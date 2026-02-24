@@ -1,0 +1,23 @@
+---
+description: Client Details: hide empty fields; Change Log: only real changes with readable labels
+globs: components/clients/**/*.tsx
+alwaysApply: false
+---
+
+# Client Details + Change Log rules
+
+## Client Details drawer (left)
+- **Hide null/empty fields** (null, undefined, empty string, empty array).
+- When a field becomes non-empty again, it should **re-appear automatically**.
+- Prefer configured `insured_fields` / `contactinfo_fields` ordering and labels; use `lib/format/contact-info.ts` helpers for Contact Info:
+  - `formatContactLabel(label, key)`
+  - `getContactSortWeight(key)`
+
+## Change Log drawer (right)
+- Only show fields that **actually changed**:
+  - Filter out noise like empty→empty, null→null, undefined→null.
+- Labels must be **human readable**:
+  - Prefer admin-configured labels by matching on a normalized meaning token (group + token).
+  - Fallback to `formatContactLabel()` for unknown keys.
+- For cleared values, render a clear indicator like **`(cleared)`**.
+

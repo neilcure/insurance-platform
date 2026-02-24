@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: insurance_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: insurance_admin
+      POSTGRES_PASSWORD: S0m3_Str0ng_pass!
+      POSTGRES_DB: insurance_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

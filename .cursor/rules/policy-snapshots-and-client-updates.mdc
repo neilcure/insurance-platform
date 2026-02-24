@@ -1,0 +1,25 @@
+---
+description: Prevent “one policy behind” snapshots; keep policies immutable
+globs: app/**/*
+alwaysApply: false
+---
+
+# Policy snapshots vs live client data
+
+## Core invariants
+- **Policies store a snapshot at creation time** (e.g. `insuredSnapshot`, `packagesSnapshot`) and must **not change** when a client record changes later.
+- **New policies must snapshot the latest client info** at the moment the policy is created.
+- Policy creation (`POST /api/policies`) must be **snapshot-only** and must **not mutate** existing clients.
+
+## Existing client edits in `/policies/new`
+- When patching an existing client (Step 2), **always sync the saved canonical values back into RHF state** after `PATCH /api/clients/:id` succeeds.
+  - This prevents the “**one policy behind**” bug where the next policy snapshot accidentally reuses stale `insured__*` / legacy key variants.
+- Keep the delete-detection baseline in sync with what was saved (baseline drives reliable “clear to delete” behavior).
+
+## Dynamic key normalization rules
+- Treat `insured__*` / `contactinfo__*` as UI-friendly variants but persist **canonical** keys (`insured_*`, `contactinfo_*`) to the client.
+- When building snapshots, **canonicalize and dedupe by meaning token**, preferring:
+  1) explicit delete (`null`)
+  2) dirty user edits
+  3) best key-shape score (prefer `__` input sources when they represent user edits, but snapshot must end canonical)
+

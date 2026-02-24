@@ -1,0 +1,12 @@
+---
+description: Keep builds offline-safe; avoid next/font/google fetch failures
+globs: app/{layout.tsx,globals.css}
+alwaysApply: false
+---
+
+# Offline-safe builds (fonts)
+
+- Do **not** rely on `next/font/google` in builds that may run without internet access.
+- Prefer **system font stacks** (or self-hosted local fonts committed to `public/` / `app/`).
+- If typography vars are used in CSS (e.g. `--font-sans` / `--font-mono`), ensure they have sensible **fallbacks**.
+
