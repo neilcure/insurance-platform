@@ -13,6 +13,19 @@ import { maskDDMMYYYY, parseAnyDate } from "@/lib/format/date";
 import { Field } from "@/components/ui/form-field";
 import { resolveFieldValue, evaluateFormula } from "@/lib/formula";
 import type { SelectOption, RepeatableFieldConfig, RepeatableConfig } from "@/lib/types/form";
+import { EntityPickerDrawer, type EntityPickerSelection } from "@/components/policies/EntityPickerDrawer";
+import { Search } from "lucide-react";
+
+type EntityPickerFieldMapping = {
+  sourceField: string;
+  targetField: string;
+};
+
+type EntityPickerMeta = {
+  flow: string;
+  buttonLabel?: string;
+  mappings: EntityPickerFieldMapping[];
+};
 function getRepeatable(raw: unknown): RepeatableConfig {
   if (Array.isArray(raw)) {
     const first = raw[0];
@@ -564,6 +577,41 @@ export function PackageBlock({
     }
   }, [allFormValues, pkgFields, pkg, form]);
 
+  const [activeEntityPicker, setActiveEntityPicker] = React.useState<EntityPickerMeta | null>(null);
+
+  const handleEntityPickerSelect = React.useCallback(
+    (picker: EntityPickerMeta, selection: EntityPickerSelection) => {
+      const extra = selection.extraAttributes;
+      const pkgs = (extra?.packagesSnapshot ?? {}) as Record<string, unknown>;
+
+      const findValue = (sourceField: string): unknown => {
+        for (const [, data] of Object.entries(pkgs)) {
+          if (!data || typeof data !== "object") continue;
+          const structured = data as { values?: Record<string, unknown> };
+          const values = structured.values ?? (data as Record<string, unknown>);
+          if (sourceField in values) return values[sourceField];
+          for (const [k, v] of Object.entries(values)) {
+            const kTail = k.includes("__") ? k.split("__").pop() : k;
+            if (kTail === sourceField) return v;
+          }
+        }
+        return undefined;
+      };
+
+      for (const m of picker.mappings) {
+        if (!m.sourceField || !m.targetField) continue;
+        const val = findValue(m.sourceField);
+        if (val !== undefined && val !== null && val !== "") {
+          const targetKey = m.targetField.includes("__") ? m.targetField : `${pkg}__${m.targetField}`;
+          form.setValue(targetKey as never, val as never, { shouldDirty: true });
+        }
+      }
+
+      toast.success(`${picker.buttonLabel || "Record"} selected: ${selection.policyNumber}`, { duration: 1500 });
+    },
+    [form, pkg],
+  );
+
   return (
     <section className="space-y-4">
       {categories.length > 1 ? (
@@ -741,6 +789,7 @@ export function PackageBlock({
                     booleanLabels?: { true?: string; false?: string };
                     booleanDisplay?: "radio" | "dropdown";
                     labelCase?: "original" | "upper" | "lower" | "title";
+                    entityPicker?: EntityPickerMeta;
                   };
                   const displayLabel = applyLabelCase(f.label, meta.labelCase);
                   const inputType = meta.inputType ?? "string";
@@ -893,7 +942,7 @@ export function PackageBlock({
                       children?: { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; currencyCode?: string; decimals?: number; booleanLabels?: { true?: string; false?: string }; booleanDisplay?: "radio" | "dropdown"; booleanChildren?: { true?: any[]; false?: any[] } }[];
                     }[];
                     const fieldId = (f as any).id as number | undefined;
-                    return (
+                    const selectEl = (
                       <InlineSelectWithChildren
                         key={nameBase}
                         form={form}
@@ -914,6 +963,25 @@ export function PackageBlock({
                         }}
                       />
                     );
+                    if (meta.entityPicker?.flow) {
+                      return (
+                        <div key={`${nameBase}__ep`} className="space-y-1">
+                          {selectEl}
+                          <button
+                            type="button"
+                            className="group/ep relative inline-flex h-8 w-8 items-center justify-center rounded-md border border-neutral-200 bg-white text-neutral-600 transition-all duration-300 ease-out hover:w-auto hover:gap-1.5 hover:px-3 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+                            onClick={() => setActiveEntityPicker(meta.entityPicker!)}
+                            title={meta.entityPicker.buttonLabel || "Browse"}
+                          >
+                            <Search className="h-3.5 w-3.5 shrink-0" />
+                            <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium opacity-0 transition-all duration-300 ease-out group-hover/ep:max-w-48 group-hover/ep:opacity-100">
+                              {meta.entityPicker.buttonLabel || "Browse"}
+                            </span>
+                          </button>
+                        </div>
+                      );
+                    }
+                    return selectEl;
                   }
                   if (inputType === "multi_select") {
                     const options = (Array.isArray(meta.options) ? (meta.options as unknown[]) : []) as {
@@ -1768,6 +1836,35 @@ export function PackageBlock({
                       </div>
                     );
                   }
+                  if (meta.entityPicker?.flow) {
+                    return (
+                      <div key={nameBase} className="col-span-2 space-y-1">
+                        <Label>
+                          {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                        </Label>
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            className="flex-1"
+                            type={isNumber ? "number" : isDate ? "text" : "text"}
+                            placeholder={isDate ? "DD-MM-YYYY" : undefined}
+                            inputMode={isDate ? "numeric" : undefined}
+                            {...form.register(nameBase as never, options)}
+                          />
+                          <button
+                            type="button"
+                            className="group/ep relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-neutral-200 bg-white text-neutral-600 transition-all duration-300 ease-out hover:w-auto hover:gap-1.5 hover:px-3 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+                            onClick={() => setActiveEntityPicker(meta.entityPicker!)}
+                            title={meta.entityPicker.buttonLabel || "Browse"}
+                          >
+                            <Search className="h-3.5 w-3.5 shrink-0" />
+                            <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium opacity-0 transition-all duration-300 ease-out group-hover/ep:max-w-48 group-hover/ep:opacity-100">
+                              {meta.entityPicker.buttonLabel || "Browse"}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
                   return (
                     <Field
                       key={nameBase}
@@ -1819,6 +1916,15 @@ export function PackageBlock({
           return [...groupedElements, debugPanel];
         })()}
       </div>
+      {activeEntityPicker && (
+        <EntityPickerDrawer
+          open={!!activeEntityPicker}
+          onClose={() => setActiveEntityPicker(null)}
+          flowKey={activeEntityPicker.flow}
+          title={activeEntityPicker.buttonLabel || "Select Record"}
+          onSelect={(sel) => handleEntityPickerSelect(activeEntityPicker, sel)}
+        />
+      )}
     </section>
   );
 }

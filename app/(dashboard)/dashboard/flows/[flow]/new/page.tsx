@@ -78,6 +78,8 @@ type RecordRow = {
   policyId: number;
   policyNumber: string;
   createdAt: string;
+  carExtra?: Record<string, unknown> | null;
+  displayName?: string;
 };
 
 function StepDot({
@@ -609,9 +611,67 @@ export default function FlowNewPage() {
         const res = await fetch(`/api/policies?flow=${encodeURIComponent(flowKey)}`, { cache: "no-store" });
         const json = (res.ok ? ((await res.json()) as RecordRow[]) : []);
         if (!cancelled) {
+          const norm = (k: string) => k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
+          const SKIP_KEYS = /district|area|region|street|block|floor|flat|room|address|city|state|zip|postal|country|phone|tel|fax|mobile|email|account|number|date|remark|note|memo/;
           setRecordRows(
             (Array.isArray(json) ? json : [])
-              .filter((r) => Number.isFinite(r.policyId) && r.policyId > 0),
+              .filter((r: RecordRow) => Number.isFinite(r.policyId) && r.policyId > 0)
+              .map((r: RecordRow) => {
+                const extra = (r.carExtra ?? null) as Record<string, unknown> | null;
+                if (!extra) return r;
+                let displayName = "";
+                const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
+                for (const [pkgKey, data] of Object.entries(pkgs)) {
+                  if (displayName || !data || typeof data !== "object") continue;
+                  const structured = data as { values?: Record<string, unknown> };
+                  const vals = structured.values ?? (data as Record<string, unknown>);
+                  if (!vals || typeof vals !== "object") continue;
+                  let first = "", last = "";
+                  for (const [k, v] of Object.entries(vals)) {
+                    const n = norm(k), s = String(v ?? "").trim();
+                    if (!s) continue;
+                    if (!last && /lastname|surname|lname/.test(n)) last = s;
+                    if (!first && /firstname|fname/.test(n)) first = s;
+                  }
+                  if (first || last) { displayName = [last, first].filter(Boolean).join(" "); continue; }
+                  for (const [k, v] of Object.entries(vals)) {
+                    const n = norm(k), s = String(v ?? "").trim();
+                    if (!s) continue;
+                    if (/companyname|organisationname|orgname|corporatename|firmname/.test(n)) { displayName = s; break; }
+                  }
+                  if (!displayName) {
+                    for (const [k, v] of Object.entries(vals)) {
+                      const n = norm(k), s = String(v ?? "").trim();
+                      if (!s) continue;
+                      if (/fullname|displayname|^name$|title|label/.test(n)) { displayName = s; break; }
+                    }
+                  }
+                  if (!displayName) {
+                    const pkgNorm = pkgKey.toLowerCase().replace(/[^a-z]/g, "");
+                    for (const [k, v] of Object.entries(vals)) {
+                      const n = norm(k), s = String(v ?? "").trim();
+                      if (!s || typeof v !== "string") continue;
+                      if (n === pkgNorm && s.length > 1 && !SKIP_KEYS.test(n)) { displayName = s; break; }
+                    }
+                  }
+                  if (!displayName) {
+                    for (const [k, v] of Object.entries(vals)) {
+                      const n = norm(k), s = String(v ?? "").trim();
+                      if (!s || typeof v !== "string") continue;
+                      if (/name|broker|agent|company|insurer|vendor|supplier|partner/.test(n) && !SKIP_KEYS.test(n)) { displayName = s; break; }
+                    }
+                  }
+                }
+                const insured = (extra.insuredSnapshot ?? null) as Record<string, unknown> | null;
+                if (!displayName && insured) {
+                  for (const [k, v] of Object.entries(insured)) {
+                    const n = norm(k), s = String(v ?? "").trim();
+                    if (!s) continue;
+                    if (/companyname|fullname|^name$|organisationname/.test(n)) { displayName = s; break; }
+                  }
+                }
+                return { ...r, displayName };
+              }),
           );
         }
       } catch {
@@ -627,7 +687,10 @@ export default function FlowNewPage() {
   const filteredRecords = React.useMemo(() => {
     const q = recordSearch.trim().toLowerCase();
     if (!q) return recordRows;
-    return recordRows.filter((r) => r.policyNumber.toLowerCase().includes(q));
+    return recordRows.filter((r) => {
+      const hay = `${r.policyNumber} ${r.displayName ?? ""}`.toLowerCase();
+      return hay.includes(q);
+    });
   }, [recordRows, recordSearch]);
 
   async function chooseExistingClient(policyId: number) {
@@ -1658,7 +1721,7 @@ export default function FlowNewPage() {
           </DrawerHeader>
           <div className="space-y-3 p-4">
             <Input
-              placeholder={`Search by record number…`}
+              placeholder="Search by name or record number…"
               value={recordSearch}
               onChange={(e) => setRecordSearch(e.target.value)}
             />
@@ -1681,8 +1744,13 @@ export default function FlowNewPage() {
                       className="flex items-center justify-between gap-3 p-3"
                     >
                       <div className="min-w-0">
-                        <div className="font-mono text-sm">{r.policyNumber}</div>
-                        <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                        {r.displayName && (
+                          <div className="text-xs font-medium wrap-break-word">{r.displayName}</div>
+                        )}
+                        <div className="truncate font-mono text-xs text-neutral-500 dark:text-neutral-400">
+                          {r.policyNumber}
+                        </div>
+                        <div className="text-[11px] text-neutral-400 dark:text-neutral-500">
                           {r.createdAt ? new Date(r.createdAt).toLocaleDateString() : ""}
                         </div>
                       </div>

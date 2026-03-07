@@ -14,6 +14,7 @@ import { BooleanChildrenEditor, MetaJsonPreview } from "@/components/admin/gener
 import { TopLevelSelectEditor, TopLevelRepeatableEditor } from "@/components/admin/generic/FieldTypeEditors";
 import { GroupAssignmentSection } from "@/components/admin/generic/GroupAssignmentSection";
 import { AutoFillConfigEditor, type AutoFillConfig } from "@/components/admin/generic/AutoFillConfig";
+import { EntityPickerConfigEditor, type EntityPickerConfig } from "@/components/admin/generic/EntityPickerConfig";
 import { InputTypeSelect, type InputType } from "@/components/admin/generic/InputTypeSelect";
 
 export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
@@ -40,6 +41,7 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
       booleanDisplay?: "radio" | "dropdown";
       group?: string;
       groupOrder?: number;
+      labelCase?: "original" | "upper" | "lower" | "title";
       selectDisplay?: "dropdown" | "radio" | "checkbox";
       repeatable?: {
         itemLabel?: string;
@@ -51,6 +53,7 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
       groupShowWhen?: { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null;
       groupShowWhenMap?: Record<string, { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null>;
       autoFill?: AutoFillConfig;
+      entityPicker?: EntityPickerConfig;
     };
   }>({
     label: "",
@@ -232,6 +235,19 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
             <Input value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} />
           </div>
           <div className="grid gap-1">
+            <Label>Label Case</Label>
+            <select
+              className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              value={(form.meta?.labelCase ?? "original")}
+              onChange={(e) => updateMeta("labelCase", e.target.value as "original" | "upper" | "lower" | "title")}
+            >
+              <option value="original">Original</option>
+              <option value="upper">UPPERCASE</option>
+              <option value="lower">lowercase</option>
+              <option value="title">Title Case</option>
+            </select>
+          </div>
+          <div className="grid gap-1">
             <Label>Value (key)</Label>
             <Input value={form.value} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} />
           </div>
@@ -370,6 +386,12 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
             allPackages={allPackages}
             crossPkgCategories={crossPkgCategories}
             onLoadCategories={loadCrossPkgCats}
+          />
+
+          <EntityPickerConfigEditor
+            value={form.meta?.entityPicker}
+            onChange={(next) => updateMeta("entityPicker", next as any)}
+            currentPkg={pkg}
           />
 
           <GroupAssignmentSection
