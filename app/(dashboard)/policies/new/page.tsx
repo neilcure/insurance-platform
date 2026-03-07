@@ -1335,6 +1335,7 @@ export default function NewPolicyStep1Page() {
         packages?: string[];
         packageCategories?: Record<string, string[]>;
         packageShowWhen?: Record<string, { package: string; category: string | string[] }[]>;
+        packageGroupLabelsHidden?: Record<string, boolean>;
         categoryStepVisibility?: Record<string, string[]>;
         isFinal?: boolean;
         wizardStep?: number;
@@ -1409,6 +1410,7 @@ export default function NewPolicyStep1Page() {
       packages?: string[];
       packageCategories?: Record<string, string[]>;
       packageShowWhen?: Record<string, { package: string; category: string | string[] }[]>;
+      packageGroupLabelsHidden?: Record<string, boolean>;
       categoryStepVisibility?: Record<string, string[]>;
       isFinal?: boolean;
       wizardStep?: number;
@@ -4419,6 +4421,7 @@ export default function NewPolicyStep1Page() {
                   const pkgs = Array.isArray(row?.meta?.packages) ? (row!.meta!.packages as string[]) : [];
                   const pkgCats = (row?.meta?.packageCategories ?? {}) as Record<string, string[]>;
                   const pkgShowWhen = (row?.meta?.packageShowWhen ?? {}) as Record<string, { package: string; category: string | string[] }[]>;
+                  const pkgGrpHidden = (row?.meta?.packageGroupLabelsHidden ?? {}) as Record<string, boolean>;
                   const activePkgs = pkgs
                     .filter((p) => packagesOptions.some((po) => po.value === p))
                     .filter((p) => {
@@ -4460,6 +4463,7 @@ export default function NewPolicyStep1Page() {
                         pkg={p}
                         allowedCategories={finalAllowedCats}
                         isAdmin={currentUserType === "admin"}
+                        hideGroupLabels={!!pkgGrpHidden[p]}
                       />
                     );
                   });

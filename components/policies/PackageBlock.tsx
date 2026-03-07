@@ -381,11 +381,13 @@ export function PackageBlock({
   pkg,
   allowedCategories,
   isAdmin,
+  hideGroupLabels,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   pkg: string;
   allowedCategories?: string[] | undefined;
   isAdmin?: boolean;
+  hideGroupLabels?: boolean;
 }) {
   const [categories, setCategories] = React.useState<{ id: number; label: string; value: string; sortOrder: number; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }[]>([]);
   const catFieldName = `${pkg}__category`;
@@ -488,6 +490,7 @@ export function PackageBlock({
       }
     }
   }, [allFormValues, categories, catFieldName, form, selectedCategory]);
+
   const [pkgFields, setPkgFields] = React.useState<
     { id: number; label: string; value: string; valueType: string; sortOrder: number; meta?: unknown }[]
   >([]);
@@ -533,6 +536,33 @@ export function PackageBlock({
       cancelled = true;
     };
   }, [pkg]);
+
+  // Auto-fill: when a boolean field with autoFill config changes to the trigger value,
+  // copy values from source package fields into this package's fields.
+  const autoFillPrevRef = React.useRef<Record<string, string>>({});
+  React.useEffect(() => {
+    if (pkgFields.length === 0) return;
+    for (const f of pkgFields) {
+      const meta = (f.meta ?? {}) as { inputType?: string; autoFill?: { when: string; mappings: { sourcePackage: string; sourceField: string; targetPackage?: string; targetField: string }[] } };
+      if (meta.inputType !== "boolean" || !meta.autoFill?.mappings?.length) continue;
+      const key = `${pkg}__${f.value}`;
+      const currentVal = String(allFormValues[key] ?? "");
+      const prevVal = autoFillPrevRef.current[key];
+      if (currentVal === prevVal) continue;
+      autoFillPrevRef.current[key] = currentVal;
+      if (currentVal !== meta.autoFill.when) continue;
+      for (const mapping of meta.autoFill.mappings) {
+        if (!mapping.sourcePackage || !mapping.sourceField || !mapping.targetField) continue;
+        const sourceKey = `${mapping.sourcePackage}__${mapping.sourceField}`;
+        const tPkg = mapping.targetPackage || pkg;
+        const targetKey = `${tPkg}__${mapping.targetField}`;
+        const sourceVal = allFormValues[sourceKey];
+        if (sourceVal !== undefined && sourceVal !== null && sourceVal !== "") {
+          form.setValue(targetKey as never, sourceVal as never, { shouldDirty: true });
+        }
+      }
+    }
+  }, [allFormValues, pkgFields, pkg, form]);
 
   return (
     <section className="space-y-4">
@@ -692,7 +722,7 @@ export function PackageBlock({
             });
           const groupedElements = entries.map(([groupLabel, bucket]) => (
             <div key={groupLabel || "default"} className="space-y-2">
-              {groupLabel ? (
+              {groupLabel && !hideGroupLabels ? (
                 <div className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{groupLabel}</div>
               ) : null}
               <div className="grid grid-cols-2 gap-4">

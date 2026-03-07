@@ -19,6 +19,7 @@ type StepRow = {
     packages?: string[];
     packageCategories?: Record<string, string[]>;
     packageShowWhen?: Record<string, ShowWhenRule[]>;
+    packageGroupLabelsHidden?: Record<string, boolean>;
     categoryStepVisibility?: Record<string, string[]>;
     isFinal?: boolean;
     wizardStep?: number;
@@ -117,7 +118,7 @@ export default function StepsManager({ flow }: { flow: string }) {
           newMap[p] = [];
         }
       }
-      setCategoriesByPkg(newMap);
+      setCategoriesByPkg((prev) => ({ ...prev, ...newMap }));
     }
     const pkgs = Array.isArray(form.meta?.packages) ? (form.meta?.packages as string[]) : [];
     void loadCatsFor(pkgs);
@@ -138,7 +139,7 @@ export default function StepsManager({ flow }: { flow: string }) {
           newMap[p] = [];
         }
       }
-      setCategoriesByPkg((prev) => ({ ...newMap, ...prev }));
+      setCategoriesByPkg((prev) => ({ ...prev, ...newMap }));
     }
     if (packages.length > 0) void loadAllCats();
   }, [packages]);
@@ -218,6 +219,10 @@ export default function StepsManager({ flow }: { flow: string }) {
       const categoryStepVisibility = Object.fromEntries(
         Object.entries(csvRaw).filter(([, steps]) => Array.isArray(steps) && steps.length > 0),
       );
+      const pkgGrpLabelsRaw = (form.meta?.packageGroupLabelsHidden ?? {}) as Record<string, boolean>;
+      const packageGroupLabelsHidden = Object.fromEntries(
+        Object.entries(pkgGrpLabelsRaw).filter(([k, v]) => selectedPkgs.includes(k) && v),
+      );
       const embeddedFlowLabel = typeof form.meta?.embeddedFlowLabel === "string" ? form.meta.embeddedFlowLabel.trim() : undefined;
       const payload = {
         label: form.label,
@@ -230,6 +235,7 @@ export default function StepsManager({ flow }: { flow: string }) {
           packages: selectedPkgs,
           packageCategories: pkgCats,
           packageShowWhen: pkgShowWhen,
+          packageGroupLabelsHidden,
           categoryStepVisibility,
           wizardStep,
           wizardStepLabel,
@@ -551,9 +557,24 @@ export default function StepsManager({ flow }: { flow: string }) {
                   const selected = ((form.meta?.packageCategories ?? {}) as Record<string, string[]>)[pkg] ?? [];
                   const showWhenRules = ((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>)[pkg] ?? [];
                   const otherSelectedPkgs = (form.meta!.packages as string[]).filter((p) => p !== pkg);
+                  const groupLabelsHidden = ((form.meta?.packageGroupLabelsHidden ?? {}) as Record<string, boolean>)[pkg] ?? false;
                   return (
                     <div key={pkg} className="rounded-md border border-neutral-200 p-3 space-y-3 dark:border-neutral-800">
-                      <div className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{pkgLabel}</div>
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{pkgLabel}</div>
+                        <label className="inline-flex items-center gap-1.5 text-xs text-neutral-600 dark:text-neutral-400">
+                          <input
+                            type="checkbox"
+                            checked={groupLabelsHidden}
+                            onChange={(e) => {
+                              const map = { ...((form.meta?.packageGroupLabelsHidden ?? {}) as Record<string, boolean>) };
+                              map[pkg] = e.target.checked;
+                              setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageGroupLabelsHidden: map } as StepRow["meta"] }));
+                            }}
+                          />
+                          Hide group labels in flow
+                        </label>
+                      </div>
                       <div>
                         <Label className="text-xs">Categories (optional)</Label>
                         <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -633,6 +654,17 @@ export default function StepsManager({ flow }: { flow: string }) {
                                       arr[rIdx] = { ...arr[rIdx], package: e.target.value, category: [] };
                                       map[pkg] = arr;
                                       setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageShowWhen: map } as StepRow["meta"] }));
+                                      const depPkg = e.target.value;
+                                      if (depPkg && !categoriesByPkg[depPkg]) {
+                                        void (async () => {
+                                          try {
+                                            const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${depPkg}_category`)}`, { cache: "no-store" });
+                                            if (!res.ok) return;
+                                            const data = (await res.json()) as { label: string; value: string }[];
+                                            setCategoriesByPkg((prev) => ({ ...prev, [depPkg]: Array.isArray(data) ? data : [] }));
+                                          } catch { /* ignore */ }
+                                        })();
+                                      }
                                     }}
                                   >
                                     <option value="">-- Select --</option>

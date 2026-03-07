@@ -48,6 +48,7 @@ type StepRow = {
       string,
       { package: string; category: string | string[] }[]
     >;
+    packageGroupLabelsHidden?: Record<string, boolean>;
     categoryStepVisibility?: Record<string, string[]>;
     showWhen?: {
       package: string;
@@ -1472,6 +1473,7 @@ export default function FlowNewPage() {
                     {}) as Record<string, string[]>;
                   const csv = (row.meta?.categoryStepVisibility ??
                     {}) as Record<string, string[]>;
+                  const pkgGrpHidden = (row.meta?.packageGroupLabelsHidden ?? {}) as Record<string, boolean>;
                   const baseCats = pkgCats[p];
                   let finalCats = baseCats;
                   if (
@@ -1494,6 +1496,7 @@ export default function FlowNewPage() {
                       pkg={p}
                       allowedCategories={finalCats}
                       isAdmin={userType === "admin"}
+                      hideGroupLabels={!!pkgGrpHidden[p]}
                     />
                   );
                 })

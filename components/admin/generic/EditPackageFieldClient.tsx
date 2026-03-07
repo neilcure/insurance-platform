@@ -13,6 +13,7 @@ import { GroupShowWhenConfig } from "@/components/admin/generic/GroupShowWhenCon
 import { BooleanChildrenEditor, MetaJsonPreview } from "@/components/admin/generic/BooleanChildrenEditor";
 import { TopLevelSelectEditor, TopLevelRepeatableEditor } from "@/components/admin/generic/FieldTypeEditors";
 import { GroupAssignmentSection } from "@/components/admin/generic/GroupAssignmentSection";
+import { AutoFillConfigEditor, type AutoFillConfig } from "@/components/admin/generic/AutoFillConfig";
 import { InputTypeSelect, type InputType } from "@/components/admin/generic/InputTypeSelect";
 
 export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: number }) {
@@ -50,6 +51,7 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
       showWhen?: { package: string; category: string | string[] }[];
       groupShowWhen?: { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null;
       groupShowWhenMap?: Record<string, { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null>;
+      autoFill?: AutoFillConfig;
     };
   }>({
     label: "",
@@ -349,19 +351,28 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
           ) : null}
 
           {form.meta?.inputType === "boolean" ? (
-            <BooleanChildrenEditor
-              booleanChildren={form.meta?.booleanChildren as any}
-              onChange={(next) => updateMeta("booleanChildren", next as any)}
-              defaultBoolean={form.meta?.defaultBoolean as any}
-              onDefaultBooleanChange={(v) => updateMeta("defaultBoolean", v as any)}
-              booleanLabels={form.meta?.booleanLabels as any}
-              onBooleanLabelsChange={(v) => updateMeta("booleanLabels", v as any)}
-              booleanDisplay={(form.meta?.booleanDisplay as any) ?? "radio"}
-              onBooleanDisplayChange={(v) => updateMeta("booleanDisplay", v as any)}
-              allPackages={allPackages}
-              crossPkgCategories={crossPkgCategories}
-              onLoadCategories={loadCrossPkgCats}
-            />
+            <>
+              <BooleanChildrenEditor
+                booleanChildren={form.meta?.booleanChildren as any}
+                onChange={(next) => updateMeta("booleanChildren", next as any)}
+                defaultBoolean={form.meta?.defaultBoolean as any}
+                onDefaultBooleanChange={(v) => updateMeta("defaultBoolean", v as any)}
+                booleanLabels={form.meta?.booleanLabels as any}
+                onBooleanLabelsChange={(v) => updateMeta("booleanLabels", v as any)}
+                booleanDisplay={(form.meta?.booleanDisplay as any) ?? "radio"}
+                onBooleanDisplayChange={(v) => updateMeta("booleanDisplay", v as any)}
+                allPackages={allPackages}
+                crossPkgCategories={crossPkgCategories}
+                onLoadCategories={loadCrossPkgCats}
+              />
+              <AutoFillConfigEditor
+                value={form.meta?.autoFill}
+                onChange={(next) => updateMeta("autoFill", next as any)}
+                allPackages={allPackages}
+                currentPkg={pkg}
+                currentFieldValue={form.value}
+              />
+            </>
           ) : null}
 
           <div className="grid gap-1">
