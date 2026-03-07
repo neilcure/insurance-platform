@@ -1,8 +1,8 @@
-import { cookies } from "next/headers";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import AgentsTableClient from "@/components/agents/AgentsTableClient";
+import { serverFetch } from "@/lib/auth/server-fetch";
 
 type AgentRow = {
   id: number;
@@ -14,16 +14,7 @@ type AgentRow = {
 };
 
 async function fetchAgents(): Promise<AgentRow[]> {
-  const cookieStore = (await (cookies() as unknown as Promise<ReturnType<typeof cookies>>));
-  const cookieHeader = cookieStore
-    .getAll()
-    .map((c: { name: string; value: string }) => `${c.name}=${encodeURIComponent(c.value)}`)
-    .join("; ");
-  const base = process.env.NEXTAUTH_URL ?? "";
-  const res = await fetch(`${base}/api/agents`, {
-    headers: cookieHeader ? { cookie: cookieHeader } : {},
-    cache: "no-store",
-  });
+  const res = await serverFetch("/api/agents");
   if (!res.ok) {
     if (res.status === 401) return [];
     throw new Error("Failed to load agents");

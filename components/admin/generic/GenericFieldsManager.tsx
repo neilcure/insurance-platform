@@ -11,8 +11,9 @@ import { toast } from "sonner";
 import { Plus, Pencil, Eye, EyeOff, Save, X, Trash2, ChevronUp, ChevronDown } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { GroupShowWhenConfig } from "@/components/admin/generic/GroupShowWhenConfig";
+import type { InputType } from "@/lib/types/form";
+import { InputTypeSelect } from "@/components/admin/generic/InputTypeSelect";
 
-type InputType = "string" | "number" | "currency" | "date" | "select" | "multi_select" | "boolean" | "repeatable" | "formula";
 type BooleanBranchChild = {
   label?: string;
   inputType?: InputType;
@@ -55,9 +56,10 @@ type FieldMeta = {
     max?: number;
     fields?: ChildFieldMeta[];
   };
-  group?: string; // Optional visual grouping label
+  group?: string | string[]; // Optional visual grouping label (single or multiple)
   groupOrder?: number; // Optional sort order for the group itself
   groupShowWhen?: { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null;
+  groupShowWhenMap?: Record<string, { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null>;
   selectDisplay?: "dropdown" | "radio" | "checkbox"; // How to render select/multi_select
   // Display formatting
   labelCase?: "original" | "upper" | "lower" | "title";
@@ -78,6 +80,17 @@ type FieldRow = {
   meta: FieldMeta | null;
 };
 
+function getFieldGroups(group: string | string[] | undefined): string[] {
+  if (!group) return [""];
+  if (Array.isArray(group)) return group.length > 0 ? group : [""];
+  return group.trim() ? [group.trim()] : [""];
+}
+
+function getPrimaryGroup(group: string | string[] | undefined): string {
+  if (Array.isArray(group)) return group[0]?.trim() ?? "";
+  return String(group ?? "").trim();
+}
+
 export default function GenericFieldsManager({ pkg }: { pkg: string }) {
   const groupKey = `${pkg}_fields`;
   const categoryGroupKey = `${pkg}_category`;
@@ -94,6 +107,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
   const [customGroupMode, setCustomGroupMode] = React.useState(false);
   const [renamingGroup, setRenamingGroup] = React.useState<string | null>(null);
   const [renameValue, setRenameValue] = React.useState("");
+  const [confirmDeleteGroup, setConfirmDeleteGroup] = React.useState<string | null>(null);
 
   const [form, setForm] = React.useState<Partial<FieldRow>>({
     label: "",
@@ -103,6 +117,14 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     isActive: true,
     meta: { inputType: "string", required: false, categories: [] },
   });
+
+  const [copyDialogOpen, setCopyDialogOpen] = React.useState(false);
+  const [availablePackages, setAvailablePackages] = React.useState<{ label: string; value: string }[]>([]);
+  const [copySourcePkg, setCopySourcePkg] = React.useState("");
+  const [copySourceFields, setCopySourceFields] = React.useState<FieldRow[]>([]);
+  const [copySelectedKeys, setCopySelectedKeys] = React.useState<Set<string>>(new Set());
+  const [loadingSourceFields, setLoadingSourceFields] = React.useState(false);
+  const [copying, setCopying] = React.useState(false);
 
   // Ensure consistent numeric behavior and stable ordering
   const toInt = React.useCallback((value: unknown, fallback = 0) => {
@@ -136,6 +158,78 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     void load();
   }, [load]);
 
+  const openCopyDialog = React.useCallback(async () => {
+    try {
+      const res = await fetch("/api/form-options?groupKey=packages", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as { label: string; value: string }[];
+      setAvailablePackages((Array.isArray(data) ? data : []).filter((p) => p.value !== pkg));
+    } catch { /* ignore */ }
+    setCopySourcePkg("");
+    setCopySourceFields([]);
+    setCopySelectedKeys(new Set());
+    setCopyDialogOpen(true);
+  }, [pkg]);
+
+  const loadSourceFields = React.useCallback(async (sourcePkg: string) => {
+    setCopySourcePkg(sourcePkg);
+    setCopySourceFields([]);
+    setCopySelectedKeys(new Set());
+    if (!sourcePkg) return;
+    setLoadingSourceFields(true);
+    try {
+      const res = await fetch(`/api/admin/form-options?groupKey=${encodeURIComponent(`${sourcePkg}_fields`)}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as FieldRow[];
+      const fields = Array.isArray(data) ? data : [];
+      const existingKeys = new Set(rows.map((r) => r.value.toLowerCase()));
+      const available = fields.filter((f) => !existingKeys.has(f.value.toLowerCase()));
+      setCopySourceFields(available);
+      setCopySelectedKeys(new Set(available.map((f) => f.value)));
+    } catch { /* ignore */ }
+    finally { setLoadingSourceFields(false); }
+  }, [rows]);
+
+  const handleCopyFields = React.useCallback(async () => {
+    if (!copySourcePkg || copySelectedKeys.size === 0) return;
+    setCopying(true);
+    try {
+      const toCreate = copySourceFields.filter((f) => copySelectedKeys.has(f.value));
+      if (toCreate.length === 0) {
+        toast.info("No fields selected");
+        return;
+      }
+      let created = 0;
+      let skipped = 0;
+      for (const field of toCreate) {
+        const sourceMeta = (field.meta ?? {}) as Record<string, unknown>;
+        const { group, groupOrder, groupShowWhen, groupShowWhenMap, categories, ...cleanMeta } = sourceMeta;
+        const postRes = await fetch("/api/admin/form-options", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            groupKey,
+            label: field.label,
+            value: field.value,
+            sortOrder: field.sortOrder,
+            isActive: field.isActive,
+            valueType: field.valueType ?? "string",
+            meta: cleanMeta,
+          }),
+        });
+        if (postRes.ok) created++;
+        else skipped++;
+      }
+      toast.success(`Copied ${created} field${created !== 1 ? "s" : ""}${skipped > 0 ? `, ${skipped} skipped` : ""}`);
+      setCopyDialogOpen(false);
+      void load();
+    } catch (err: unknown) {
+      toast.error((err as { message?: string })?.message ?? "Copy failed");
+    } finally {
+      setCopying(false);
+    }
+  }, [copySourcePkg, copySelectedKeys, copySourceFields, groupKey, load]);
+
   const displayRows = React.useMemo(() => {
     const next = [...rows];
     next.sort((a, b) => {
@@ -151,8 +245,8 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
         const ao = Number.isFinite(Number(am.groupOrder)) ? Number(am.groupOrder) : 0;
         const bo = Number.isFinite(Number(bm.groupOrder)) ? Number(bm.groupOrder) : 0;
         if (ao !== bo) return ao - bo;
-        const ga = String(am.group ?? "");
-        const gb = String(bm.group ?? "");
+        const ga = getPrimaryGroup(am.group);
+        const gb = getPrimaryGroup(bm.group);
         const cmp = ga.localeCompare(gb, undefined, { sensitivity: "base" });
         return cmp === 0 ? sortBySortOrderStable(a, b) : cmp;
       }
@@ -162,8 +256,8 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
       const ao = Number.isFinite(Number(am.groupOrder)) ? Number(am.groupOrder) : 0;
       const bo = Number.isFinite(Number(bm.groupOrder)) ? Number(bm.groupOrder) : 0;
       if (ao !== bo) return ao - bo;
-      const ga = String(am.group ?? "");
-      const gb = String(bm.group ?? "");
+      const ga = getPrimaryGroup(am.group);
+      const gb = getPrimaryGroup(bm.group);
       const gcmp = ga.localeCompare(gb, undefined, { sensitivity: "base" });
       if (gcmp !== 0) return gcmp;
       return sortBySortOrderStable(a, b);
@@ -201,10 +295,10 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
         categories: applyToAll ? [] : (form.meta?.categories ?? []),
       };
       // Determine next sort order: append to end if creating, or if group changed
-      const targetGroup = String((normalizedMeta.group ?? "") || "");
-      const prevGroup = String(((editing?.meta ?? {}) as FieldMeta)?.group ?? "");
+      const targetGroup = getPrimaryGroup(normalizedMeta.group);
+      const prevGroup = getPrimaryGroup(((editing?.meta ?? {}) as FieldMeta)?.group);
       const groupMembers = rows.filter(
-        (r) => String(((r.meta ?? {}) as FieldMeta).group ?? "") === targetGroup && (!editing || r.id !== editing.id)
+        (r) => getPrimaryGroup(((r.meta ?? {}) as FieldMeta).group) === targetGroup && (!editing || r.id !== editing.id)
       );
       const maxGroupSort = groupMembers.reduce((acc, r) => Math.max(acc, toInt(r.sortOrder, 0)), -1);
       const nextSortOrder =
@@ -284,9 +378,9 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
   // Reorder helpers within a group by renumbering sortOrder deterministically
   async function moveWithinGroup(targetId: number, direction: "up" | "down") {
     // Allow reordering even when group is empty ("no group").
-    const group = String(((rows.find((r) => r.id === targetId)?.meta as FieldMeta | null)?.group ?? "") as string);
+    const group = getPrimaryGroup((rows.find((r) => r.id === targetId)?.meta as FieldMeta | null)?.group);
     const members = rows
-      .filter((r) => ((r.meta as FieldMeta | null)?.group ?? "") === group)
+      .filter((r) => getFieldGroups((r.meta as FieldMeta | null)?.group).includes(group))
       .sort(sortBySortOrderStable);
     const idx = members.findIndex((m) => m.id === targetId);
     if (idx < 0) return;
@@ -322,9 +416,10 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     // Build group membership using raw rows (not displayRows) so ordering is deterministic.
     const byGroup = new Map<string, FieldRow[]>();
     for (const r of rows) {
-      const g = String((((r.meta ?? {}) as FieldMeta).group ?? "") as string);
-      if (!byGroup.has(g)) byGroup.set(g, []);
-      byGroup.get(g)!.push(r);
+      for (const g of getFieldGroups(((r.meta ?? {}) as FieldMeta).group)) {
+        if (!byGroup.has(g)) byGroup.set(g, []);
+        byGroup.get(g)!.push(r);
+      }
     }
     for (const [g, membersRaw] of byGroup.entries()) {
       const members = [...membersRaw].sort(sortBySortOrderStable);
@@ -341,13 +436,14 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     const map = new Map<string, GroupInfo>();
     for (const r of rows) {
       const meta = (r.meta ?? {}) as FieldMeta;
-      const name = meta.group ?? "";
       const order = typeof meta.groupOrder === "number" ? meta.groupOrder : 0;
-      const gi = map.get(name) ?? { name, order, ids: [], count: 0 };
-      gi.order = Math.min(gi.order, order);
-      gi.ids.push(r.id);
-      gi.count += 1;
-      map.set(name, gi);
+      for (const name of getFieldGroups(meta.group)) {
+        const gi = map.get(name) ?? { name, order, ids: [], count: 0 };
+        gi.order = Math.min(gi.order, order);
+        if (!gi.ids.includes(r.id)) gi.ids.push(r.id);
+        gi.count = gi.ids.length;
+        map.set(name, gi);
+      }
     }
     return Array.from(map.values())
       .filter((g) => g.count > 0)
@@ -355,8 +451,8 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
   }, [rows]);
   const existingGroupNames = React.useMemo(() => groups.map((g) => g.name).filter((n) => n) as string[], [groups]);
   const isCustomGroup = React.useMemo(() => {
-    const val = (form.meta as FieldMeta | undefined)?.group ?? "";
-    return Boolean(val) && !existingGroupNames.includes(val);
+    const vals = getFieldGroups((form.meta as FieldMeta | undefined)?.group);
+    return vals.some((v) => v && !existingGroupNames.includes(v));
   }, [form.meta, existingGroupNames]);
   async function moveGroup(name: string, direction: "up" | "down") {
     const idx = groups.findIndex((g) => g.name === name);
@@ -414,11 +510,23 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     for (const id of group.ids) {
       const row = rows.find((r) => r.id === id);
       if (!row) continue;
+      const currentGroups = getFieldGroups((row.meta as FieldMeta | null)?.group);
+      const newGroups = currentGroups.map((g) => (g === oldName ? trimmed : g));
+      const groupVal = newGroups.length === 1 ? (newGroups[0] || undefined) : newGroups.filter(Boolean);
+      const patchMeta = { ...(row.meta ?? {}), group: groupVal } as Record<string, unknown>;
+      // Rename key in groupShowWhenMap if present
+      const gswMap = patchMeta.groupShowWhenMap as Record<string, unknown> | undefined;
+      if (gswMap && oldName in gswMap) {
+        const val = gswMap[oldName];
+        delete gswMap[oldName];
+        gswMap[trimmed] = val;
+        patchMeta.groupShowWhenMap = gswMap;
+      }
       updates.push(
         fetch(`/api/admin/form-options/${id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ meta: { ...(row.meta ?? {}), group: trimmed } }),
+          body: JSON.stringify({ meta: patchMeta }),
         })
       );
     }
@@ -432,10 +540,52 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     }
   }
 
+  async function deleteGroup(groupName: string) {
+    const group = groups.find((g) => g.name === groupName);
+    if (!group) return;
+
+    const updates: Promise<Response>[] = [];
+    for (const id of group.ids) {
+      const row = rows.find((r) => r.id === id);
+      if (!row) continue;
+      const currentGroups = getFieldGroups((row.meta as FieldMeta | null)?.group);
+      const remaining = currentGroups.filter((g) => g !== groupName);
+      const cleanedMeta = { ...(row.meta ?? {}) };
+      if (remaining.length === 0 || (remaining.length === 1 && !remaining[0])) {
+        delete (cleanedMeta as Record<string, unknown>).group;
+        delete (cleanedMeta as Record<string, unknown>).groupOrder;
+        delete (cleanedMeta as Record<string, unknown>).groupShowWhen;
+        delete (cleanedMeta as Record<string, unknown>).groupShowWhenMap;
+      } else {
+        (cleanedMeta as Record<string, unknown>).group = remaining.length === 1 ? remaining[0] : remaining;
+        // Remove the deleted group's key from groupShowWhenMap
+        const gswMap = (cleanedMeta as Record<string, unknown>).groupShowWhenMap as Record<string, unknown> | undefined;
+        if (gswMap && groupName in gswMap) {
+          delete gswMap[groupName];
+          if (Object.keys(gswMap).length === 0) delete (cleanedMeta as Record<string, unknown>).groupShowWhenMap;
+        }
+      }
+      updates.push(
+        fetch(`/api/admin/form-options/${id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ meta: cleanedMeta }),
+        })
+      );
+    }
+    try {
+      await Promise.all(updates);
+      await load();
+      toast.success(`Group "${groupName}" deleted — ${group.count} field(s) updated`);
+    } catch {
+      toast.error("Failed to delete group");
+    }
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-sm text-neutral-500">
+        <div className="text-sm text-neutral-500 dark:text-neutral-400">
           <div className="flex items-center gap-2">
             <span className="hidden sm:inline">Sort by</span>
             <select
@@ -459,17 +609,22 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
             </Button>
           </div>
         </div>
-        <Link href={`/admin/policy-settings/${pkg}/fields/new`}>
-          <Button size="sm" className="inline-flex items-center gap-2 self-start sm:self-auto">
-            <Plus className="h-4 w-4" />
-            <span className="hidden sm:inline">Add</span>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={openCopyDialog}>
+            <span className="hidden sm:inline">Copy from</span>
           </Button>
-        </Link>
+          <Link href={`/admin/policy-settings/${pkg}/fields/new`}>
+            <Button size="sm" className="inline-flex items-center gap-2 self-start sm:self-auto">
+              <Plus className="h-4 w-4 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Add</span>
+            </Button>
+          </Link>
+        </div>
       </div>
       <div className="rounded-md border border-neutral-200 p-2 sm:p-3 text-xs dark:border-neutral-800 w-full overflow-x-auto">
         <div className="mb-1 sm:mb-2 text-[13px] font-medium">Group order</div>
-        {groups.length <= 1 ? (
-          <div className="text-neutral-500">No groups yet. Use the Group field when editing/adding to create groups.</div>
+        {!groups.some((g) => g.name) ? (
+          <div className="text-neutral-500 dark:text-neutral-400">No groups yet. Use the Group field when editing/adding to create groups.</div>
         ) : (
           <ul className="grid gap-1">
             {groups.map((g, i) => {
@@ -513,22 +668,34 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                       <span className="inline-flex items-center gap-1">
                         <span className="font-medium">{g.name || "(no group)"}</span>
                         {g.name ? (
-                          <Button
-                            type="button"
-                            size="iconCompact"
-                            variant="ghost"
-                            className="h-5 w-5"
-                            onClick={() => { setRenamingGroup(g.name); setRenameValue(g.name); }}
-                            title="Rename group"
-                          >
-                            <Pencil className="h-3 w-3" />
-                          </Button>
+                          <>
+                            <Button
+                              type="button"
+                              size="iconCompact"
+                              variant="ghost"
+                              className="h-5 w-5"
+                              onClick={() => { setRenamingGroup(g.name); setRenameValue(g.name); }}
+                              title="Rename group"
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="iconCompact"
+                              variant="ghost"
+                              className="h-5 w-5 text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                              onClick={() => setConfirmDeleteGroup(g.name)}
+                              title="Delete group"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </>
                         ) : null}
                       </span>
                     )}
-                    <span className="px-1 sm:px-2 text-neutral-500">•</span>
+                    <span className="px-1 sm:px-2 text-neutral-500 dark:text-neutral-400">•</span>
                     <span className="font-mono">order {g.order}</span>
-                    <span className="px-1 sm:px-2 text-neutral-500">•</span>
+                    <span className="px-1 sm:px-2 text-neutral-500 dark:text-neutral-400">•</span>
                     <span>{g.count} field{g.count === 1 ? "" : "s"}</span>
                   </div>
                   <div className="absolute right-0.5 top-1/2 -translate-y-1/2 flex shrink-0 gap-0.5 sm:static sm:right-auto sm:top-auto sm:translate-y-0 sm:gap-2">
@@ -586,21 +753,18 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                   </span>
                 </div>
                 <div className="mt-2 flex gap-2 sm:hidden">
-                  <Button size="sm" variant="secondary" onClick={() => startEdit(r)} className="inline-flex items-center gap-2">
+                  <Button size="sm" variant="secondary" onClick={() => startEdit(r)} aria-label="Edit">
                     <Pencil className="h-4 w-4" />
-                    Edit
                   </Button>
-                  <Button size="sm" variant={r.isActive ? "outline" : "default"} onClick={() => toggleActive(r)} className="inline-flex items-center gap-2">
+                  <Button size="sm" variant={r.isActive ? "outline" : "default"} onClick={() => toggleActive(r)} aria-label={r.isActive ? "Disable" : "Enable"}>
                     {r.isActive ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    {r.isActive ? "Disable" : "Enable"}
                   </Button>
-                  <Button size="sm" variant="destructive" onClick={() => remove(r)} className="inline-flex items-center gap-2">
+                  <Button size="sm" variant="destructive" onClick={() => remove(r)} aria-label="Delete">
                     <Trash2 className="h-4 w-4" />
-                    Delete
                   </Button>
                 </div>
               </TableCell>
-              <TableCell className="hidden text-xs p-2 sm:table-cell sm:p-4">{((r.meta ?? {}) as FieldMeta).group || "(no group)"}</TableCell>
+              <TableCell className="hidden text-xs p-2 sm:table-cell sm:p-4">{(() => { const g = ((r.meta ?? {}) as FieldMeta).group; return Array.isArray(g) ? g.join(", ") : (g || "(no group)"); })()}</TableCell>
               <TableCell className="hidden p-2 sm:table-cell sm:p-4">
                 <div className="flex items-center gap-2">
                   <span className="font-mono">{r.sortOrder}</span>
@@ -636,15 +800,15 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
               <TableCell className="hidden text-right sm:table-cell p-2 sm:p-4">
                 <div className="flex justify-end gap-2">
                   <Button size="sm" variant="secondary" onClick={() => startEdit(r)} className="inline-flex items-center gap-2">
-                    <Pencil className="h-4 w-4" />
+                    <Pencil className="h-4 w-4 sm:hidden lg:inline" />
                     <span className="hidden sm:inline">Edit</span>
                   </Button>
                   <Button size="sm" variant={r.isActive ? "outline" : "default"} onClick={() => toggleActive(r)} className="inline-flex items-center gap-2">
-                    {r.isActive ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    {r.isActive ? <EyeOff className="h-4 w-4 sm:hidden lg:inline" /> : <Eye className="h-4 w-4 sm:hidden lg:inline" />}
                     <span className="hidden sm:inline">{r.isActive ? "Disable" : "Enable"}</span>
                   </Button>
                   <Button size="sm" variant="destructive" onClick={() => remove(r)} className="inline-flex items-center gap-2">
-                    <Trash2 className="h-4 w-4" />
+                    <Trash2 className="h-4 w-4 sm:hidden lg:inline" />
                     <span className="hidden sm:inline">Delete</span>
                   </Button>
                 </div>
@@ -653,7 +817,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
           ))}
           {!loading && rows.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={5} className="text-center text-sm text-neutral-500">
+              <TableCell colSpan={5} className="text-center text-sm text-neutral-500 dark:text-neutral-400">
                 No fields defined.
               </TableCell>
             </TableRow>
@@ -677,21 +841,10 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
             </div>
             <div className="grid gap-1">
               <Label>Input Type</Label>
-              <select
-                className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              <InputTypeSelect
                 value={form.meta?.inputType ?? "string"}
-                onChange={(e) => updateMeta("inputType", e.target.value as InputType)}
-              >
-                <option value="string">String</option>
-                <option value="number">Number</option>
-                <option value="currency">Currency</option>
-                <option value="date">Date</option>
-                <option value="select">Select</option>
-                <option value="multi_select">Multi Select</option>
-                <option value="boolean">Boolean (Yes/No)</option>
-                <option value="repeatable">Repeatable (List)</option>
-                <option value="formula">Formula</option>
-              </select>
+                onChange={(v) => updateMeta("inputType", v as InputType)}
+              />
             </div>
 
             {/* Formula config */}
@@ -704,7 +857,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                     value={String(((form.meta as any)?.formula ?? "") || "")}
                     onChange={(e) => updateMeta("formula" as any, e.target.value as any)}
                   />
-                  <p className="text-xs text-neutral-500">
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
                     Reference other fields using {"{field_key}"} syntax. Supports numeric math (+, -, *, /) and date arithmetic (e.g. {"{start_date}"} + 364 to add days).
                   </p>
                 </div>
@@ -1093,7 +1246,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                                   <div className="w-[200px]">
                                     <Label>Type</Label>
                                     <select
-                                      className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                                      className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                                       value={child?.inputType ?? "string"}
                                       onChange={(e) => {
                                         const nextType = e.target.value as InputType;
@@ -1255,7 +1408,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                                                     }} />
                                                   </div>
                                                   <div className="col-span-6">
-                                                    <select className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900" value={bChild?.inputType ?? "string"} onChange={(e) => {
+                                                    <select className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100" value={bChild?.inputType ?? "string"} onChange={(e) => {
                                                       const next: SelectOption[] = [...(form.meta?.options ?? [])];
                                                       const children = Array.isArray(next[idx]?.children) ? [...(next[idx].children ?? [])] : [];
                                                       const boolCh: any = { ...((children[cIdx] as any)?.booleanChildren ?? {}) };
@@ -1429,7 +1582,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                                           </div>
                                         ))}
                                         {((child?.options?.length ?? 0) === 0) ? (
-                                          <p className="text-xs text-neutral-500">No child options yet. Click &quot;Add option&quot; or &quot;Import&quot;.</p>
+                                          <p className="text-xs text-neutral-500 dark:text-neutral-400">No child options yet. Click &quot;Add option&quot; or &quot;Import&quot;.</p>
                                         ) : null}
                                       </div>
                                     </div>
@@ -1438,7 +1591,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                               </div>
                             ))}
                             {(Array.isArray(opt.children) ? opt.children : []).length === 0 ? (
-                              <p className="text-xs text-neutral-500">No child fields yet. Click &quot;Add child&quot;.</p>
+                              <p className="text-xs text-neutral-500 dark:text-neutral-400">No child fields yet. Click &quot;Add child&quot;.</p>
                             ) : null}
                           </div>
                         </div>
@@ -1446,7 +1599,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                     )
                   )}
                   {((form.meta?.options?.length ?? 0) === 0) ? (
-                    <p className="text-xs text-neutral-500">No options yet. Click &quot;Add option&quot; or &quot;Import&quot;.</p>
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400">No options yet. Click &quot;Add option&quot; or &quot;Import&quot;.</p>
                   ) : null}
                 </div>
               </div>
@@ -1573,7 +1726,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                       </div>
                       <div className="col-span-3">
                         <select
-                          className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                          className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                           value={fld?.inputType ?? "string"}
                           onChange={(e) => {
                             const nextType = e.target.value as InputType;
@@ -1698,7 +1851,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                   <Label>Labels</Label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <div className="grid gap-1">
-                      <Label className="text-xs text-neutral-500">Yes label</Label>
+                      <Label className="text-xs text-neutral-500 dark:text-neutral-400">Yes label</Label>
                       <Input
                         placeholder="Yes"
                         value={String(((form.meta as FieldMeta | undefined)?.booleanLabels?.true ?? ""))}
@@ -1711,7 +1864,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                       />
                     </div>
                     <div className="grid gap-1">
-                      <Label className="text-xs text-neutral-500">No label</Label>
+                      <Label className="text-xs text-neutral-500 dark:text-neutral-400">No label</Label>
                       <Input
                         placeholder="No"
                         value={String(((form.meta as FieldMeta | undefined)?.booleanLabels?.false ?? ""))}
@@ -1785,7 +1938,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                               <div className="w-[200px]">
                                 <Label>Type</Label>
                                 <select
-                                  className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                                  className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                                   value={child?.inputType ?? "string"}
                                   onChange={(e) => {
                                     const nextType = e.target.value as InputType;
@@ -1823,7 +1976,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                                       updateMeta("booleanChildren", { ...bc, true: arr } as any);
                                     }}
                                   />
-                                  <p className="mt-1 text-xs text-neutral-500">Reference sibling fields using {"{field_key}"} syntax.</p>
+                                  <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">Reference sibling fields using {"{field_key}"} syntax.</p>
                                 </div>
                               ) : null}
                               {child?.inputType === "currency" ? (
@@ -1951,7 +2104,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                                                 }} />
                                               </div>
                                               <div className="col-span-6">
-                                                <select className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900" value={bChild?.inputType ?? "string"} onChange={(e) => {
+                                                <select className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100" value={bChild?.inputType ?? "string"} onChange={(e) => {
                                                   const bc = { ...((form.meta as FieldMeta | undefined)?.booleanChildren ?? {}) };
                                                   const parentArr: ChildFieldMeta[] = Array.isArray(bc.true) ? [...(bc.true as ChildFieldMeta[])] : [];
                                                   const boolCh: any = { ...((parentArr[cIdx] as any)?.booleanChildren ?? {}) };
@@ -2109,7 +2262,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                                         </div>
                                         <div className="col-span-3">
                                           <select
-                                            className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                                            className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                                             value={String(rf?.inputType ?? "string")}
                                             onChange={(e) => {
                                               const nextType = e.target.value as InputType;
@@ -2326,7 +2479,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                               <div className="w-[200px]">
                                 <Label>Type</Label>
                                 <select
-                                  className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                                  className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                                   value={child?.inputType ?? "string"}
                                   onChange={(e) => {
                                     const nextType = e.target.value as InputType;
@@ -2364,7 +2517,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                                       updateMeta("booleanChildren", { ...bc, false: arr } as any);
                                     }}
                                   />
-                                  <p className="mt-1 text-xs text-neutral-500">Reference sibling fields using {"{field_key}"} syntax.</p>
+                                  <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">Reference sibling fields using {"{field_key}"} syntax.</p>
                                 </div>
                               ) : null}
                               {child?.inputType === "currency" ? (
@@ -2492,7 +2645,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                                                 }} />
                                               </div>
                                               <div className="col-span-6">
-                                                <select className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900" value={bChild?.inputType ?? "string"} onChange={(e) => {
+                                                <select className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100" value={bChild?.inputType ?? "string"} onChange={(e) => {
                                                   const bc = { ...((form.meta as FieldMeta | undefined)?.booleanChildren ?? {}) };
                                                   const parentArr: ChildFieldMeta[] = Array.isArray(bc.false) ? [...(bc.false as ChildFieldMeta[])] : [];
                                                   const boolCh: any = { ...((parentArr[cIdx] as any)?.booleanChildren ?? {}) };
@@ -2650,7 +2803,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                                         </div>
                                         <div className="col-span-3">
                                           <select
-                                            className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                                            className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                                             value={String(rf?.inputType ?? "string")}
                                             onChange={(e) => {
                                               const nextType = e.target.value as InputType;
@@ -2836,7 +2989,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                 Applies to all categories
               </label>
               {!applyToAll ? null : (
-                <p className="text-xs text-neutral-500">Uncheck above to select specific categories.</p>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">Uncheck above to select specific categories.</p>
               )}
               <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${applyToAll ? "opacity-50 pointer-events-none" : ""}`}>
                 {categoryOptions.map((opt) => {
@@ -2852,54 +3005,55 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                   );
                 })}
                 {categoryOptions.length === 0 ? (
-                  <p className="col-span-2 text-xs text-neutral-500">No categories found. Create categories first.</p>
+                  <p className="col-span-2 text-xs text-neutral-500 dark:text-neutral-400">No categories found. Create categories first.</p>
                 ) : null}
               </div>
             </div>
             {/* Sort Order input removed; ordering handled by group and in-dialog reordering */}
             <div className="grid gap-1">
-              <Label>Group (optional)</Label>
-              <select
-                className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-                value={customGroupMode || isCustomGroup ? "__custom" : (((form.meta ?? {}) as FieldMeta).group ?? "")}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === "__custom") {
-                    setCustomGroupMode(true);
-                    updateMeta("group", "");
-                  } else {
-                    setCustomGroupMode(false);
-                    updateMeta("group", v);
-                    if (v) {
-                      const sibling = rows.find((r) => r.id !== editing?.id && String((r.meta as FieldMeta | null)?.group ?? "").trim() === v && (r.meta as FieldMeta | null)?.groupShowWhen);
-                      if (sibling) {
-                        updateMeta("groupShowWhen", (sibling.meta as FieldMeta).groupShowWhen!);
-                      } else {
-                        updateMeta("groupShowWhen", null as any);
-                      }
-                    } else {
-                      updateMeta("groupShowWhen", null as any);
-                    }
-                  }
-                }}
-              >
-                <option value="">(no group)</option>
-                {existingGroupNames.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-                <option value="__custom">Custom…</option>
-              </select>
-              {customGroupMode ||
-              isCustomGroup ||
-              (String((((form.meta ?? {}) as FieldMeta).group ?? "")) === "" && existingGroupNames.length === 0) ? (
-                <Input
-                  placeholder="Enter new group name"
-                  value={((form.meta ?? {}) as FieldMeta).group ?? ""}
-                  onChange={(e) => updateMeta("group", e.target.value)}
-                />
+              <Label>Groups (optional — select multiple)</Label>
+              {existingGroupNames.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {existingGroupNames.map((name) => {
+                    const current = getFieldGroups((form.meta as FieldMeta | undefined)?.group);
+                    const checked = current.includes(name);
+                    return (
+                      <label key={name} className="inline-flex items-center gap-1 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            const next = checked ? current.filter((g) => g !== name) : [...current.filter(Boolean), name];
+                            const val = next.filter(Boolean);
+                            updateMeta("group", val.length === 0 ? "" : val.length === 1 ? val[0]! : val as any);
+                          }}
+                        />
+                        {name}
+                      </label>
+                    );
+                  })}
+                </div>
               ) : null}
+              <div className="flex items-center gap-1">
+                <Input
+                  placeholder="Add new group name"
+                  value={customGroupMode ? (typeof (form.meta as FieldMeta | undefined)?.group === "string" && !(form.meta as FieldMeta | undefined)?.group ? "" : "") : ""}
+                  className="flex-1"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      const val = (e.target as HTMLInputElement).value.trim();
+                      if (!val) return;
+                      const current = getFieldGroups((form.meta as FieldMeta | undefined)?.group).filter(Boolean);
+                      if (current.includes(val)) return;
+                      const next = [...current, val];
+                      updateMeta("group", next.length === 1 ? next[0]! : next as any);
+                      (e.target as HTMLInputElement).value = "";
+                    }
+                  }}
+                />
+                <span className="text-[10px] text-neutral-500 dark:text-neutral-400 shrink-0">Enter to add</span>
+              </div>
             </div>
             <div className="grid gap-1">
               <Label>Group Sort Order (optional)</Label>
@@ -2940,19 +3094,29 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                   </Button>
                 </div>
               </div>
-              {String((form.meta as FieldMeta | undefined)?.group ?? "").trim() ? (
-                <GroupShowWhenConfig
-                  value={(form.meta as FieldMeta | undefined)?.groupShowWhen ?? null}
-                  onChange={(next) => updateMeta("groupShowWhen", next as any)}
-                  fields={rows as any}
-                  excludeFieldId={editing?.id}
-                />
-              ) : null}
               {(() => {
-                const group = (form.meta as FieldMeta | undefined)?.group ?? "";
-                // Include the current editing field as well, reflecting unsaved label/sort changes
+                const cGroups = getFieldGroups((form.meta as FieldMeta | undefined)?.group).filter(Boolean);
+                if (cGroups.length === 0) return null;
+                const meta = form.meta as (FieldMeta & { groupShowWhenMap?: Record<string, any> }) | undefined;
+                return cGroups.map((gName) => (
+                  <GroupShowWhenConfig
+                    key={gName}
+                    groupLabel={gName}
+                    value={meta?.groupShowWhenMap?.[gName] ?? (cGroups.length === 1 ? (meta?.groupShowWhen ?? null) : null)}
+                    onChange={(next) => {
+                      const map = { ...(meta?.groupShowWhenMap ?? {}), [gName]: next as any };
+                      updateMeta("groupShowWhenMap", map as any);
+                    }}
+                    fields={rows as any}
+                    excludeFieldId={editing?.id}
+                  />
+                ));
+              })()}
+              {(() => {
+                const fieldGroups = getFieldGroups((form.meta as FieldMeta | undefined)?.group);
+                const primaryGroup = fieldGroups.find(Boolean) ?? "";
                 const rawMembers = rows
-                  .filter((r) => ((r.meta as FieldMeta | null)?.group ?? "") === group)
+                  .filter((r) => getFieldGroups((r.meta as FieldMeta | null)?.group).includes(primaryGroup))
                   .sort(sortBySortOrderStable);
                 const members = rawMembers.map((r) =>
                   editing && r.id === editing.id
@@ -2963,12 +3127,12 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                       }
                     : r
                 );
-                if (!group) return null;
+                if (!primaryGroup) return null;
                 return (
                   <div className="mt-2 w-full overflow-x-auto rounded-md border border-neutral-200 p-1.5 sm:p-2 text-xs dark:border-neutral-800">
-                    <div className="mb-1 font-medium">Current group: {group}</div>
+                    <div className="mb-1 font-medium">Current group: {primaryGroup}</div>
                     {members.length === 0 ? (
-                      <div className="text-neutral-500">No other members yet.</div>
+                      <div className="text-neutral-500 dark:text-neutral-400">No other members yet.</div>
                     ) : (
                       <ul className="grid gap-1">
                         {members.map((m, i) => {
@@ -3024,12 +3188,125 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)} className="inline-flex items-center gap-2">
-              <X className="h-4 w-4" />
+              <X className="h-4 w-4 sm:hidden lg:inline" />
               <span className="hidden sm:inline">Cancel</span>
             </Button>
             <Button onClick={save} className="inline-flex items-center gap-2">
-              <Save className="h-4 w-4" />
+              <Save className="h-4 w-4 sm:hidden lg:inline" />
               <span className="hidden sm:inline">{editing ? "Save" : "Create"}</span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!confirmDeleteGroup} onOpenChange={(v) => { if (!v) setConfirmDeleteGroup(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Group</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm">
+            Are you sure you want to delete the group <strong>&quot;{confirmDeleteGroup}&quot;</strong>?
+            All {groups.find((g) => g.name === confirmDeleteGroup)?.count ?? 0} field(s) will be moved to &quot;(no group)&quot;.
+            The fields themselves will not be deleted.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDeleteGroup(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (confirmDeleteGroup) {
+                  void deleteGroup(confirmDeleteGroup);
+                  setConfirmDeleteGroup(null);
+                }
+              }}
+            >
+              Delete Group
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={copyDialogOpen} onOpenChange={setCopyDialogOpen}>
+        <DialogContent className="max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Copy Fields from Another Package</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 flex-1 overflow-hidden">
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">
+              Select a package and choose which fields to copy into <strong>{pkg}</strong>. Fields that already exist will not appear.
+            </p>
+            <div className="grid gap-1">
+              <Label>Source Package</Label>
+              <select
+                value={copySourcePkg}
+                onChange={(e) => loadSourceFields(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              >
+                <option value="">-- Select a package --</option>
+                {availablePackages.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {loadingSourceFields && (
+              <p className="text-xs text-neutral-400">Loading fields...</p>
+            )}
+
+            {copySourcePkg && !loadingSourceFields && copySourceFields.length === 0 && (
+              <p className="text-xs text-neutral-500">All fields from this package already exist or the package has no fields.</p>
+            )}
+
+            {copySourceFields.length > 0 && (
+              <div className="flex flex-col gap-2 overflow-hidden">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs">{copySelectedKeys.size} of {copySourceFields.length} selected</Label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                      onClick={() => setCopySelectedKeys(new Set(copySourceFields.map((f) => f.value)))}
+                    >
+                      Select all
+                    </button>
+                    <button
+                      type="button"
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                      onClick={() => setCopySelectedKeys(new Set())}
+                    >
+                      Deselect all
+                    </button>
+                  </div>
+                </div>
+                <div className="overflow-y-auto max-h-52 border rounded-md dark:border-neutral-700">
+                  {copySourceFields.map((f) => (
+                    <label
+                      key={f.value}
+                      className="flex items-center gap-2 px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer border-b last:border-b-0 dark:border-neutral-700"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={copySelectedKeys.has(f.value)}
+                        onChange={(e) => {
+                          setCopySelectedKeys((prev) => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(f.value);
+                            else next.delete(f.value);
+                            return next;
+                          });
+                        }}
+                        className="rounded border-neutral-300 dark:border-neutral-600"
+                      />
+                      <span className="text-sm">{f.label}</span>
+                      <span className="text-xs text-neutral-400 ml-auto">{f.value}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCopyDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleCopyFields} disabled={!copySourcePkg || copySelectedKeys.size === 0 || copying}>
+              {copying ? "Copying..." : `Copy ${copySelectedKeys.size} Field${copySelectedKeys.size !== 1 ? "s" : ""}`}
             </Button>
           </DialogFooter>
         </DialogContent>

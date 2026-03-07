@@ -8,14 +8,9 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
+import { Field } from "@/components/ui/form-field";
 import { toast } from "sonner";
-
-function formatDDMMYYYY(raw: string): string {
-  const digits = String(raw ?? "").replace(/\D/g, "").slice(0, 8);
-  if (digits.length <= 2) return digits;
-  if (digits.length <= 4) return `${digits.slice(0, 2)}-${digits.slice(2)}`;
-  return `${digits.slice(0, 2)}-${digits.slice(2, 4)}-${digits.slice(4)}`;
-}
+import { maskDDMMYYYY } from "@/lib/format/date";
 
 // Helper: fetch first non-empty result from a list of group keys
 async function fetchOptionsFrom(keys: string[]): Promise<unknown[]> {
@@ -251,20 +246,7 @@ export function VehicleStep({
   );
 }
 
-function Field({
-  label,
-  required,
-  ...props
-}: React.InputHTMLAttributes<HTMLInputElement> & { label: string; required?: boolean }) {
-  return (
-    <div className="space-y-1">
-      <Label>
-        {label} {required ? <span className="text-red-600">*</span> : null}
-      </Label>
-      <Input {...props} />
-    </div>
-  );
-}
+// Field extracted to @/components/ui/form-field
 
 function DynamicCommonFields({
   category,
@@ -457,7 +439,7 @@ function DynamicCommonFields({
             <div key={f.value} className="space-y-2">
               <div className="space-y-1">
                 <Label>
-                  {f.label} {f.meta?.required ? <span className="text-red-600">*</span> : null}
+                  {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                 </Label>
                 <select
                   className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
@@ -498,7 +480,7 @@ function DynamicCommonFields({
             <div key={f.value} className="space-y-2">
               <div className="space-y-1">
                 <Label>
-                  {f.label} {f.meta?.required ? <span className="text-red-600">*</span> : null}
+                  {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                 </Label>
                 <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
                   {options.map((o) => (
@@ -517,7 +499,7 @@ function DynamicCommonFields({
                       {o.label}
                     </label>
                   ))}
-                  {options.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                  {options.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                 </div>
               </div>
               {/* Render child fields for each selected option that defines one */}
@@ -547,7 +529,7 @@ function DynamicCommonFields({
             <div key={f.value} className="space-y-2">
               <div className="space-y-1">
                 <Label>
-                  {f.label} {f.meta?.required ? <span className="text-red-600">*</span> : null}
+                  {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                 </Label>
                 <div className="flex items-center gap-6">
                   <label className="inline-flex items-center gap-2 text-sm">
@@ -641,7 +623,7 @@ function DynamicCommonFields({
             <div key={f.value} className="col-span-2 space-y-2">
               <div className="flex items-center justify-between">
                 <Label>
-                  {f.label} {f.meta?.required ? <span className="text-red-600">*</span> : null}
+                  {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                 </Label>
                 <Button type="button" size="sm" variant="secondary" onClick={addItem} disabled={!canAdd}>
                   Add {itemLabel}
@@ -704,7 +686,7 @@ function DynamicCommonFields({
                                       {o.label}
                                     </label>
                                   ))}
-                                  {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                  {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                 </div>
                               </div>
                             );
@@ -726,7 +708,7 @@ function DynamicCommonFields({
                               return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY";
                             };
                             childOptions.onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-                              const formatted = formatDDMMYYYY(e?.target?.value ?? "");
+                              const formatted = maskDDMMYYYY(e?.target?.value ?? "");
                               setValue(base, formatted, { shouldDirty: true });
                             };
                           }
@@ -779,7 +761,7 @@ function DynamicCommonFields({
             <div key={`${f.value}__rep_fallback`} className="col-span-2 space-y-2">
               <div className="flex items-center justify-between">
                 <Label>
-                  {f.label} {f.meta?.required ? <span className="text-red-600">*</span> : null}
+                  {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                 </Label>
                 <Button type="button" size="sm" variant="secondary" onClick={addItem} disabled={!canAdd}>
                   Add {itemLabel}
@@ -849,7 +831,7 @@ function DynamicCommonFields({
                                       {o.label}
                                     </label>
                                   ))}
-                                  {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                  {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                 </div>
                               </div>
                             );
@@ -871,7 +853,7 @@ function DynamicCommonFields({
                               return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY";
                             };
                             childOptions.onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-                              const formatted = formatDDMMYYYY(e?.target?.value ?? "");
+                              const formatted = maskDDMMYYYY(e?.target?.value ?? "");
                               setValue(base, formatted, { shouldDirty: true });
                             };
                           }
@@ -910,7 +892,7 @@ function DynamicCommonFields({
             return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY";
           };
           options.onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-            const formatted = formatDDMMYYYY(e?.target?.value ?? "");
+            const formatted = maskDDMMYYYY(e?.target?.value ?? "");
             setValue(f.value, formatted, { shouldDirty: true });
           };
         }
@@ -1040,7 +1022,7 @@ function ChildFieldRenderer({
                                 {o.label}
                               </label>
                             ))}
-                            {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                            {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                           </div>
                         </div>
                       );
@@ -1058,7 +1040,7 @@ function ChildFieldRenderer({
                         return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY";
                       };
                       reg.onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-                        const formatted = formatDDMMYYYY(e?.target?.value ?? "");
+                        const formatted = maskDDMMYYYY(e?.target?.value ?? "");
                         setValue(childName as never, formatted as never, { shouldDirty: true });
                       };
                     }
@@ -1123,7 +1105,7 @@ function ChildFieldRenderer({
               {o.label}
             </label>
           ))}
-          {options.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+          {options.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
         </div>
       </div>
     );

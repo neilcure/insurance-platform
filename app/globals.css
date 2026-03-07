@@ -146,6 +146,35 @@
   }
 }
 
+/* Scrollbar: hidden by default, visible on hover */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+*:hover {
+  scrollbar-color: #d4d4d4 transparent;
+}
+.dark *:hover {
+  scrollbar-color: #404040 transparent;
+}
+*::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+}
+*:hover::-webkit-scrollbar-thumb {
+  background: #d4d4d4;
+}
+.dark *:hover::-webkit-scrollbar-thumb {
+  background: #404040;
+}
+
 /* Radix RadioGroup checked fill to match native radios (light/dark) */
 .rg-item[data-state="checked"] {
   background-color: oklch(0.141 0.005 285.823);

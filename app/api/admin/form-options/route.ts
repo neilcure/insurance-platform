@@ -3,14 +3,7 @@ import { db } from "@/db/client";
 import { formOptions, formOptionGroups } from "@/db/schema/form_options";
 import { and, desc, eq, or } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
-
-function normalizeKeyLike(raw: string): string {
-  return String(raw ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_")
-    .replace(/[^a-z0-9_-]/g, "");
-}
+import { normalizeKeyLike } from "@/lib/utils";
 
 function isValidPackageKey(v: string): boolean {
   return /^[a-z][a-z0-9_-]{0,127}$/.test(v);

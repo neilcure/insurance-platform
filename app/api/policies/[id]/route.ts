@@ -4,6 +4,7 @@ import { cars, policies } from "@/db/schema/insurance";
 import { memberships, clients, clientAgentAssignments } from "@/db/schema/core";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
+import { getPolicyColumns } from "@/lib/db/column-check";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -48,35 +49,35 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       extraAttributes?: unknown;
     };
     let rows: Row[];
+    const polCols = await getPolicyColumns();
     try {
       if (user.userType === "admin" || user.userType === "internal_staff") {
         rows = await baseSelect;
       } else if (user.userType === "agent") {
-        // Agents can view policies they authored (agent_id = current user)
         const agentId = Number(user.id);
-        const result = await db.execute(sql`
-          with has_agent as (
-            select exists (select 1 from information_schema.columns where table_name='policies' and column_name='agent_id') as present
-          )
-          select
-            p.id as "policyId",
-            p.policy_number as "policyNumber",
-            p.organisation_id as "organisationId",
-            p.created_at as "createdAt",
-            c.id as "carId",
-            c.plate_number as "plateNumber",
-            c.make as "make",
-            c.model as "model",
-            c.year as "year",
-            c.extra_attributes as "extraAttributes"
-          from "policies" p
-          left join "cars" c on c.policy_id = p.id
-          where p.id = ${id}
-            and (select present from has_agent)
-            and p.agent_id = ${agentId}
-          limit 1
-        `);
-        rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
+        if (!polCols.hasAgentId) {
+          rows = [];
+        } else {
+          const result = await db.execute(sql`
+            select
+              p.id as "policyId",
+              p.policy_number as "policyNumber",
+              p.organisation_id as "organisationId",
+              p.created_at as "createdAt",
+              c.id as "carId",
+              c.plate_number as "plateNumber",
+              c.make as "make",
+              c.model as "model",
+              c.year as "year",
+              c.extra_attributes as "extraAttributes"
+            from "policies" p
+            left join "cars" c on c.policy_id = p.id
+            where p.id = ${id}
+              and p.agent_id = ${agentId}
+            limit 1
+          `);
+          rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
+        }
       } else {
         rows = await db
           .select({
@@ -146,21 +147,17 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       // Prefer the relational link when `policies.client_id` exists (this is the most reliable).
       // Older snapshots may not contain clientId, but the policy row can still be linked.
       try {
-        const res = await db.execute(sql`
-          with has_client as (
-            select exists (
-              select 1 from information_schema.columns
-              where table_name='policies' and column_name='client_id'
-            ) as present
-          )
-          select
-            (case when (select present from has_client) then p.client_id else null end) as "clientId"
-          from "policies" p
-          where p.id = ${id}
-          limit 1
-        `);
-        const r = Array.isArray(res) ? (res as any)[0] : (res as any)?.rows?.[0];
-        const cid = Number(r?.clientId ?? r?.client_id);
+        let cid = NaN;
+        if (polCols.hasClientId) {
+          const res = await db.execute(sql`
+            select p.client_id as "clientId"
+            from "policies" p
+            where p.id = ${id}
+            limit 1
+          `);
+          const r = Array.isArray(res) ? (res as any)[0] : (res as any)?.rows?.[0];
+          cid = Number(r?.clientId ?? r?.client_id);
+        }
         if (Number.isFinite(cid) && cid > 0) {
           policyClientId = cid;
           const [c] = await db
@@ -308,31 +305,27 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
     let resolvedAgent:
       | { id: number; userNumber: string | null; name: string | null; email: string }
       | null = null;
-    try {
-      const res = await db.execute(sql`
-        with has_agent as (
-          select exists (
-            select 1 from information_schema.columns
-            where table_name='policies' and column_name='agent_id'
-          ) as present
-        )
-        select u.id, u.user_number as "userNumber", u.name, u.email
-        from "policies" p
-        left join "users" u on ((select present from has_agent) and u.id = p.agent_id)
-        where p.id = ${id}
-        limit 1
-      `);
-      const r = Array.isArray(res) ? (res as any)[0] : (res as any)?.rows?.[0];
-      if (r && r.id) {
-        resolvedAgent = {
-          id: Number(r.id),
-          userNumber: r.userNumber !== undefined ? (r.userNumber as any) : (r.user_number as any) ?? null,
-          name: (r.name as any) ?? null,
-          email: String(r.email),
-        };
+    if (polCols.hasAgentId) {
+      try {
+        const res = await db.execute(sql`
+          select u.id, u.user_number as "userNumber", u.name, u.email
+          from "policies" p
+          left join "users" u on u.id = p.agent_id
+          where p.id = ${id}
+          limit 1
+        `);
+        const r = Array.isArray(res) ? (res as any)[0] : (res as any)?.rows?.[0];
+        if (r && r.id) {
+          resolvedAgent = {
+            id: Number(r.id),
+            userNumber: r.userNumber !== undefined ? (r.userNumber as any) : (r.user_number as any) ?? null,
+            name: (r.name as any) ?? null,
+            email: String(r.email),
+          };
+        }
+      } catch {
+        resolvedAgent = null;
       }
-    } catch {
-      resolvedAgent = null;
     }
     const res = NextResponse.json(
       { ...base, clientId: policyClientId ?? resolvedClient?.id ?? null, client: resolvedClient, agent: resolvedAgent },
@@ -340,6 +333,120 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
     );
     res.headers.set("cache-control", "no-store");
     return res;
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: Request, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await requireUser();
+    const { id: idParam } = await ctx.params;
+    const id = Number(idParam);
+    if (!Number.isFinite(id) || id <= 0) {
+      return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+    }
+    if (!(user.userType === "admin" || user.userType === "internal_staff")) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+    const body = (await request.json()) as {
+      packages?: Record<string, unknown>;
+      insured?: Record<string, unknown>;
+      flowKey?: string;
+      isActive?: boolean;
+    };
+
+    // Handle isActive toggle on the policies table
+    if (typeof body.isActive === "boolean") {
+      const cols = await getPolicyColumns();
+      if (cols.hasIsActive) {
+        await db.update(policies).set({ isActive: body.isActive }).where(eq(policies.id, id));
+      }
+      if (body.packages === undefined && body.insured === undefined) {
+        return NextResponse.json({ ok: true, policyId: id, isActive: body.isActive }, { status: 200 });
+      }
+    }
+
+    const [carRow] = await db
+      .select({ id: cars.id, extraAttributes: cars.extraAttributes })
+      .from(cars)
+      .where(eq(cars.policyId, id))
+      .limit(1);
+
+    if (!carRow) {
+      return NextResponse.json({ error: "Record not found" }, { status: 404 });
+    }
+
+    const existing = (carRow.extraAttributes ?? {}) as Record<string, unknown>;
+    const oldPkgs = (existing.packagesSnapshot ?? {}) as Record<string, unknown>;
+    const newPkgs = (body.packages ?? oldPkgs) as Record<string, unknown>;
+
+    const changes: { key: string; from: unknown; to: unknown }[] = [];
+    const flattenPkg = (pkgs: Record<string, unknown>): Record<string, unknown> => {
+      const flat: Record<string, unknown> = {};
+      for (const [pkg, data] of Object.entries(pkgs)) {
+        if (!data || typeof data !== "object") continue;
+        const vals = (data as { values?: Record<string, unknown> }).values ?? (data as Record<string, unknown>);
+        for (const [k, v] of Object.entries(vals)) flat[k] = v;
+        if ((data as { category?: string }).category) flat[`${pkg}__category`] = (data as { category?: string }).category;
+      }
+      return flat;
+    };
+    const oldFlat = flattenPkg(oldPkgs);
+    const newFlat = flattenPkg(newPkgs);
+    const allKeys = new Set([...Object.keys(oldFlat), ...Object.keys(newFlat)]);
+    for (const k of allKeys) {
+      const ov = oldFlat[k], nv = newFlat[k];
+      const os = JSON.stringify(ov ?? null), ns = JSON.stringify(nv ?? null);
+      if (os !== ns) changes.push({ key: k, from: ov ?? null, to: nv ?? null });
+    }
+    if (body.insured) {
+      const oldInsured = (existing.insuredSnapshot ?? {}) as Record<string, unknown>;
+      const newInsured = body.insured;
+      const insuredKeys = new Set([...Object.keys(oldInsured), ...Object.keys(newInsured)]);
+      for (const k of insuredKeys) {
+        const ov = oldInsured[k], nv = newInsured[k];
+        const os = JSON.stringify(ov ?? null), ns = JSON.stringify(nv ?? null);
+        if (os !== ns) changes.push({ key: k, from: ov ?? null, to: nv ?? null });
+      }
+    }
+
+    // Deduplicate changes by normalized key to avoid double entries
+    // for keys like insured_companyName vs insured__companyName
+    const normalizeChangeKey = (k: string) =>
+      k.replace(/^[a-zA-Z0-9]+__/, "").replace(/^[a-zA-Z0-9]+_/, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const seenChangeKeys = new Set<string>();
+    const dedupedChanges = changes.filter((c) => {
+      const nk = normalizeChangeKey(c.key);
+      if (seenChangeKeys.has(nk)) return false;
+      seenChangeKeys.add(nk);
+      return true;
+    });
+
+    const auditArr = Array.isArray(existing._audit) ? [...(existing._audit as unknown[])] : [];
+    if (dedupedChanges.length > 0) {
+      auditArr.push({
+        at: new Date().toISOString(),
+        by: { id: Number(user.id), email: (user as { email?: string }).email ?? "" },
+        changes: dedupedChanges,
+      });
+    }
+
+    const updated: Record<string, unknown> = {
+      ...existing,
+      packagesSnapshot: newPkgs,
+      insuredSnapshot: body.insured ?? existing.insuredSnapshot,
+      _audit: auditArr,
+      _lastEditedAt: new Date().toISOString(),
+    };
+
+    await db
+      .update(cars)
+      .set({ extraAttributes: updated })
+      .where(eq(cars.id, carRow.id));
+
+    return NextResponse.json({ ok: true, policyId: id }, { status: 200 });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

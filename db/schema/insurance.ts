@@ -1,4 +1,4 @@
-import { integer, jsonb, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, integer, jsonb, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 import { organisations, clients, users } from "./core";
 
 export const policies = pgTable("policies", {
@@ -10,6 +10,7 @@ export const policies = pgTable("policies", {
   // Agent responsible at creation time; used for visibility rules
   agentId: integer("agent_id").references(() => users.id, { onDelete: "set null" }),
   createdBy: integer("created_by"),
+  isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
 });
 

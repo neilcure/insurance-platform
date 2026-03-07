@@ -62,13 +62,39 @@ export function AddressTool({
   const [verifying, setVerifying] = React.useState(false);
   const [mapping, setMapping] = React.useState<AddressFieldMap>({});
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const [fetchedPkgKeys, setFetchedPkgKeys] = React.useState<string[]>([]);
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    async function loadPkgFields() {
+      const keys: string[] = [];
+      const pkgs = ["contactinfo", "insured"];
+      for (const pkg of pkgs) {
+        try {
+          const res = await fetch(
+            `/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}`,
+            { cache: "no-store" },
+          );
+          if (!res.ok) continue;
+          const rows = (await res.json()) as { value?: string }[];
+          for (const r of rows) {
+            const v = String(r.value ?? "").trim();
+            if (v) keys.push(`${pkg}__${v}`);
+          }
+        } catch { /* ignore */ }
+      }
+      if (!cancelled) setFetchedPkgKeys(keys);
+    }
+    void loadPkgFields();
+    return () => { cancelled = true; };
+  }, [open]);
   const availableKeys = React.useMemo(() => {
     const raw = Object.keys((form.getValues?.() ?? {}) as Record<string, unknown>);
-    const ci = raw.filter((k) => k.toLowerCase().startsWith("contactinfo_"));
-    // Prefer contactinfo_* keys; if none, fall back to all keys to avoid empty list
-    return ci.length > 0 ? ci : raw;
+    const merged = Array.from(new Set([...raw, ...fetchedPkgKeys]));
+    const ci = merged.filter((k) => k.toLowerCase().startsWith("contactinfo_") || k.toLowerCase().startsWith("insured_"));
+    return ci.length > 0 ? ci : merged;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, fetchedPkgKeys]);
   const storageKey = React.useMemo(() => {
     const path = typeof window !== "undefined" ? window.location.pathname : "/";
     return `addressTool.mapping:${path}`;
@@ -681,7 +707,7 @@ export function AddressTool({
                 onChange={(e) => setText(e.target.value)}
                 placeholder="e.g. Flat C, 26/F, BLK 16 Laguna Verde, 9 Hung Hom Road, Hung Hom, Kowloon"
               />
-              <p className="text-xs text-neutral-500">
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
                 Tip: Include flat, floor, block, building/estate, street number/name, and district if available.
               </p>
             </div>
@@ -853,7 +879,7 @@ export function AddressTool({
                       </div>
                     </div>
 
-                    <div className="text-xs text-neutral-500">
+                    <div className="text-xs text-neutral-500 dark:text-neutral-400">
                       {verified.locationType ? `Location type: ${verified.locationType}. ` : null}
                       {verified.partialMatch ? "Partial match. " : null}
                       {verified.inHongKong === false ? "Warning: outside Hong Kong bounds." : null}
@@ -862,9 +888,9 @@ export function AddressTool({
                 ) : (
                   <div className="space-y-1 text-sm text-red-600 dark:text-red-400">
                     <div>{verified.error ?? "Verify failed"}</div>
-                    {verified.errorMessage ? <div className="text-xs text-neutral-500">{verified.errorMessage}</div> : null}
+                    {verified.errorMessage ? <div className="text-xs text-neutral-500 dark:text-neutral-400">{verified.errorMessage}</div> : null}
                     {String(verified.error ?? "").includes("REQUEST_DENIED") ? (
-                      <div className="text-xs text-neutral-500">
+                      <div className="text-xs text-neutral-500 dark:text-neutral-400">
                         Tip: restart your dev server after changing `.env.local`, and ensure your Google key has Geocoding API enabled + billing +
                         server-side key restrictions.
                       </div>

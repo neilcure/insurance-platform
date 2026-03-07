@@ -1,41 +1,24 @@
-import { cookies } from "next/headers";
+import { formatDDMMYYYY } from "@/lib/format/date";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import PoliciesTableClient from "@/components/policies/PoliciesTableClient";
+import { serverFetch } from "@/lib/auth/server-fetch";
 
-type PolicyRow = { policyId: number; policyNumber: string; createdAt: string };
+type PolicyRow = { policyId: number; policyNumber: string; createdAt: string; isActive: boolean };
 
 async function fetchPolicies(): Promise<PolicyRow[]> {
-  const cookieStore = (await (cookies() as unknown as Promise<ReturnType<typeof cookies>>)) as any;
-  const cookieHeader = cookieStore
-    .getAll()
-    .map((c: { name: string; value: string }) => `${c.name}=${encodeURIComponent(c.value)}`)
-    .join("; ");
-  const base = process.env.NEXTAUTH_URL ?? "";
-  const res = await fetch(`${base}/api/policies`, {
-    headers: cookieHeader ? { cookie: cookieHeader } : {},
-    cache: "no-store",
-  });
+  const res = await serverFetch("/api/policies");
   if (!res.ok) {
-    if (res.status === 401) {
-      // handled by layout redirect, but keep a guard
-      return [];
-    }
+    if (res.status === 401) return [];
     throw new Error("Failed to load policies");
   }
-  return (await res.json()) as PolicyRow[];
+  const raw = (await res.json()) as PolicyRow[];
+  return raw.map((r) => ({ ...r, isActive: r.isActive !== false }));
 }
 
 export default async function PoliciesPage() {
   const rows = await fetchPolicies();
-  const formatDDMMYYYY = (iso: string) => {
-    const d = new Date(iso);
-    const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const yyyy = d.getFullYear();
-    return `${dd}-${mm}-${yyyy}`;
-  };
 
   return (
     <main className="mx-auto max-w-6xl">

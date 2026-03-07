@@ -29,7 +29,7 @@ export function NavUser({ user }: { user: { name?: string | null; email?: string
         </div>
         <div className="group-data-[collapsed=true]/sidebar-wrapper:hidden">
           <div className="font-medium leading-none">{user.name || label}</div>
-          <div className="text-xs text-neutral-500">{user.email || ""}</div>
+          <div className="text-xs text-neutral-500 dark:text-neutral-400">{user.email || ""}</div>
         </div>
       </button>
       {open ? (

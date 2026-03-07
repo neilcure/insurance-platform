@@ -1,4 +1,5 @@
-import { cookies } from "next/headers";
+import { serverFetch } from "@/lib/auth/server-fetch";
+import { formatDDMMYYYYHHMM } from "@/lib/format/date";
 
 type Row = {
   policyId: number;
@@ -18,31 +19,21 @@ export default async function ClientPoliciesDebugPage({
   const policyNumber = typeof sp.policyNumber === "string" ? sp.policyNumber : "";
   const showExtra = sp.showExtra === "1";
 
-  const cookieStore = (await (cookies() as unknown as Promise<ReturnType<typeof cookies>>));
-  const cookieHeader = cookieStore
-    .getAll()
-    .map((c: { name: string; value: string }) => `${c.name}=${encodeURIComponent(c.value)}`)
-    .join("; ");
-
   async function fetchPolicies(): Promise<Row[]> {
     const params: string[] = [];
     if (clientId) params.push(`clientId=${encodeURIComponent(clientId)}`);
     if (clientNumber) params.push(`clientNumber=${encodeURIComponent(clientNumber)}`);
     if (showExtra) params.push("include=extra");
     const qs = params.join("&");
-    const res = await fetch(`${process.env.NEXTAUTH_URL ?? ""}/api/policies?${qs}`, {
-      headers: cookieHeader ? { cookie: cookieHeader } : {},
-      cache: "no-store",
-    });
+    const res = await serverFetch(`/api/policies?${qs}`);
     if (!res.ok) return [];
     return (await res.json()) as Row[];
   }
 
   async function fetchOne(): Promise<Row | null> {
     if (!policyNumber || !showExtra) return null;
-    const res = await fetch(
-      `${process.env.NEXTAUTH_URL ?? ""}/api/policies?policyNumber=${encodeURIComponent(policyNumber)}&include=extra`,
-      { headers: cookieHeader ? { cookie: cookieHeader } : {}, cache: "no-store" },
+    const res = await serverFetch(
+      `/api/policies?policyNumber=${encodeURIComponent(policyNumber)}&include=extra`,
     );
     if (!res.ok) return null;
     const arr = (await res.json()) as Row[];
@@ -90,16 +81,7 @@ export default async function ClientPoliciesDebugPage({
                   <tr key={r.policyId} className="border-t border-neutral-200 dark:border-neutral-800">
                     <td className="px-3 py-2 font-mono">{r.policyNumber}</td>
                     <td className="px-3 py-2 font-mono">
-                      {(() => {
-                        const d = new Date(r.createdAt);
-                        if (Number.isNaN(d.getTime())) return r.createdAt;
-                        const dd = String(d.getDate()).padStart(2, "0");
-                        const mm = String(d.getMonth() + 1).padStart(2, "0");
-                        const yyyy = d.getFullYear();
-                        const hh = String(d.getHours()).padStart(2, "0");
-                        const min = String(d.getMinutes()).padStart(2, "0");
-                        return `${dd}-${mm}-${yyyy} ${hh}:${min}`;
-                      })()}
+                      {formatDDMMYYYYHHMM(r.createdAt)}
                     </td>
                   </tr>
                 ))}

@@ -40,6 +40,51 @@ export const HONG_KONG_DISTRICTS = [
   "Shatin",
   "Tai Wai",
   "Tsuen Wan West",
+  // New Territories neighborhoods
+  "Fanling",
+  "Sheung Shui",
+  "Tin Shui Wai",
+  "Tseung Kwan O",
+  "Ma On Shan",
+  "Tung Chung",
+  "Yuen Long Town",
+  "Kam Tin",
+  "Lam Tin",
+  "Lo Wu",
+  "Lok Ma Chau",
+  // Kowloon neighborhoods
+  "To Kwa Wan",
+  "Kowloon Tong",
+  "Kowloon Bay",
+  "Ngau Tau Kok",
+  "Kwai Chung",
+  "Tsing Yi",
+  "Lei Yue Mun",
+  "Diamond Hill",
+  "San Po Kong",
+  "Cheung Sha Wan",
+  "Lai Chi Kok",
+  // Hong Kong Island neighborhoods
+  "Aberdeen",
+  "Ap Lei Chau",
+  "Stanley",
+  "Repulse Bay",
+  "Happy Valley",
+  "Pok Fu Lam",
+  "Kennedy Town",
+  "Sai Ying Pun",
+  "Mid-Levels",
+  "North Point",
+  "Quarry Bay",
+  "Chai Wan",
+  "Shau Kei Wan",
+  "Sai Wan Ho",
+  // Outlying Islands
+  "Discovery Bay",
+  "Cheung Chau",
+  "Peng Chau",
+  "Lamma Island",
+  "Mui Wo",
 ];
 
 // Very lightweight parser that tries to extract common components from free-text HK addresses.
@@ -88,9 +133,9 @@ export function parseHongKongAddress(input: string): ParsedHongKongAddress {
     result.streetName = expandAbbreviation(cleanup(streetMatch[2]));
   }
 
-  // Property name (pick a prominent building/estate name if present)
+  // Property name (pick a prominent building/estate name if present, including the suffix)
   const propertyMatch = text.match(
-    /\b([A-Z][A-Z0-9\s'\-]+?)\s+(?:BUILDING|TOWER|ESTATE|MANSION|COURT|GARDEN|RESIDENCE|RESIDENCES|PLAZA)\b/i,
+    /\b([A-Z][A-Z0-9\s'\-]+?\s+(?:BUILDING|TOWER|ESTATE|MANSION|COURT|GARDEN|RESIDENCE|RESIDENCES|PLAZA|CENTRE|CENTER|HOUSE|TERRACE|LODGE|VILLAS?))\b/i,
   );
   if (propertyMatch) result.propertyName = cleanup(propertyMatch[1]);
 

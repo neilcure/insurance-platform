@@ -37,6 +37,9 @@ function parseCsvToMap(csv: string): Map<string, Set<string>> {
 }
 
 export async function POST(request: Request) {
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json({ error: "Not available in production" }, { status: 404 });
+  }
   const me = await requireUser();
   if (me.userType !== "admin") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });

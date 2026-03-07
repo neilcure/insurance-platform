@@ -26,7 +26,7 @@ export default async function DashboardGroupLayout({
         user={{ name: (session.user as any)?.name ?? null, email: (session.user as any)?.email ?? null }}
       />
       <SidebarInset>
-        <header className="flex h-16 shrink-0 items-center gap-2 px-4 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
+        <header className="flex h-12 shrink-0 items-center gap-2 px-3 sm:h-16 sm:px-4 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
           <div className="flex items-center gap-2">
             <SidebarTrigger className="-ml-1" />
             <Separator orientation="vertical" className="mr-2 h-4" />
@@ -46,7 +46,7 @@ export default async function DashboardGroupLayout({
             <ModeToggle />
           </div>
         </header>
-        <div className="flex-1 p-6 pt-0">
+        <div className="flex-1 p-3 pt-0 sm:p-6 sm:pt-0">
           <Suspense>{children}</Suspense>
         </div>
       </SidebarInset>

@@ -4,6 +4,8 @@ import * as React from "react";
 import type { UseFormReturn } from "react-hook-form";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { maskDDMMYYYY } from "@/lib/format/date";
+import { Field } from "@/components/ui/form-field";
 
 type DynamicField = {
   label: string;
@@ -138,19 +140,13 @@ export function InsuredStep({
     return () => sub.unsubscribe && sub.unsubscribe();
   }, [form, insuredType, dynamicFields]);
 
-  function formatDDMMYYYY(raw: string): string {
-    const digits = String(raw ?? "").replace(/\D/g, "").slice(0, 8);
-    if (digits.length <= 2) return digits;
-    if (digits.length <= 4) return `${digits.slice(0, 2)}-${digits.slice(2)}`;
-    return `${digits.slice(0, 2)}-${digits.slice(2, 4)}-${digits.slice(4)}`;
-  }
 
   return (
     <>
       <div className="space-y-2">
         <Label>Insured Type</Label>
         {insuredTypes.length === 0 ? (
-          <p className="text-sm text-neutral-500">
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">
             No insured categories configured. Please create one in Admin → Policy Settings → Insured Category.
           </p>
         ) : (
@@ -205,7 +201,7 @@ export function InsuredStep({
                   return (
                     <div key={nameBase} className="space-y-1">
                       <Label>
-                        {f.label} {f.meta?.required ? <span className="text-red-600">*</span> : null}
+                        {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                       </Label>
                       <div className="flex flex-wrap gap-4">
                         {options.map((o) => (
@@ -231,7 +227,7 @@ export function InsuredStep({
                   return (
                     <div key={nameBase} className="space-y-1">
                       <Label>
-                        {f.label} {f.meta?.required ? <span className="text-red-600">*</span> : null}
+                        {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                       </Label>
                       <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
                         {options.map((o) => (
@@ -247,7 +243,7 @@ export function InsuredStep({
                             {o.label}
                           </label>
                         ))}
-                        {options.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                        {options.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                       </div>
                     </div>
                   );
@@ -261,7 +257,7 @@ export function InsuredStep({
                     <div key={nameBase} className="col-span-2 space-y-2">
                       <div className="space-y-1">
                         <Label>
-                          {f.label} {f.meta?.required ? <span className="text-red-600">*</span> : null}
+                          {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                         </Label>
                         <div className="flex items-center gap-6">
                           <label className="inline-flex items-center gap-2 text-sm">
@@ -328,7 +324,7 @@ export function InsuredStep({
                                         {o.label}
                                       </label>
                                     ))}
-                                    {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                    {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                   </div>
                                 </div>
                               );
@@ -342,7 +338,7 @@ export function InsuredStep({
                               };
                               regOpts.onChange = (e: unknown) => {
                                 const t = e as { target?: { value?: string } };
-                                const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                 form.setValue(name as never, formatted as never, { shouldDirty: true });
                               };
                             }
@@ -399,7 +395,7 @@ export function InsuredStep({
                                         {o.label}
                                       </label>
                                     ))}
-                                    {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                    {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                   </div>
                                 </div>
                               );
@@ -413,7 +409,7 @@ export function InsuredStep({
                               };
                               regOpts.onChange = (e: unknown) => {
                                 const t = e as { target?: { value?: string } };
-                                const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                 form.setValue(name as never, formatted as never, { shouldDirty: true });
                               };
                             }
@@ -448,7 +444,7 @@ export function InsuredStep({
                     return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY";
                   };
                   options.onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-                    const formatted = formatDDMMYYYY(e?.target?.value ?? "");
+                    const formatted = maskDDMMYYYY(e?.target?.value ?? "");
                     form.setValue(nameBase as never, formatted as never, { shouldDirty: true });
                   };
                 }
@@ -473,17 +469,5 @@ export function InsuredStep({
   );
 }
 
-function Field({
-  label,
-  ...props
-}: React.InputHTMLAttributes<HTMLInputElement> & { label: string; required?: boolean }) {
-  return (
-    <div className="space-y-1">
-      <Label>
-        {label} {props.required ? <span className="text-red-600">*</span> : null}
-      </Label>
-      <Input {...props} />
-    </div>
-  );
-}
+// Field extracted to @/components/ui/form-field
 

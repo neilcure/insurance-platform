@@ -146,7 +146,7 @@ export default function DeclarationsManager() {
   return (
     <div className="space-y-3">
       <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-sm text-neutral-500"></div>
+        <div className="text-sm text-neutral-500 dark:text-neutral-400"></div>
         <Button size="sm" onClick={startCreate} className="self-start sm:self-auto">
           Add
         </Button>
@@ -201,7 +201,7 @@ export default function DeclarationsManager() {
           ))}
           {!loading && rows.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={4} className="text-center text-sm text-neutral-500">
+              <TableCell colSpan={4} className="text-center text-sm text-neutral-500 dark:text-neutral-400">
                 No declarations defined.
               </TableCell>
             </TableRow>

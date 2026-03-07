@@ -40,7 +40,7 @@ export function CardDescription({
   ...props
 }: React.HTMLAttributes<HTMLParagraphElement>) {
   return (
-    <p className={cn("text-sm text-neutral-500", className)} {...props} />
+    <p className={cn("text-sm text-neutral-500 dark:text-neutral-400", className)} {...props} />
   );
 }
 

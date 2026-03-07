@@ -7,6 +7,7 @@ import { policyCreateSchema } from "@/lib/validation/policy";
 import { normalizeDeclarations, DeclarationsDynamicSchema } from "@/lib/validation/declarations";
 import { requireUser } from "@/lib/auth/require-user";
 import { canCreatePolicy } from "@/lib/auth/rbac";
+import { getPolicyColumns } from "@/lib/db/column-check";
 // removed insured upsert/validation; insured snapshot only
 
 type FinalPolicyPayload = {
@@ -117,10 +118,54 @@ export async function POST(request: Request) {
         }
       }
 
+      // Resolve flow-specific prefix from settings
+      const flowKey = typeof (json as any).flowKey === "string" ? (json as any).flowKey.trim() : "";
+      let recordPrefix = "POL";
+      if (flowKey) {
+        try {
+          const orgSuffix = organisationId ? `:${organisationId}` : "";
+          const [fpRow] = await db.select().from(appSettings).where(eq(appSettings.key, `flow_prefixes${orgSuffix}`)).limit(1);
+          const flowPrefixes = (fpRow?.value as Record<string, string> | undefined) ?? {};
+          if (flowPrefixes[flowKey]) recordPrefix = flowPrefixes[flowKey];
+        } catch { /* use default */ }
+      }
+
+      // Override prefix with company/personal prefix ONLY for client-specific flows
+      // (e.g., clientSet). Other flows like policyset should use their own flow prefix.
+      const isClientFlow = flowKey.toLowerCase().includes("client");
+      if (isClientFlow) {
+        const insuredObj = (body as any).insured;
+        const rawInsuredType =
+          insuredObj?.insuredType ??
+          insuredObj?.insured__category ??
+          insuredObj?.insured_category ??
+          insuredObj?.category;
+        const resolvedInsuredType =
+          typeof rawInsuredType === "string"
+            ? rawInsuredType.trim().toLowerCase()
+            : "";
+        if (resolvedInsuredType === "company" || resolvedInsuredType === "personal") {
+          try {
+            const orgSuffix = organisationId ? `:${organisationId}` : "";
+            const [cpRow] = await db
+              .select()
+              .from(appSettings)
+              .where(eq(appSettings.key, `client_number_prefixes${orgSuffix}`))
+              .limit(1);
+            const prefixes = (cpRow?.value as { companyPrefix?: string; personalPrefix?: string } | undefined) ?? {};
+            const chosen =
+              resolvedInsuredType === "company"
+                ? prefixes.companyPrefix
+                : prefixes.personalPrefix;
+            if (chosen && chosen.trim()) recordPrefix = chosen.trim();
+          } catch { /* fall back to flow prefix */ }
+        }
+      }
+
       const generatedPolicyNumber =
         (policy as any)?.insurerPolicyNo ||
         (policy as any)?.covernoteNo ||
-        `POL-${Date.now()}`;
+        `${recordPrefix}-${Date.now()}`;
 
       // Normalize declarations shape (support legacy and new)
       let normalizedDeclarations: { answers: Record<string, boolean>; notes?: string } | null = null;
@@ -197,40 +242,7 @@ export async function POST(request: Request) {
       }
       const insuredCandidate = buildInsuredCandidate();
 
-      // Check legacy DB shape to avoid errors inside an open transaction
-      let hasCreatedBy = false;
-      let hasClientIdColumn = false;
-      let hasAgentIdColumn = false;
-      try {
-        const chk = await db.execute(
-          sql`select 1 as ok from information_schema.columns where table_name = 'policies' and column_name = 'created_by' limit 1`
-        );
-        const row =
-          (Array.isArray(chk) ? (chk as any[])[0] : (chk as any)?.rows?.[0]) as { ok?: unknown } | undefined;
-        hasCreatedBy = Boolean(row?.ok ?? row);
-      } catch {
-        hasCreatedBy = false;
-      }
-      try {
-        const chk2 = await db.execute(
-          sql`select 1 as ok from information_schema.columns where table_name = 'policies' and column_name = 'client_id' limit 1`
-        );
-        const row2 =
-          (Array.isArray(chk2) ? (chk2 as any[])[0] : (chk2 as any)?.rows?.[0]) as { ok?: unknown } | undefined;
-        hasClientIdColumn = Boolean(row2?.ok ?? row2);
-      } catch {
-        hasClientIdColumn = false;
-      }
-      try {
-        const chk3 = await db.execute(
-          sql`select 1 as ok from information_schema.columns where table_name = 'policies' and column_name = 'agent_id' limit 1`
-        );
-        const row3 =
-          (Array.isArray(chk3) ? (chk3 as any[])[0] : (chk3 as any)?.rows?.[0]) as { ok?: unknown } | undefined;
-        hasAgentIdColumn = Boolean(row3?.ok ?? row3);
-      } catch {
-        hasAgentIdColumn = false;
-      }
+      const { hasCreatedBy, hasClientId: hasClientIdColumn, hasAgentId: hasAgentIdColumn } = await getPolicyColumns();
 
       // Per-policy model: no client-level assignment check on create.
 
@@ -374,9 +386,9 @@ export async function POST(request: Request) {
           declarations: normalizedDeclarations ?? (body as any).declarations,
           insuredSnapshot: (body as any).insured,
           clientId: ensuredClientId,
-          // include all packages snapshot for traceability
           packagesSnapshot: packages,
           excessSection1: (policy as any)?.coverType === "comprehensive" ? (policy as any).excessSection1 : undefined,
+          ...(flowKey ? { flowKey } : {}),
         } as Record<string, unknown>;
 
         // Normalize vehicle primitives for DB column types
@@ -551,11 +563,15 @@ export async function GET(request: Request) {
     const clientIdParam = url.searchParams.get("clientId");
     const policyNumberParam = url.searchParams.get("policyNumber");
     const clientNumberParam = url.searchParams.get("clientNumber");
-    // Optional flags can be read from querystring, but we always return car extra for simplicity
+    const flowParam = url.searchParams.get("flow");
     const clientIdFilter = Number(clientIdParam);
     const hasClientFilter = Number.isFinite(clientIdFilter) && clientIdFilter > 0;
     const hasPolicyNumberFilter = typeof policyNumberParam === "string" && policyNumberParam.trim().length > 0;
     const hasClientNumberFilter = typeof clientNumberParam === "string" && clientNumberParam.trim().length > 0;
+    const hasFlowFilter = typeof flowParam === "string" && flowParam.trim().length > 0;
+    const MAX_LIMIT = 500;
+    const qLimit = Math.min(Math.max(Number(url.searchParams.get("limit")) || MAX_LIMIT, 1), MAX_LIMIT);
+    const qOffset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
     // Scope: admin/internal_staff see all; others limited to their memberships
     const baseSelect = db
       .select({
@@ -563,6 +579,7 @@ export async function GET(request: Request) {
         policyNumber: policies.policyNumber,
         organisationId: policies.organisationId,
         createdAt: policies.createdAt,
+        isActive: policies.isActive,
         carId: cars.id,
         plateNumber: cars.plateNumber,
         make: cars.make,
@@ -586,12 +603,10 @@ export async function GET(request: Request) {
       carExtra: Record<string, unknown> | null;
     };
     let rows: Row[];
-    // Prefer fast path on policies.client_id when present; otherwise JSON snapshot fallbacks
+    const polCols = await getPolicyColumns();
     const clientFilterExpr = hasClientFilter
       ? sql`(
-          (CASE WHEN EXISTS (select 1 from information_schema.columns where table_name = 'policies' and column_name = 'client_id')
-            THEN (${policies.clientId} = ${clientIdFilter}) ELSE false END)
-          OR
+          ${polCols.hasClientId ? sql`(${policies.clientId} = ${clientIdFilter}) OR` : sql``}
           (((${cars.extraAttributes})::jsonb ->> 'clientId')::int = ${clientIdFilter})
           OR ((((${cars.extraAttributes})::jsonb -> 'packagesSnapshot' -> 'policy') ->> 'clientId')::int = ${clientIdFilter})
           OR ((((${cars.extraAttributes})::jsonb -> 'packagesSnapshot' -> 'policy' -> 'values') ->> 'clientId')::int = ${clientIdFilter})
@@ -601,14 +616,18 @@ export async function GET(request: Request) {
           OR ((${cars.extraAttributes})::text ILIKE ${'%\"client%\":\"' + String(clientIdFilter) + '\"%'})
         )`
       : undefined;
-    // JSONB filter that supports common key paths for clientNumber
     const clientNumberFilterExpr = hasClientNumberFilter
       ? sql`(
           (((${cars.extraAttributes})::jsonb ->> 'clientNumber') = ${clientNumberParam})
           OR ((((${cars.extraAttributes})::jsonb -> 'packagesSnapshot' -> 'policy') ->> 'clientNumber') = ${clientNumberParam})
           OR ((((${cars.extraAttributes})::jsonb -> 'packagesSnapshot' -> 'policy' -> 'values') ->> 'clientNumber') = ${clientNumberParam})
+          OR ((((${cars.extraAttributes})::jsonb -> 'insuredSnapshot') ->> 'clientPolicyNumber') = ${clientNumberParam})
           OR ((${cars.extraAttributes})::text ILIKE ${'%\"clientNumber\":\"' + String(clientNumberParam) + '\"%'})
+          OR ((${cars.extraAttributes})::text ILIKE ${'%\"clientPolicyNumber\":\"' + String(clientNumberParam) + '\"%'})
         )`
+      : undefined;
+    const flowFilterExpr = hasFlowFilter
+      ? sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') = ${flowParam}`
       : undefined;
     try {
       if (user.userType === "admin" || user.userType === "internal_staff") {
@@ -616,42 +635,39 @@ export async function GET(request: Request) {
         if (hasPolicyNumberFilter) q = q.where(eq(policies.policyNumber, policyNumberParam!));
         if (hasClientFilter) q = q.where(clientFilterExpr!);
         if (hasClientNumberFilter) q = q.where(clientNumberFilterExpr!);
-        q = q.orderBy(desc(policies.createdAt), desc(policies.id));
+        if (hasFlowFilter) q = q.where(flowFilterExpr!);
+        q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
         rows = await q;
       } else if (user.userType === "agent") {
-        // Agent: see policies they authored (agent_id = current user); optional clientId filter narrows the list
         const agentId = Number(user.id);
-        const result = await db.execute(sql`
-          with has_agent as (
-            select exists (select 1 from information_schema.columns where table_name='policies' and column_name='agent_id') as present
-          ), has_client as (
-            select exists (select 1 from information_schema.columns where table_name='policies' and column_name='client_id') as present
-          )
-          select
-            p.id as "policyId",
-            p.policy_number as "policyNumber",
-            p.organisation_id as "organisationId",
-            p.created_at as "createdAt",
-            c.id as "carId",
-            c.plate_number as "plateNumber",
-            c.make as "make",
-            c.model as "model",
-            c.year as "year",
-            c.extra_attributes as "carExtra"
-          from "policies" p
-          left join "cars" c on c.policy_id = p.id
-          where (select present from has_agent)
-            and p.agent_id = ${agentId}
-            ${hasPolicyNumberFilter ? sql`and p.policy_number = ${policyNumberParam!}` : sql``}
-            ${
-              hasClientFilter
-                ? sql`and (select present from has_client) and p.client_id = ${Number(url.searchParams.get("clientId"))}`
-                : sql``
-            }
-            ${hasClientNumberFilter ? sql`and ((c.extra_attributes)::jsonb ->> 'clientNumber') = ${clientNumberParam!}` : sql``}
-          order by p.created_at desc, p.id desc
-        `);
-        rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
+        if (!polCols.hasAgentId) {
+          rows = [];
+        } else {
+          const result = await db.execute(sql`
+            select
+              p.id as "policyId",
+              p.policy_number as "policyNumber",
+              p.organisation_id as "organisationId",
+              p.created_at as "createdAt",
+              p.is_active as "isActive",
+              c.id as "carId",
+              c.plate_number as "plateNumber",
+              c.make as "make",
+              c.model as "model",
+              c.year as "year",
+              c.extra_attributes as "carExtra"
+            from "policies" p
+            left join "cars" c on c.policy_id = p.id
+            where p.agent_id = ${agentId}
+              ${hasPolicyNumberFilter ? sql`and p.policy_number = ${policyNumberParam!}` : sql``}
+              ${hasClientFilter && polCols.hasClientId ? sql`and p.client_id = ${Number(url.searchParams.get("clientId"))}` : sql``}
+              ${hasClientNumberFilter ? sql`and ((c.extra_attributes)::jsonb ->> 'clientNumber') = ${clientNumberParam!}` : sql``}
+              ${hasFlowFilter ? sql`and ((c.extra_attributes)::jsonb ->> 'flowKey') = ${flowParam}` : sql``}
+            order by p.created_at desc, p.id desc
+            limit ${qLimit} offset ${qOffset}
+          `);
+          rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
+        }
       } else {
         let scoped: any = baseSelect.innerJoin(
           memberships,
@@ -660,20 +676,18 @@ export async function GET(request: Request) {
         if (hasPolicyNumberFilter) scoped = scoped.where(eq(policies.policyNumber, policyNumberParam!));
         if (hasClientFilter) scoped = scoped.where(clientFilterExpr!);
         if (hasClientNumberFilter) scoped = scoped.where(clientNumberFilterExpr!);
-        scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id));
+        if (hasFlowFilter) scoped = scoped.where(flowFilterExpr!);
+        scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
         rows = await scoped;
       }
     } catch {
-      // Fallback for legacy DBs without created_by:
-      // - Admin/Internal Staff: see all
-      // - Agent: return none to avoid data leakage until migrations are applied
-      // - Others: membership-based scope
       if (user.userType === "admin" || user.userType === "internal_staff") {
         let q: any = baseSelect;
         if (hasPolicyNumberFilter) q = q.where(eq(policies.policyNumber, policyNumberParam!));
         if (hasClientFilter) q = q.where(clientFilterExpr!);
         if (hasClientNumberFilter) q = q.where(clientNumberFilterExpr!);
-        q = q.orderBy(desc(policies.createdAt), desc(policies.id));
+        if (hasFlowFilter) q = q.where(flowFilterExpr!);
+        q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
         rows = await q;
       } else if (user.userType === "agent") {
         rows = [];
@@ -685,7 +699,8 @@ export async function GET(request: Request) {
         if (hasPolicyNumberFilter) scoped = scoped.where(eq(policies.policyNumber, policyNumberParam!));
         if (hasClientFilter) scoped = scoped.where(clientFilterExpr!);
         if (hasClientNumberFilter) scoped = scoped.where(clientNumberFilterExpr!);
-        scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id));
+        if (hasFlowFilter) scoped = scoped.where(flowFilterExpr!);
+        scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
         rows = await scoped;
       }
     }

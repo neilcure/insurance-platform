@@ -98,7 +98,7 @@ export default function HomeActions({
             <CardTitle>Demo credentials</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-sm text-neutral-600">
+            <div className="text-sm text-neutral-600 dark:text-neutral-400">
               Use these to sign in via Credentials on the login page.
             </div>
             <Separator />

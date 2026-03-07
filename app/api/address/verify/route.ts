@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth/require-user";
-import { parseHongKongAddress } from "@/lib/address/hk";
+import { parseHongKongAddress, HONG_KONG_DISTRICTS } from "@/lib/address/hk";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -48,12 +48,33 @@ function inHongKongBounds(lat?: number, lng?: number): boolean | undefined {
 function deriveAreaFromDistrict(d?: string): string | undefined {
   if (!d) return undefined;
   const s = d.toLowerCase();
+  // Official 18 districts
   const kowloon = ["kowloon city", "yau tsim mong", "sham shui po", "wong tai sin", "kwun tong"];
   const hkIsland = ["central and western", "eastern", "southern", "wan chai"];
   const newTerr = ["islands", "kwai tsing", "north", "sai kung", "sha tin", "tai po", "tsuen wan", "tuen mun", "yuen long"];
   if (kowloon.some((k) => s.includes(k))) return "Kowloon";
   if (hkIsland.some((k) => s.includes(k))) return "Hong Kong Island";
   if (newTerr.some((k) => s.includes(k))) return "New Territories";
+  // Common neighborhood → area mapping
+  const kowloonNeighborhoods = [
+    "to kwa wan", "kowloon tong", "kowloon bay", "ngau tau kok", "kwai chung",
+    "tsing yi", "lei yue mun", "diamond hill", "san po kong", "cheung sha wan",
+    "lai chi kok", "hung hom", "mong kok", "tsim sha tsui", "jordan", "lam tin",
+  ];
+  const hkIslandNeighborhoods = [
+    "aberdeen", "ap lei chau", "stanley", "repulse bay", "happy valley",
+    "pok fu lam", "kennedy town", "sai ying pun", "mid-levels", "north point",
+    "quarry bay", "chai wan", "shau kei wan", "sai wan ho", "sheung wan", "causeway bay",
+  ];
+  const newTerrNeighborhoods = [
+    "fanling", "sheung shui", "tin shui wai", "tseung kwan o", "ma on shan",
+    "tung chung", "yuen long town", "kam tin", "shatin", "tai wai",
+    "lo wu", "lok ma chau", "discovery bay", "cheung chau", "peng chau",
+    "lamma island", "mui wo",
+  ];
+  if (kowloonNeighborhoods.some((k) => s.includes(k))) return "Kowloon";
+  if (hkIslandNeighborhoods.some((k) => s.includes(k))) return "Hong Kong Island";
+  if (newTerrNeighborhoods.some((k) => s.includes(k))) return "New Territories";
   return undefined;
 }
 
@@ -157,16 +178,21 @@ export async function POST(request: Request) {
   const streetName = pickComponent(addressComponents, "route");
   const flatNumber = pickComponent(addressComponents, "subpremise");
   const floorNumber = pickComponent(addressComponents, "floor");
+  const neighborhoodRaw = pickComponent(addressComponents, "neighborhood");
+  const isNeighborhoodADistrict = neighborhoodRaw
+    ? HONG_KONG_DISTRICTS.some((d) => d.toLowerCase() === neighborhoodRaw.toLowerCase())
+    : false;
   const propertyName =
     pickComponent(addressComponents, "premise") ||
     pickComponent(addressComponents, "establishment") ||
     pickComponent(addressComponents, "point_of_interest") ||
-    pickComponent(addressComponents, "neighborhood");
+    (isNeighborhoodADistrict ? undefined : neighborhoodRaw);
   const districtName =
     pickComponent(addressComponents, "administrative_area_level_3") ||
     pickComponent(addressComponents, "administrative_area_level_2") ||
     pickComponent(addressComponents, "sublocality_level_1") ||
-    pickComponent(addressComponents, "locality");
+    pickComponent(addressComponents, "locality") ||
+    (isNeighborhoodADistrict ? neighborhoodRaw : undefined);
   const area =
     pickComponent(addressComponents, "administrative_area_level_1") ||
     pickComponent(addressComponents, "sublocality") ||

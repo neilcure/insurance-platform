@@ -1,16 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { formOptions } from "@/db/schema/form_options";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
-
-function normalizeKeyLike(raw: string): string {
-  return String(raw ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_")
-    .replace(/[^a-z0-9_-]/g, "");
-}
+import { normalizeKeyLike } from "@/lib/utils";
 
 export async function PATCH(
   request: NextRequest,
@@ -139,4 +132,159 @@ export async function DELETE(
   return NextResponse.json({ ok: true }, { status: 200 });
 }
 
+/**
+ * Add or remove an option from meta.options for a select/multi_select field.
+ *
+ * For top-level options: { action, label, value }
+ * For child options:     { action, label, value, childPath: { parentOptionValue, childIndex } }
+ */
+export async function POST(
+  request: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  const user = await requireUser();
+  if (user.userType !== "admin") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const { id: idStr } = await context.params;
+  const id = Number(idStr);
+  if (!Number.isFinite(id)) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  }
 
+  const body = await request.json();
+  const action = String(body.action ?? "add");
+
+  const existing = await db.select().from(formOptions).where(eq(formOptions.id, id)).limit(1);
+  if (existing.length === 0) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  const current = existing[0];
+  const meta = (current.meta ?? {}) as Record<string, unknown>;
+  const inputType = String(meta.inputType ?? "");
+  if (inputType !== "select" && inputType !== "multi_select") {
+    return NextResponse.json({ error: "Field is not a select/multi_select type" }, { status: 400 });
+  }
+
+  const currentOptions = Array.isArray(meta.options) ? (meta.options as { label?: string; value?: string; children?: Record<string, unknown>[] }[]) : [];
+
+  const childPath = body.childPath as { parentOptionValue?: string; childIndex?: number } | undefined;
+  const isChildOp = childPath && typeof childPath.parentOptionValue === "string" && typeof childPath.childIndex === "number";
+
+  // --- Child option operations (nested inside meta.options[].children[].options) ---
+  if (isChildOp) {
+    const parentIdx = currentOptions.findIndex((o) => o.value === childPath.parentOptionValue);
+    if (parentIdx < 0) {
+      return NextResponse.json({ error: "Parent option not found" }, { status: 404 });
+    }
+    const parent = currentOptions[parentIdx];
+    const children = Array.isArray(parent.children) ? parent.children : [];
+    const cIdx = childPath.childIndex!;
+    if (cIdx < 0 || cIdx >= children.length) {
+      return NextResponse.json({ error: "Child index out of range" }, { status: 400 });
+    }
+    const child = children[cIdx] as Record<string, unknown>;
+    const childOpts = Array.isArray(child.options) ? (child.options as { label?: string; value?: string }[]) : [];
+
+    if (action === "remove") {
+      const removeValue = String(body.value ?? "").trim();
+      if (!removeValue) {
+        return NextResponse.json({ error: "value is required for remove" }, { status: 400 });
+      }
+      const filtered = childOpts.filter((o) => o.value !== removeValue);
+      if (filtered.length === childOpts.length) {
+        return NextResponse.json({ error: "Option not found" }, { status: 404 });
+      }
+      const updatedChild = { ...child, options: filtered };
+      const updatedChildren = [...children];
+      updatedChildren[cIdx] = updatedChild;
+      const updatedParent = { ...parent, children: updatedChildren };
+      const updatedOptions = [...currentOptions];
+      updatedOptions[parentIdx] = updatedParent;
+      const updatedMeta = { ...meta, options: updatedOptions };
+      await db.update(formOptions).set({ meta: updatedMeta }).where(eq(formOptions.id, id));
+      const [updated] = await db.select().from(formOptions).where(eq(formOptions.id, id)).limit(1);
+      return NextResponse.json({ removed: body.value, field: updated }, { status: 200 });
+    }
+
+    // add to child
+    const label = String(body.label ?? "").trim();
+    if (!label) {
+      return NextResponse.json({ error: "label is required" }, { status: 400 });
+    }
+    const value = String(body.value ?? label).trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+    if (!value) {
+      return NextResponse.json({ error: "Could not derive a valid value key" }, { status: 400 });
+    }
+    if (childOpts.some((o) => o.value === value)) {
+      return NextResponse.json({ option: { label, value }, message: "Option already exists" }, { status: 200 });
+    }
+    const newOpt = { label, value };
+    const updatedChild = { ...child, options: [...childOpts, newOpt] };
+    const updatedChildren = [...children];
+    updatedChildren[cIdx] = updatedChild;
+    const updatedParent = { ...parent, children: updatedChildren };
+    const updatedOptions = [...currentOptions];
+    updatedOptions[parentIdx] = updatedParent;
+    const updatedMeta = { ...meta, options: updatedOptions };
+    await db.update(formOptions).set({ meta: updatedMeta }).where(eq(formOptions.id, id));
+    const [updated] = await db.select().from(formOptions).where(eq(formOptions.id, id)).limit(1);
+    return NextResponse.json({ option: newOpt, field: updated }, { status: 200 });
+  }
+
+  // --- Top-level option operations ---
+  if (action === "remove") {
+    const removeValue = String(body.value ?? "").trim();
+    if (!removeValue) {
+      return NextResponse.json({ error: "value is required for remove" }, { status: 400 });
+    }
+    const filtered = currentOptions.filter((o) => o.value !== removeValue);
+    if (filtered.length === currentOptions.length) {
+      return NextResponse.json({ error: "Option not found" }, { status: 404 });
+    }
+    const updatedMeta = { ...meta, options: filtered };
+    await db.update(formOptions).set({ meta: updatedMeta }).where(eq(formOptions.id, id));
+    const [updated] = await db.select().from(formOptions).where(eq(formOptions.id, id)).limit(1);
+    return NextResponse.json({ removed: removeValue, field: updated }, { status: 200 });
+  }
+
+  // Default action: add
+  const label = String(body.label ?? "").trim();
+  if (!label) {
+    return NextResponse.json({ error: "label is required" }, { status: 400 });
+  }
+  const value = String(body.value ?? label)
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
+  if (!value) {
+    return NextResponse.json({ error: "Could not derive a valid value key" }, { status: 400 });
+  }
+
+  if (currentOptions.some((o) => o.value === value)) {
+    return NextResponse.json({ option: { label, value }, message: "Option already exists" }, { status: 200 });
+  }
+
+  // If existing options have children, clone the children structure with empty options
+  // so child fields (e.g. Model under Make) appear for the new option too.
+  const donor = currentOptions.find((o) => Array.isArray(o.children) && o.children.length > 0);
+  let childrenTemplate: Record<string, unknown>[] | undefined;
+  if (donor && Array.isArray(donor.children)) {
+    childrenTemplate = (donor.children as Record<string, unknown>[]).map((c) => {
+      const clone: Record<string, unknown> = { ...c, options: [] };
+      return clone;
+    });
+  }
+
+  const newOption: Record<string, unknown> = { label, value };
+  if (childrenTemplate) newOption.children = childrenTemplate;
+
+  // Use read-modify-write to include children structure
+  const updatedMeta = { ...meta, options: [...currentOptions, newOption] };
+  await db.update(formOptions).set({ meta: updatedMeta }).where(eq(formOptions.id, id));
+
+  const [updated] = await db.select().from(formOptions).where(eq(formOptions.id, id)).limit(1);
+
+  return NextResponse.json({ option: { label, value }, field: updated }, { status: 200 });
+}

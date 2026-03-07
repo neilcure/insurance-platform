@@ -14,14 +14,26 @@ export function canonicalizeContactKey(rawKey: string): string {
 // Priority buckets to mirror Policy Details ordering
 // 1-9: core contact; 100+ address in canonical sequence; 10000 fallback/unknown
 const CONTACT_PRIORITY: Record<string, number> = {
+	insuredtype: 0,
 	ptitle: 1,
 	title: 1,
+	category: 1,
 	fullname: 2,
 	name: 2,
-	tel: 3,
-	phone: 3,
-	mobile: 4,
-	email: 5,
+	companyname: 2,
+	lastname: 2,
+	surname: 2,
+	firstname: 3,
+	brnumber: 4,
+	cinumber: 4,
+	idnumber: 4,
+	dob: 5,
+	birthdate: 5,
+	dateofbirth: 5,
+	tel: 6,
+	phone: 6,
+	mobile: 7,
+	email: 8,
 };
 
 const ADDRESS_PRIORITY: Record<string, number> = {
@@ -53,6 +65,7 @@ export function formatContactLabel(rawLabel: string, rawKey: string): string {
 	const baseRaw = rawLabel?.trim() ? rawLabel : dropPrefix;
 	const canon = baseRaw.toLowerCase().replace(/\s+/g, "");
 	const map: Record<string, string> = {
+		insuredtype: "Insured Type",
 		flatno: "Flat Number",
 		flatnumber: "Flat Number",
 		floorno: "Floor Number",
@@ -72,7 +85,15 @@ export function formatContactLabel(rawLabel: string, rawKey: string): string {
 		brnumber: "BR No.",
 		cinumber: "CI No.",
 		fullname: "Full Name",
+		firstname: "First Name",
+		lastname: "Last Name",
+		surname: "Last Name",
 		idnumber: "ID No.",
+		idno: "ID No.",
+		hkid: "HKID",
+		dob: "Date of Birth",
+		birthdate: "Date of Birth",
+		dateofbirth: "Date of Birth",
 		ptitle: "Personal Title",
 		title: "Personal Title",
 	};

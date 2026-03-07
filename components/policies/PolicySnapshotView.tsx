@@ -1,19 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { formatContactLabel, getContactSortWeight } from "@/lib/format/contact-info";
-
-type PolicySnapshotDetail = {
-  policyNumber: string;
-  createdAt: string;
-  extraAttributes?: {
-    packagesSnapshot?: Record<string, unknown>;
-    insuredSnapshot?: Record<string, unknown>;
-    [key: string]: unknown;
-  } | null;
-  client?: { id: number; clientNumber?: string; createdAt?: string } | null;
-  agent?: { id: number; userNumber?: string | null; name?: string | null; email?: string } | null;
-};
+import type { PolicyDetail } from "@/lib/types/policy";
+import { normalizeFieldKey, isHiddenPackage } from "@/lib/utils";
+import { ClientLinkedPolicies } from "@/components/policies/ClientLinkedPolicies";
 
 type FieldMeta = {
   labels: Record<string, string>;
@@ -35,7 +25,7 @@ type FieldMeta = {
 
 const toKey = (v: unknown) => String(v ?? "").trim();
 const toNum = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-const normalizeKey = (s: string) => s.replace(/^_+/, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const normalizeKey = normalizeFieldKey;
 
 function registerChildLabels(
   parentKey: string,
@@ -87,11 +77,12 @@ async function loadFieldMeta(packageNames: string[]): Promise<{
   packageSortOrders: Record<string, number>;
   categoryLabels: Record<string, Record<string, string>>;
 }> {
+  const ts = Date.now();
   const [packagesRes, ...fieldAndCatResults] = await Promise.all([
-    fetch(`/api/form-options?groupKey=packages`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
+    fetch(`/api/form-options?groupKey=packages&_t=${ts}`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
     ...packageNames.flatMap(pkg => [
-      fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
-      fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_category`)}`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}&_t=${ts}`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_category`)}&_t=${ts}`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
     ]),
   ]);
 
@@ -190,27 +181,48 @@ async function loadFieldMeta(packageNames: string[]): Promise<{
   return { pkgMeta, packageLabels, packageSortOrders, categoryLabels };
 }
 
-function resolveKey(key: string, labels: Record<string, string>): string {
+function stripPkgPrefix(key: string, pkgName?: string): string {
+  if (pkgName) {
+    const prefixes = [`${pkgName}__`, `${pkgName}_`];
+    for (const p of prefixes) {
+      if (key.startsWith(p) && key.length > p.length) return key.slice(p.length);
+    }
+  }
+  const dblIdx = key.indexOf("__");
+  if (dblIdx > 0 && dblIdx < key.length - 2) return key.slice(dblIdx + 2);
+  return key;
+}
+
+function resolveKey(key: string, labels: Record<string, string>, pkgName?: string): string {
   if (labels[key]) return key;
   const stripped = key.replace(/^_+/, "");
   if (stripped !== key && labels[stripped]) return stripped;
+  const base = stripPkgPrefix(key, pkgName);
+  if (base !== key && labels[base]) return base;
   const nk = normalizeKey(key);
   const match = Object.keys(labels).find(k => normalizeKey(k) === nk);
-  return match ?? key;
+  if (match) return match;
+  const nkBase = normalizeKey(base);
+  const baseMatch = Object.keys(labels).find(k => normalizeKey(k) === nkBase);
+  return baseMatch ?? base;
 }
 
-function humanizeFieldKey(key: string, labels: Record<string, string>): string {
+function humanizeFieldKey(key: string, labels: Record<string, string>, pkgName?: string): string {
   let s = key.replace(/^_+/, "");
   s = s.replace(/__opt_[^_]+/g, "");
   s = s.replace(/__c\d+/g, "");
   s = s.replace(/__bc\d+/g, "");
   s = s.replace(/__(true|false)/g, "");
+  const base = stripPkgPrefix(s, pkgName);
+  const baseNorm = normalizeKey(base);
+  const baseMatch = Object.keys(labels).find(k => normalizeKey(k) === baseNorm);
+  if (baseMatch) return labels[baseMatch] ?? baseMatch;
   const parentToken = normalizeKey(s.split("__")[0] ?? s);
   const parentMatch = Object.keys(labels).find(k => normalizeKey(k) === parentToken);
   if (parentMatch) return labels[parentMatch] ?? parentMatch;
-  s = s.replace(/__+/g, " — ").replace(/_+/g, " ");
-  s = s.replace(/([a-z])([A-Z])/g, "$1 $2");
-  return s.replace(/\b\w/g, c => c.toUpperCase()).trim() || key;
+  let display = base.replace(/__+/g, " ").replace(/_+/g, " ");
+  display = display.replace(/([a-z])([A-Z])/g, "$1 $2");
+  return display.replace(/\b\w/g, c => c.toUpperCase()).trim() || key;
 }
 
 function applyCase(text: string, mode?: "original" | "upper" | "lower" | "title") {
@@ -289,12 +301,16 @@ function PackageSection({
   meta,
   packageLabel,
   categoryLabel,
+  recentKeys,
+  onEdit,
 }: {
   pkgName: string;
   pkg: unknown;
   meta: FieldMeta;
   packageLabel: string;
   categoryLabel?: string;
+  recentKeys?: Set<string>;
+  onEdit?: () => void;
 }) {
   const values: Record<string, unknown> = isStructuredPkg(pkg) ? (pkg as StructuredPkg).values ?? {} : (pkg as Record<string, unknown>) ?? {};
   const category = isStructuredPkg(pkg) ? (pkg as StructuredPkg).category : undefined;
@@ -302,16 +318,29 @@ function PackageSection({
     ? (categoryLabel ?? String(category))
     : undefined;
 
-  const resolve = (key: string) => resolveKey(key, meta.labels);
+  const resolve = (key: string) => resolveKey(key, meta.labels, pkgName);
   const label = (key: string) => {
     const rk = resolve(key);
     const registered = meta.labels[rk];
-    const raw = registered ?? humanizeFieldKey(key, meta.labels);
+    const raw = registered ?? humanizeFieldKey(key, meta.labels, pkgName);
     return applyCase(raw, meta.formattingMeta[rk]?.labelCase);
   };
   const getType = (key: string) => meta.inputTypes[resolve(key)] ?? "";
   const getOptMap = (key: string) => meta.optionLabels[resolve(key)] ?? {};
   const getFmt = (key: string) => meta.formattingMeta[resolve(key)];
+
+  const isRecentKey = (k: string): boolean => {
+    if (!recentKeys || recentKeys.size === 0) return false;
+    if (recentKeys.has(k)) return true;
+    const stripped = stripPkgPrefix(k, pkgName);
+    if (recentKeys.has(stripped)) return true;
+    const nk = normalizeKey(k);
+    for (const rk of recentKeys) {
+      if (normalizeKey(rk) === nk) return true;
+    }
+    return false;
+  };
+  const recentCls = "text-yellow-600 dark:text-yellow-400";
 
   const kvsRaw = Object.entries(values).filter(([k, v]) => {
     if (v === null || typeof v === "undefined") return false;
@@ -347,9 +376,20 @@ function PackageSection({
     <div className="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
       <div className="mb-1 flex items-center justify-between">
         <div className="text-sm font-medium">{packageLabel}</div>
-        {displayCategoryLabel ? (
-          <div className="text-xs text-neutral-500">Category: {displayCategoryLabel}</div>
-        ) : null}
+        <div className="flex items-center gap-2">
+          {displayCategoryLabel ? (
+            <span className="text-xs text-neutral-500 dark:text-neutral-400">Category: {displayCategoryLabel}</span>
+          ) : null}
+          {onEdit ? (
+            <button
+              type="button"
+              onClick={onEdit}
+              className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
+            >
+              Edit
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="grid grid-cols-1 gap-1">
         {kvs.map(([k, v]) => {
@@ -357,6 +397,8 @@ function PackageSection({
           const fieldLabel = label(k);
           const type = getType(k);
           const fmt = getFmt(k);
+
+          const recent = isRecentKey(k);
 
           if (type === "repeatable" && Array.isArray(v)) {
             const items = (v as unknown[]).filter(it => it && typeof it === "object") as Array<Record<string, unknown>>;
@@ -379,12 +421,12 @@ function PackageSection({
             return (
               <React.Fragment key={k}>
                 <div className="flex items-start justify-between gap-3 text-xs">
-                  <div className="text-neutral-500">{`${fieldLabel} — Name`}</div>
-                  <div className="max-w-[60%] wrap-break-word font-mono text-right">{names.filter(Boolean).join(", ")}</div>
+                  <div className="text-neutral-500 dark:text-neutral-400">{`${fieldLabel} — Name`}</div>
+                  <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{names.filter(Boolean).join(", ")}</div>
                 </div>
                 <div className="flex items-start justify-between gap-3 text-xs">
-                  <div className="text-neutral-500">{`${fieldLabel} — Price`}</div>
-                  <div className="max-w-[60%] wrap-break-word font-mono text-right">{prices.filter(Boolean).join(", ")}</div>
+                  <div className="text-neutral-500 dark:text-neutral-400">{`${fieldLabel} — Price`}</div>
+                  <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{prices.filter(Boolean).join(", ")}</div>
                 </div>
               </React.Fragment>
             );
@@ -393,8 +435,8 @@ function PackageSection({
           const valueText = formatFieldValue(v, type, getOptMap(k), fmt);
           return (
             <div key={k} className="flex items-start justify-between gap-3 text-xs">
-              <div className="text-neutral-500">{fieldLabel}</div>
-              <div className="max-w-[60%] wrap-break-word font-mono text-right">{valueText}</div>
+              <div className="text-neutral-500 dark:text-neutral-400">{fieldLabel}</div>
+              <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{valueText}</div>
             </div>
           );
         })}
@@ -403,7 +445,11 @@ function PackageSection({
   );
 }
 
-export function PolicySnapshotView({ detail }: { detail: PolicySnapshotDetail }) {
+export function PolicySnapshotView({ detail, entityLabel, onEditPackage }: {
+  detail: PolicyDetail;
+  entityLabel?: string;
+  onEditPackage?: (pkgName: string, pkgLabel: string, values: Record<string, unknown>) => void;
+}) {
   const [meta, setMeta] = React.useState<{
     pkgMeta: Record<string, FieldMeta>;
     packageLabels: Record<string, string>;
@@ -413,7 +459,58 @@ export function PolicySnapshotView({ detail }: { detail: PolicySnapshotDetail })
 
   const snap = (detail.extraAttributes ?? {}) as Record<string, unknown>;
   const pkgs = (snap.packagesSnapshot ?? {}) as Record<string, unknown>;
-  const pkgNames = React.useMemo(() => Object.keys(pkgs), [pkgs]);
+  const insuredSnap = (snap.insuredSnapshot ?? null) as Record<string, unknown> | null;
+
+  const isClientRecord = React.useMemo(() => {
+    const fk = String(snap.flowKey ?? "").toLowerCase();
+    return fk.includes("client");
+  }, [snap.flowKey]);
+
+  const allPkgs = React.useMemo(() => {
+    const merged = { ...pkgs };
+    if (!insuredSnap || typeof insuredSnap !== "object") return merged;
+    const insuredValues: Record<string, unknown> = {};
+    const contactValues: Record<string, unknown> = {};
+    let insuredCategory = "";
+    for (const [k, v] of Object.entries(insuredSnap)) {
+      if (v === null || typeof v === "undefined" || String(v).trim() === "") continue;
+      const lower = k.toLowerCase();
+      if (lower.startsWith("contactinfo_") || lower.startsWith("contactinfo__")) {
+        contactValues[k] = v;
+      } else if (lower === "insuredtype" || lower === "insured__category") {
+        insuredCategory = String(v).trim();
+      } else if (lower.startsWith("insured_") || lower.startsWith("insured__")) {
+        insuredValues[k] = v;
+      }
+    }
+    if (Object.keys(insuredValues).length > 0 && !merged["insured"]) {
+      merged["insured"] = insuredCategory
+        ? { category: insuredCategory, values: insuredValues }
+        : insuredValues;
+    }
+    if (Object.keys(contactValues).length > 0 && !merged["contactinfo"]) {
+      merged["contactinfo"] = contactValues;
+    }
+    return merged;
+  }, [pkgs, insuredSnap]);
+
+  const pkgNames = React.useMemo(() => Object.keys(allPkgs), [allPkgs]);
+
+  const recentKeys = React.useMemo(() => {
+    const keys = new Set<string>();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    type AuditEntry = { at?: string; changes?: Array<{ key: string }> };
+    const audit = Array.isArray(snap._audit) ? (snap._audit as AuditEntry[]) : [];
+    for (const entry of audit) {
+      const at = new Date(String(entry?.at ?? "")).getTime();
+      if (!Number.isFinite(at) || now - at > sevenDaysMs || now - at < 0) continue;
+      for (const c of Array.isArray(entry?.changes) ? entry.changes! : []) {
+        if (c?.key) keys.add(c.key);
+      }
+    }
+    return keys;
+  }, [snap._audit]);
 
   React.useEffect(() => {
     if (pkgNames.length === 0) { setMeta(null); return; }
@@ -465,61 +562,26 @@ export function PolicySnapshotView({ detail }: { detail: PolicySnapshotDetail })
 
   // Package entries sorted by configured order
   const sortedPkgEntries = React.useMemo(() => {
-    const entries = Object.entries(pkgs).filter(([name]) => {
-      const nk = name.toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (nk === "insured" || nk === "contactinfo" || nk === "contactinformation") return false;
-      if (nk.includes("newexistingclient") || nk.includes("existorcreateclient") || nk.includes("existcreate") || nk.includes("chooseclient")) return false;
-      const label = (packageLabels[name] ?? name).toLowerCase();
-      if (label.includes("new or existing client")) return false;
-      return true;
-    });
+    const entries = Object.entries(allPkgs).filter(([name]) =>
+      !isHiddenPackage(name, packageLabels[name])
+    );
     return entries.sort((a, b) => {
       const ao = meta?.packageSortOrders?.[a[0]] ?? 0;
       const bo = meta?.packageSortOrders?.[b[0]] ?? 0;
       if (ao !== bo) return ao - bo;
       return (packageLabels[a[0]] ?? a[0]).localeCompare(packageLabels[b[0]] ?? b[0], undefined, { sensitivity: "base" });
     });
-  }, [pkgs, packageLabels, meta?.packageSortOrders]);
+  }, [allPkgs, packageLabels, meta?.packageSortOrders]);
 
-  // Insured/Contact snapshot
-  const insuredSnap = (snap.insuredSnapshot ?? null) as Record<string, unknown> | null;
-
-  const renderInsuredBlock = (prefix: "insured_" | "contactinfo_", title: string) => {
-    if (!insuredSnap || typeof insuredSnap !== "object") return null;
-    const rows = Object.entries(insuredSnap)
-      .filter(([k, v]) => {
-        const kk = k.toLowerCase();
-        if (!kk.startsWith(prefix) && !(prefix === "insured_" && kk === "insuredtype")) return false;
-        return !(v === null || typeof v === "undefined" || String(v).trim() === "");
-      })
-      .sort((a, b) => getContactSortWeight(a[0]) - getContactSortWeight(b[0]));
-    if (rows.length === 0) return null;
-    return (
-      <div className="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
-        <div className="mb-1 flex items-center justify-between">
-          <div className="text-sm font-medium">{title}</div>
-          <div className="text-[11px] text-neutral-500">Snapshot</div>
-        </div>
-        <div className="grid grid-cols-1 gap-1 text-xs">
-          {rows.map(([k, v]) => (
-            <div key={k} className="flex items-start justify-between gap-2">
-              <div className="text-neutral-500">{formatContactLabel("", k)}</div>
-              <div className="max-w-[60%] wrap-break-word font-mono text-right">{String(v ?? "")}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  };
 
   return (
     <div className="space-y-3">
       <div>
-        <div className="text-xs text-neutral-500">Policy #</div>
+        <div className="text-xs text-neutral-500 dark:text-neutral-400">{entityLabel || "Policy"} #</div>
         <div className="font-mono">{detail.policyNumber}</div>
       </div>
       <div>
-        <div className="text-xs text-neutral-500">Created</div>
+        <div className="text-xs text-neutral-500 dark:text-neutral-400">Created</div>
         <div className="font-mono">
           {(() => {
             const d = new Date(detail.createdAt);
@@ -530,7 +592,7 @@ export function PolicySnapshotView({ detail }: { detail: PolicySnapshotDetail })
 
       {insuranceType ? (
         <div>
-          <div className="text-xs text-neutral-500">Insurance Type</div>
+          <div className="text-xs text-neutral-500 dark:text-neutral-400">Insurance Type</div>
           <div className="font-mono">{insuranceType}</div>
         </div>
       ) : null}
@@ -556,22 +618,31 @@ export function PolicySnapshotView({ detail }: { detail: PolicySnapshotDetail })
         </div>
       ) : null}
 
-      {renderInsuredBlock("insured_", "Insured")}
-      {renderInsuredBlock("contactinfo_", "Contact Information")}
-
       {sortedPkgEntries.length > 0 ? (
         <div className="space-y-2">
-          {sortedPkgEntries.map(([pkgName, pkg]) => (
-            <PackageSection
-              key={pkgName}
-              pkgName={pkgName}
-              pkg={pkg}
-              meta={meta?.pkgMeta?.[pkgName] ?? { labels: {}, sortOrders: {}, groupOrders: {}, groupNames: {}, optionLabels: {}, inputTypes: {}, currencyCodes: {}, formattingMeta: {} }}
-              packageLabel={packageLabels[pkgName] ?? pkgName}
-              categoryLabel={meta?.categoryLabels?.[pkgName]?.[String(isStructuredPkg(pkg) ? (pkg as StructuredPkg).category : "")] ?? undefined}
-            />
-          ))}
+          {sortedPkgEntries.map(([pkgName, pkg]) => {
+            const values: Record<string, unknown> = isStructuredPkg(pkg) ? (pkg as StructuredPkg).values ?? {} : (pkg as Record<string, unknown>) ?? {};
+            return (
+              <PackageSection
+                key={pkgName}
+                pkgName={pkgName}
+                pkg={pkg}
+                meta={meta?.pkgMeta?.[pkgName] ?? { labels: {}, sortOrders: {}, groupOrders: {}, groupNames: {}, optionLabels: {}, inputTypes: {}, currencyCodes: {}, formattingMeta: {} }}
+                packageLabel={packageLabels[pkgName] ?? pkgName}
+                categoryLabel={meta?.categoryLabels?.[pkgName]?.[String(isStructuredPkg(pkg) ? (pkg as StructuredPkg).category : "")] ?? undefined}
+                recentKeys={recentKeys}
+                onEdit={onEditPackage ? () => onEditPackage(pkgName, packageLabels[pkgName] ?? pkgName, values) : undefined}
+              />
+            );
+          })}
         </div>
+      ) : null}
+
+      {isClientRecord ? (
+        <ClientLinkedPolicies
+          clientPolicyNumber={detail.policyNumber}
+          clientPolicyId={detail.policyId}
+        />
       ) : null}
     </div>
   );

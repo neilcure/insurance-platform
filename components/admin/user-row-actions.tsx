@@ -65,7 +65,7 @@ export function UserRowActions({
   return (
     <div className="flex items-center justify-start gap-2 flex-wrap sm:flex-nowrap">
       <select
-        className="min-w-[140px] rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+        className="min-w-[140px] rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
         value={type}
         onChange={(e) => update({ userType: e.target.value as UserType })}
         disabled={loading}
@@ -105,7 +105,7 @@ export function UserRowActions({
         disabled={loading}
         className="inline-flex items-center gap-2 whitespace-nowrap"
       >
-        <Power className="h-4 w-4" />
+        <Power className="h-4 w-4 sm:hidden lg:inline" />
         <span className="hidden sm:inline">{active ? "Deactivate" : "Activate"}</span>
       </Button>
       {!active ? <ReissueInviteButton userId={userId} /> : null}
@@ -116,7 +116,7 @@ export function UserRowActions({
         onClick={del}
         disabled={loading}
       >
-        <Trash2 className="h-4 w-4" />
+        <Trash2 className="h-4 w-4 sm:hidden lg:inline" />
         <span className="hidden sm:inline">Delete</span>
       </Button>
     </div>

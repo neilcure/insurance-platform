@@ -88,14 +88,14 @@ export function DeclarationsStep({
                 <span className="text-sm">
                   {opt.label}
                   {opt.meta?.helpText ? (
-                    <span className="ml-2 text-xs text-neutral-500">{opt.meta.helpText}</span>
+                    <span className="ml-2 text-xs text-neutral-500 dark:text-neutral-400">{opt.meta.helpText}</span>
                   ) : null}
                 </span>
               </label>
             );
           })}
           {!loading && options.length === 0 ? (
-            <div className="text-sm text-neutral-500">No declarations available.</div>
+            <div className="text-sm text-neutral-500 dark:text-neutral-400">No declarations available.</div>
           ) : null}
         </section>
 

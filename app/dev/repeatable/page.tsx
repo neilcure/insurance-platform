@@ -102,7 +102,7 @@ export default function RepeatableTestPage() {
         <div className="flex items-center justify-between">
           <Label>
             {applyCase(field.label, (field.meta as FieldMeta | undefined)?.labelCase)}{" "}
-            {field.meta && (field.meta as any).required ? <span className="text-red-600">*</span> : null}
+            {field.meta && (field.meta as any).required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
           </Label>
           <Button type="button" size="sm" variant="secondary" onClick={addItem} disabled={!canAdd}>
             Add {itemLabel}

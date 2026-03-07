@@ -90,7 +90,7 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
         </div>
         <div className="flex justify-start sm:justify-end">
           <Button disabled={submitting} onClick={submit} className="inline-flex items-center gap-2">
-            <UserPlus className="h-4 w-4" />
+            <UserPlus className="h-4 w-4 sm:hidden lg:inline" />
             <span className="hidden sm:inline">{submitting ? "Creating..." : "Create Invite"}</span>
           </Button>
         </div>

@@ -64,6 +64,13 @@
       "when": 1768228932284,
       "tag": "0008_high_bulldozer",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1772693143154,
+      "tag": "0009_flaky_black_tarantula",
+      "breakpoints": true
     }
   ]
 }

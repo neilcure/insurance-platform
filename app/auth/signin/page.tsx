@@ -205,7 +205,7 @@ function SignInContent() {
           )}
 
           {error ? (
-            <p className="text-sm text-red-600">{error}</p>
+            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
           ) : null}
         </CardContent>
       </Card>

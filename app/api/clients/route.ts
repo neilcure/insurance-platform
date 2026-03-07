@@ -3,6 +3,7 @@ import { db } from "@/db/client";
 import { and, eq, asc, sql } from "drizzle-orm";
 import { clients, appSettings, clientAgentAssignments } from "@/db/schema/core";
 import { requireUser } from "@/lib/auth/require-user";
+import { getPolicyColumns } from "@/lib/db/column-check";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -232,9 +233,13 @@ export async function POST(request: Request) {
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const me = await requireUser();
+    const url = new URL(request.url);
+    const MAX_LIMIT = 500;
+    const qLimit = Math.min(Math.max(Number(url.searchParams.get("limit")) || MAX_LIMIT, 1), MAX_LIMIT);
+    const qOffset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
     // Helpers must be available to both primary and fallback branches.
     const canonicalizeKey = (k: string): string => {
       let out = String(k ?? "").trim();
@@ -405,13 +410,12 @@ export async function GET() {
             createdAt: clients.createdAt,
           })
           .from(clients)
-          .orderBy(asc(clients.id));
+          .orderBy(asc(clients.id))
+          .limit(qLimit)
+          .offset(qOffset);
       } else if (me.userType === "agent") {
-        // Per-policy visibility: list clients that have at least one policy authored by this agent
+        const polCols = await getPolicyColumns();
         const result = await db.execute(sql`
-          with has_client as (
-            select exists (select 1 from information_schema.columns where table_name='policies' and column_name='client_id') as present
-          )
           select distinct
             c.id,
             c.client_number as "clientNumber",
@@ -429,22 +433,21 @@ export async function GET() {
             left join "cars" x on x.policy_id = p.id
             where p.agent_id = ${Number(me.id)}
               and (
-                ((select present from has_client) and p.client_id = c.id)
+                ${polCols.hasClientId ? sql`p.client_id = c.id OR` : sql``}
+                (x.extra_attributes->>'clientId')::int = c.id
+                or (((x.extra_attributes->'packagesSnapshot'->'policy')->>'clientId')::int = c.id)
+                or (((x.extra_attributes->'packagesSnapshot'->'policy'->'values')->>'clientId')::int = c.id)
+                or (x.extra_attributes->>'client_id')::int = c.id
+                or (x.extra_attributes->>'clientid')::int = c.id
                 or (
-                  (x.extra_attributes->>'clientId')::int = c.id
-                  or (((x.extra_attributes->'packagesSnapshot'->'policy')->>'clientId')::int = c.id)
-                  or (((x.extra_attributes->'packagesSnapshot'->'policy'->'values')->>'clientId')::int = c.id)
-                  or (x.extra_attributes->>'client_id')::int = c.id
-                  or (x.extra_attributes->>'clientid')::int = c.id
-                  or (
-                    c.client_number is not null and (
-                      x.extra_attributes::text ilike ('%'||quote_literal('clientNumber')||':'||quote_literal(c.client_number)||'%')
-                    )
+                  c.client_number is not null and (
+                    x.extra_attributes::text ilike ('%'||quote_literal('clientNumber')||':'||quote_literal(c.client_number)||'%')
                   )
                 )
               )
           )
           order by c.id asc
+          limit ${qLimit} offset ${qOffset}
         `);
         rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
       } else {
@@ -461,7 +464,9 @@ export async function GET() {
             createdAt: clients.createdAt,
           })
           .from(clients)
-          .orderBy(asc(clients.id));
+          .orderBy(asc(clients.id))
+          .limit(qLimit)
+          .offset(qOffset);
       }
       // Ensure the list reflects the latest dynamic insured/contact data even if legacy writes
       // didn't keep core columns in sync.

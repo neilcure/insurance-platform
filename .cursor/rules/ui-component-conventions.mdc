@@ -1,0 +1,61 @@
+---
+description: UI component conventions — Button usage, shared types, SlideDrawer, and form field patterns
+globs: **/*.tsx
+alwaysApply: false
+---
+
+# UI Component Conventions
+
+## Button
+
+Always import from `@/components/ui/button`. It supports shadcn/ui standard props:
+
+- **`asChild`** — render as `<Link>` or `<a>` while keeping button styling:
+  ```tsx
+  <Button asChild>
+    <Link href="/page">Go</Link>
+  </Button>
+  ```
+- **Sizes**: `xs`, `sm`, `default`, `lg`, `icon`, `icon-xs`, `icon-sm`, `icon-lg`
+- **Variants**: `default`, `destructive`, `outline`, `secondary`, `ghost`, `link`
+
+## Three-stage responsive buttons (icon / text / icon+text)
+
+All action buttons in tables and toolbars must use this pattern:
+
+```tsx
+<Button size="sm" variant="secondary">
+  <Pencil className="h-4 w-4 sm:hidden lg:inline" />
+  <span className="hidden sm:inline">Edit</span>
+</Button>
+```
+
+| Screen | Shows | How |
+|--------|-------|-----|
+| Mobile (<640px) | Icon only | icon visible by default, text `hidden` |
+| Tablet (640–1023px) | Text only | icon `sm:hidden`, text `sm:inline` |
+| Desktop (≥1024px) | Icon + text | icon `lg:inline`, text `sm:inline` |
+
+## SlideDrawer
+
+Use `<SlideDrawer>` from `@/components/ui/slide-drawer` for all slide-over panels. Never implement inline translate-x drawers.
+
+```tsx
+<SlideDrawer open={open} onClose={() => setOpen(false)} title="Details" side="left">
+  <div className="overflow-y-auto p-3">{content}</div>
+</SlideDrawer>
+```
+
+Props: `side` ("left" | "right"), `widthClass`, `zClass`, `passthrough` (for stacked drawers).
+
+## Shared form types
+
+Import from `@/lib/types/form.ts` — never define locally:
+`InputType`, `SelectOption`, `BooleanBranchChild`, `ShowWhenRule`, `SelectChild`, `RepeatableFieldConfig`, `RepeatableConfig`
+
+## Shared utilities
+
+- Date formatting: import from `@/lib/format/date`
+- Formula evaluation: import from `@/lib/formula`
+- Server-side fetch with cookies: import `serverFetch` from `@/lib/auth/server-fetch`
+- Column presence checks: import `getPolicyColumns` from `@/lib/db/column-check`

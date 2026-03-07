@@ -7,8 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-
-type ShowWhenRule = { package: string; category: string | string[] };
+import type { ShowWhenRule } from "@/lib/types/form";
 
 type StepRow = {
   id: number;
@@ -24,6 +23,10 @@ type StepRow = {
     isFinal?: boolean;
     wizardStep?: number;
     wizardStepLabel?: string;
+    /** When set, this step embeds another flow's steps. Packages come from the embedded flow. */
+    embeddedFlow?: string;
+    /** Label override when embedding (shown instead of embedded flow's default title). */
+    embeddedFlowLabel?: string;
   } | null;
 };
 
@@ -34,6 +37,7 @@ export default function StepsManager({ flow }: { flow: string }) {
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<StepRow | null>(null);
   const [packages, setPackages] = React.useState<{ label: string; value: string }[]>([]);
+  const [flows, setFlows] = React.useState<{ label: string; value: string }[]>([]);
   const [categoriesByPkg, setCategoriesByPkg] = React.useState<Record<string, { label: string; value: string }[]>>({});
   const [form, setForm] = React.useState<Partial<StepRow>>({
     label: "",
@@ -60,6 +64,20 @@ export default function StepsManager({ flow }: { flow: string }) {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  React.useEffect(() => {
+    async function loadFlows() {
+      try {
+        const res = await fetch(`/api/form-options?groupKey=flows`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { label: string; value: string }[];
+        setFlows(Array.isArray(data) ? data : []);
+      } catch {
+        setFlows([]);
+      }
+    }
+    void loadFlows();
+  }, []);
 
   React.useEffect(() => {
     async function loadPackages() {
@@ -176,11 +194,11 @@ export default function StepsManager({ flow }: { flow: string }) {
         toast.error("Label and value are required");
         return;
       }
-      // Ensure we only save valid packages that still exist
+      const embeddedFlow = String(form.meta?.embeddedFlow ?? "").trim();
       const selectedPkgsRaw = Array.isArray(form.meta?.packages) ? (form.meta?.packages as string[]) : [];
       const selectedPkgs = selectedPkgsRaw.filter((p) => packages.some((po) => po.value === p));
-      if (selectedPkgs.length === 0) {
-        toast.error("Please select at least one package");
+      if (!embeddedFlow && selectedPkgs.length === 0) {
+        toast.error("Please select at least one package, or use an embedded flow");
         return;
       }
       const pkgCatsRaw = (form.meta?.packageCategories ?? {}) as Record<string, string[]>;
@@ -200,13 +218,24 @@ export default function StepsManager({ flow }: { flow: string }) {
       const categoryStepVisibility = Object.fromEntries(
         Object.entries(csvRaw).filter(([, steps]) => Array.isArray(steps) && steps.length > 0),
       );
+      const embeddedFlowLabel = typeof form.meta?.embeddedFlowLabel === "string" ? form.meta.embeddedFlowLabel.trim() : undefined;
       const payload = {
         label: form.label,
         value: form.value,
         sortOrder: Number(form.sortOrder) || 0,
         isActive: !!form.isActive,
         valueType: "string",
-        meta: { ...(form.meta ?? {}), packages: selectedPkgs, packageCategories: pkgCats, packageShowWhen: pkgShowWhen, categoryStepVisibility, wizardStep, wizardStepLabel },
+        meta: {
+          ...(form.meta ?? {}),
+          packages: selectedPkgs,
+          packageCategories: pkgCats,
+          packageShowWhen: pkgShowWhen,
+          categoryStepVisibility,
+          wizardStep,
+          wizardStepLabel,
+          embeddedFlow: embeddedFlow || undefined,
+          embeddedFlowLabel: embeddedFlowLabel || undefined,
+        },
       };
       if (editing) {
         const res = await fetch(`/api/admin/form-options/${editing.id}`, {
@@ -269,7 +298,7 @@ export default function StepsManager({ flow }: { flow: string }) {
   return (
     <div className="space-y-3">
       <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-sm text-neutral-500">Configure steps for this flow. Each step selects a package and optional categories.</div>
+        <div className="text-sm text-neutral-500 dark:text-neutral-400">Configure steps for this flow. Each step selects a package and optional categories.</div>
         <Button type="button" size="sm" onClick={startCreate} className="self-start sm:self-auto">
           Add Step
         </Button>
@@ -288,11 +317,16 @@ export default function StepsManager({ flow }: { flow: string }) {
           {rows.map((r) => (
             <TableRow key={r.id}>
               <TableCell className="p-2 sm:p-4">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span>{r.label}</span>
                   {r.meta?.isFinal ? (
                     <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-700 dark:bg-green-900/40 dark:text-green-300">
                       Final
+                    </span>
+                  ) : null}
+                  {r.meta?.embeddedFlow ? (
+                    <span className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                      Embed: {flows.find((f) => f.value === r.meta?.embeddedFlow)?.label ?? r.meta.embeddedFlow}
                     </span>
                   ) : null}
                 </div>
@@ -306,6 +340,7 @@ export default function StepsManager({ flow }: { flow: string }) {
                 {(() => {
                   const map = (r.meta?.packageCategories ?? {}) as Record<string, string[]>;
                   const csvMap = (r.meta?.categoryStepVisibility ?? {}) as Record<string, string[]>;
+                  const showWhenMap = (r.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>;
                   const pkgs = ((r.meta?.packages ?? []) as string[]).filter((p) =>
                     packages.some((po) => po.value === p),
                   );
@@ -317,13 +352,30 @@ export default function StepsManager({ flow }: { flow: string }) {
                         const cs = Array.isArray(map[p]) ? map[p] : [];
                         const options = categoriesByPkg[p] ?? [];
                         const labels = cs
-                          .map((val) => options.find((o) => o.value === val)?.label ?? null)
+                          .map((val) => options.find((o) => o.value === val)?.label ?? val)
                           .filter(Boolean) as string[];
                         const pkgLabel = packages.find((po) => po.value === p)?.label ?? p;
+                        const swRules = showWhenMap[p] ?? [];
+                        const hasCondition = swRules.length > 0 && swRules.some((rule) => rule.package);
                         return (
                           <div key={p} className="text-xs">
                             <span className="font-medium">{pkgLabel}</span>
-                            <span className="text-neutral-500">: {labels.length > 0 ? labels.join(", ") : "all"}</span>
+                            <span className="text-neutral-500 dark:text-neutral-400">: {labels.length > 0 ? labels.join(", ") : "all"}</span>
+                            {hasCondition ? (
+                              <div className="mt-0.5">
+                                {swRules.filter((rule) => rule.package).map((rule, ri) => {
+                                  const depPkgLabel = packages.find((po) => po.value === rule.package)?.label ?? rule.package;
+                                  const depCats = Array.isArray(rule.category) ? rule.category : (rule.category ? [rule.category] : []);
+                                  const depCatOptions = categoriesByPkg[rule.package] ?? [];
+                                  const depCatLabels = depCats.map((cv) => depCatOptions.find((o) => o.value === cv)?.label ?? cv);
+                                  return (
+                                    <span key={ri} className="inline-block rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 mr-1">
+                                      when {depPkgLabel} = {depCatLabels.join(" / ") || "any"}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
                           </div>
                         );
                       })}
@@ -352,6 +404,15 @@ export default function StepsManager({ flow }: { flow: string }) {
               <TableCell className="p-2 sm:p-4">{r.sortOrder}</TableCell>
               <TableCell className="p-2 sm:p-4">
                 {(() => {
+                  if (r.meta?.embeddedFlow) {
+                    const lbl = String(r.meta.embeddedFlowLabel ?? r.meta.wizardStepLabel ?? "").trim();
+                    return (
+                      <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                        Auto{lbl ? ` — ${lbl}` : ""}<br />
+                        <span className="text-[10px]">(uses Sort Order)</span>
+                      </span>
+                    );
+                  }
                   const n = Number(r.meta?.wizardStep ?? 0);
                   const label = String((r.meta?.wizardStepLabel ?? "") || "").trim();
                   if (!(Number.isFinite(n) && n > 0)) return "-";
@@ -372,7 +433,7 @@ export default function StepsManager({ flow }: { flow: string }) {
           ))}
           {!loading && rows.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={5} className="text-center text-sm text-neutral-500">
+              <TableCell colSpan={5} className="text-center text-sm text-neutral-500 dark:text-neutral-400">
                 No steps defined.
               </TableCell>
             </TableRow>
@@ -394,8 +455,72 @@ export default function StepsManager({ flow }: { flow: string }) {
               <Label>Step Key</Label>
               <Input value={form.value ?? ""} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} />
             </div>
+            <div className="grid gap-3 rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={!!form.meta?.embeddedFlow}
+                  onChange={(e) => {
+                    const next = e.target.checked
+                      ? (flows.find((fl) => fl.value !== flow)?.value ?? flows[0]?.value ?? "")
+                      : "";
+                    setForm((f) => ({
+                      ...f,
+                      meta: {
+                        ...(f.meta ?? {}),
+                        embeddedFlow: next,
+                        embeddedFlowLabel: f.meta?.embeddedFlowLabel ?? "",
+                      } as StepRow["meta"],
+                    }));
+                  }}
+                />
+                Embed another flow (e.g. Create Client)
+              </label>
+              {form.meta?.embeddedFlow ? (
+                <>
+                  <div className="grid gap-1">
+                    <Label className="text-xs">Flow to embed</Label>
+                    <select
+                      className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+                      value={form.meta.embeddedFlow}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          meta: { ...(f.meta ?? {}), embeddedFlow: e.target.value } as StepRow["meta"],
+                        }))
+                      }
+                    >
+                      <option value="">-- Select flow --</option>
+                      {flows
+                        .filter((fl) => fl.value !== flow)
+                        .map((fl) => (
+                          <option key={fl.value} value={fl.value}>
+                            {fl.label}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div className="grid gap-1">
+                    <Label className="text-xs">Label override (optional)</Label>
+                    <Input
+                      placeholder="e.g. Client Information"
+                      value={String(form.meta?.embeddedFlowLabel ?? "")}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          meta: { ...(f.meta ?? {}), embeddedFlowLabel: e.target.value } as StepRow["meta"],
+                        }))
+                      }
+                    />
+                    <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
+                      Shown as the step title in this flow. Leave empty to use the embedded flow&apos;s default.
+                    </p>
+                  </div>
+                </>
+              ) : null}
+            </div>
             <div className="grid gap-1">
-              <Label>Packages</Label>
+              <Label>Packages {form.meta?.embeddedFlow ? "(ignored when embedding)" : ""}</Label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {packages.map((p) => {
                   const selected = Array.isArray(form.meta?.packages) ? (form.meta!.packages as string[])?.includes(p.value) : false;
@@ -414,7 +539,7 @@ export default function StepsManager({ flow }: { flow: string }) {
                     </label>
                   );
                 })}
-                {packages.length === 0 ? <p className="text-xs text-neutral-500">No packages found. Create packages first.</p> : null}
+                {packages.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No packages found. Create packages first.</p> : null}
               </div>
             </div>
             {/* Categories per selected package */}
@@ -441,7 +566,7 @@ export default function StepsManager({ flow }: { flow: string }) {
                               </label>
                             );
                           })}
-                          {cats.length === 0 ? <p className="text-xs text-neutral-500">No categories for this package.</p> : null}
+                          {cats.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No categories for this package.</p> : null}
                         </div>
                       </div>
                       {/* Category → Step Mapping: map each selected category to steps that should be visible */}
@@ -498,7 +623,7 @@ export default function StepsManager({ flow }: { flow: string }) {
                             <div key={rIdx} className="mb-1 flex items-start gap-2 rounded border border-neutral-200 p-2 dark:border-neutral-700">
                               <div className="flex-1 space-y-1">
                                 <div className="flex items-center gap-2">
-                                  <span className="w-14 shrink-0 text-[11px] text-neutral-500">Package</span>
+                                  <span className="w-14 shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">Package</span>
                                   <select
                                     className="h-7 flex-1 rounded border border-neutral-300 bg-white px-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
                                     value={rule.package}
@@ -522,7 +647,7 @@ export default function StepsManager({ flow }: { flow: string }) {
                                 </div>
                                 {rule.package && ruleCats.length > 0 ? (
                                   <div className="flex items-start gap-2">
-                                    <span className="w-14 shrink-0 pt-0.5 text-[11px] text-neutral-500">Category</span>
+                                    <span className="w-14 shrink-0 pt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">Category</span>
                                     <div className="flex flex-wrap gap-2">
                                       {ruleCats.map((c) => {
                                         const allowed = Array.isArray(rule.category) ? rule.category : (rule.category ? [rule.category] : []);
@@ -552,7 +677,7 @@ export default function StepsManager({ flow }: { flow: string }) {
                               </div>
                               <button
                                 type="button"
-                                className="shrink-0 text-neutral-400 hover:text-neutral-600 text-lg leading-none"
+                                className="shrink-0 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 text-lg leading-none"
                                 onClick={() => {
                                   const map = { ...((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>) };
                                   map[pkg] = (map[pkg] ?? []).filter((_, i) => i !== rIdx);
@@ -631,7 +756,7 @@ export default function StepsManager({ flow }: { flow: string }) {
                   </>
                 );
               })()}
-              <div className="text-xs text-neutral-500">Shown as the title for this wizard step group when applicable.</div>
+              <div className="text-xs text-neutral-500 dark:text-neutral-400">Shown as the title for this wizard step group when applicable.</div>
             </div>
             <div className="grid gap-1">
               <Label>Wizard Step</Label>
@@ -645,7 +770,7 @@ export default function StepsManager({ flow }: { flow: string }) {
                   }))
                 }
               />
-              <div className="text-xs text-neutral-500">Determines the wizard step number on the New Policy page.</div>
+              <div className="text-xs text-neutral-500 dark:text-neutral-400">Determines the wizard step number on the New Policy page.</div>
             </div>
             <div className="grid gap-1">
               <label className="flex items-center gap-2 text-sm">

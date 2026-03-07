@@ -1,51 +1,91 @@
 "use client";
 
 import * as React from "react";
+import * as ReactDOM from "react-dom";
+import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { PanelLeft } from "lucide-react";
+import { PanelLeft, X } from "lucide-react";
 
 type SidebarContextValue = {
   collapsed: boolean;
   setCollapsed: (v: boolean) => void;
+  isMobile: boolean;
+  mobileOpen: boolean;
+  setMobileOpen: (v: boolean) => void;
 };
 
 const SidebarContext = React.createContext<SidebarContextValue | null>(null);
 
+export function useSidebar() {
+  const ctx = React.useContext(SidebarContext);
+  if (!ctx) throw new Error("useSidebar must be used within SidebarProvider");
+  return ctx;
+}
+
+const MOBILE_BREAKPOINT = 768;
+const SIDEBAR_COLLAPSED_KEY = "sidebar-collapsed";
+
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = React.useState<boolean>(false);
+  const [collapsed, setCollapsedRaw] = React.useState<boolean>(false);
+  const [isMobile, setIsMobile] = React.useState<boolean>(false);
+  const [mobileOpen, setMobileOpen] = React.useState<boolean>(false);
+
+  const setCollapsed = React.useCallback((v: boolean) => {
+    setCollapsedRaw(v);
+    try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(v)); } catch {}
+  }, []);
+
   React.useEffect(() => {
     if (typeof window === "undefined") return;
-    const mql = window.matchMedia("(max-width: 768px)");
-    const handle = (e: MediaQueryListEvent) => setCollapsed(e.matches);
+    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`);
+    const saved = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
 
-    let legacy: (MediaQueryList & {
-      addListener: (fn: (e: MediaQueryListEvent) => void) => void;
-      removeListener: (fn: (e: MediaQueryListEvent) => void) => void;
-    }) | null = null;
+    const handle = (e: MediaQueryListEvent | MediaQueryList) => {
+      const mobile = "matches" in e ? e.matches : false;
+      setIsMobile(mobile);
+      if (mobile) {
+        setCollapsedRaw(true);
+        setMobileOpen(false);
+      } else {
+        setCollapsedRaw(saved === "true");
+      }
+    };
+    handle(mql);
 
-    // Set initial collapsed state on mount to avoid SSR/client mismatch
-    setCollapsed(mql.matches);
+    const onChange = (e: MediaQueryListEvent) => {
+      const mobile = e.matches;
+      setIsMobile(mobile);
+      if (mobile) {
+        setCollapsedRaw(true);
+        setMobileOpen(false);
+      } else {
+        const current = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+        setCollapsedRaw(current === "true");
+      }
+    };
 
     if (mql.addEventListener) {
-      mql.addEventListener("change", handle);
+      mql.addEventListener("change", onChange);
     } else {
-      legacy = mql as MediaQueryList & {
-        addListener: (fn: (e: MediaQueryListEvent) => void) => void;
-        removeListener: (fn: (e: MediaQueryListEvent) => void) => void;
-      };
-      legacy.addListener(handle);
+      (mql as any).addListener(onChange);
     }
     return () => {
       if (mql.removeEventListener) {
-        mql.removeEventListener("change", handle);
+        mql.removeEventListener("change", onChange);
       } else {
-        legacy?.removeListener(handle);
+        (mql as any).removeListener(onChange);
       }
     };
   }, []);
+
+  const pathname = usePathname();
+  React.useEffect(() => {
+    if (isMobile) setMobileOpen(false);
+  }, [pathname, isMobile]);
+
   return (
-    <SidebarContext.Provider value={{ collapsed, setCollapsed }}>
+    <SidebarContext.Provider value={{ collapsed, setCollapsed, isMobile, mobileOpen, setMobileOpen }}>
       <div className="flex min-h-screen">{children}</div>
     </SidebarContext.Provider>
   );
@@ -58,13 +98,40 @@ export function Sidebar({
   ...props
 }: React.HTMLAttributes<HTMLDivElement> & { collapsible?: "icon" | "none" }) {
   const ctx = React.useContext(SidebarContext)!;
+
+  if (ctx.isMobile) {
+    return (
+      <>
+        {ctx.mobileOpen && (
+          <div
+            className="fixed inset-0 z-40 bg-black/60 transition-opacity"
+            onClick={() => ctx.setMobileOpen(false)}
+            aria-label="Close sidebar"
+          />
+        )}
+        <div
+          data-collapsible={collapsible}
+          data-collapsed="false"
+          className={cn(
+            "group/sidebar-wrapper fixed left-0 top-0 z-50 h-full w-72 border-r border-neutral-200 bg-white shadow-xl transition-transform duration-300 ease-out dark:border-neutral-800 dark:bg-neutral-950/40 dark:backdrop-blur-xl flex flex-col",
+            ctx.mobileOpen ? "translate-x-0" : "-translate-x-full",
+            className
+          )}
+          {...props}
+        >
+          {children}
+        </div>
+      </>
+    );
+  }
+
   return (
     <div
       data-collapsible={collapsible}
       data-collapsed={ctx.collapsed ? "true" : "false"}
       className={cn(
-        "group/sidebar-wrapper sticky top-0 h-screen shrink-0 border-r border-neutral-200 bg-white transition-[width] dark:border-neutral-800 dark:bg-neutral-950 flex flex-col",
-        ctx.collapsed ? "w-24 md:w-24" : "w-80",
+        "group/sidebar-wrapper sticky top-0 h-screen shrink-0 border-r border-neutral-200 bg-white transition-[width] dark:border-neutral-800 dark:bg-neutral-950/40 dark:backdrop-blur-xl flex flex-col",
+        ctx.collapsed ? "w-20" : "w-56",
         className
       )}
       {...props}
@@ -84,7 +151,13 @@ export function SidebarTrigger({
       type="button"
       variant="outline"
       size="icon"
-      onClick={() => ctx.setCollapsed(!ctx.collapsed)}
+      onClick={() => {
+        if (ctx.isMobile) {
+          ctx.setMobileOpen(!ctx.mobileOpen);
+        } else {
+          ctx.setCollapsed(!ctx.collapsed);
+        }
+      }}
       className={cn("shrink-0", className)}
       {...props}
     >
@@ -94,14 +167,35 @@ export function SidebarTrigger({
 }
 
 export function SidebarInset({ children }: { children: React.ReactNode }) {
-  return <div className="flex min-h-screen flex-1 flex-col">{children}</div>;
+  return <div className="flex min-h-screen flex-1 flex-col overflow-x-hidden">{children}</div>;
 }
 
 export function SidebarHeader({ children }: { children: React.ReactNode }) {
-  return <div className="p-3">{children}</div>;
+  const ctx = React.useContext(SidebarContext);
+  return (
+    <div className="flex items-center gap-2 p-3">
+      <div className="min-w-0 flex-1">{children}</div>
+      {ctx?.isMobile && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => ctx.setMobileOpen(false)}
+          aria-label="Close sidebar"
+          className="h-8 w-8 shrink-0 text-neutral-900 dark:text-white"
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      )}
+    </div>
+  );
 }
 export function SidebarContent({ children }: { children: React.ReactNode }) {
-  return <div className="px-2">{children}</div>;
+  return (
+    <div className="flex-1 overflow-y-auto px-2">
+      {children}
+    </div>
+  );
 }
 export function SidebarFooter({ children }: { children: React.ReactNode }) {
   return <div className="mt-auto p-2">{children}</div>;
@@ -122,6 +216,40 @@ export function SidebarMenu({ children }: { children: React.ReactNode }) {
 export function SidebarMenuItem({ children }: { children: React.ReactNode }) {
   return <li>{children}</li>;
 }
+export function FloatingTooltip({ text, anchorRef }: { text: string; anchorRef: React.RefObject<HTMLElement | null> }) {
+  const [pos, setPos] = React.useState<{ top: number; left: number } | null>(null);
+  const [visible, setVisible] = React.useState(false);
+
+  React.useEffect(() => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const show = () => {
+      const rect = el.getBoundingClientRect();
+      setPos({ top: rect.top + rect.height / 2, left: rect.right + 8 });
+      setVisible(true);
+    };
+    const hide = () => setVisible(false);
+    el.addEventListener("mouseenter", show);
+    el.addEventListener("mouseleave", hide);
+    return () => {
+      el.removeEventListener("mouseenter", show);
+      el.removeEventListener("mouseleave", hide);
+    };
+  }, [anchorRef]);
+
+  if (!visible || !pos) return null;
+
+  return ReactDOM.createPortal(
+    <div
+      className="pointer-events-none fixed z-9999 -translate-y-1/2 whitespace-nowrap rounded-md bg-neutral-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-md dark:bg-neutral-100 dark:text-neutral-900"
+      style={{ top: pos.top, left: pos.left }}
+    >
+      {text}
+    </div>,
+    document.body
+  );
+}
+
 export function SidebarMenuButton({
   tooltip,
   className,
@@ -130,21 +258,32 @@ export function SidebarMenuButton({
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { tooltip?: string; asChild?: boolean }) {
   const ctx = React.useContext(SidebarContext)!;
+  const showTooltip = ctx.collapsed && !ctx.isMobile && !!tooltip;
+  const ref = React.useRef<HTMLElement | null>(null);
   const cls = cn(
-    "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-900",
+    "flex w-full items-center rounded-md text-sm hover:bg-neutral-100 dark:hover:bg-neutral-900",
+    ctx.collapsed && !ctx.isMobile
+      ? "justify-center px-1 py-1.5 [&_svg]:h-5 [&_svg]:w-5"
+      : "gap-2 px-2 py-2 text-left",
     className
   );
+
   if (asChild && React.isValidElement(children)) {
     const child = children as React.ReactElement<Record<string, unknown>>;
-    return React.cloneElement(child, {
-      ...child.props,
-      className: cn((child.props as { className?: string })?.className, cls),
-      title: ctx.collapsed ? tooltip : undefined,
-    });
+    return (
+      <div ref={ref as React.RefObject<HTMLDivElement>}>
+        {React.cloneElement(child, {
+          ...child.props,
+          className: cn((child.props as { className?: string })?.className, cls),
+        })}
+        {showTooltip && <FloatingTooltip text={tooltip} anchorRef={ref} />}
+      </div>
+    );
   }
   return (
-    <button className={cls} title={ctx.collapsed ? tooltip : undefined} {...props}>
+    <button ref={ref as React.RefObject<HTMLButtonElement>} className={cls} {...props}>
       {children}
+      {showTooltip && <FloatingTooltip text={tooltip} anchorRef={ref} />}
     </button>
   );
 }
@@ -165,5 +304,3 @@ export function SidebarMenuSubButton({
     </Comp>
   );
 }
-
-

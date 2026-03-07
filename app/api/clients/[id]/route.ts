@@ -3,9 +3,28 @@ import { db } from "@/db/client";
 import { clients } from "@/db/schema/core";
 import { and, eq, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
+import { getPolicyColumns } from "@/lib/db/column-check";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+
+function normalizeKey(k: string): string {
+  let out = String(k ?? "").trim();
+  if (!out) return "";
+  if (out.startsWith("insured__")) out = `insured_${out.slice("insured__".length)}`;
+  if (out.startsWith("contactinfo__")) out = `contactinfo_${out.slice("contactinfo__".length)}`;
+  return out.toLowerCase();
+}
+
+function normalizeMeaningToken(k: string): { group: "insured" | "contactinfo" | null; token: string } {
+  const canon = normalizeKey(k);
+  const group = canon.startsWith("insured_") ? "insured" : canon.startsWith("contactinfo_") ? "contactinfo" : null;
+  const token = canon
+    .replace(/^(insured|contactinfo)_/i, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  return { group, token };
+}
 
 export async function PATCH(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
@@ -90,26 +109,6 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
 			: {};
 		// Accept keys that start with "insured_" / "contactinfo_" (preferred)
 		// and legacy double-underscore "insured__" / "contactinfo__" (still accepted).
-		// Normalize on write to a canonical form:
-		// - convert __ → _
-		// - lowercase keys
-		const normalizeKey = (k: string): string => {
-			let out = k;
-			if (out.startsWith("insured__")) out = `insured_${out.slice("insured__".length)}`;
-			if (out.startsWith("contactinfo__")) out = `contactinfo_${out.slice("contactinfo__".length)}`;
-			return out.toLowerCase();
-		};
-		// Normalize by meaning so we can remove old variants:
-		// companyName / company_name / companyname should be treated as the same field.
-		const normalizeMeaningToken = (k: string): { group: "insured" | "contactinfo" | null; token: string } => {
-			const canon = normalizeKey(k);
-			const group = canon.startsWith("insured_") ? "insured" : canon.startsWith("contactinfo_") ? "contactinfo" : null;
-			const token = canon
-				.replace(/^(insured|contactinfo)_/i, "")
-				.toLowerCase()
-				.replace(/[^a-z0-9]/g, "");
-			return { group, token };
-		};
 		const merged: Record<string, unknown> = { ...base };
 		const changes: Array<{ key: string; from: unknown; to: unknown }> = [];
 		let prunedAny = false;
@@ -497,7 +496,10 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
 
 export async function DELETE(_request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
-    await requireUser();
+    const user = await requireUser();
+    if (!(user.userType === "admin" || user.userType === "internal_staff")) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
     const { id } = await context.params;
     const clientId = Number(id);
     if (!Number.isFinite(clientId)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
@@ -512,24 +514,20 @@ export async function DELETE(_request: NextRequest, context: { params: Promise<{
 
 export async function GET(_request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
-    await requireUser();
     const user = await requireUser();
     const { id } = await context.params;
     const clientId = Number(id);
     if (!Number.isFinite(clientId)) return NextResponse.json({ error: "Invalid id" }, { status: 400 });
-    // Agents may only access clients that have at least one policy authored by them
+    const polCols = await getPolicyColumns();
     if (user.userType === "agent") {
       const result = await db.execute(sql`
-        with has_client as (
-          select exists (select 1 from information_schema.columns where table_name='policies' and column_name='client_id') as present
-        )
         select 1
         from "policies" p
         left join "cars" x on x.policy_id = p.id
         where p.agent_id = ${Number(user.id)}
           and (
-            ((select present from has_client) and p.client_id = ${clientId})
-            or ((x.extra_attributes->>'clientId')::int = ${clientId})
+            ${polCols.hasClientId ? sql`p.client_id = ${clientId} OR` : sql``}
+            ((x.extra_attributes->>'clientId')::int = ${clientId})
             or (((x.extra_attributes->'packagesSnapshot'->'policy')->>'clientId')::int = ${clientId})
             or (((x.extra_attributes->'packagesSnapshot'->'policy'->'values')->>'clientId')::int = ${clientId})
             or ((x.extra_attributes->>'client_id')::int = ${clientId})
@@ -564,35 +562,27 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
       let policyRows: Array<{ id: number; policyNumber: string }> = [];
       try {
         const result = await db.execute(sql`
-          with has_col as (
-            select exists (
-              select 1 from information_schema.columns where table_name='policies' and column_name='client_id'
-            ) as present
-          ),
-          has_agent as (
-            select exists (
-              select 1 from information_schema.columns where table_name='policies' and column_name='agent_id'
-            ) as present
-          )
           select p.id, p.policy_number as "policyNumber"
           from "policies" p
           inner join "cars" c on c.policy_id = p.id
           where
             (
-              ((select present from has_col) and p.client_id = ${clientId})
-              or (not (select present from has_col) and (
-                (c.extra_attributes->>'clientId') = ${String(clientId)}
-                or ((c.extra_attributes->'packagesSnapshot'->'policy')->>'clientId') = ${String(clientId)}
-                or ((c.extra_attributes->'packagesSnapshot'->'policy'->'values')->>'clientId') = ${String(clientId)}
-                or (c.extra_attributes->>'client_id') = ${String(clientId)}
-                or (c.extra_attributes->>'clientid') = ${String(clientId)}
-                or (c.extra_attributes::text ILIKE ${'%\"client%\":' + String(clientId) + '%'})
-                or (c.extra_attributes::text ILIKE ${'%\"client%\":\"' + String(clientId) + '\"%'})
-              ))
+              ${polCols.hasClientId
+                ? sql`p.client_id = ${clientId}`
+                : sql`
+                  (c.extra_attributes->>'clientId') = ${String(clientId)}
+                  or ((c.extra_attributes->'packagesSnapshot'->'policy')->>'clientId') = ${String(clientId)}
+                  or ((c.extra_attributes->'packagesSnapshot'->'policy'->'values')->>'clientId') = ${String(clientId)}
+                  or (c.extra_attributes->>'client_id') = ${String(clientId)}
+                  or (c.extra_attributes->>'clientid') = ${String(clientId)}
+                  or (c.extra_attributes::text ILIKE ${'%\"client%\":' + String(clientId) + '%'})
+                  or (c.extra_attributes::text ILIKE ${'%\"client%\":\"' + String(clientId) + '\"%'})
+                `
+              }
             )
             ${
-              user.userType === "agent"
-                ? sql`and (select present from has_agent) and p.agent_id = ${Number(user.id)}`
+              user.userType === "agent" && polCols.hasAgentId
+                ? sql`and p.agent_id = ${Number(user.id)}`
                 : sql``
             }
           order by p.id desc
@@ -606,13 +596,6 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
       const resolvedExtra = (() => {
         const base = (row.extraAttributes ?? null) as Record<string, unknown> | null;
         if (!base || typeof base !== "object") return row.extraAttributes;
-        const normalizeKey = (k: string): string => {
-          let out = String(k ?? "").trim();
-          if (!out) return "";
-          if (out.startsWith("insured__")) out = `insured_${out.slice("insured__".length)}`;
-          if (out.startsWith("contactinfo__")) out = `contactinfo_${out.slice("contactinfo__".length)}`;
-          return out.toLowerCase();
-        };
         const isDyn = (k: string) => k.startsWith("insured_") || k.startsWith("contactinfo_");
         // Canonicalize into a clean map
         const canon: Record<string, unknown> = {};
@@ -746,34 +729,28 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
       let policyRows: Array<{ id: number; policyNumber: string }> = [];
       try {
         const result = await db.execute(sql`
-          with has_col as (
-            select exists (
-              select 1 from information_schema.columns where table_name='policies' and column_name='client_id'
-            ) as present
-          ),
-          has_agent as (
-            select exists (
-              select 1 from information_schema.columns where table_name='policies' and column_name='agent_id'
-            ) as present
-          )
           select p.id, p.policy_number as "policyNumber"
           from "policies" p
           inner join "cars" c on c.policy_id = p.id
           where
             (
-              ((select present from has_col) and p.client_id = ${clientId})
-              or (not (select present from has_col) and (
-                (c.extra_attributes->>'clientId') = ${String(clientId)}
-                or ((c.extra_attributes->'packagesSnapshot'->'policy')->>'clientId') = ${String(clientId)}
-                or ((c.extra_attributes->'packagesSnapshot'->'policy'->'values')->>'clientId') = ${String(clientId)}
-                or (c.extra_attributes->>'client_id') = ${String(clientId)}
-                or (c.extra_attributes->>'clientid') = ${String(clientId)}
-                or (c.extra_attributes::text ILIKE ${'%\"client%\":' + String(clientId) + '%'})
-                or (c.extra_attributes::text ILIKE ${'%\"client%\":\"' + String(clientId) + '\"%'})
-              ))
+              ${polCols.hasClientId
+                ? sql`p.client_id = ${clientId}`
+                : sql`
+                  (c.extra_attributes->>'clientId') = ${String(clientId)}
+                  or ((c.extra_attributes->'packagesSnapshot'->'policy')->>'clientId') = ${String(clientId)}
+                  or ((c.extra_attributes->'packagesSnapshot'->'policy'->'values')->>'clientId') = ${String(clientId)}
+                  or (c.extra_attributes->>'client_id') = ${String(clientId)}
+                  or (c.extra_attributes->>'clientid') = ${String(clientId)}
+                  or (c.extra_attributes::text ILIKE ${'%\"client%\":' + String(clientId) + '%'})
+                  or (c.extra_attributes::text ILIKE ${'%\"client%\":\"' + String(clientId) + '\"%'})
+                `
+              }
             )
             ${
-              `and ( (select present from has_agent) = false or ${user.userType === "agent" ? sql`p.agent_id = ${Number(user.id)}` : sql`true`} )`
+              user.userType === "agent" && polCols.hasAgentId
+                ? sql`and p.agent_id = ${Number(user.id)}`
+                : sql``
             }
           order by p.id desc
         `);
@@ -794,13 +771,6 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
         extraAttributes: (() => {
           const base = (row.extra as unknown as Record<string, unknown> | null) ?? null;
           if (!base || typeof base !== "object") return row.extra as unknown;
-          const normalizeKey = (k: string): string => {
-            let out = String(k ?? "").trim();
-            if (!out) return "";
-            if (out.startsWith("insured__")) out = `insured_${out.slice("insured__".length)}`;
-            if (out.startsWith("contactinfo__")) out = `contactinfo_${out.slice("contactinfo__".length)}`;
-            return out.toLowerCase();
-          };
           const isDyn = (k: string) => k.startsWith("insured_") || k.startsWith("contactinfo_");
           const canon: Record<string, unknown> = {};
           for (const [k, v] of Object.entries(base)) {

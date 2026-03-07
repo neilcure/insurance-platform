@@ -7,6 +7,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { getIcon } from "@/lib/icons";
+import { IconPicker } from "@/components/admin/generic/IconPicker";
 
 type OptionRow = {
   id: number;
@@ -16,6 +18,7 @@ type OptionRow = {
   valueType: string;
   sortOrder: number;
   isActive: boolean;
+  meta?: Record<string, unknown> | null;
 };
 
 export default function PackagesManager() {
@@ -28,7 +31,9 @@ export default function PackagesManager() {
     value: "",
     sortOrder: 0,
     isActive: true,
+    meta: null,
   });
+  const selectedIcon = (form.meta as Record<string, unknown> | null)?.icon as string | undefined;
 
   async function load() {
     setLoading(true);
@@ -50,12 +55,12 @@ export default function PackagesManager() {
 
   function startCreate() {
     setEditing(null);
-    setForm({ label: "", value: "", sortOrder: 0, isActive: true });
+    setForm({ label: "", value: "", sortOrder: 0, isActive: true, meta: null });
     setOpen(true);
   }
   function startEdit(row: OptionRow) {
     setEditing(row);
-    setForm({ ...row });
+    setForm({ ...row, meta: row.meta ?? null });
     setOpen(true);
   }
   async function save() {
@@ -64,16 +69,17 @@ export default function PackagesManager() {
         toast.error("Label and value are required");
         return;
       }
+      const meta = { ...(form.meta as Record<string, unknown> ?? {}), icon: selectedIcon || null };
       if (editing) {
         const res = await fetch(`/api/admin/form-options/${editing.id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             label: form.label,
-            // Package keys are immutable (changing breaks `${pkg}_fields` / `${pkg}_category` lookups)
             value: editing.value,
             sortOrder: Number(form.sortOrder) || 0,
             isActive: !!form.isActive,
+            meta,
           }),
         });
         if (!res.ok) throw new Error("Update failed");
@@ -89,6 +95,7 @@ export default function PackagesManager() {
             sortOrder: Number(form.sortOrder) || 0,
             isActive: !!form.isActive,
             valueType: "string",
+            meta,
           }),
         });
         if (!res.ok) throw new Error("Create failed");
@@ -133,7 +140,7 @@ export default function PackagesManager() {
   return (
     <div className="space-y-3">
       <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-sm text-neutral-500">Add or remove configurable packages.</div>
+        <div className="text-sm text-neutral-500 dark:text-neutral-400">Add or remove configurable packages.</div>
         <Button type="button" size="sm" onClick={startCreate} className="self-start sm:self-auto">
           Add
         </Button>
@@ -141,6 +148,7 @@ export default function PackagesManager() {
       <Table className="min-w-[640px]">
         <TableHeader className="hidden sm:table-header-group">
           <TableRow>
+            <TableHead className="p-2 sm:p-4 w-10">Icon</TableHead>
             <TableHead className="p-2 sm:p-4">Label</TableHead>
             <TableHead className="p-2 sm:p-4">Key</TableHead>
             <TableHead className="p-2 sm:p-4">Sort</TableHead>
@@ -148,8 +156,14 @@ export default function PackagesManager() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map((r) => (
+          {rows.map((r) => {
+            const iconName = (r.meta as Record<string, unknown> | null)?.icon as string | undefined;
+            const IconComp = getIcon(iconName);
+            return (
             <TableRow key={r.id}>
+              <TableCell className="p-2 sm:p-4">
+                <IconComp className="h-4 w-4 text-neutral-500 dark:text-neutral-400" />
+              </TableCell>
               <TableCell className={`${r.isActive ? "text-green-600 dark:text-green-400" : ""} p-2 sm:p-4`}>
                 {r.label}
                 <div className="mt-1 text-xs text-neutral-500 sm:hidden">
@@ -185,10 +199,11 @@ export default function PackagesManager() {
                 </div>
               </TableCell>
             </TableRow>
-          ))}
+            );
+          })}
           {!loading && rows.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={4} className="text-center text-sm text-neutral-500">
+              <TableCell colSpan={5} className="text-center text-sm text-neutral-500 dark:text-neutral-400">
                 No packages defined.
               </TableCell>
             </TableRow>
@@ -215,11 +230,11 @@ export default function PackagesManager() {
               onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))}
             />
             {editing ? (
-              <p className="text-xs text-neutral-500">
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
                 Package keys are immutable to prevent fetch/render mismatches. Create a new package if you need a different key.
               </p>
             ) : (
-              <p className="text-xs text-neutral-500">Use lowercase letters/numbers with `_` or `-` (e.g. `insured`, `contactinfo`).</p>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">Use lowercase letters/numbers with `_` or `-` (e.g. `insured`, `contactinfo`).</p>
             )}
             </div>
             <div className="grid gap-1">
@@ -230,6 +245,10 @@ export default function PackagesManager() {
                 onChange={(e) => setForm((f) => ({ ...f, sortOrder: Number(e.target.value) }))}
               />
             </div>
+            <IconPicker
+              value={selectedIcon}
+              onChange={(name) => setForm((f) => ({ ...f, meta: { ...(f.meta as Record<string, unknown> ?? {}), icon: name } }))}
+            />
             <div className="grid gap-1">
               <label className="flex items-center gap-2 text-sm">
                 <input

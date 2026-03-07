@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { requireUser } from "@/lib/auth/require-user";
 import { Separator } from "@/components/ui/separator";
 import { SettingsBlock } from "@/components/ui/settings-block";
@@ -17,7 +18,9 @@ export default async function PolicySettingsFlowsPage() {
       <Separator />
       <SettingsBlock title="Flows" description="Add flows and manage their steps.">
         <div className="w-full overflow-x-auto">
-          <FlowsManager />
+          <Suspense fallback={<div className="min-h-[200px] animate-pulse rounded-md bg-neutral-100 dark:bg-neutral-800" />}>
+            <FlowsManager />
+          </Suspense>
         </div>
       </SettingsBlock>
     </main>

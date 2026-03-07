@@ -6,20 +6,13 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { InlineSelectWithChildren, BooleanBranchFields } from "@/components/policies/InlineSelectWithChildren";
-
-type SelectOption = { label?: string; value?: string };
-type RepeatableFieldConfig = {
-  label?: string;
-  value?: string;
-  inputType?: string;
-  options?: SelectOption[];
-};
-type RepeatableConfig = {
-  itemLabel?: string;
-  min?: number;
-  max?: number;
-  fields?: RepeatableFieldConfig[];
-};
+import { CreatableSelect } from "@/components/ui/creatable-select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { toast } from "sonner";
+import { maskDDMMYYYY, parseAnyDate } from "@/lib/format/date";
+import { Field } from "@/components/ui/form-field";
+import { resolveFieldValue, evaluateFormula } from "@/lib/formula";
+import type { SelectOption, RepeatableFieldConfig, RepeatableConfig } from "@/lib/types/form";
 function getRepeatable(raw: unknown): RepeatableConfig {
   if (Array.isArray(raw)) {
     const first = raw[0];
@@ -36,116 +29,11 @@ function applyLabelCase(text: string, mode?: "original" | "upper" | "lower" | "t
   return text;
 }
 
-function parseAnyDate(s: string): Date | null {
-  const trimmed = String(s ?? "").trim();
-  if (!trimmed) return null;
-  const ddmmyyyy = /^(\d{2})-(\d{2})-(\d{4})$/.exec(trimmed);
-  if (ddmmyyyy) {
-    const d = new Date(Number(ddmmyyyy[3]), Number(ddmmyyyy[2]) - 1, Number(ddmmyyyy[1]));
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-  const yyyymmdd = /^(\d{4})-(\d{2})-(\d{2})/.exec(trimmed);
-  if (yyyymmdd) {
-    const d = new Date(Number(yyyymmdd[1]), Number(yyyymmdd[2]) - 1, Number(yyyymmdd[3]));
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-  return null;
-}
-
-function fmtDateDDMMYYYY(d: Date): string {
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return `${dd}-${mm}-${d.getFullYear()}`;
-}
-
-function resolveFieldValue(
-  key: string,
-  formValues: Record<string, unknown>,
-  pkg: string,
-): string {
-  const direct = [
-    formValues[`${pkg}__${key}`],
-    formValues[key],
-  ];
-  for (const v of direct) {
-    if (v !== undefined && v !== null && v !== "") return String(v);
-  }
-  const keyLower = key.toLowerCase();
-  for (const [fk, fv] of Object.entries(formValues)) {
-    if (fv === undefined || fv === null || fv === "") continue;
-    const suffix = fk.includes("__") ? fk.split("__").pop()! : fk;
-    if (suffix.toLowerCase() === keyLower) return String(fv);
-  }
-  return "";
-}
-
-function computeFormula(
-  formula: string,
-  refs: Record<string, string>,
-): string {
-  if (Object.values(refs).some((v) => v === "")) return "";
-
-  const hasDate = Object.values(refs).some((v) => parseAnyDate(v) !== null);
-
-  if (hasDate) {
-    const dateMatch = /^\{([^}]+)\}\s*([+-])\s*(\d+)\s*(d|days?)?$/i.exec(formula.trim());
-    if (dateMatch) {
-      const refVal = refs[dateMatch[1].trim()] ?? "";
-      const baseDate = parseAnyDate(refVal);
-      if (!baseDate) return "";
-      const offset = Number(dateMatch[3]) * (dateMatch[2] === "-" ? -1 : 1);
-      const result = new Date(baseDate);
-      result.setDate(result.getDate() + offset);
-      return fmtDateDDMMYYYY(result);
-    }
-    return "";
-  }
-
-  const resolved = formula.replace(/\{([^}]+)\}/g, (_, key: string) => {
-    const raw = refs[key.trim()] || "0";
-    const n = Number(raw);
-    return Number.isFinite(n) ? String(n) : "0";
-  });
-  if (!/^[\d\s+\-*/().]+$/.test(resolved)) return "";
-  const result = new Function(`"use strict"; return (${resolved});`)() as number;
-  if (!Number.isFinite(result)) return "";
-  return String(Math.round(result * 100) / 100);
-}
-
-function evaluateFormula(
-  formula: string,
-  formValues: Record<string, unknown>,
-  pkg: string,
-): string {
-  if (!formula) return "";
-  try {
-    const refs: Record<string, string> = {};
-    formula.replace(/\{([^}]+)\}/g, (_, key: string) => {
-      refs[key.trim()] = resolveFieldValue(key.trim(), formValues, pkg);
-      return "";
-    });
-    return computeFormula(formula, refs);
-  } catch {
-    return "";
-  }
-}
-
 function evaluateRowFormula(
   formula: string,
   rowValues: Record<string, unknown>,
 ): string {
-  if (!formula) return "";
-  try {
-    const refs: Record<string, string> = {};
-    formula.replace(/\{([^}]+)\}/g, (_, key: string) => {
-      const v = rowValues[key.trim()];
-      refs[key.trim()] = v !== undefined && v !== null && v !== "" ? String(v) : "";
-      return "";
-    });
-    return computeFormula(formula, refs);
-  } catch {
-    return "";
-  }
+  return evaluateFormula(formula, rowValues);
 }
 
 function FormulaField({
@@ -155,7 +43,6 @@ function FormulaField({
   label,
   required,
   pkg,
-  formatDDMMYYYY,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   name: string;
@@ -163,7 +50,6 @@ function FormulaField({
   label: string;
   required?: boolean;
   pkg: string;
-  formatDDMMYYYY: (raw: string) => string;
 }) {
   const lastFormula = React.useRef("");
   const isDateResult = React.useRef(false);
@@ -201,7 +87,7 @@ function FormulaField({
     dateOpts.inputMode = "numeric";
     dateOpts.onChange = (e: unknown) => {
       const t = e as { target?: { value?: string } };
-      const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+      const formatted = maskDDMMYYYY(t?.target?.value ?? "");
       form.setValue(name as never, formatted as never, { shouldDirty: true });
     };
   }
@@ -209,7 +95,7 @@ function FormulaField({
   return (
     <div className="space-y-1">
       <Label>
-        {label} {required ? <span className="text-red-600">*</span> : null}
+        {label} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
       </Label>
       <Input
         type="text"
@@ -220,7 +106,7 @@ function FormulaField({
 }
 
 function evaluateShowWhen(
-  showWhen: { package: string; category: string | string[] }[] | undefined,
+  showWhen: { package: string; category: string | string[]; field?: string; fieldValues?: string[] }[] | undefined,
   formValues: Record<string, unknown>,
 ): boolean {
   if (!showWhen || !Array.isArray(showWhen) || showWhen.length === 0) return true;
@@ -231,20 +117,275 @@ function evaluateShowWhen(
     const allowed = (Array.isArray(rule.category) ? rule.category : [rule.category])
       .map((c) => String(c ?? "").trim().toLowerCase())
       .filter(Boolean);
-    return allowed.length === 0 || allowed.includes(otherCatVal);
+    if (allowed.length > 0 && !allowed.includes(otherCatVal)) return false;
+    if (rule.field) {
+      const fv = String(formValues[`${otherPkg}__${rule.field}`] ?? "").trim().toLowerCase();
+      const allowedVals = (rule.fieldValues ?? []).map((v) => String(v).trim().toLowerCase()).filter(Boolean);
+      if (allowedVals.length > 0 && !allowedVals.includes(fv)) return false;
+    }
+    return true;
   });
+}
+
+type FieldUpdateResult = { option?: { label: string; value: string }; field?: { meta?: unknown } } | null;
+
+async function appendOptionToField(
+  fieldId: number,
+  label: string,
+): Promise<FieldUpdateResult> {
+  try {
+    const res = await fetch(`/api/admin/form-options/${fieldId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      toast.error(err.error ?? "Failed to add option");
+      return null;
+    }
+    const data = (await res.json()) as { option?: { label: string; value: string }; field?: { meta?: unknown }; message?: string };
+    if (data.message) toast.info(data.message);
+    else toast.success(`Option "${label}" added`);
+    return data;
+  } catch {
+    toast.error("Failed to add option");
+    return null;
+  }
+}
+
+async function removeOptionFromField(
+  fieldId: number,
+  value: string,
+): Promise<FieldUpdateResult> {
+  try {
+    const res = await fetch(`/api/admin/form-options/${fieldId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "remove", value }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      toast.error(err.error ?? "Failed to remove option");
+      return null;
+    }
+    const data = (await res.json()) as { field?: { meta?: unknown } };
+    toast.success("Option removed");
+    return data;
+  } catch {
+    toast.error("Failed to remove option");
+    return null;
+  }
+}
+
+function AdminAddOption({
+  fieldId,
+  existingOptions,
+  onFieldUpdated,
+}: {
+  fieldId: number;
+  existingOptions: { label?: string; value?: string }[];
+  onFieldUpdated: (updatedField: { meta?: unknown }) => void;
+}) {
+  const [value, setValue] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [removing, setRemoving] = React.useState<string | null>(null);
+  const [confirmAdd, setConfirmAdd] = React.useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = React.useState<{ value: string; label: string } | null>(null);
+
+  const handleAddConfirmed = async () => {
+    const label = confirmAdd;
+    if (!label || busy) return;
+    setBusy(true);
+    try {
+      const result = await appendOptionToField(fieldId, label);
+      if (result?.field) {
+        onFieldUpdated(result.field);
+        setValue("");
+      }
+    } finally {
+      setBusy(false);
+      setConfirmAdd(null);
+    }
+  };
+
+  const handleRemoveConfirmed = async () => {
+    if (!confirmRemove || removing) return;
+    const optValue = confirmRemove.value;
+    setRemoving(optValue);
+    try {
+      const result = await removeOptionFromField(fieldId, optValue);
+      if (result?.field) onFieldUpdated(result.field);
+    } finally {
+      setRemoving(null);
+      setConfirmRemove(null);
+    }
+  };
+
+  const requestAdd = () => {
+    const label = value.trim();
+    if (!label) return;
+    const lower = label.toLowerCase();
+    if (existingOptions.some((o) => (o.label ?? "").toLowerCase() === lower || (o.value ?? "").toLowerCase() === lower)) {
+      toast.info("This option already exists");
+      return;
+    }
+    setConfirmAdd(label);
+  };
+
+  return (
+    <div className="mt-1 space-y-1">
+      <div className="flex items-center gap-1.5">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              requestAdd();
+            }
+          }}
+          placeholder="Add new option..."
+          className="h-7 flex-1 rounded border border-neutral-200 bg-white px-2 text-xs outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+        />
+        <Button type="button" size="xs" variant="secondary" disabled={busy || !value.trim()} onClick={requestAdd}>
+          {busy ? "..." : "+"}
+        </Button>
+      </div>
+      {existingOptions.length > 0 && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200">
+            Manage options ({existingOptions.length})
+          </summary>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {existingOptions.map((o) => (
+              <span
+                key={o.value}
+                className="inline-flex items-center gap-1 rounded bg-neutral-100 px-1.5 py-0.5 text-xs dark:bg-neutral-800 dark:text-neutral-200"
+              >
+                {o.label ?? o.value}
+                <button
+                  type="button"
+                  onClick={() => setConfirmRemove({ value: o.value ?? "", label: o.label ?? o.value ?? "" })}
+                  disabled={removing === o.value}
+                  className="rounded text-neutral-400 hover:text-red-600 dark:hover:text-red-400"
+                  title="Remove option"
+                >
+                  {removing === o.value ? "..." : "×"}
+                </button>
+              </span>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {/* Confirm Add Dialog */}
+      <Dialog open={!!confirmAdd} onOpenChange={(v) => { if (!v) setConfirmAdd(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add new option</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-neutral-600 dark:text-neutral-400">
+            Are you sure you want to add <strong className="text-neutral-900 dark:text-neutral-100">&ldquo;{confirmAdd}&rdquo;</strong> as
+            a new option? This will be available to all users.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setConfirmAdd(null)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={() => void handleAddConfirmed()} disabled={busy}>
+              {busy ? "Adding..." : "Confirm"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm Remove Dialog */}
+      <Dialog open={!!confirmRemove} onOpenChange={(v) => { if (!v) setConfirmRemove(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove option</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-neutral-600 dark:text-neutral-400">
+            Are you sure you want to remove <strong className="text-neutral-900 dark:text-neutral-100">&ldquo;{confirmRemove?.label}&rdquo;</strong>?
+            This will remove it from the list for all users.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setConfirmRemove(null)} disabled={!!removing}>
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={() => void handleRemoveConfirmed()} disabled={!!removing}>
+              {removing ? "Removing..." : "Remove"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function CategoryTabs({
+  categories,
+  selectedCategory,
+  onSelect,
+  applyLabelCase,
+}: {
+  categories: { id: number; label: string; value: string; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }[];
+  selectedCategory: string;
+  onSelect: (v: string) => void;
+  applyLabelCase: (text: string, mode?: "original" | "upper" | "lower" | "title") => string;
+}) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [indicator, setIndicator] = React.useState({ left: 0, width: 0 });
+
+  React.useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const active = container.querySelector<HTMLButtonElement>("[data-active=true]");
+    if (active) {
+      setIndicator({
+        left: active.offsetLeft,
+        width: active.offsetWidth,
+      });
+    }
+  }, [selectedCategory, categories]);
+
+  return (
+    <div ref={containerRef} className="relative flex gap-1">
+      <div
+        className="absolute top-0 h-full rounded-md bg-neutral-100 shadow-sm transition-all duration-300 ease-in-out dark:bg-neutral-800"
+        style={{ left: indicator.left, width: indicator.width }}
+      />
+      {categories.map((opt) => (
+        <button
+          key={opt.id}
+          type="button"
+          data-active={selectedCategory === opt.value}
+          className={`relative z-10 rounded-md px-5 py-2 text-sm font-medium transition-colors duration-200 ${
+            selectedCategory === opt.value
+              ? "text-neutral-900 dark:text-white"
+              : "text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+          }`}
+          onClick={() => onSelect(opt.value)}
+        >
+          {applyLabelCase(opt.label, opt.meta?.labelCase ?? "original")}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export function PackageBlock({
   form,
   pkg,
   allowedCategories,
-  formatDDMMYYYY,
+  isAdmin,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   pkg: string;
   allowedCategories?: string[] | undefined;
-  formatDDMMYYYY: (raw: string) => string;
+  isAdmin?: boolean;
 }) {
   const [categories, setCategories] = React.useState<{ id: number; label: string; value: string; sortOrder: number; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }[]>([]);
   const catFieldName = `${pkg}__category`;
@@ -296,7 +437,19 @@ export function PackageBlock({
           const current = normalizeCategoryValue(currentRaw);
           const hasCurrent = filtered.some((c) => c.value === current);
           if (!hasCurrent && filtered.length > 0) {
-            form.setValue(catFieldName as never, filtered[0].value as never, { shouldDirty: false, shouldTouch: false });
+            // Try to auto-match based on another package's selected category
+            let best = filtered[0].value;
+            const formVals = form.getValues() as Record<string, unknown>;
+            for (const [key, val] of Object.entries(formVals)) {
+              if (key.endsWith("__category") && key !== catFieldName && val) {
+                const otherCat = String(val).trim().toLowerCase();
+                if (otherCat) {
+                  const match = filtered.find((c) => c.value.toLowerCase().includes(otherCat));
+                  if (match) { best = match.value; break; }
+                }
+              }
+            }
+            form.setValue(catFieldName as never, best as never, { shouldDirty: false, shouldTouch: false });
           } else if (currentRaw && current && currentRaw !== current) {
             // Canonicalize casing (e.g. "Company" -> "company") without dirtying.
             form.setValue(catFieldName as never, current as never, { shouldDirty: false, shouldTouch: false });
@@ -317,15 +470,33 @@ export function PackageBlock({
   );
 
   const allFormValues = useWatch({ control: form.control }) as Record<string, unknown>;
+
+  // Auto-sync: when another package's category changes, re-match our category
+  React.useEffect(() => {
+    if (categories.length <= 1) return;
+    const otherCatKeys = Object.keys(allFormValues).filter(
+      (k) => k.endsWith("__category") && k !== catFieldName,
+    );
+    if (otherCatKeys.length === 0) return;
+    for (const key of otherCatKeys) {
+      const otherCat = String(allFormValues[key] ?? "").trim().toLowerCase();
+      if (!otherCat) continue;
+      const match = categories.find((c) => c.value.toLowerCase().includes(otherCat));
+      if (match && match.value !== selectedCategory) {
+        form.setValue(catFieldName as never, match.value as never, { shouldDirty: false, shouldTouch: false });
+        return;
+      }
+    }
+  }, [allFormValues, categories, catFieldName, form, selectedCategory]);
   const [pkgFields, setPkgFields] = React.useState<
-    { label: string; value: string; valueType: string; sortOrder: number; meta?: unknown }[]
+    { id: number; label: string; value: string; valueType: string; sortOrder: number; meta?: unknown }[]
   >([]);
   React.useEffect(() => {
     let cancelled = false;
     async function loadFields() {
       try {
         // Try primary group first; if empty, fall back to common aliases
-        const primaryRes = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}`, { cache: "no-store" });
+        const primaryRes = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}&_t=${Date.now()}`, { cache: "no-store" });
         let data = (await primaryRes.json()) as unknown[];
         // Only apply vehicle fallbacks when the selected package is a vehicle-like package.
         if ((!Array.isArray(data) || data.length === 0)) {
@@ -335,7 +506,7 @@ export function PackageBlock({
             const fallbacks = ["vehicleinfo_fields", "vehicle_fields"];
             for (const fb of fallbacks) {
               try {
-                const r = await fetch(`/api/form-options?groupKey=${encodeURIComponent(fb)}`, { cache: "no-store" });
+                const r = await fetch(`/api/form-options?groupKey=${encodeURIComponent(fb)}&_t=${Date.now()}`, { cache: "no-store" });
                 const j = (await r.json()) as unknown[];
                 if (Array.isArray(j) && j.length > 0) {
                   data = j;
@@ -350,7 +521,7 @@ export function PackageBlock({
         if (!cancelled)
           setPkgFields(
             Array.isArray(data)
-              ? (data as { label: string; value: string; valueType: string; sortOrder: number; meta?: unknown }[])
+              ? (data as { id: number; label: string; value: string; valueType: string; sortOrder: number; meta?: unknown }[])
               : [],
           );
       } catch {
@@ -365,26 +536,20 @@ export function PackageBlock({
 
   return (
     <section className="space-y-4">
-      <div className="space-y-2">
-        <div className="flex flex-wrap gap-6">
-          {categories.map((opt) => (
-            <label key={opt.id} className="inline-flex items-center gap-2 text-sm">
-              <input
-                type="radio"
-                className="appearance-none h-3.5 w-3.5 rounded-full border border-neutral-400 bg-transparent checked:bg-neutral-900 dark:checked:bg-white checked:border-white dark:checked:border-black focus-visible:outline-none focus-visible:ring-0"
-                value={opt.value}
-                checked={selectedCategory === opt.value}
-                onChange={(e) => form.setValue(catFieldName as never, e.target.value as never)}
-              />
-              {applyLabelCase(opt.label, opt.meta?.labelCase ?? "original")}
-            </label>
-          ))}
-          {categories.length === 0 ? null : null}
-        </div>
-      </div>
+      {categories.length > 1 ? (
+        <CategoryTabs
+          categories={categories}
+          selectedCategory={selectedCategory}
+          onSelect={(v) => form.setValue(catFieldName as never, v as never)}
+          applyLabelCase={applyLabelCase}
+        />
+      ) : categories.length === 1 ? (
+        <input type="hidden" value={categories[0].value} {...form.register(catFieldName as never)} />
+      ) : null}
       {/* Grouped fields by meta.group with group-level sorting */}
       <div className="space-y-6">
         {(() => {
+          const debugRows: { label: string; value: string; group: string; catPass: boolean; catDetail: string; swPass: boolean; swDetail: string; visible: boolean }[] = [];
           const visible = pkgFields.filter((f) => {
             const meta = (f.meta ?? {}) as {
               inputType?: string;
@@ -397,17 +562,46 @@ export function PackageBlock({
               };
               group?: string;
               groupOrder?: number;
-              showWhen?: { package: string; category: string | string[] } | { package: string; category: string | string[] }[];
+              showWhen?: { package: string; category: string | string[]; field?: string; fieldValues?: string[] } | { package: string; category: string | string[]; field?: string; fieldValues?: string[] }[];
             };
             const cats = (meta.categories ?? []) as string[];
             const canonCats = cats.map((c) => String(c ?? "").trim().toLowerCase()).filter(Boolean);
             const sel = String(selectedCategory ?? "").trim().toLowerCase();
-            if (canonCats.length > 0 && !canonCats.includes(sel)) return false;
+            const catPass = canonCats.length === 0 || canonCats.includes(sel);
+            const catDetail = canonCats.length === 0
+              ? "all (no filter)"
+              : `needs [${canonCats.join(", ")}], selected="${sel}", ${catPass ? "PASS" : "FAIL"}`;
 
-            if (!evaluateShowWhen(
-              Array.isArray(meta.showWhen) ? meta.showWhen : (meta.showWhen ? [meta.showWhen] : undefined),
-              allFormValues,
-            )) return false;
+            const swRules = Array.isArray(meta.showWhen) ? meta.showWhen : (meta.showWhen ? [meta.showWhen] : undefined);
+            const swPass = evaluateShowWhen(swRules, allFormValues);
+            let swDetail = "none";
+            if (swRules && swRules.length > 0) {
+              swDetail = swRules.map((r) => {
+                const p = r.package;
+                const catVal = String(allFormValues[`${p}__category`] ?? "").trim();
+                const allowed = (Array.isArray(r.category) ? r.category : [r.category]).filter(Boolean);
+                let detail = `pkg="${p}" cat="${catVal}" allowed=[${allowed.join(",")}]`;
+                if (r.field) {
+                  const fv = String(allFormValues[`${p}__${r.field}`] ?? "").trim();
+                  detail += ` field="${r.field}" val="${fv}" allowedVals=[${(r.fieldValues ?? []).join(",")}]`;
+                }
+                return detail;
+              }).join(" | ");
+            }
+
+            debugRows.push({
+              label: (f as { label?: string }).label ?? "?",
+              value: (f as { value?: string }).value ?? "?",
+              group: Array.isArray(meta.group) ? meta.group.join(", ") : (meta.group ?? "(none)"),
+              catPass,
+              catDetail,
+              swPass,
+              swDetail,
+              visible: catPass && swPass,
+            });
+
+            if (!catPass) return false;
+            if (!swPass) return false;
 
             return true;
           });
@@ -430,37 +624,65 @@ export function PackageBlock({
 
           const groupMap = new Map<string, { fields: typeof dedupedVisible; order: number }>();
           for (const f of dedupedVisible) {
-            const meta = (f.meta ?? {}) as { group?: string; groupOrder?: number };
-            const key = meta?.group ?? "";
+            const meta = (f.meta ?? {}) as { group?: string | string[]; groupOrder?: number };
+            const rawGroup = meta?.group;
+            const fieldGroups = Array.isArray(rawGroup)
+              ? (rawGroup.length > 0 ? rawGroup : [""])
+              : [String(rawGroup ?? "")];
             const order = typeof meta?.groupOrder === "number" ? meta.groupOrder : 0;
-            if (!groupMap.has(key)) groupMap.set(key, { fields: [], order });
-            const bucket = groupMap.get(key)!;
-            bucket.fields.push(f);
-            // keep the minimum order among fields in the same group
-            if (typeof meta?.groupOrder === "number") {
-              bucket.order = Math.min(bucket.order, meta.groupOrder);
+            for (const key of fieldGroups) {
+              if (!groupMap.has(key)) groupMap.set(key, { fields: [], order });
+              const bucket = groupMap.get(key)!;
+              bucket.fields.push(f);
+              if (typeof meta?.groupOrder === "number") {
+                bucket.order = Math.min(bucket.order, meta.groupOrder);
+              }
             }
           }
           const entries = Array.from(groupMap.entries())
             .sort((a, b) => a[1].order - b[1].order)
-            .filter(([, bucket]) => {
-              type GswRule = { field: string; values: string[]; childKey?: string; childValues?: string[] };
-              const raw = bucket.fields
-                .map((f) => (f.meta as { groupShowWhen?: GswRule | GswRule[] | null } | null)?.groupShowWhen)
-                .find((g) => g != null);
+            .filter(([groupLabel, bucket]) => {
+              type GswRule = { package?: string; field: string; values: string[]; childKey?: string; childValues?: string[] };
+              type GswMap = Record<string, GswRule[] | null>;
+              // Resolve per-group conditions: check groupShowWhenMap first, then fall back to flat groupShowWhen
+              let raw: GswRule | GswRule[] | null | undefined;
+              for (const f of bucket.fields) {
+                const meta = f.meta as { groupShowWhen?: GswRule | GswRule[] | GswMap | null; groupShowWhenMap?: GswMap } | null;
+                // Per-group map takes priority
+                const map = meta?.groupShowWhenMap;
+                if (map && groupLabel && typeof map === "object" && !Array.isArray(map) && groupLabel in map) {
+                  raw = map[groupLabel];
+                  break;
+                }
+                // Fall back to legacy flat groupShowWhen (but only if it's not a map itself)
+                const legacy = meta?.groupShowWhen;
+                if (legacy != null) {
+                  if (typeof legacy === "object" && !Array.isArray(legacy) && !("field" in legacy)) {
+                    // It's a map-style groupShowWhen (keyed by group name)
+                    if (groupLabel && groupLabel in (legacy as GswMap)) {
+                      raw = (legacy as GswMap)[groupLabel];
+                      break;
+                    }
+                  } else {
+                    raw = legacy as GswRule | GswRule[];
+                    break;
+                  }
+                }
+              }
               if (!raw) return true;
               const rules: GswRule[] = Array.isArray(raw) ? raw : [raw];
               if (rules.length === 0 || !rules[0]?.field) return true;
               return rules.every((gsw) => {
                 if (!gsw.field) return true;
-                const fieldVal = String(allFormValues[`${pkg}__${gsw.field}`] ?? "").trim().toLowerCase();
+                const rulePkg = gsw.package || pkg;
+                const fieldVal = String(allFormValues[`${rulePkg}__${gsw.field}`] ?? "").trim().toLowerCase();
                 const allowed = (gsw.values ?? []).map((v) => String(v).trim().toLowerCase()).filter(Boolean);
                 if (allowed.length > 0 && !allowed.includes(fieldVal)) return false;
                 if (gsw.childKey) {
                   const optMatch = gsw.childKey.match(/__opt_([^_]+)__c\d+$/);
                   const childOwnerOpt = optMatch ? optMatch[1].toLowerCase() : "";
                   if (!childOwnerOpt || fieldVal === childOwnerOpt) {
-                    const childVal = String(allFormValues[`${pkg}__${gsw.childKey}`] ?? "").trim().toLowerCase();
+                    const childVal = String(allFormValues[`${rulePkg}__${gsw.childKey}`] ?? "").trim().toLowerCase();
                     const childAllowed = (gsw.childValues ?? []).map((v) => String(v).trim().toLowerCase()).filter(Boolean);
                     if (childAllowed.length > 0 && !childAllowed.includes(childVal)) return false;
                   }
@@ -468,7 +690,7 @@ export function PackageBlock({
                 return true;
               });
             });
-          return entries.map(([groupLabel, bucket]) => (
+          const groupedElements = entries.map(([groupLabel, bucket]) => (
             <div key={groupLabel || "default"} className="space-y-2">
               {groupLabel ? (
                 <div className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{groupLabel}</div>
@@ -530,7 +752,7 @@ export function PackageBlock({
                       <div key={nameBase} className="col-span-2 space-y-2">
                         <div className="flex items-center justify-between">
                           <Label>
-                            {displayLabel} {Boolean(meta.required) ? <span className="text-red-600">*</span> : null}
+                            {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                           </Label>
                           <Button type="button" size="sm" variant="secondary" onClick={addItem} disabled={!canAdd}>
                             Add {itemLabel}
@@ -584,7 +806,7 @@ export function PackageBlock({
                                                 {o.label}
                                               </label>
                                             ))}
-                                            {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                            {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                           </div>
                                         </div>
                                       );
@@ -610,7 +832,7 @@ export function PackageBlock({
                                       };
                                       regOpts.onChange = (e: unknown) => {
                                         const t = e as { target?: { value?: string } };
-                                        const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                        const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                         form.setValue(childName as never, formatted as never, { shouldDirty: true });
                                       };
                                     }
@@ -640,6 +862,7 @@ export function PackageBlock({
                       value?: string;
                       children?: { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; currencyCode?: string; decimals?: number; booleanLabels?: { true?: string; false?: string }; booleanDisplay?: "radio" | "dropdown"; booleanChildren?: { true?: any[]; false?: any[] } }[];
                     }[];
+                    const fieldId = (f as any).id as number | undefined;
                     return (
                       <InlineSelectWithChildren
                         key={nameBase}
@@ -649,7 +872,16 @@ export function PackageBlock({
                         required={Boolean(meta.required)}
                         options={options}
                         displayMode={(meta?.selectDisplay ?? "dropdown") === "dropdown" ? "dropdown" : "radio"}
-                        formatDDMMYYYY={formatDDMMYYYY}
+                        isAdmin={isAdmin}
+                        fieldId={fieldId}
+                        onFieldUpdated={(updatedField) => {
+                          const idx = pkgFields.findIndex((pf) => pf.id === fieldId);
+                          if (idx >= 0) {
+                            const updated = [...pkgFields];
+                            updated[idx] = { ...updated[idx], meta: updatedField.meta };
+                            setPkgFields(updated);
+                          }
+                        }}
                       />
                     );
                   }
@@ -659,6 +891,7 @@ export function PackageBlock({
                       value?: string;
                       children?: { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; currencyCode?: string; decimals?: number }[];
                     }[];
+                    const fieldId = (f as any).id as number | undefined;
                     const currentRaw = form.watch(nameBase as never) as unknown;
                     const current = Array.isArray(currentRaw)
                       ? (currentRaw as unknown[])
@@ -669,7 +902,7 @@ export function PackageBlock({
                       <div key={nameBase} className="space-y-2">
                         <div className="space-y-1">
                           <Label>
-                            {displayLabel} {meta.required ? <span className="text-red-600">*</span> : null}
+                            {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                           </Label>
                           <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
                             {options.map((o) => (
@@ -687,8 +920,22 @@ export function PackageBlock({
                                 {o.label}
                               </label>
                             ))}
-                            {options.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                            {options.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                           </div>
+                          {isAdmin && fieldId && (
+                            <AdminAddOption
+                              fieldId={fieldId}
+                              existingOptions={options}
+                              onFieldUpdated={(updatedField) => {
+                                const idx = pkgFields.findIndex((pf) => pf.id === fieldId);
+                                if (idx >= 0) {
+                                  const updated = [...pkgFields];
+                                  updated[idx] = { ...updated[idx], meta: updatedField.meta };
+                                  setPkgFields(updated);
+                                }
+                              }}
+                            />
+                          )}
                         </div>
                         {(() => {
                           const childrenTuples =
@@ -714,7 +961,7 @@ export function PackageBlock({
                                     };
                                     regOpts.onChange = (e: unknown) => {
                                       const t = e as { target?: { value?: string } };
-                                      const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                      const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                       form.setValue(name as never, formatted as never, { shouldDirty: true });
                                     };
                                   }
@@ -727,7 +974,7 @@ export function PackageBlock({
                                         formula={String((child as any)?.formula ?? "")}
                                         label={child?.label ?? "Value"}
                                         pkg={pkg}
-                                        formatDDMMYYYY={formatDDMMYYYY}
+                
                                       />
                                     );
                                   }
@@ -768,7 +1015,7 @@ export function PackageBlock({
                                               {o.label}
                                             </label>
                                           ))}
-                                          {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                          {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                         </div>
                                       </div>
                                     );
@@ -781,7 +1028,7 @@ export function PackageBlock({
                                       <div key={name} className="space-y-1">
                                         <Label>{child?.label ?? "Details"}</Label>
                                         <div className="flex items-center gap-2">
-                                          {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                          {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                           <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                         </div>
                                       </div>
@@ -813,15 +1060,17 @@ export function PackageBlock({
                     const noChildren = (Array.isArray(meta.booleanChildren?.false)
                       ? (meta.booleanChildren?.false as unknown[])
                       : []) as { label?: string; inputType?: string; options?: { label?: string; value?: string }[] }[];
-                    const curr = form.watch(nameBase as never);
-                    const isYes = String(curr) === "true";
+                    const curr: unknown = form.watch(nameBase as never);
+                    const hasSelection = curr !== undefined && curr !== null && curr !== "";
+                    const isYes = hasSelection && String(curr) === "true";
+                    const isNo = hasSelection && String(curr) === "false";
                     const trueLabel = String((meta?.booleanLabels?.true ?? "Yes"));
                     const falseLabel = String((meta?.booleanLabels?.false ?? "No"));
                     return (
                       <div key={nameBase} className="col-span-2 space-y-2">
                         <div className="space-y-1">
                           <Label>
-                            {displayLabel} {meta.required ? <span className="text-red-600">*</span> : null}
+                            {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                           </Label>
                           {(meta?.booleanDisplay ?? "radio") === "dropdown" ? (
                             <select
@@ -880,7 +1129,7 @@ export function PackageBlock({
                                     formula={String((child as any)?.formula ?? "")}
                                     label={child?.label ?? "Value"}
                                     pkg={pkg}
-                                    formatDDMMYYYY={formatDDMMYYYY}
+            
                                   />
                                 );
                               }
@@ -903,7 +1152,7 @@ export function PackageBlock({
                                         <option value="true">{yesL}</option>
                                         <option value="false">{noL}</option>
                                       </select>
-                                      <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                      <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                     </div>
                                   );
                                 }
@@ -920,7 +1169,7 @@ export function PackageBlock({
                                         {noL}
                                       </label>
                                     </div>
-                                    <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                    <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                   </div>
                                 );
                               }
@@ -1009,7 +1258,7 @@ export function PackageBlock({
                                                             {o.label}
                                                           </label>
                                                         ))}
-                                                        {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                                        {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                                       </div>
                                                     </div>
                                                   );
@@ -1022,7 +1271,7 @@ export function PackageBlock({
                                                     <div key={`${childName}__cur`} className="space-y-1">
                                                       <Label>{cf?.label ?? "Value"}</Label>
                                                       <div className="flex items-center gap-2">
-                                                        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                                        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                                         <Input type="number" step={step} placeholder="0.00" {...form.register(childName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                                       </div>
                                                     </div>
@@ -1047,7 +1296,7 @@ export function PackageBlock({
                                                   };
                                                   regChildOpts.onChange = (e: unknown) => {
                                                     const t = e as { target?: { value?: string } };
-                                                    const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                                    const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                                     form.setValue(childName as never, formatted as never, { shouldDirty: true });
                                                   };
                                                 }
@@ -1079,8 +1328,44 @@ export function PackageBlock({
                                   <div key={name} className="space-y-1">
                                     <Label>{child?.label ?? "Details"}</Label>
                                     <div className="flex items-center gap-2">
-                                      {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                      {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                       <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
+                                    </div>
+                                  </div>
+                                );
+                              }
+                              if (cType === "select") {
+                                const allOpts = (Array.isArray(child?.options) ? child.options : []) as { label?: string; value?: string; showWhen?: unknown }[];
+                                const opts = allOpts.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
+                                return (
+                                  <div key={name} className="space-y-1">
+                                    <Label>{child?.label ?? "Select"}</Label>
+                                    <select
+                                      className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+                                      {...form.register(name as never)}
+                                    >
+                                      <option value="">-- Select --</option>
+                                      {opts.map((o) => (
+                                        <option key={o.value} value={o.value}>{o.label}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                );
+                              }
+                              if (cType === "multi_select") {
+                                const allOpts = (Array.isArray(child?.options) ? child.options : []) as { label?: string; value?: string; showWhen?: unknown }[];
+                                const opts = allOpts.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
+                                return (
+                                  <div key={name} className="space-y-1">
+                                    <Label>{child?.label ?? "Select"}</Label>
+                                    <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
+                                      {opts.map((o) => (
+                                        <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                          <input type="checkbox" value={o.value} {...form.register(name as never)} />
+                                          {o.label}
+                                        </label>
+                                      ))}
+                                      {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                     </div>
                                   </div>
                                 );
@@ -1096,7 +1381,7 @@ export function PackageBlock({
                                 };
                                 regOpts.onChange = (e: unknown) => {
                                   const t = e as { target?: { value?: string } };
-                                  const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                  const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                   form.setValue(name as never, formatted as never, { shouldDirty: true });
                                 };
                               }
@@ -1115,7 +1400,7 @@ export function PackageBlock({
                             })}
                           </div>
                         ) : null}
-                        {!isYes && noChildren.length > 0 ? (
+                        {isNo && noChildren.length > 0 ? (
                           <div className="grid grid-cols-2 gap-4">
                             {noChildren.map((child: { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; booleanLabels?: { true?: string; false?: string }; booleanDisplay?: "radio" | "dropdown"; showWhen?: { package: string; category: string | string[] }[] }, cIdx: number) => {
                               if (!evaluateShowWhen(child?.showWhen, allFormValues)) return null;
@@ -1130,7 +1415,7 @@ export function PackageBlock({
                                     formula={String((child as any)?.formula ?? "")}
                                     label={child?.label ?? "Value"}
                                     pkg={pkg}
-                                    formatDDMMYYYY={formatDDMMYYYY}
+            
                                   />
                                 );
                               }
@@ -1153,7 +1438,7 @@ export function PackageBlock({
                                         <option value="true">{yesL}</option>
                                         <option value="false">{noL}</option>
                                       </select>
-                                      <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                      <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                     </div>
                                   );
                                 }
@@ -1170,7 +1455,7 @@ export function PackageBlock({
                                         {noL}
                                       </label>
                                     </div>
-                                    <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                    <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                   </div>
                                 );
                               }
@@ -1259,7 +1544,7 @@ export function PackageBlock({
                                                             {o.label}
                                                           </label>
                                                         ))}
-                                                        {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                                        {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                                       </div>
                                                     </div>
                                                   );
@@ -1272,7 +1557,7 @@ export function PackageBlock({
                                                     <div key={`${childName}__cur`} className="space-y-1">
                                                       <Label>{cf?.label ?? "Value"}</Label>
                                                       <div className="flex items-center gap-2">
-                                                        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                                        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                                         <Input type="number" step={step} placeholder="0.00" {...form.register(childName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                                       </div>
                                                     </div>
@@ -1297,7 +1582,7 @@ export function PackageBlock({
                                                   };
                                                   regChildOpts.onChange = (e: unknown) => {
                                                     const t = e as { target?: { value?: string } };
-                                                    const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                                    const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                                     form.setValue(childName as never, formatted as never, { shouldDirty: true });
                                                   };
                                                 }
@@ -1329,8 +1614,44 @@ export function PackageBlock({
                                   <div key={name} className="space-y-1">
                                     <Label>{child?.label ?? "Details"}</Label>
                                     <div className="flex items-center gap-2">
-                                      {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                      {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                       <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
+                                    </div>
+                                  </div>
+                                );
+                              }
+                              if (cType === "select") {
+                                const allOpts = (Array.isArray(child?.options) ? child.options : []) as { label?: string; value?: string; showWhen?: unknown }[];
+                                const opts = allOpts.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
+                                return (
+                                  <div key={name} className="space-y-1">
+                                    <Label>{child?.label ?? "Select"}</Label>
+                                    <select
+                                      className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+                                      {...form.register(name as never)}
+                                    >
+                                      <option value="">-- Select --</option>
+                                      {opts.map((o) => (
+                                        <option key={o.value} value={o.value}>{o.label}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                );
+                              }
+                              if (cType === "multi_select") {
+                                const allOpts = (Array.isArray(child?.options) ? child.options : []) as { label?: string; value?: string; showWhen?: unknown }[];
+                                const opts = allOpts.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
+                                return (
+                                  <div key={name} className="space-y-1">
+                                    <Label>{child?.label ?? "Select"}</Label>
+                                    <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
+                                      {opts.map((o) => (
+                                        <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                          <input type="checkbox" value={o.value} {...form.register(name as never)} />
+                                          {o.label}
+                                        </label>
+                                      ))}
+                                      {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                     </div>
                                   </div>
                                 );
@@ -1346,7 +1667,7 @@ export function PackageBlock({
                                 };
                                 regOpts.onChange = (e: unknown) => {
                                   const t = e as { target?: { value?: string } };
-                                  const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                  const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                   form.setValue(name as never, formatted as never, { shouldDirty: true });
                                 };
                               }
@@ -1378,7 +1699,7 @@ export function PackageBlock({
                         label={displayLabel}
                         required={Boolean(meta.required)}
                         pkg={pkg}
-                        formatDDMMYYYY={formatDDMMYYYY}
+
                       />
                     );
                   }
@@ -1391,7 +1712,7 @@ export function PackageBlock({
                     };
                     options.onChange = (e: unknown) => {
                       const t = e as { target?: { value?: string } };
-                      const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                      const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                       form.setValue(nameBase as never, formatted as never, { shouldDirty: true });
                     };
                   }
@@ -1403,10 +1724,10 @@ export function PackageBlock({
                     return (
                       <div key={nameBase} className="space-y-1">
                         <Label>
-                          {displayLabel} {Boolean(meta.required) ? <span className="text-red-600">*</span> : null}
+                          {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                         </Label>
                         <div className="flex items-center gap-2">
-                          {currencyCode ? <span className="shrink-0 text-sm font-medium text-neutral-500">{currencyCode}</span> : null}
+                          {currencyCode ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{currencyCode}</span> : null}
                           <Input
                             type="number"
                             step={step}
@@ -1432,23 +1753,45 @@ export function PackageBlock({
               </div>
             </div>
           ));
+
+          const debugPanel = isAdmin ? (
+            <details key="__debug" className="mt-4 rounded-md border border-dashed border-amber-400/50 bg-amber-50/50 p-2 dark:border-amber-600/30 dark:bg-amber-950/20">
+              <summary className="cursor-pointer text-xs font-medium text-amber-700 dark:text-amber-400">
+                Debug: Field Visibility ({pkg}) &mdash; {debugRows.filter((r) => r.visible).length}/{debugRows.length} visible, selectedCategory=&quot;{selectedCategory}&quot;, categories loaded={categories.length}
+              </summary>
+              <div className="mt-2 max-h-64 overflow-auto text-[10px] font-mono leading-relaxed">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="border-b border-amber-300 dark:border-amber-700 text-left">
+                      <th className="px-1 py-0.5">Field</th>
+                      <th className="px-1 py-0.5">Group</th>
+                      <th className="px-1 py-0.5">Cat</th>
+                      <th className="px-1 py-0.5">ShowWhen</th>
+                      <th className="px-1 py-0.5">Visible</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {debugRows.map((r) => (
+                      <tr key={r.value} className={r.visible ? "" : "text-red-600 dark:text-red-400"}>
+                        <td className="px-1 py-0.5 whitespace-nowrap">{r.label} <span className="opacity-50">({r.value})</span></td>
+                        <td className="px-1 py-0.5">{r.group}</td>
+                        <td className="px-1 py-0.5">{r.catPass ? "PASS" : "FAIL"} <span className="opacity-60">{r.catDetail}</span></td>
+                        <td className="px-1 py-0.5">{r.swPass ? "PASS" : "FAIL"} <span className="opacity-60">{r.swDetail}</span></td>
+                        <td className="px-1 py-0.5">{r.visible ? "YES" : "NO"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          ) : null;
+
+          return [...groupedElements, debugPanel];
         })()}
       </div>
     </section>
   );
 }
 
-function Field({
-  label,
-  ...props
-}: React.InputHTMLAttributes<HTMLInputElement> & { label: string; required?: boolean }) {
-  return (
-    <div className="space-y-1">
-      <Label>
-        {label} {props.required ? <span className="text-red-600">*</span> : null}
-      </Label>
-      <Input {...props} />
-    </div>
-  );
-}
+// Field extracted to @/components/ui/form-field
 

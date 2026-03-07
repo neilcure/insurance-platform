@@ -4,8 +4,10 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { X } from "lucide-react";
+import type { ShowWhenRule } from "@/lib/types/form";
+import { usePkgFields, type PkgFieldInfo } from "@/hooks/use-pkg-fields";
 
-type ShowWhenRule = { package: string; category: string | string[] };
+type FieldInfo = PkgFieldInfo;
 
 export function ShowWhenConfig({
   value,
@@ -23,14 +25,20 @@ export function ShowWhenConfig({
   compact?: boolean;
 }) {
   const labelSize = compact ? "text-[11px]" : "text-xs";
+  const selectCls = "h-7 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100";
+
+  const { pkgFieldsCache, loadPkgFields } = usePkgFields();
 
   React.useEffect(() => {
     for (const rule of value) {
       if (rule.package && !crossPkgCategories[rule.package]) {
         onLoadCategories(rule.package);
       }
+      if (rule.package && rule.field && !pkgFieldsCache[rule.package]) {
+        void loadPkgFields(rule.package);
+      }
     }
-  }, [value, crossPkgCategories, onLoadCategories]);
+  }, [value, crossPkgCategories, onLoadCategories, pkgFieldsCache, loadPkgFields]);
 
   return (
     <div className="grid gap-1">
@@ -38,23 +46,41 @@ export function ShowWhenConfig({
         {compact ? "Show when (cross-package)" : "Cross-Package Conditions (showWhen)"}
       </Label>
       <p className={`${compact ? "text-[10px]" : "text-xs"} text-neutral-500`}>
-        Only show when another package&apos;s category matches.
+        Only show when another package&apos;s category or field value matches.
       </p>
       {value.map((rule, rIdx) => {
         const cats = crossPkgCategories[rule.package] ?? [];
+        const pkgFields = pkgFieldsCache[rule.package] ?? [];
+        const fieldCandidates = pkgFields.filter(
+          (f) => (f.meta?.inputType === "select" || f.meta?.inputType === "boolean") && f.isActive !== false,
+        );
+        const selectedField = rule.field ? pkgFields.find((f) => f.value === rule.field) : null;
+        const fieldType = selectedField?.meta?.inputType;
+        const fieldOpts: { label: string; value: string }[] =
+          fieldType === "boolean"
+            ? [
+                { label: selectedField?.meta?.booleanLabels?.true ?? "Yes", value: "true" },
+                { label: selectedField?.meta?.booleanLabels?.false ?? "No", value: "false" },
+              ]
+            : (selectedField?.meta?.options ?? []).map((o) => ({ label: o.label ?? o.value ?? "", value: o.value ?? "" }));
+        const selectedFieldValues = rule.fieldValues ?? [];
+
         return (
           <div key={rIdx} className="flex items-start gap-2 rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
             <div className="flex-1 space-y-2">
               <div className="flex items-center gap-2">
                 <Label className={`w-16 shrink-0 ${labelSize}`}>Package</Label>
                 <select
-                  className="h-7 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+                  className={selectCls}
                   value={rule.package}
                   onChange={(e) => {
                     const next = [...value];
-                    next[rIdx] = { ...next[rIdx], package: e.target.value, category: [] };
+                    next[rIdx] = { ...next[rIdx], package: e.target.value, category: [], field: undefined, fieldValues: undefined };
                     onChange(next);
-                    if (e.target.value) onLoadCategories(e.target.value);
+                    if (e.target.value) {
+                      onLoadCategories(e.target.value);
+                      void loadPkgFields(e.target.value);
+                    }
                   }}
                 >
                   <option value="">-- Select --</option>
@@ -93,6 +119,53 @@ export function ShowWhenConfig({
                 </div>
               ) : rule.package && cats.length === 0 ? (
                 <p className="text-[10px] text-neutral-500 ml-18">No categories for this package.</p>
+              ) : null}
+              {rule.package ? (
+                <div className="flex items-start gap-2">
+                  <Label className={`w-16 shrink-0 pt-0.5 ${labelSize}`}>Field</Label>
+                  <div className="flex-1 space-y-1">
+                    <select
+                      className={selectCls}
+                      value={rule.field ?? ""}
+                      onChange={(e) => {
+                        const next = [...value];
+                        next[rIdx] = { ...next[rIdx], field: e.target.value || undefined, fieldValues: e.target.value ? [] : undefined };
+                        onChange(next);
+                      }}
+                    >
+                      <option value="">(no field condition)</option>
+                      {fieldCandidates.map((f) => (
+                        <option key={f.id} value={f.value}>
+                          {f.label} ({f.meta?.inputType})
+                        </option>
+                      ))}
+                    </select>
+                    {rule.field && fieldOpts.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {fieldOpts.map((o) => {
+                          const checked = selectedFieldValues.includes(o.value);
+                          return (
+                            <label key={o.value} className="inline-flex items-center gap-1 text-xs">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  const next = [...value];
+                                  const updated = checked
+                                    ? selectedFieldValues.filter((v) => v !== o.value)
+                                    : [...selectedFieldValues, o.value];
+                                  next[rIdx] = { ...next[rIdx], fieldValues: updated };
+                                  onChange(next);
+                                }}
+                              />
+                              {o.label}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
               ) : null}
             </div>
             <Button

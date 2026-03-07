@@ -1,12 +1,15 @@
 import { getServerSession } from "next-auth";
 import type { Session } from "next-auth";
+import Link from "next/link";
 import { authOptions } from "@/lib/auth/options";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { db } from "@/db/client";
 import { memberships, organisations, users } from "@/db/schema/core";
 import { eq } from "drizzle-orm";
 import { LocalUpdatedBadge } from "@/components/LocalUpdatedBadge";
+import { GitBranch } from "lucide-react";
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
@@ -49,9 +52,21 @@ export default async function DashboardPage() {
     // ignore
   }
 
+  const isAdmin = user?.userType === "admin";
+
   return (
     <main className="mx-auto max-w-5xl">
-      <h1 className="mb-6 text-2xl font-semibold">Dashboard</h1>
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Dashboard</h1>
+        {isAdmin && (
+          <Button asChild size="sm">
+            <Link href="/admin/policy-settings/flows?create=1">
+              <GitBranch className="h-4 w-4 shrink-0" />
+              Create Flow
+            </Link>
+          </Button>
+        )}
+      </div>
       <Card>
         <CardHeader>
           <CardTitle>Welcome</CardTitle>

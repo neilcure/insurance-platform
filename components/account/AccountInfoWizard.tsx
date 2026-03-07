@@ -255,7 +255,7 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
                 </select>
               </div>
               <div className="flex items-center justify-between">
-                <div className="text-sm text-neutral-500">Email: {initial.user?.email}</div>
+                <div className="text-sm text-neutral-500 dark:text-neutral-400">Email: {initial.user?.email}</div>
                 <div className="flex gap-2">
                   <Button
                     type="button"
@@ -409,7 +409,7 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
           </Card>
         ) : null}
 
-        <div className="flex items-center justify-center text-sm text-neutral-500">
+        <div className="flex items-center justify-center text-sm text-neutral-500 dark:text-neutral-400">
           Step {currentStepIndex + 1} of {steps.length}
         </div>
       </form>

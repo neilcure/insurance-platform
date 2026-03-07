@@ -1,0 +1,38 @@
+---
+description: Responsive layout rules — sidebar, tables, padding, and mobile-first design
+globs: **/*.tsx
+alwaysApply: false
+---
+
+# Responsive Layout Rules
+
+## Sidebar
+
+The `SidebarProvider` in `@/components/ui/sidebar` handles two modes automatically:
+- **Desktop (>768px)**: sticky sidebar with icon-collapse toggle
+- **Mobile (≤768px)**: sidebar fully hidden, opens as fixed overlay with backdrop via `SidebarTrigger`
+
+Do not re-implement sidebar collapse logic. The sidebar auto-closes on route change.
+
+## Tables
+
+Always wrap `<Table>` in `<div className="overflow-x-auto">` to enable horizontal scroll on small screens.
+
+Hide non-essential columns on mobile using `hidden sm:table-cell` on both `<TableHead>` and the matching `<TableCell>`:
+
+```tsx
+<TableHead className="hidden sm:table-cell">Category</TableHead>
+// ...
+<TableCell className="hidden sm:table-cell">{row.category}</TableCell>
+```
+
+## Content padding
+
+Dashboard pages use `p-3 pt-0 sm:p-6 sm:pt-0` — tighter on mobile, standard on desktop. Don't use fixed `p-6` alone.
+
+## General rules
+
+- Use Tailwind responsive prefixes (`sm:`, `md:`, `lg:`) — never custom `@media` queries
+- Stack horizontal layouts vertically on mobile: `flex flex-col sm:flex-row`
+- Use `max-w-*` with `mx-auto` for centered content containers
+- All API list endpoints support `limit` and `offset` query params for pagination

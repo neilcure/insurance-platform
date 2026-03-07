@@ -27,7 +27,7 @@ export function TeamSwitcher({
         {T.name}
       </span>
       {T.plan ? (
-        <span className="ml-auto text-[11px] text-neutral-500 group-data-[collapsed=true]/sidebar-wrapper:hidden">
+        <span className="ml-auto text-[11px] text-neutral-500 dark:text-neutral-400 group-data-[collapsed=true]/sidebar-wrapper:hidden">
           {T.plan}
         </span>
       ) : null}

@@ -4,6 +4,7 @@ import * as React from "react";
 import { useForm, useWatch, type UseFormReturn } from "react-hook-form";
 import { toast } from "sonner";
 import { usePathname, useSearchParams, useRouter } from "next/navigation";
+import { maskDDMMYYYY } from "@/lib/format/date";
 
 import {
   Card,
@@ -17,6 +18,7 @@ import { Label } from "@/components/ui/label";
 // Radix RadioGroup is available, but insured radios use native inputs for consistent styling
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Field } from "@/components/ui/form-field";
 import { VehicleStep } from "@/components/policies/vehicle-step";
 import { PolicyStep } from "@/components/policies/policy-step";
 import { DeclarationsStep } from "@/components/policies/declarations-step";
@@ -25,6 +27,8 @@ import { PackageBlock } from "@/components/policies/PackageBlock";
 import { InsuredStep } from "@/components/policies/InsuredStep";
 import { buildInsuredDynamicSchema } from "@/lib/validation/insured";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
+import { SlideDrawer } from "@/components/ui/slide-drawer";
+import { X, UserPlus, UserSearch, ArrowRight, Check, Loader2, Save } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { BooleanBranchFields } from "@/components/policies/InlineSelectWithChildren";
 
@@ -37,20 +41,7 @@ type WizardState = {
   highestCompletedStep: number;
 };
 
-// Shared dynamic config types and helpers (for strong typing and to avoid any)
-type SelectOption = { label?: string; value?: string };
-type RepeatableFieldConfig = {
-  label?: string;
-  value?: string;
-  inputType?: string;
-  options?: SelectOption[];
-};
-type RepeatableConfig = {
-  itemLabel?: string;
-  min?: number;
-  max?: number;
-  fields?: RepeatableFieldConfig[];
-};
+import type { SelectOption, RepeatableFieldConfig, RepeatableConfig } from "@/lib/types/form";
 function getRepeatable(raw: unknown): RepeatableConfig {
   if (Array.isArray(raw)) {
     const first = raw[0];
@@ -75,7 +66,6 @@ const InlineSelectWithChildrenMemo = React.memo(function InlineSelectWithChildre
   required,
   options,
   displayMode = "radio",
-  formatDDMMYYYY,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   nameBase: string;
@@ -83,7 +73,6 @@ const InlineSelectWithChildrenMemo = React.memo(function InlineSelectWithChildre
   required?: boolean;
   options: { label?: string; value?: string; children?: { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; currencyCode?: string; decimals?: number; booleanLabels?: { true?: string; false?: string }; booleanDisplay?: "radio" | "dropdown"; booleanChildren?: { true?: any[]; false?: any[] } }[] }[];
   displayMode?: "dropdown" | "radio";
-  formatDDMMYYYY: (raw: string) => string;
 }) {
   const current = useWatch({ control: form.control, name: nameBase as string }) as string | undefined;
   const nodes: React.ReactNode[] = [];
@@ -91,7 +80,7 @@ const InlineSelectWithChildrenMemo = React.memo(function InlineSelectWithChildre
     <div key={`${nameBase}__field`} className="space-y-2">
       <div className="space-y-1">
         <Label>
-          {label} {required ? <span className="text-red-600">*</span> : null}
+          {label} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
         </Label>
         {displayMode === "dropdown" ? (
           <select
@@ -141,7 +130,7 @@ const InlineSelectWithChildrenMemo = React.memo(function InlineSelectWithChildre
         };
         regOpts.onChange = (e: unknown) => {
           const t = e as { target?: { value?: string } };
-          const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+          const formatted = maskDDMMYYYY(t?.target?.value ?? "");
           form.setValue(name as never, formatted as never, { shouldDirty: true });
         };
       }
@@ -163,7 +152,7 @@ const InlineSelectWithChildrenMemo = React.memo(function InlineSelectWithChildre
                 <option value="true">{yesLabel}</option>
                 <option value="false">{noLabel}</option>
               </select>
-              <BooleanBranchFields form={form} name={name} booleanChildren={child?.booleanChildren} formatDDMMYYYY={formatDDMMYYYY} />
+              <BooleanBranchFields form={form} name={name} booleanChildren={child?.booleanChildren} />
             </div>
           );
         } else {
@@ -194,7 +183,7 @@ const InlineSelectWithChildrenMemo = React.memo(function InlineSelectWithChildre
                   {noLabel}
                 </label>
               </div>
-              <BooleanBranchFields form={form} name={name} booleanChildren={child?.booleanChildren} formatDDMMYYYY={formatDDMMYYYY} />
+              <BooleanBranchFields form={form} name={name} booleanChildren={child?.booleanChildren} />
             </div>
           );
         }
@@ -238,7 +227,7 @@ const InlineSelectWithChildrenMemo = React.memo(function InlineSelectWithChildre
                   {o.label}
                 </label>
               ))}
-              {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+              {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
             </div>
           </div>
         );
@@ -252,7 +241,7 @@ const InlineSelectWithChildrenMemo = React.memo(function InlineSelectWithChildre
           <div key={name} className="min-w-[220px] flex-1 space-y-1">
             <Label>{child?.label ?? "Details"}</Label>
             <div className="flex items-center gap-2">
-              {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+              {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
               <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
             </div>
           </div>
@@ -282,12 +271,10 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
   form,
   pkg,
   allowedCategories,
-  formatDDMMYYYY,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   pkg: string;
   allowedCategories?: string[] | undefined;
-  formatDDMMYYYY: (raw: string) => string;
 }) {
   const [categories, setCategories] = React.useState<{ label: string; value: string; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }[]>([]);
   const catFieldName = `${pkg}__category`;
@@ -510,7 +497,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                       <div key={nameBase} className="col-span-2 space-y-2">
                         <div className="flex items-center justify-between">
                           <Label>
-                            {displayLabel} {Boolean(meta.required) ? <span className="text-red-600">*</span> : null}
+                            {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                           </Label>
                           <Button type="button" size="sm" variant="secondary" onClick={addItem} disabled={!canAdd}>
                             Add {itemLabel}
@@ -564,7 +551,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                 {o.label}
                                               </label>
                                             ))}
-                                            {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                            {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                           </div>
                                         </div>
                                       );
@@ -577,7 +564,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                         <div key={`${childName}__cur`} className="space-y-1">
                                           <Label>{cf.label ?? "Value"}</Label>
                                           <div className="flex items-center gap-2">
-                                            {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                            {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                             <Input type="number" step={step} placeholder="0.00" {...form.register(childName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                           </div>
                                         </div>
@@ -594,7 +581,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                       };
                                       regOpts.onChange = (e: unknown) => {
                                         const t = e as { target?: { value?: string } };
-                                        const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                        const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                         form.setValue(childName as never, formatted as never, { shouldDirty: true });
                                       };
                                     }
@@ -633,7 +620,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                         required={Boolean(meta.required)}
                         options={options}
                         displayMode={(meta?.selectDisplay ?? "dropdown") === "dropdown" ? "dropdown" : "radio"}
-                        formatDDMMYYYY={formatDDMMYYYY}
+
                       />
                     );
                   }
@@ -648,7 +635,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                       <div key={nameBase} className="space-y-2">
                         <div className="space-y-1">
                           <Label>
-                            {displayLabel} {meta.required ? <span className="text-red-600">*</span> : null}
+                            {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                           </Label>
                           <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
                             {options.map((o) => (
@@ -666,7 +653,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                 {o.label}
                               </label>
                             ))}
-                            {options.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                            {options.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                           </div>
                         </div>
                         {(() => {
@@ -692,7 +679,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                     };
                                     regOpts.onChange = (e: unknown) => {
                                       const t = e as { target?: { value?: string } };
-                                      const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                      const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                       form.setValue(name as never, formatted as never, { shouldDirty: true });
                                     };
                                   }
@@ -733,7 +720,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                               {o.label}
                                             </label>
                                           ))}
-                                          {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                          {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                         </div>
                                       </div>
                                     );
@@ -746,7 +733,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                       <div key={name} className="space-y-1">
                                         <Label>{child?.label ?? "Details"}</Label>
                                         <div className="flex items-center gap-2">
-                                          {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                          {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                           <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                         </div>
                                       </div>
@@ -786,7 +773,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                       <div key={nameBase} className="col-span-2 space-y-2">
                         <div className="space-y-1">
                           <Label>
-                            {displayLabel} {meta.required ? <span className="text-red-600">*</span> : null}
+                            {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                           </Label>
                           {(meta?.booleanDisplay ?? "radio") === "dropdown" ? (
                             <select
@@ -849,7 +836,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                         <option value="true">{yesL}</option>
                                         <option value="false">{noL}</option>
                                       </select>
-                                      <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                      <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                     </div>
                                   );
                                 }
@@ -866,7 +853,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                         {noL}
                                       </label>
                                     </div>
-                                    <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                    <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                   </div>
                                 );
                               }
@@ -955,7 +942,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                             {o.label}
                                                           </label>
                                                         ))}
-                                                        {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                                        {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                                       </div>
                                                     </div>
                                                   );
@@ -968,7 +955,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                     <div key={`${childName}__cur`} className="space-y-1">
                                                       <Label>{cf?.label ?? "Value"}</Label>
                                                       <div className="flex items-center gap-2">
-                                                        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                                        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                                         <Input type="number" step={step} placeholder="0.00" {...form.register(childName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                                       </div>
                                                     </div>
@@ -983,7 +970,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                   };
                                                   regChildOpts.onChange = (e: unknown) => {
                                                     const t = e as { target?: { value?: string } };
-                                                    const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                                    const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                                     form.setValue(childName as never, formatted as never, { shouldDirty: true });
                                                   };
                                                 }
@@ -1015,7 +1002,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                   <div key={name} className="space-y-1">
                                     <Label>{child?.label ?? "Details"}</Label>
                                     <div className="flex items-center gap-2">
-                                      {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                      {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                       <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                     </div>
                                   </div>
@@ -1032,7 +1019,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                 };
                                 regOpts.onChange = (e: unknown) => {
                                   const t = e as { target?: { value?: string } };
-                                  const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                  const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                   form.setValue(name as never, formatted as never, { shouldDirty: true });
                                 };
                               }
@@ -1070,7 +1057,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                         <option value="true">{yesL}</option>
                                         <option value="false">{noL}</option>
                                       </select>
-                                      <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                      <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                     </div>
                                   );
                                 }
@@ -1087,7 +1074,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                         {noL}
                                       </label>
                                     </div>
-                                    <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                    <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                   </div>
                                 );
                               }
@@ -1176,7 +1163,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                             {o.label}
                                                           </label>
                                                         ))}
-                                                        {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                                        {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                                       </div>
                                                     </div>
                                                   );
@@ -1189,7 +1176,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                     <div key={`${childName}__cur`} className="space-y-1">
                                                       <Label>{cf?.label ?? "Value"}</Label>
                                                       <div className="flex items-center gap-2">
-                                                        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                                        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                                         <Input type="number" step={step} placeholder="0.00" {...form.register(childName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                                       </div>
                                                     </div>
@@ -1204,7 +1191,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                   };
                                                   regChildOpts.onChange = (e: unknown) => {
                                                     const t = e as { target?: { value?: string } };
-                                                    const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                                    const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                                     form.setValue(childName as never, formatted as never, { shouldDirty: true });
                                                   };
                                                 }
@@ -1236,7 +1223,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                   <div key={name} className="space-y-1">
                                     <Label>{child?.label ?? "Details"}</Label>
                                     <div className="flex items-center gap-2">
-                                      {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                      {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                       <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                     </div>
                                   </div>
@@ -1253,7 +1240,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                 };
                                 regOpts.onChange = (e: unknown) => {
                                   const t = e as { target?: { value?: string } };
-                                  const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                  const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                   form.setValue(name as never, formatted as never, { shouldDirty: true });
                                 };
                               }
@@ -1284,7 +1271,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                     };
                     options.onChange = (e: unknown) => {
                       const t = e as { target?: { value?: string } };
-                      const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                      const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                       form.setValue(nameBase as never, formatted as never, { shouldDirty: true });
                     };
                   }
@@ -1296,10 +1283,10 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                     return (
                       <div key={nameBase} className="space-y-1">
                         <Label>
-                          {displayLabel} {Boolean(meta.required) ? <span className="text-red-600">*</span> : null}
+                          {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                         </Label>
                         <div className="flex items-center gap-2">
-                          {currencyCode ? <span className="shrink-0 text-sm font-medium text-neutral-500">{currencyCode}</span> : null}
+                          {currencyCode ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{currencyCode}</span> : null}
                           <Input
                             type="number"
                             step={step}
@@ -1352,6 +1339,8 @@ export default function NewPolicyStep1Page() {
         isFinal?: boolean;
         wizardStep?: number;
         wizardStepLabel?: string;
+        embeddedFlow?: string;
+        embeddedFlowLabel?: string;
       };
     }[]
   >([]);
@@ -1411,6 +1400,23 @@ export default function NewPolicyStep1Page() {
     };
   }, [refreshTick]);
   const [stepsLoading, setStepsLoading] = React.useState(true);
+  type StepShape = {
+    id: number;
+    label: string;
+    value: string;
+    sortOrder: number;
+    meta?: {
+      packages?: string[];
+      packageCategories?: Record<string, string[]>;
+      packageShowWhen?: Record<string, { package: string; category: string | string[] }[]>;
+      categoryStepVisibility?: Record<string, string[]>;
+      isFinal?: boolean;
+      wizardStep?: number;
+      wizardStepLabel?: string;
+      embeddedFlow?: string;
+      embeddedFlowLabel?: string;
+    };
+  };
   React.useEffect(() => {
     let cancelled = false;
     async function loadSteps() {
@@ -1422,27 +1428,57 @@ export default function NewPolicyStep1Page() {
       try {
         const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`flow_${flowKey}_steps`)}`, { cache: "no-store" });
         if (!res.ok) return;
-        const data = (await res.json()) as unknown[];
-        if (!cancelled)
-          setSteps(
-            Array.isArray(data)
-              ? (data as {
-                  id: number;
-                  label: string;
-                  value: string;
-                  sortOrder: number;
-                  meta?: {
-                    packages?: string[];
-                    packageCategories?: Record<string, string[]>;
-                    packageShowWhen?: Record<string, { package: string; category: string | string[] }[]>;
-                    categoryStepVisibility?: Record<string, string[]>;
-                    isFinal?: boolean;
-                    wizardStep?: number;
-                    wizardStepLabel?: string;
-                  };
-                }[])
-              : [],
-          );
+        const data = (await res.json()) as StepShape[];
+        const raw = Array.isArray(data) ? data : [];
+        const sorted = [...raw].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+
+        const expanded: StepShape[] = [];
+        let wizardStepCounter = 1;
+
+        for (const step of sorted) {
+          const meta = step.meta ?? {};
+          if (meta.embeddedFlow) {
+            const embedRes = await fetch(
+              `/api/form-options?groupKey=${encodeURIComponent(`flow_${meta.embeddedFlow}_steps`)}`,
+              { cache: "no-store" }
+            );
+            if (!embedRes.ok || cancelled) continue;
+            const embedData = (await embedRes.json()) as StepShape[];
+            const embedSteps = Array.isArray(embedData)
+              ? [...embedData].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+              : [];
+            const labelOverride = meta.embeddedFlowLabel?.trim();
+            const byStep = new Map<number, StepShape[]>();
+            for (const es of embedSteps) {
+              const n = Number(es.meta?.wizardStep ?? 0) || 999;
+              if (!byStep.has(n)) byStep.set(n, []);
+              byStep.get(n)!.push(es);
+            }
+            const sortedGroupKeys = [...byStep.keys()].sort((a, b) => a - b);
+            for (const k of sortedGroupKeys) {
+              const group = byStep.get(k) ?? [];
+              for (const es of group) {
+                expanded.push({
+                  ...es,
+                  id: es.id * 10000 + wizardStepCounter,
+                  meta: {
+                    ...es.meta,
+                    wizardStep: wizardStepCounter,
+                    wizardStepLabel: labelOverride || es.meta?.wizardStepLabel,
+                  },
+                });
+              }
+              wizardStepCounter++;
+            }
+          } else {
+            expanded.push({
+              ...step,
+              meta: { ...meta, wizardStep: wizardStepCounter },
+            });
+            wizardStepCounter++;
+          }
+        }
+        if (!cancelled) setSteps(expanded);
       } catch {
         // keep previous steps on error to avoid flicker
       } finally {
@@ -1542,15 +1578,13 @@ export default function NewPolicyStep1Page() {
     reValidateMode: "onSubmit",
   });
   const wizardFormValues = useWatch({ control: form.control }) as Record<string, unknown>;
-  // If deep-linked with intent=create_client, skip Step 1 and go directly to Step 2 (create-new path)
+  // If deep-linked with intent=create_client, pre-select "Create a New Client" and stay on Step 1
   const intentHandledRef = React.useRef(false);
   React.useEffect(() => {
     if (intentHandledRef.current) return;
     const intent = searchParams.get("intent");
     if (intent !== "create_client") return;
-    // Mark as handled to avoid loops
     intentHandledRef.current = true;
-    // Best-effort set of common Step 1 keys to "create" value so any downstream logic remains consistent
     try {
       const createVal = "createNClient";
       const keys = ["existOrCreateClient", "newExistingClient", "newOrExistingClient", "existingOrNewClient"];
@@ -1560,13 +1594,6 @@ export default function NewPolicyStep1Page() {
         } catch {}
       }
     } catch {}
-    // Advance to Step 2 immediately
-    setWizard((w) => ({
-      ...w,
-      step: w.step >= 2 ? w.step : 2,
-      highestCompletedStep: Math.max(w.highestCompletedStep, 1),
-    }));
-  // only on first mount / searchParams change
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -1593,22 +1620,51 @@ export default function NewPolicyStep1Page() {
       if (!clientPickerOpen) return;
       setLoadingClients(true);
       try {
-        const res = await fetch("/api/clients", { cache: "no-store" });
-        const json = (res.ok ? ((await res.json()) as unknown[]) : []) as {
-          id?: unknown;
-          clientNumber?: unknown;
-          category?: unknown;
-          displayName?: unknown;
-        }[];
+        // Find the client flow key from available flows
+        const flowsRes = await fetch("/api/form-options?groupKey=flows", { cache: "no-store" });
+        const flows = flowsRes.ok ? ((await flowsRes.json()) as Array<{ value?: string }>) : [];
+        const clientFlow = flows.find((f) => String(f.value ?? "").toLowerCase().includes("client"));
+        const clientFlowKey = clientFlow?.value ?? "clientSet";
+        const res = await fetch(`/api/policies?flow=${encodeURIComponent(clientFlowKey)}&_t=${Date.now()}`, { cache: "no-store" });
+        const json = (res.ok ? ((await res.json()) as unknown[]) : []) as Array<Record<string, unknown>>;
         if (!cancelled) {
+          const norm = (k: string) => k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
           setClientRows(
             json
-              .map((r) => ({
-                id: Number(r?.id ?? 0),
-                clientNumber: String(r?.clientNumber ?? ""),
-                category: String(r?.category ?? ""),
-                displayName: String(r?.displayName ?? ""),
-              }))
+              .map((r: Record<string, unknown>) => {
+                const policyId = Number(r.policyId ?? r.id ?? 0);
+                const policyNumber = String(r.policyNumber ?? r.policy_number ?? "");
+                const extra = (r.carExtra ?? r.extraAttributes ?? r.extra_attributes ?? null) as Record<string, unknown> | null;
+                const insured = (extra?.insuredSnapshot ?? {}) as Record<string, unknown>;
+                const rawType = String(insured?.insuredType ?? insured?.insured__category ?? "").trim().toLowerCase();
+                const category = rawType === "company" || rawType === "personal" ? rawType : "";
+                let displayName = "";
+                if (category === "personal") {
+                  let first = "", last = "";
+                  for (const [k, v] of Object.entries(insured)) {
+                    const n = norm(k), s = String(v ?? "").trim();
+                    if (!s) continue;
+                    if (!last && /lastname|surname/.test(n)) last = s;
+                    if (!first && /firstname/.test(n)) first = s;
+                  }
+                  displayName = [last, first].filter(Boolean).join(" ");
+                }
+                if (!displayName) {
+                  for (const [k, v] of Object.entries(insured)) {
+                    const n = norm(k), s = String(v ?? "").trim();
+                    if (!s) continue;
+                    if (/companyname|organisationname|orgname/.test(n)) { displayName = s; break; }
+                  }
+                }
+                if (!displayName) {
+                  for (const [k, v] of Object.entries(insured)) {
+                    const n = norm(k), s = String(v ?? "").trim();
+                    if (!s) continue;
+                    if (/fullname|^name$/.test(n)) { displayName = s; break; }
+                  }
+                }
+                return { id: policyId, clientNumber: policyNumber, category, displayName };
+              })
               .filter((r) => Number.isFinite(r.id) && r.id > 0),
           );
         }
@@ -1633,19 +1689,27 @@ export default function NewPolicyStep1Page() {
   }, [clientRows, clientSearch]);
   async function chooseExistingClient(id: number) {
     try {
-      const res = await fetch(`/api/clients/${id}`, { cache: "no-store" });
+      const res = await fetch(`/api/policies/${id}?_t=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) {
         toast.error("Failed to load client");
         return;
       }
       const detail = (await res.json()) as {
-        id: number;
+        policyId: number;
+        id?: number;
+        policyNumber?: string;
         clientNumber?: string;
         category?: string;
         displayName?: string;
         extraAttributes?: Record<string, unknown> | null;
       };
-      const extra = (detail?.extraAttributes ?? {}) as Record<string, unknown>;
+      const rawExtra = (detail?.extraAttributes ?? {}) as Record<string, unknown>;
+      const insured = (rawExtra.insuredSnapshot ?? {}) as Record<string, unknown>;
+      const derivedCategory = String(insured?.insuredType ?? insured?.insured__category ?? "").trim().toLowerCase();
+      const extra = insured;
+      if (!detail.category) (detail as any).category = derivedCategory || undefined;
+      if (!detail.id) (detail as any).id = detail.policyId;
+      if (!detail.clientNumber) (detail as any).clientNumber = detail.policyNumber;
       // Baseline for delete detection should come from the stored client data (extraAttributes),
       // not RHF dirty tracking, since cleared number inputs often become undefined/omitted.
       try {
@@ -1847,12 +1911,10 @@ export default function NewPolicyStep1Page() {
         // ignore
       }
       // Set clientId on the policy state
+      setClientWasCreatedByButton(false);
       setWizard((w) => ({
         ...w,
         policy: { ...(w.policy ?? {}), clientId: Number(detail.id) },
-        // Auto-advance if we're on a branching step expecting existing client selection
-        step: w.step + 1,
-        highestCompletedStep: Math.max(w.highestCompletedStep, w.step),
       }));
       // After the step advances, dynamic insured fields may mount/register on the next render.
       // Run the same fill again in the next frame so insured fields never stay blank.
@@ -2410,12 +2472,7 @@ export default function NewPolicyStep1Page() {
     });
     return () => sub.unsubscribe && sub.unsubscribe();
   }, [form, insuredType, dynamicFields]);
-  function formatDDMMYYYY(raw: string): string {
-    const digits = String(raw ?? "").replace(/\D/g, "").slice(0, 8);
-    if (digits.length <= 2) return digits;
-    if (digits.length <= 4) return `${digits.slice(0, 2)}-${digits.slice(2)}`;
-    return `${digits.slice(0, 2)}-${digits.slice(2, 4)}-${digits.slice(4)}`;
-  }
+
 
   // Discover address field mappings across dynamic insured fields and active package fields
   const [addressFieldMap, setAddressFieldMap] = React.useState<Record<string, string>>({});
@@ -2490,46 +2547,74 @@ export default function NewPolicyStep1Page() {
           if (!cancelled && opts.length > 0) setAreaOptionsForTool(opts);
         }
 
-        // From current step packages
+        // Scan ALL active packages for address fields (not just step packages)
+        const pkgsToScan = new Set<string>();
+        // From step packages
         if (Array.isArray(steps) && steps.length > 0) {
           const sorted = [...steps].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-          const step = sorted[Math.max(0, (wizardStepForAddressDiscover ?? 1) - 1)];
-          const pkgs = Array.isArray(step?.meta?.packages) ? (step!.meta!.packages as string[]) : [];
-          for (const pkg of pkgs) {
-            try {
-              const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}`, { cache: "no-store" });
-              if (!res.ok) continue;
-              const rows = (await res.json()) as { label?: string; value?: string; meta?: { options?: { label?: string; value?: string }[] } }[];
-              const compact = rows.map((r) => ({ label: r.label ?? "", value: r.value ?? "" }));
-              const toPkgName = (raw?: string) => {
-                const k = String(raw ?? "").trim();
-                if (!k) return undefined;
-                if (k.startsWith(`${pkg}__`)) return k;
-                const fieldKey = k.startsWith(`${pkg}_`) ? k.slice(`${pkg}_`.length) : k;
-                return `${pkg}__${fieldKey}`;
-              };
-              setIf("flatNumber", toPkgName(findByTokens(compact, tokens.flatNumber)));
-              setIf("floorNumber", toPkgName(findByTokens(compact, tokens.floorNumber)));
-              setIf("blockNumber", toPkgName(findByTokens(compact, tokens.blockNumber)));
-              setIf("blockName", toPkgName(findByTokens(compact, tokens.blockName)));
-              setIf("streetNumber", toPkgName(findByTokens(compact, tokens.streetNumber)));
-              setIf("streetName", toPkgName(findByTokens(compact, tokens.streetName)));
-              setIf("propertyName", toPkgName(findByTokens(compact, tokens.propertyName)));
-              setIf("districtName", toPkgName(findByTokens(compact, tokens.districtName)));
-              const areaKey = findByTokens(compact, tokens.area);
-              setIf("area", toPkgName(areaKey));
-              setIf("verifiedAddress", toPkgName(findByTokens(compact, tokens.verifiedAddress)));
-              setIf("latitude", toPkgName(findByTokens(compact, tokens.latitude)));
-              setIf("longitude", toPkgName(findByTokens(compact, tokens.longitude)));
-              setIf("placeId", toPkgName(findByTokens(compact, tokens.placeId)));
-              if (areaKey) {
-                const areaRow = rows.find((r) => String(r.value ?? "") === areaKey);
-                const opts = (Array.isArray(areaRow?.meta?.options) ? (areaRow?.meta?.options as { label?: string; value?: string }[]) : []) || [];
-                if (!cancelled) setAreaOptionsForTool(opts);
+          for (const step of sorted) {
+            for (const p of (Array.isArray(step?.meta?.packages) ? step!.meta!.packages as string[] : [])) pkgsToScan.add(p);
+          }
+        }
+        // Always include contactinfo — address fields commonly live here
+        pkgsToScan.add("contactinfo");
+        // Also include any packages loaded from packages list
+        try {
+          const pkgListRes = await fetch("/api/form-options?groupKey=packages", { cache: "no-store" });
+          if (pkgListRes.ok) {
+            const allPkgs = (await pkgListRes.json()) as { value?: string }[];
+            for (const p of allPkgs) if (p.value) pkgsToScan.add(p.value);
+          }
+        } catch { /* ignore */ }
+
+        const usedFieldValues = new Set<string>();
+        for (const pkg of pkgsToScan) {
+          try {
+            const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}`, { cache: "no-store" });
+            if (!res.ok) continue;
+            const rows = (await res.json()) as { label?: string; value?: string; meta?: { options?: { label?: string; value?: string }[] } }[];
+            const toPkgName = (raw?: string) => {
+              const k = String(raw ?? "").trim();
+              if (!k) return undefined;
+              if (k.startsWith(`${pkg}__`)) return k;
+              const fieldKey = k.startsWith(`${pkg}_`) ? k.slice(`${pkg}_`.length) : k;
+              return `${pkg}__${fieldKey}`;
+            };
+            const findByTokensExclusive = (allRows: { label?: string; value?: string }[], tkns: string[]) => {
+              for (const r of allRows) {
+                const fv = String(r.value ?? "");
+                if (usedFieldValues.has(`${pkg}:${fv}`)) continue;
+                const l = normalize(r.label);
+                const v = normalize(fv);
+                if (includesAny(l, tkns) || includesAny(v, tkns)) {
+                  usedFieldValues.add(`${pkg}:${fv}`);
+                  return fv;
+                }
               }
-            } catch {
-              // ignore per pkg
+              return undefined;
+            };
+            const compact = rows.map((r) => ({ label: r.label ?? "", value: r.value ?? "" }));
+            setIf("flatNumber", toPkgName(findByTokensExclusive(compact, tokens.flatNumber)));
+            setIf("floorNumber", toPkgName(findByTokensExclusive(compact, tokens.floorNumber)));
+            setIf("blockNumber", toPkgName(findByTokensExclusive(compact, tokens.blockNumber)));
+            setIf("blockName", toPkgName(findByTokensExclusive(compact, tokens.blockName)));
+            setIf("streetNumber", toPkgName(findByTokensExclusive(compact, tokens.streetNumber)));
+            setIf("streetName", toPkgName(findByTokensExclusive(compact, tokens.streetName)));
+            setIf("propertyName", toPkgName(findByTokensExclusive(compact, tokens.propertyName)));
+            setIf("districtName", toPkgName(findByTokensExclusive(compact, tokens.districtName)));
+            const areaKey = findByTokensExclusive(compact, tokens.area);
+            setIf("area", toPkgName(areaKey));
+            setIf("verifiedAddress", toPkgName(findByTokensExclusive(compact, tokens.verifiedAddress)));
+            setIf("latitude", toPkgName(findByTokensExclusive(compact, tokens.latitude)));
+            setIf("longitude", toPkgName(findByTokensExclusive(compact, tokens.longitude)));
+            setIf("placeId", toPkgName(findByTokensExclusive(compact, tokens.placeId)));
+            if (areaKey) {
+              const areaRow = rows.find((r) => String(r.value ?? "") === areaKey);
+              const opts = (Array.isArray(areaRow?.meta?.options) ? (areaRow?.meta?.options as { label?: string; value?: string }[]) : []) || [];
+              if (!cancelled && opts.length > 0) setAreaOptionsForTool(opts);
             }
+          } catch {
+            // ignore per pkg
           }
         }
       } finally {
@@ -2613,12 +2698,6 @@ export default function NewPolicyStep1Page() {
 
     return (
       <section className="space-y-4">
-        <h3 className="text-sm font-medium">
-          {(() => {
-            const match = packagesOptions.find((po) => po.value === (title ?? pkg));
-            return match?.label ?? title ?? pkg;
-          })()}
-        </h3>
         <div className="space-y-2">
           <div className="flex flex-wrap gap-6">
             {categories.map((opt) => (
@@ -2715,7 +2794,7 @@ export default function NewPolicyStep1Page() {
                   <div key={nameBase} className="space-y-2">
                     <div className="space-y-1">
                       <Label>
-                        {f.label} {meta.required ? <span className="text-red-600">*</span> : null}
+                        {f.label} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                       </Label>
                       <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
                         {options.map((o) => (
@@ -2731,7 +2810,7 @@ export default function NewPolicyStep1Page() {
                             {o.label}
                           </label>
                         ))}
-                        {options.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                        {options.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                       </div>
                     </div>
                     {(() => {
@@ -2757,7 +2836,7 @@ export default function NewPolicyStep1Page() {
                                 };
                                 regOpts.onChange = (e: unknown) => {
                                   const t = e as { target?: { value?: string } };
-                                  const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                  const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                   form.setValue(name as never, formatted as never, { shouldDirty: true });
                                 };
                               }
@@ -2798,7 +2877,7 @@ export default function NewPolicyStep1Page() {
                                           {o.label}
                                         </label>
                                       ))}
-                                      {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                      {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                     </div>
                                   </div>
                                 );
@@ -2811,7 +2890,7 @@ export default function NewPolicyStep1Page() {
                                   <div key={name} className="space-y-1">
                                     <Label>{child?.label ?? "Details"}</Label>
                                     <div className="flex items-center gap-2">
-                                      {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                      {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                       <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                     </div>
                                   </div>
@@ -2852,7 +2931,7 @@ export default function NewPolicyStep1Page() {
                   <div key={nameBase} className="col-span-2 space-y-2">
                     <div className="space-y-1">
                       <Label>
-                        {f.label} {meta.required ? <span className="text-red-600">*</span> : null}
+                        {f.label} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                       </Label>
                       <div className="flex items-center gap-6">
                         <label className="inline-flex items-center gap-2 text-sm">
@@ -2900,7 +2979,7 @@ export default function NewPolicyStep1Page() {
                                     <option value="true">{yesL}</option>
                                     <option value="false">{noL}</option>
                                   </select>
-                                  <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                  <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                 </div>
                               );
                             }
@@ -2917,7 +2996,7 @@ export default function NewPolicyStep1Page() {
                                     {noL}
                                   </label>
                                 </div>
-                                <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                               </div>
                             );
                           }
@@ -2997,7 +3076,7 @@ export default function NewPolicyStep1Page() {
                                                         {o.label}
                                                       </label>
                                                     ))}
-                                                    {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                                    {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                                   </div>
                                                 </div>
                                               );
@@ -3010,7 +3089,7 @@ export default function NewPolicyStep1Page() {
                                                 <div key={`${childName}__cur`} className="space-y-1">
                                                   <Label>{cf.label ?? "Value"}</Label>
                                                   <div className="flex items-center gap-2">
-                                                    {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                                    {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                                     <Input type="number" step={step} placeholder="0.00" {...form.register(childName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                                   </div>
                                                 </div>
@@ -3025,7 +3104,7 @@ export default function NewPolicyStep1Page() {
                                               };
                                               regChildOpts.onChange = (e: unknown) => {
                                                 const t = e as { target?: { value?: string } };
-                                                const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                                const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                                 form.setValue(childName as never, formatted as never, { shouldDirty: true });
                                               };
                                             }
@@ -3058,7 +3137,7 @@ export default function NewPolicyStep1Page() {
                               <div key={name} className="space-y-1">
                                 <Label>{child?.label ?? "Details"}</Label>
                                 <div className="flex items-center gap-2">
-                                  {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                  {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                   <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                 </div>
                               </div>
@@ -3075,7 +3154,7 @@ export default function NewPolicyStep1Page() {
                             };
                             regOpts.onChange = (e: unknown) => {
                               const t = e as { target?: { value?: string } };
-                              const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                              const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                               form.setValue(name as never, formatted as never, { shouldDirty: true });
                             };
                           }
@@ -3113,7 +3192,7 @@ export default function NewPolicyStep1Page() {
                                     <option value="true">{yesL}</option>
                                     <option value="false">{noL}</option>
                                   </select>
-                                  <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                  <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                 </div>
                               );
                             }
@@ -3130,7 +3209,7 @@ export default function NewPolicyStep1Page() {
                                     {noL}
                                   </label>
                                 </div>
-                                <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} formatDDMMYYYY={formatDDMMYYYY} />
+                                <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                               </div>
                             );
                           }
@@ -3210,7 +3289,7 @@ export default function NewPolicyStep1Page() {
                                                         {o.label}
                                                       </label>
                                                     ))}
-                                                    {opts.length === 0 ? <p className="text-xs text-neutral-500">No options configured.</p> : null}
+                                                    {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                                   </div>
                                                 </div>
                                               );
@@ -3223,7 +3302,7 @@ export default function NewPolicyStep1Page() {
                                                 <div key={`${childName}__cur`} className="space-y-1">
                                                   <Label>{cf.label ?? "Value"}</Label>
                                                   <div className="flex items-center gap-2">
-                                                    {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                                    {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                                     <Input type="number" step={step} placeholder="0.00" {...form.register(childName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                                   </div>
                                                 </div>
@@ -3238,7 +3317,7 @@ export default function NewPolicyStep1Page() {
                                               };
                                               regChildOpts.onChange = (e: unknown) => {
                                                 const t = e as { target?: { value?: string } };
-                                                const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                                                const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                                                 form.setValue(childName as never, formatted as never, { shouldDirty: true });
                                               };
                                             }
@@ -3271,7 +3350,7 @@ export default function NewPolicyStep1Page() {
                               <div key={name} className="space-y-1">
                                 <Label>{child?.label ?? "Details"}</Label>
                                 <div className="flex items-center gap-2">
-                                  {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500">{cc}</span> : null}
+                                  {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
                                   <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
                                 </div>
                               </div>
@@ -3288,7 +3367,7 @@ export default function NewPolicyStep1Page() {
                             };
                             regOpts.onChange = (e: unknown) => {
                               const t = e as { target?: { value?: string } };
-                              const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                              const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                               form.setValue(name as never, formatted as never, { shouldDirty: true });
                             };
                           }
@@ -3319,7 +3398,7 @@ export default function NewPolicyStep1Page() {
                 };
                 options.onChange = (e: unknown) => {
                   const t = e as { target?: { value?: string } };
-                  const formatted = formatDDMMYYYY(t?.target?.value ?? "");
+                  const formatted = maskDDMMYYYY(t?.target?.value ?? "");
                   form.setValue(nameBase as never, formatted as never, { shouldDirty: true });
                 };
               }
@@ -3394,12 +3473,136 @@ export default function NewPolicyStep1Page() {
     return Number.isFinite(n) ? n : undefined;
   }, []);
 
-  // Ensure baseline exists whenever we are on Step 2 with an existing clientId.
-  // Users can land on Step 2 via draft/resume/navigation without going through chooseExistingClient(),
-  // which would otherwise leave the baseline null and make "clear to delete" impossible.
+  const [creatingClient, setCreatingClient] = React.useState(false);
+  const [clientWasCreatedByButton, setClientWasCreatedByButton] = React.useState(false);
+
+  const isCreateNewClientMode = React.useMemo(() => {
+    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+    let namespacedResult: boolean | null = null;
+    let rawResult: boolean | null = null;
+    for (const [k, v] of Object.entries(wizardFormValues ?? {})) {
+      const nk = normalize(k);
+      const isField =
+        nk.includes("existorcreateclient") ||
+        nk.includes("newexistingclient") ||
+        nk.includes("neworexistingclient") ||
+        nk.includes("existingornewclient") ||
+        nk.includes("newexisting") ||
+        nk.includes("existcreate") ||
+        nk.includes("existingclient");
+      if (!isField) continue;
+      const nv = normalize(String(v ?? ""));
+      let result: boolean | null = null;
+      if (nv.includes("create") || nv.includes("new")) result = true;
+      else if (nv.includes("existing") || nv.includes("choose")) result = false;
+      if (result !== null) {
+        if (k.includes("__")) namespacedResult = result;
+        else rawResult = result;
+      }
+    }
+    return namespacedResult ?? rawResult ?? false;
+  }, [wizardFormValues]);
+
+  const handleCreateClient = React.useCallback(async () => {
+    setCreatingClient(true);
+    try {
+      const values = form.getValues() as Record<string, unknown>;
+      const insuredOut: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(values)) {
+        if (typeof k !== "string") continue;
+        const lower = k.toLowerCase();
+        const isInsured =
+          lower.startsWith("insured_") ||
+          lower.startsWith("insured__") ||
+          lower.includes("__insured_") ||
+          lower.includes("__insured__");
+        const isContact =
+          lower.startsWith("contactinfo_") ||
+          lower.startsWith("contactinfo__") ||
+          lower.includes("__contactinfo_") ||
+          lower.includes("__contactinfo__");
+        if (!isInsured && !isContact) continue;
+        if (v === undefined || v === null) continue;
+        if (typeof v === "string" && v.trim() === "") continue;
+        insuredOut[k] = v;
+      }
+      const getAlias = (name: string): unknown => {
+        const direct = values[name];
+        if (typeof direct !== "undefined") return direct;
+        const nameNorm = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+        for (const [kk, vv] of Object.entries(values)) {
+          const nk = kk.toLowerCase();
+          if (nk.endsWith(`__${nameNorm}`) || nk.endsWith(`_${nameNorm}`)) {
+            const sv = typeof vv === "string" ? vv : (vv as any)?.toString?.();
+            if (typeof sv === "string" && sv.trim() !== "") return sv;
+            if (vv !== undefined && vv !== null && typeof vv !== "string") return vv;
+          }
+        }
+        return undefined;
+      };
+      let insuredTypeVal = values["insuredType"] as unknown;
+      if (typeof insuredTypeVal !== "string" || !insuredTypeVal.trim()) {
+        insuredTypeVal = getAlias("category") ?? getAlias("insuredType");
+      }
+      if (typeof insuredTypeVal === "string") {
+        const t = insuredTypeVal.trim().toLowerCase();
+        if (t === "company" || t === "personal") insuredOut["insuredType"] = t;
+      }
+      if (!insuredOut["insuredType"]) {
+        const cat = (values["insured__category"] ?? getAlias("category")) as unknown;
+        if (typeof cat === "string" && cat.trim()) insuredOut["insuredType"] = cat.trim().toLowerCase();
+      }
+      const addIfMissing = (destKey: string, val: unknown) => {
+        if (typeof insuredOut[destKey] === "undefined") {
+          if (typeof val === "string" ? val.trim() !== "" : typeof val !== "undefined" && val !== null) {
+            insuredOut[destKey] = typeof val === "string" ? val.trim() : val;
+          }
+        }
+      };
+      addIfMissing("insured_companyName", getAlias("companyName"));
+      addIfMissing("insured_brNumber", getAlias("brNumber"));
+      addIfMissing("insured_ciNumber", getAlias("ciNumber"));
+      addIfMissing("insured_firstName", getAlias("firstName"));
+      addIfMissing("insured_lastName", getAlias("lastName"));
+      addIfMissing("insured_fullName", getAlias("fullName"));
+      addIfMissing("insured_idNumber", getAlias("idNumber"));
+      addIfMissing("insured_contactPhone", getAlias("contactPhone"));
+      addIfMissing("insured_contactName", getAlias("contactName"));
+      addIfMissing("insured_contactEmail", getAlias("contactEmail"));
+      if (Object.keys(insuredOut).length === 0) {
+        toast.error("Please provide insured/contact information to create client.");
+        return;
+      }
+      const resClient = await fetch("/api/clients", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ insured: insuredOut }),
+      });
+      const jClient = (await resClient.json().catch(() => ({}))) as Record<string, unknown>;
+      if (resClient.ok && typeof jClient?.clientId === "number") {
+        setWizard((w) => ({
+          ...w,
+          policy: { ...(w.policy ?? {}), clientId: jClient.clientId },
+        }));
+        setClientWasCreatedByButton(true);
+        toast.success(
+          `${jClient.existed ? "Existing client" : "Client created"}: ${jClient.clientNumber ?? jClient.clientId}`,
+        );
+      } else {
+        toast.error((jClient?.error as string) ?? "Failed to create/find client");
+      }
+    } catch {
+      toast.error("Failed to create/find client");
+    } finally {
+      setCreatingClient(false);
+    }
+  }, [form, setWizard]);
+
+  // Ensure baseline exists whenever an existing clientId is set (Step 1 or later).
+  // Users can select an existing client at Step 1 and edit fields before clicking Continue,
+  // so the baseline must be available for change detection at any step.
   React.useEffect(() => {
     const cid = getClientId(wizard.policy);
-    if (wizard.step !== 2) return;
     if (typeof cid !== "number" || !Number.isFinite(cid) || cid <= 0) return;
     if (existingClientBaselineIdRef.current === cid && existingClientBaselineRef.current) return;
     let cancelled = false;
@@ -3438,9 +3641,10 @@ export default function NewPolicyStep1Page() {
   const [clientUpdateConfirmOpen, setClientUpdateConfirmOpen] = React.useState(false);
   const [clientUpdateConfirmBusy, setClientUpdateConfirmBusy] = React.useState(false);
   const [clientUpdateDirtyKeys, setClientUpdateDirtyKeys] = React.useState<string[]>([]);
+  const [updateClientBusy, setUpdateClientBusy] = React.useState(false);
   const pendingClientUpdateRef = React.useRef<null | {
     clientId: number;
-    proceed: () => void;
+    proceed: () => void | Promise<void>;
     autoProceedAfterSave?: boolean;
   }>(null);
 
@@ -3471,9 +3675,10 @@ export default function NewPolicyStep1Page() {
       const dirtyRaw = (form.formState.dirtyFields ?? {}) as unknown;
       const dirtyNames = collectDirtyFieldNames(dirtyRaw);
       const isClientInfo = (name: string) => {
-        const base = String(name ?? "").split(".")[0] ?? "";
+        const full = String(name ?? "").trim();
+        if (!full) return false;
+        const base = full.split(".")[0] ?? "";
         const lower = base.toLowerCase();
-        if (!lower) return false;
         if (lower === "insuredtype") return true;
         if (
           lower.startsWith("insured_") ||
@@ -3482,7 +3687,30 @@ export default function NewPolicyStep1Page() {
           lower.startsWith("contactinfo__")
         )
           return true;
-        // Some configs register unprefixed insured field keys (e.g. "companyName").
+        // Nested package keys: e.g. `newExistingClient__contactinfo_tel` or `newExistingClient__insured_name`
+        if (lower.includes("__")) {
+          const tail = lower.split("__").pop() ?? "";
+          if (
+            tail.startsWith("insured_") ||
+            tail.startsWith("insured__") ||
+            tail.startsWith("contactinfo_") ||
+            tail.startsWith("contactinfo__")
+          )
+            return true;
+        }
+        // Dotted nested: e.g. `newExistingClient.contactinfo_tel`
+        if (full.includes(".")) {
+          const tail = full.split(".").pop() ?? "";
+          const tailLower = tail.toLowerCase();
+          if (
+            tailLower.startsWith("insured_") ||
+            tailLower.startsWith("insured__") ||
+            tailLower.startsWith("contactinfo_") ||
+            tailLower.startsWith("contactinfo__") ||
+            tailLower === "insuredtype"
+          )
+            return true;
+        }
         if (insuredConfigKeysLower.has(lower)) return true;
         return false;
       };
@@ -3885,6 +4113,78 @@ export default function NewPolicyStep1Page() {
     [insuredConfigKeysLower, isEmptyClientValue, canonicalizePrefixedKey],
   );
 
+  const handleUpdateClient = React.useCallback(async () => {
+    const clientId = getClientId(wizard.policy);
+    if (typeof clientId !== "number") return;
+    const dirtyKeys = getDirtyClientInfoFieldNames();
+    if (!dirtyKeys.length) {
+      toast.success("No changes to save.", { duration: 1000 });
+      return;
+    }
+    setUpdateClientBusy(true);
+    try {
+      const valuesNow = form.getValues() as Record<string, unknown>;
+      const dirtySetNow = new Set(
+        dirtyKeys
+          .map((k) => String(k ?? "").split(".")[0] ?? "")
+          .filter((s) => Boolean(s))
+      );
+      const snapshotNow = extractClientSnapshotFromValues(valuesNow, dirtySetNow);
+      const normalizedNowAll = normalizePrefixedKeysForClientUpdate(snapshotNow, dirtySetNow);
+      const normalizedNow = filterClientUpdatePayload(normalizedNowAll, dirtySetNow);
+      const categoryNow = getCategoryFromValues(valuesNow);
+      const result = await patchClientInfoNow(clientId, normalizedNow, categoryNow);
+      if (result?.ok) {
+        try {
+          const baseline = existingClientBaselineRef.current ?? {};
+          const nextBaseline: Record<string, unknown> = { ...(baseline as Record<string, unknown>) };
+          const normalizedLower = Object.fromEntries(
+            Object.entries(normalizedNow ?? {}).map(([k, v]) => [String(k ?? "").toLowerCase(), v]),
+          ) as Record<string, unknown>;
+          for (const [k, v] of Object.entries(normalizedLower)) {
+            const ck = canonicalizePrefixedKey(k);
+            if (!ck || !(ck.startsWith("insured_") || ck.startsWith("contactinfo_"))) continue;
+            if (v === null) delete nextBaseline[ck];
+            else nextBaseline[ck] = v;
+          }
+          existingClientBaselineRef.current = nextBaseline;
+          existingClientBaselineIdRef.current = clientId;
+          if (categoryNow === "company" || categoryNow === "personal") {
+            existingClientBaselineCategoryRef.current = categoryNow;
+          }
+        } catch {
+          /* ignore */
+        }
+        try {
+          form.reset(form.getValues());
+        } catch {
+          /* ignore */
+        }
+      }
+    } finally {
+      setUpdateClientBusy(false);
+    }
+  }, [
+    wizard.policy,
+    getClientId,
+    getDirtyClientInfoFieldNames,
+    extractClientSnapshotFromValues,
+    normalizePrefixedKeysForClientUpdate,
+    filterClientUpdatePayload,
+    getCategoryFromValues,
+    patchClientInfoNow,
+    form,
+    canonicalizePrefixedKey,
+  ]);
+
+  const hasUnsavedClientEdits = (() => {
+    const cid = getClientId(wizard.policy);
+    if (typeof cid !== "number") return false;
+    if (!form.formState.isDirty) return false;
+    const dirty = getDirtyClientInfoFieldNames();
+    return dirty.length > 0;
+  })();
+
   const goto = (step: number) => {
     // Allow going back freely
     if (step < wizard.step) {
@@ -3951,6 +4251,7 @@ export default function NewPolicyStep1Page() {
                 if (!Number.isFinite(n) || n <= 0) n = ++auto;
                 if (!wizardNums.includes(n)) wizardNums.push(n);
               }
+              if (wizardNums.length <= 1) return null;
               return wizardNums.map((n) => (
                 <StepDot key={n} n={n} active={wizard.step === n} done={wizard.highestCompletedStep >= n} onClick={() => goto(n)} />
               ));
@@ -3976,7 +4277,7 @@ export default function NewPolicyStep1Page() {
               </Button>
             </>
           ) : null}
-          {wizard.step === 2 ? (
+          {Object.keys(addressFieldMap).length > 0 ? (
             <AddressTool form={form} fieldMap={addressFieldMap} areaOptions={areaOptionsForTool} />
           ) : null}
           <Button variant="secondary" onClick={saveDraft}>Save Draft</Button>
@@ -3997,30 +4298,18 @@ export default function NewPolicyStep1Page() {
                     if (!groups[n]) groups[n] = [];
                     groups[n]!.push(s);
                   }
+                  const totalSteps = Object.keys(groups).length;
                   const group = groups[wizard.step] ?? [];
-                  const base = `${flowLabel} — Step ${wizard.step}`;
-                  // If user chose an option in this group, show that label
-                  const selectedVal = selectedRowByStep[wizard.step];
-                  if (selectedVal) {
-                    const row = group.find((r) => r.value === selectedVal);
-                    const lbl = String(row?.label ?? "").trim();
-                    return lbl ? `${base}: ${lbl}` : base;
-                  }
+                  const base = totalSteps <= 1 ? flowLabel : `${flowLabel} — Step ${wizard.step}`;
                   // Prefer explicit Wizard Step Label if provided on any row in the group
                   const stepLbl = String(
                     (group.find((r) => typeof r.meta?.wizardStepLabel === "string" && r.meta?.wizardStepLabel)?.meta?.wizardStepLabel ??
                       "") || "",
                   ).trim();
-                  if (stepLbl) return `${base}: ${stepLbl}`;
-                  // Fallback: if only one row, use its label
-                  if (group.length === 1) {
-                    const lbl = String(group[0]?.label ?? "").trim();
-                    return lbl ? `${base}: ${lbl}` : base;
-                  }
-                  // Default
+                  if (stepLbl) return totalSteps <= 1 ? `${flowLabel}: ${stepLbl}` : `${base}: ${stepLbl}`;
                   return base;
                 })()
-              : `${flowLabel} — Step 1`}
+              : flowLabel}
           </CardTitle>
         </CardHeader>
 
@@ -4028,7 +4317,7 @@ export default function NewPolicyStep1Page() {
           {/* Agent summary inside the step window */}
           {wizard.step === 3 ? (
             <div className="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
-              <div className="mb-1 text-xs text-neutral-500">Agent</div>
+              <div className="mb-1 text-xs text-neutral-500 dark:text-neutral-400">Agent</div>
               <div className="flex items-center justify-between gap-2">
                 <div
                   className="max-w-[70%] truncate text-sm"
@@ -4124,7 +4413,7 @@ export default function NewPolicyStep1Page() {
                 ) : null}
                 {(() => {
                   if (!selectedRow && group.length > 1) {
-                    return <p className="text-sm text-neutral-500">Please select an option above to continue.</p>;
+                    return <p className="text-sm text-neutral-500 dark:text-neutral-400">Please select an option above to continue.</p>;
                   }
                   const row = (selectedRow ?? group[0])!;
                   const pkgs = Array.isArray(row?.meta?.packages) ? (row!.meta!.packages as string[]) : [];
@@ -4170,7 +4459,7 @@ export default function NewPolicyStep1Page() {
                         form={form}
                         pkg={p}
                         allowedCategories={finalAllowedCats}
-                        formatDDMMYYYY={formatDDMMYYYY}
+                        isAdmin={currentUserType === "admin"}
                       />
                     );
                   });
@@ -4179,61 +4468,65 @@ export default function NewPolicyStep1Page() {
             );
           })()}
 
-          {/* Static fields removed: dynamic insured configuration is the only source */}
+          {typeof getClientId(wizard.policy) === "number" ? (
+            <div className={`rounded-md border p-3 text-sm flex items-center justify-between ${
+              clientWasCreatedByButton
+                ? "border-green-300 bg-green-50 text-green-700 dark:border-green-700 dark:bg-green-900/20 dark:text-green-300"
+                : "border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-300"
+            }`}>
+              <span>
+                Client #{getClientId(wizard.policy)} {clientWasCreatedByButton ? "created successfully" : "selected"}.
+              </span>
+              <button
+                type="button"
+                className="underline text-xs"
+                onClick={() => {
+                  setClientWasCreatedByButton(false);
+                  setWizard((w) => ({ ...w, policy: { ...(w.policy ?? {}), clientId: undefined } }));
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          ) : null}
 
           <Separator />
 
           {/* Agent picker drawer (admin/internal only) */}
           {wizard.step === 3 && (currentUserType === "admin" || currentUserType === "internal_staff") && agentPickerOpen ? (
-            <div className="fixed inset-0 z-50">
-              <div
-                className={`absolute inset-0 bg-black transition-opacity duration-300 ${agentDrawerOpen ? "opacity-60" : "opacity-0"}`}
-                onClick={() => setAgentPickerOpen(false)}
-              />
-              <aside
-                className={`absolute left-0 top-0 h-full w-[280px] sm:w-[320px] md:w-[380px] bg-white dark:bg-neutral-950 border-r border-neutral-200 dark:border-neutral-800 shadow-xl transform transition-transform duration-300 ease-out will-change-transform ${
-                  agentDrawerOpen ? "translate-x-0" : "-translate-x-full"
-                }`}
-              >
-                <div className="flex items-center justify-between border-b border-neutral-200 p-3 dark:border-neutral-800">
-                  <div className="font-semibold">Select Agent</div>
-                  <Button size="iconCompact" variant="ghost" onClick={() => setAgentPickerOpen(false)} aria-label="Close">
-                    ✕
-                  </Button>
+            <SlideDrawer open={agentDrawerOpen} onClose={() => setAgentPickerOpen(false)} title="Select Agent">
+              <div className="p-3 text-sm space-y-2">
+                <Input
+                  placeholder="Search agents…"
+                  value={agentSearch}
+                  onChange={(e) => setAgentSearch(e.target.value)}
+                />
+                <div className="max-h-[70vh] overflow-auto space-y-2">
+                  {loadingAgentList ? (
+                    <div className="text-neutral-500 dark:text-neutral-400">Loading…</div>
+                  ) : filteredAgents.length === 0 ? (
+                    <div className="text-neutral-500 dark:text-neutral-400">No agents.</div>
+                  ) : (
+                    filteredAgents.map((a) => {
+                      const label =
+                        (a.userNumber ? `${a.userNumber} — ` : "") +
+                        (a.name ?? "") +
+                        ` <${a.email}>`;
+                      return (
+                        <button
+                          key={a.id}
+                          type="button"
+                          onClick={() => chooseAgent(a.id)}
+                          className="w-full rounded border border-neutral-200 px-2 py-1 text-left transition-colors hover:border-green-500 hover:bg-green-50 hover:text-green-700 dark:border-neutral-800 dark:hover:border-green-500 dark:hover:bg-green-900/30 dark:hover:text-green-300"
+                        >
+                          {label}
+                        </button>
+                      );
+                    })
+                  )}
                 </div>
-                <div className="p-3 text-sm space-y-2">
-                  <Input
-                    placeholder="Search agents…"
-                    value={agentSearch}
-                    onChange={(e) => setAgentSearch(e.target.value)}
-                  />
-                  <div className="max-h-[70vh] overflow-auto space-y-2">
-                    {loadingAgentList ? (
-                      <div className="text-neutral-500">Loading…</div>
-                    ) : filteredAgents.length === 0 ? (
-                      <div className="text-neutral-500">No agents.</div>
-                    ) : (
-                      filteredAgents.map((a) => {
-                        const label =
-                          (a.userNumber ? `${a.userNumber} — ` : "") +
-                          (a.name ?? "") +
-                          ` <${a.email}>`;
-                        return (
-                          <button
-                            key={a.id}
-                            type="button"
-                            onClick={() => chooseAgent(a.id)}
-                            className="w-full rounded border border-neutral-200 px-2 py-1 text-left transition-colors hover:border-green-500 hover:bg-green-50 hover:text-green-700 dark:border-neutral-800 dark:hover:border-green-500 dark:hover:bg-green-900/30 dark:hover:text-green-300"
-                          >
-                            {label}
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              </aside>
-            </div>
+              </div>
+            </SlideDrawer>
           ) : null}
 
           {(() => {
@@ -4326,8 +4619,40 @@ export default function NewPolicyStep1Page() {
               return (
                 <div className="pt-2 flex items-center justify-end gap-2">
                   <Button variant="outline" onClick={() => window.history.back()}>
-                    Cancel
+                    <X className="h-4 w-4 sm:hidden lg:inline" />
+                    <span className="hidden sm:inline">Cancel</span>
                   </Button>
+                  {typeof getClientId(wizard.policy) !== "number" ? (
+                    isCreateNewClientMode ? (
+                      <Button variant="secondary" onClick={handleCreateClient} disabled={creatingClient}>
+                        {creatingClient ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <UserPlus className="h-4 w-4 sm:hidden lg:inline" />
+                        )}
+                        <span className="hidden sm:inline">{creatingClient ? "Creating…" : "Create Client"}</span>
+                      </Button>
+                    ) : (
+                      <Button variant="secondary" onClick={() => setClientPickerOpen(true)}>
+                        <UserSearch className="h-4 w-4 sm:hidden lg:inline" />
+                        <span className="hidden sm:inline">Select Existing Client</span>
+                      </Button>
+                    )
+                  ) : null}
+                  {hasUnsavedClientEdits ? (
+                    <Button
+                      variant="secondary"
+                      onClick={() => void handleUpdateClient()}
+                      disabled={updateClientBusy}
+                    >
+                      {updateClientBusy ? (
+                        <Loader2 className="h-4 w-4 sm:hidden lg:inline animate-spin" />
+                      ) : (
+                        <Save className="h-4 w-4 sm:hidden lg:inline" />
+                      )}
+                      <span className="hidden sm:inline">{updateClientBusy ? "Saving…" : "Update Client"}</span>
+                    </Button>
+                  ) : null}
               <Button
               onClick={() => {
                     (async () => {
@@ -4368,13 +4693,13 @@ export default function NewPolicyStep1Page() {
                         } else {
                           isExistingBranch = valueExisting && !valueCreate;
                         }
-                        // Step-1 heuristic override: infer user's explicit choice from form field VALUES
+                        // Step-1 heuristic override: infer user's explicit choice from form field VALUES.
+                        // Namespaced keys (containing "__") take priority over raw keys set by intent handler.
                         if (wizard.step === 1) {
                           const allValues = form.getValues() as Record<string, unknown>;
                           const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
                           const keyCandidates = Object.keys(allValues).filter((k) => {
                             const nk = normalize(k);
-                            // Match common admin keys: existOrCreateClient, newExistingClient, newOrExistingClient, etc.
                             return (
                               nk.includes("existorcreateclient") ||
                               nk.includes("newexistingclient") ||
@@ -4385,43 +4710,38 @@ export default function NewPolicyStep1Page() {
                               nk.includes("existingclient")
                             );
                           });
-                          let branchFromField: "existing" | "create" | null = null;
+                          let nsBranch: "existing" | "create" | null = null;
+                          let rawBranch: "existing" | "create" | null = null;
                           for (const k of keyCandidates) {
                             const raw = allValues[k];
                             const vs = typeof raw === "string" ? raw : "";
                             const nv = normalize(vs);
-                            // Explicit mappings from your admin values:
-                            // - chooseClient => existing
-                            // - createNClient => create
+                            let branch: "existing" | "create" | null = null;
                             if (nv === "chooseclient" || nv === "chooseexistingclient" || (/^choose/.test(nv) && nv.includes("client"))) {
-                              branchFromField = "existing";
-                              break;
+                              branch = "existing";
+                            } else if (nv === "createnclient" || nv.includes("create") || nv.includes("new")) {
+                              branch = "create";
+                            } else if (/\bexisting\b/.test(vs.toLowerCase())) {
+                              branch = "existing";
+                            } else if (/\b(create|new)\b/.test(vs.toLowerCase())) {
+                              branch = "create";
                             }
-                            if (nv === "createnclient" || nv.includes("create") || nv.includes("new")) {
-                              branchFromField = "create";
-                              break;
-                            }
-                            // Generic fallbacks
-                            if (/\bexisting\b/.test(vs.toLowerCase())) {
-                              branchFromField = "existing";
-                              break;
-                            }
-                            if (/\b(create|new)\b/.test(vs.toLowerCase())) {
-                              branchFromField = "create";
-                              break;
+                            if (branch !== null) {
+                              if (k.includes("__")) nsBranch = branch;
+                              else rawBranch = branch;
                             }
                           }
+                          const branchFromField = nsBranch ?? rawBranch;
                           if (branchFromField) {
                             isExistingBranch = branchFromField === "existing";
                           }
                         }
-                        // (Debug output removed)
-                        // Step-1 heuristic override: read the user's explicit selection from form fields inside packages,
-                        // e.g., a package labeled "New or Existing Client" with a field like `${pkg}__new_or_existing_client`.
+                        // Second pass: read the user's explicit selection from form fields inside packages.
+                        // Namespaced keys (containing "__") take priority over raw keys.
                         if (wizard.step === 1) {
                           const allValues = form.getValues() as Record<string, unknown>;
-                          let saysExistingForm = false;
-                          let saysCreateForm = false;
+                          let nsExisting = false, nsCreate = false;
+                          let rawExisting = false, rawCreate = false;
                           for (const [k, v] of Object.entries(allValues)) {
                             const kLower = String(k ?? "").toLowerCase();
                             const vLower = typeof v === "string" ? v.toLowerCase() : "";
@@ -4432,10 +4752,18 @@ export default function NewPolicyStep1Page() {
                               /\bexisting\b/.test(vLower) || ["existing", "existing_client", "existingclient", "use_existing"].includes(vLower);
                             const valCreate = /\b(new|create)\b/.test(vLower) || ["new", "create", "new_client", "create_client"].includes(vLower);
                             if (keyRelevant || valExisting || valCreate) {
-                              saysExistingForm ||= valExisting && !valCreate;
-                              saysCreateForm ||= valCreate && !valExisting;
+                              if (k.includes("__")) {
+                                nsExisting ||= valExisting && !valCreate;
+                                nsCreate ||= valCreate && !valExisting;
+                              } else {
+                                rawExisting ||= valExisting && !valCreate;
+                                rawCreate ||= valCreate && !valExisting;
+                              }
                             }
                           }
+                          const hasNs = nsExisting || nsCreate;
+                          const saysExistingForm = hasNs ? nsExisting : rawExisting;
+                          const saysCreateForm = hasNs ? nsCreate : rawCreate;
                           if (saysExistingForm || saysCreateForm) {
                             isExistingBranch = saysExistingForm && !saysCreateForm;
                           }
@@ -4457,15 +4785,19 @@ export default function NewPolicyStep1Page() {
                           );
                           const insured = buildInsuredSnapshot(values, dirtySet);
                           const clientId = getClientId(wizard.policy);
-                          const proceed = () => {
+                          const proceed = async () => {
                             setWizard((w) => ({
                               ...w,
                               insured: { ...(w.insured ?? {}), ...insured },
                               step: isFinal ? w.step : w.step + 1,
                               highestCompletedStep: Math.max(w.highestCompletedStep, w.step),
                             }));
+                            if (isFinal) {
+                              toast.success("Completed", { duration: 1000 });
+                              router.push(flowKey ? `/dashboard/flows/${encodeURIComponent(flowKey)}` : "/dashboard");
+                            }
                           };
-                          if (wizard.step === 2 && typeof clientId === "number") {
+                          if (typeof clientId === "number") {
                             const dirtyKeys = getDirtyClientInfoFieldNames();
                             const dirtySetForCheck = new Set(
                               (dirtyKeys ?? [])
@@ -4487,7 +4819,8 @@ export default function NewPolicyStep1Page() {
                                 const debugEnabled =
                                   typeof window !== "undefined" && new URLSearchParams(window.location.search).get("debug") === "1";
                                 if (debugEnabled) {
-                                  console.log("Step2 client-update check (existing branch)", {
+                                  console.log("Client-update check (existing branch)", {
+                                    step: wizard.step,
                                     dirtyKeys,
                                     normalizedForCheckAll,
                                     normalizedForCheck,
@@ -4518,8 +4851,8 @@ export default function NewPolicyStep1Page() {
                           proceed();
                           return;
                         }
-                        // For Step 1 "Create a New Client" branch: only advance if NOT existing branch
-                        if (wizard.step === 1 && !isExistingBranch) {
+                        // For Step 1 "Create a New Client" branch: advance to next step (skip when isFinal — let finish logic handle it)
+                        if (wizard.step === 1 && !isExistingBranch && !isFinal) {
                           const values = form.getValues() as Record<string, unknown>;
                           setWizard((w) => ({
                             ...w,
@@ -4682,7 +5015,7 @@ export default function NewPolicyStep1Page() {
                               }));
                             } else {
                               // End the flow and return to dashboard
-                              router.push("/dashboard/clients");
+                              router.push(flowKey ? `/dashboard/flows/${encodeURIComponent(flowKey)}` : "/dashboard");
                             }
                           } else {
                             toast.error(jClient?.error ?? "Failed to create/find client");
@@ -4703,6 +5036,10 @@ export default function NewPolicyStep1Page() {
                       }));
                     }
                         if (isFinal) {
+                          if (isCreateNewClientMode && typeof getClientId(wizard.policy) !== "number") {
+                            toast.error("Please click \"Create Client\" to create the client first.");
+                            return;
+                          }
                           // Build packages payload from ALL configured steps, not just the current step
                           const sortedAll = [...steps].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
                           const allPkgs = Array.from(
@@ -4777,6 +5114,7 @@ export default function NewPolicyStep1Page() {
                                 return normalized;
                               })(),
                               policy: (wizard.policy ?? {}),
+                              ...(flowKey ? { flowKey } : {}),
                             }),
                           });
                           const json = await res.json().catch(() => ({}));
@@ -4784,7 +5122,7 @@ export default function NewPolicyStep1Page() {
                             throw new Error(json?.error ?? "Submit failed");
                           }
                           toast.success("Policy created", { duration: 1000 });
-                          router.push("/dashboard/policies");
+                          router.push(flowKey ? `/dashboard/flows/${encodeURIComponent(flowKey)}` : "/dashboard");
                         }
                       } catch (err: unknown) {
                         const message = (err as { message?: string } | undefined)?.message ?? "Validation failed";
@@ -4793,7 +5131,12 @@ export default function NewPolicyStep1Page() {
                     })();
                   }}
                 >
-                  {buttonText}
+                  {isFinal ? (
+                    <Check className="h-4 w-4 sm:hidden lg:inline" />
+                  ) : (
+                    <ArrowRight className="h-4 w-4 sm:hidden lg:inline" />
+                  )}
+                  <span className="hidden sm:inline">{buttonText}</span>
                 </Button>
                 </div>
               );
@@ -4806,7 +5149,20 @@ export default function NewPolicyStep1Page() {
               <Button variant="outline" onClick={() => window.history.back()}>
                 Cancel
               </Button>
-              
+              {hasUnsavedClientEdits ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => void handleUpdateClient()}
+                  disabled={updateClientBusy}
+                >
+                  {updateClientBusy ? (
+                    <Loader2 className="h-4 w-4 sm:hidden lg:inline animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4 sm:hidden lg:inline" />
+                  )}
+                  <span className="hidden sm:inline">{updateClientBusy ? "Saving…" : "Update Client"}</span>
+                </Button>
+              ) : null}
               <Button
                       disabled={insuredTypes.length === 0}
                 onClick={() => {
@@ -5001,15 +5357,15 @@ export default function NewPolicyStep1Page() {
                   <Skeleton className="h-6 w-4/6" />
                 </div>
               ) : filteredClients.length === 0 ? (
-                <div className="p-3 text-sm text-neutral-500">No clients found.</div>
+                <div className="p-3 text-sm text-neutral-500 dark:text-neutral-400">No clients found.</div>
               ) : (
                 <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
                   {filteredClients.map((r) => (
                     <li key={r.id} className="flex items-center justify-between gap-3 p-3">
                       <div className="min-w-0">
-                        <div className="font-mono text-xs text-neutral-500">{r.clientNumber}</div>
+                        <div className="font-mono text-xs text-neutral-500 dark:text-neutral-400">{r.clientNumber}</div>
                         <div className="truncate">{r.displayName}</div>
-                        <div className="text-xs capitalize text-neutral-500">{r.category}</div>
+                        <div className="text-xs capitalize text-neutral-500 dark:text-neutral-400">{r.category}</div>
                       </div>
                       <Button size="sm" onClick={() => void chooseExistingClient(r.id)}>
                         Select
@@ -5093,6 +5449,7 @@ export default function NewPolicyStep1Page() {
                   vehicle: wizard.vehicle,
                   policy: wizard.policy,
                   declarations: d,
+                  ...(flowKey ? { flowKey } : {}),
                 };
                 try {
                   const res = await fetch("/api/policies", {
@@ -5103,7 +5460,7 @@ export default function NewPolicyStep1Page() {
                   const json = await res.json();
                   if (!res.ok) throw new Error(json?.error ?? "Submit failed");
                   toast.success("Policy submitted", { duration: 1000 });
-                  router.push("/dashboard/policies");
+                  router.push(flowKey ? `/dashboard/flows/${encodeURIComponent(flowKey)}` : "/dashboard");
                 } catch (err: unknown) {
                   const message = (err as { message?: string } | undefined)?.message ?? "Submit failed";
                   toast.error(message);
@@ -5136,7 +5493,7 @@ export default function NewPolicyStep1Page() {
               This will update the client even if you don’t finish creating a new policy.
             </div>
             {clientUpdateDirtyKeys.length > 0 ? (
-              <div className="text-xs text-neutral-500">
+              <div className="text-xs text-neutral-500 dark:text-neutral-400">
                 Changes detected:{" "}
                 {clientUpdateDirtyKeys
                   .slice(0, 6)
@@ -5167,7 +5524,7 @@ export default function NewPolicyStep1Page() {
                 pendingClientUpdateRef.current = null;
                 setClientUpdateDirtyKeys([]);
                 setClientUpdateConfirmOpen(false);
-                pending?.proceed();
+                void pending?.proceed();
               }}
             >
               No, continue
@@ -5275,7 +5632,7 @@ export default function NewPolicyStep1Page() {
                         // ignore
                       }
                     if (pending.autoProceedAfterSave) {
-                      pending?.proceed();
+                      await pending?.proceed();
                     }
                     }
                     pendingClientUpdateRef.current = null;
@@ -5299,17 +5656,7 @@ export default function NewPolicyStep1Page() {
 }
 
 /* Small helper field */
-function Field({
-  label,
-  ...props
-}: React.InputHTMLAttributes<HTMLInputElement> & { label: string }) {
-  return (
-    <div className="space-y-1">
-      <Label>{label}</Label>
-      <Input {...props} />
-    </div>
-  );
-}
+// Field extracted to @/components/ui/form-field
 
 function StepDot({
   n,

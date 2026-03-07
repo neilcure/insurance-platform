@@ -1,0 +1,60 @@
+---
+description: Dark mode rules — every visible element must have a dark: counterpart
+globs: **/*.tsx
+alwaysApply: false
+---
+
+# Dark Mode Rules
+
+This app uses `next-themes` with class strategy (`.dark` on `<html>`). Every visible color must have a `dark:` counterpart.
+
+## Required pairings
+
+| Light | Dark |
+|-------|------|
+| `bg-white` | `dark:bg-neutral-900` or `dark:bg-neutral-950` |
+| `text-neutral-900` | `dark:text-neutral-100` |
+| `text-neutral-600` | `dark:text-neutral-400` |
+| `text-neutral-500` | `dark:text-neutral-400` |
+| `border-neutral-200` | `dark:border-neutral-800` |
+| `border-neutral-300` | `dark:border-neutral-700` |
+| `text-red-600` | `dark:text-red-400` |
+| `text-green-600` | `dark:text-green-400` |
+| `hover:bg-neutral-50` | `dark:hover:bg-neutral-900` |
+
+## Select and input elements
+
+All `<select>` and `<input>` elements with custom className must include:
+- `dark:bg-neutral-900 dark:text-neutral-100` (or use the `<Input>` component)
+- `dark:border-neutral-700` or `dark:border-neutral-800`
+
+## Never use
+
+- Bare `text-neutral-500` without `dark:text-neutral-400`
+- Bare `text-red-600` without `dark:text-red-400`
+- `style={{ color: ... }}` or `style={{ background: ... }}` — use Tailwind classes
+- Bare `bg-white` without a `dark:bg-*` counterpart
+
+## Sidebar collapsed group icons
+
+All top-level group header badges in the collapsed sidebar must use a consistent blue theme with dark mode support:
+
+| Element | Light | Dark |
+|---------|-------|------|
+| Badge background | `bg-blue-100` | `dark:bg-blue-900` |
+| Icon text color | `text-neutral-900` | `dark:text-white` |
+
+Do NOT use different background colors (e.g. yellow, emerald, violet) for different groups. Keep them uniform blue.
+
+All group header badges must use the `FloatingTooltip` component (not native `title` attribute) for consistent hover indicators across both top-level and admin-section menus.
+
+No `<Separator>` dividers between collapsed group icons — spacing via `py-1` is sufficient.
+
+## Shared components with built-in dark mode
+
+Use these instead of raw HTML where possible:
+- `<Input>` — already has full dark mode
+- `<Card>` — already has full dark mode
+- `<Badge>` — all variants have dark mode
+- `<Button>` — all variants have dark mode
+- `<Dialog>` — already has full dark mode

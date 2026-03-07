@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
+import { Field } from "@/components/ui/form-field";
 import { toast } from "sonner";
 import { Button as UIButton } from "@/components/ui/button";
 
@@ -97,7 +98,7 @@ export function PolicyStep({ onComplete, initialValues }: { onComplete: (data: P
             <Label>Agent</Label>
             <div className="flex items-center gap-2">
               <select
-                className="h-9 min-w-[220px] rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+                className="h-9 min-w-[220px] rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                 value={String(form.watch("agentId") ?? "")}
                 onChange={(e) => {
                   const v = e.target.value;
@@ -208,16 +209,6 @@ export function PolicyStep({ onComplete, initialValues }: { onComplete: (data: P
   );
 }
 
-function Field({
-  label,
-  ...props
-}: React.InputHTMLAttributes<HTMLInputElement> & { label: string }) {
-  return (
-    <div className="space-y-1">
-      <Label>{label}</Label>
-      <Input {...props} />
-    </div>
-  );
-}
+// Field extracted to @/components/ui/form-field
 
 

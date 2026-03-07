@@ -2,12 +2,14 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { formOptions } from "@/db/schema/form_options";
 import { and, eq } from "drizzle-orm";
+import { requireUser } from "@/lib/auth/require-user";
 
 // Ensure this route is always dynamic and never cached
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET(request: Request) {
+  await requireUser();
   const { searchParams } = new URL(request.url);
   const groupKey = searchParams.get("groupKey") ?? "declarations";
   const rows = await db

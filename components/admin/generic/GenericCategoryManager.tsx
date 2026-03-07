@@ -138,7 +138,7 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
   return (
     <div className="space-y-3">
       <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-sm text-neutral-500"></div>
+        <div className="text-sm text-neutral-500 dark:text-neutral-400"></div>
         <Button type="button" size="sm" onClick={startCreate} className="self-start sm:self-auto">
           Add
         </Button>
@@ -193,7 +193,7 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
           ))}
           {!loading && rows.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={4} className="text-center text-sm text-neutral-500">
+              <TableCell colSpan={4} className="text-center text-sm text-neutral-500 dark:text-neutral-400">
                 No categories defined.
               </TableCell>
             </TableRow>
@@ -226,7 +226,7 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
           <div className="grid gap-1">
             <Label>Label Case</Label>
             <select
-              className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
               value={(form.meta?.labelCase ?? "original") as any}
               onChange={(e) =>
                 setForm((f) => ({
