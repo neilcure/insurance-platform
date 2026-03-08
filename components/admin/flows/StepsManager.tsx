@@ -28,6 +28,11 @@ type StepRow = {
     embeddedFlow?: string;
     /** Label override when embedding (shown instead of embedded flow's default title). */
     embeddedFlowLabel?: string;
+    /** Step-level visibility: hide entire step unless these cross-package conditions pass. */
+    showWhen?: { package: string; category?: string | string[] }[];
+    /** Per-category visibility: hide a category tab unless cross-package conditions pass.
+     *  Key format: `${pkg}__${categoryValue}` */
+    categoryShowWhen?: Record<string, { package: string; category: string | string[] }[]>;
   } | null;
 };
 
@@ -224,6 +229,17 @@ export default function StepsManager({ flow }: { flow: string }) {
         Object.entries(pkgGrpLabelsRaw).filter(([k, v]) => selectedPkgs.includes(k) && v),
       );
       const embeddedFlowLabel = typeof form.meta?.embeddedFlowLabel === "string" ? form.meta.embeddedFlowLabel.trim() : undefined;
+      const stepShowWhen = (Array.isArray(form.meta?.showWhen) ? form.meta!.showWhen : [])
+        .filter((r): r is { package: string; category?: string | string[] } => !!r.package);
+      const catShowWhenRaw = (form.meta?.categoryShowWhen ?? {}) as Record<string, { package: string; category: string | string[] }[]>;
+      const categoryShowWhen = Object.fromEntries(
+        Object.entries(catShowWhenRaw)
+          .filter(([k, rules]) => {
+            const [pkg] = k.split("__");
+            return selectedPkgs.includes(pkg!) && rules.length > 0 && rules.some((r) => !!r.package);
+          })
+          .map(([k, rules]) => [k, rules.filter((r) => !!r.package)]),
+      );
       const payload = {
         label: form.label,
         value: form.value,
@@ -237,10 +253,12 @@ export default function StepsManager({ flow }: { flow: string }) {
           packageShowWhen: pkgShowWhen,
           packageGroupLabelsHidden,
           categoryStepVisibility,
+          categoryShowWhen: Object.keys(categoryShowWhen).length > 0 ? categoryShowWhen : undefined,
           wizardStep,
           wizardStepLabel,
           embeddedFlow: embeddedFlow || undefined,
           embeddedFlowLabel: embeddedFlowLabel || undefined,
+          showWhen: stepShowWhen.length > 0 ? stepShowWhen : undefined,
         },
       };
       if (editing) {
@@ -333,6 +351,30 @@ export default function StepsManager({ flow }: { flow: string }) {
                   {r.meta?.embeddedFlow ? (
                     <span className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
                       Embed: {flows.find((f) => f.value === r.meta?.embeddedFlow)?.label ?? r.meta.embeddedFlow}
+                    </span>
+                  ) : null}
+                  {Array.isArray(r.meta?.showWhen) && r.meta!.showWhen.length > 0 ? (
+                    <span
+                      className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                      title={
+                        (r.meta!.showWhen as { package: string; category?: string | string[] }[])
+                          .map((rule) => {
+                            const pkgLabel = packages.find((p) => p.value === rule.package)?.label ?? rule.package;
+                            const cats = Array.isArray(rule.category) ? rule.category : rule.category ? [rule.category] : [];
+                            const catLabels = cats.map((c) => (categoriesByPkg[rule.package] ?? []).find((o) => o.value === c)?.label ?? c);
+                            return `${pkgLabel} = ${catLabels.join(" or ")}`;
+                          })
+                          .join(" AND ")
+                      }
+                    >
+                      When: {(r.meta!.showWhen as { package: string; category?: string | string[] }[])
+                        .map((rule) => {
+                          const pkgLabel = packages.find((p) => p.value === rule.package)?.label ?? rule.package;
+                          const cats = Array.isArray(rule.category) ? rule.category : rule.category ? [rule.category] : [];
+                          const catLabels = cats.map((c) => (categoriesByPkg[rule.package] ?? []).find((o) => o.value === c)?.label ?? c);
+                          return `${pkgLabel} = ${catLabels.join("/")}`;
+                        })
+                        .join(", ")}
                     </span>
                   ) : null}
                 </div>
@@ -577,64 +619,169 @@ export default function StepsManager({ flow }: { flow: string }) {
                       </div>
                       <div>
                         <Label className="text-xs">Categories (optional)</Label>
-                        <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div className="mt-1 space-y-2">
                           {cats.map((c) => {
                             const isChecked = selected.includes(c.value);
+                            const catCondKey = `${pkg}__${c.value}`;
+                            const catCondRules = ((form.meta?.categoryShowWhen ?? {}) as Record<string, { package: string; category: string | string[] }[]>)[catCondKey] ?? [];
+                            const hasCond = catCondRules.length > 0;
                             return (
-                              <label key={c.value} className="flex items-center gap-2 text-sm">
-                                <input type="checkbox" checked={isChecked} onChange={() => toggleCategory(pkg, c.value)} />
-                                {c.label}
-                              </label>
+                              <div key={c.value} className="space-y-1">
+                                <div className="flex items-center gap-2">
+                                  <label className="flex items-center gap-2 text-sm">
+                                    <input type="checkbox" checked={isChecked} onChange={() => toggleCategory(pkg, c.value)} />
+                                    {c.label}
+                                  </label>
+                                  {isChecked && (
+                                    <button
+                                      type="button"
+                                      className={`text-[10px] ${hasCond ? "text-amber-600 dark:text-amber-400" : "text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300"}`}
+                                      onClick={() => {
+                                        const map = { ...((form.meta?.categoryShowWhen ?? {}) as Record<string, { package: string; category: string | string[] }[]>) };
+                                        if (hasCond) {
+                                          delete map[catCondKey];
+                                        } else {
+                                          map[catCondKey] = [{ package: "", category: [] }];
+                                        }
+                                        setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), categoryShowWhen: map } as StepRow["meta"] }));
+                                      }}
+                                    >
+                                      {hasCond ? "✕ Remove condition" : "+ Show when…"}
+                                    </button>
+                                  )}
+                                </div>
+                                {isChecked && hasCond && catCondRules.map((rule, rIdx) => {
+                                  const ruleCats = categoriesByPkg[rule.package] ?? [];
+                                  const selCats = Array.isArray(rule.category) ? rule.category : rule.category ? [rule.category] : [];
+                                  return (
+                                    <div key={rIdx} className="ml-6 flex flex-wrap items-center gap-2 text-xs rounded border border-amber-200 p-2 dark:border-amber-800/50">
+                                      <span className="text-neutral-500 dark:text-neutral-400 shrink-0">Show when</span>
+                                      <select
+                                        className="h-7 rounded border border-neutral-200 bg-white px-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                                        value={rule.package}
+                                        onChange={(e) => {
+                                          const map = { ...((form.meta?.categoryShowWhen ?? {}) as Record<string, { package: string; category: string | string[] }[]>) };
+                                          const arr = [...(map[catCondKey] ?? [])];
+                                          arr[rIdx] = { ...arr[rIdx], package: e.target.value, category: [] };
+                                          map[catCondKey] = arr;
+                                          setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), categoryShowWhen: map } as StepRow["meta"] }));
+                                          const depPkg = e.target.value;
+                                          if (depPkg && !categoriesByPkg[depPkg]) {
+                                            void (async () => {
+                                              try {
+                                                const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${depPkg}_category`)}`, { cache: "no-store" });
+                                                if (!res.ok) return;
+                                                const data = (await res.json()) as { label: string; value: string }[];
+                                                setCategoriesByPkg((prev) => ({ ...prev, [depPkg]: Array.isArray(data) ? data : [] }));
+                                              } catch { /* ignore */ }
+                                            })();
+                                          }
+                                        }}
+                                      >
+                                        <option value="">-- Package --</option>
+                                        {packages.filter((p) => p.value !== pkg).map((p) => (
+                                          <option key={p.value} value={p.value}>{p.label}</option>
+                                        ))}
+                                      </select>
+                                      {rule.package && ruleCats.length > 0 && (
+                                        <>
+                                          <span className="text-neutral-400">=</span>
+                                          <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                                            {ruleCats.map((rc) => (
+                                              <label key={rc.value} className="inline-flex items-center gap-1 text-xs">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={selCats.includes(rc.value)}
+                                                  onChange={(e) => {
+                                                    const map = { ...((form.meta?.categoryShowWhen ?? {}) as Record<string, { package: string; category: string | string[] }[]>) };
+                                                    const arr = [...(map[catCondKey] ?? [])];
+                                                    const cur = [...selCats];
+                                                    if (e.target.checked) cur.push(rc.value);
+                                                    else { const idx = cur.indexOf(rc.value); if (idx >= 0) cur.splice(idx, 1); }
+                                                    arr[rIdx] = { ...arr[rIdx], category: cur };
+                                                    map[catCondKey] = arr;
+                                                    setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), categoryShowWhen: map } as StepRow["meta"] }));
+                                                  }}
+                                                />
+                                                {rc.label}
+                                              </label>
+                                            ))}
+                                          </div>
+                                        </>
+                                      )}
+                                      {rule.package && ruleCats.length === 0 && (
+                                        <span className="text-[10px] text-neutral-400 dark:text-neutral-500 italic">
+                                          (no categories — will match when any value is selected)
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             );
                           })}
                           {cats.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No categories for this package.</p> : null}
                         </div>
                       </div>
-                      {/* Category → Step Mapping: map each selected category to steps that should be visible */}
-                      {selected.length > 0 ? (
-                        <div>
-                          <Label className="text-xs">Category → Step Visibility</Label>
-                          <p className="text-[10px] text-neutral-500 mb-1">
-                            When a category is selected in the wizard, only the mapped steps will be shown. Leave empty to have no effect.
+                      {/* Category → Step Mapping (advanced): map each selected category to other steps that should become visible */}
+                      {selected.length > 0 && (() => {
+                        const csvMap = (form.meta?.categoryStepVisibility ?? {}) as Record<string, string[]>;
+                        const hasAnyMapping = selected.some((cv) => (csvMap[cv]?.length ?? 0) > 0);
+                        const otherRows = rows.filter((r) => r.value !== form.value);
+                        if (otherRows.length === 0) return null;
+                        return (
+                          <details className="group" open={hasAnyMapping || undefined}>
+                            <summary className="cursor-pointer select-none text-xs text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200">
+                              <span className="ml-1">Advanced: control which <strong>other steps</strong> appear based on category selected here</span>
+                            </summary>
+                            <p className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400 mb-1">
+                              When a category is selected in <em>this</em> step, only the checked steps below will be shown in the wizard. Leave all unchecked to have no effect.
+                            </p>
+                            <div className="mt-2 space-y-2">
+                              {selected.map((catVal) => {
+                                const catLabel = cats.find((c) => c.value === catVal)?.label ?? catVal;
+                                const mappedSteps = csvMap[catVal] ?? [];
+                                return (
+                                  <div key={catVal} className="rounded border border-neutral-200 p-2 dark:border-neutral-700">
+                                    <div className="mb-1 text-[11px] font-medium text-neutral-600 dark:text-neutral-400">
+                                      When <span className="text-neutral-900 dark:text-neutral-100">{catLabel}</span> → show steps:
+                                    </div>
+                                    <div className="flex flex-wrap gap-x-3 gap-y-1">
+                                      {otherRows.map((or) => {
+                                        const checked = mappedSteps.includes(or.value);
+                                        return (
+                                          <label key={or.value} className="inline-flex items-center gap-1 text-xs">
+                                            <input
+                                              type="checkbox"
+                                              checked={checked}
+                                              onChange={() => {
+                                                const map = { ...csvMap };
+                                                const cur = [...(map[catVal] ?? [])];
+                                                map[catVal] = checked ? cur.filter((v) => v !== or.value) : [...cur, or.value];
+                                                setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), categoryStepVisibility: map } as StepRow["meta"] }));
+                                              }}
+                                            />
+                                            {or.label}
+                                          </label>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        );
+                      })()}
+                      {(() => {
+                        const catCondMap = (form.meta?.categoryShowWhen ?? {}) as Record<string, unknown[]>;
+                        const hasCatConds = Object.keys(catCondMap).some((k) => k.startsWith(`${pkg}__`) && (catCondMap[k]?.length ?? 0) > 0);
+                        if (hasCatConds) return (
+                          <p className="text-[10px] text-neutral-500 dark:text-neutral-400 italic">
+                            Package-level condition hidden — per-category &ldquo;Show when&rdquo; conditions above are more precise.
                           </p>
-                          <div className="space-y-2">
-                            {selected.map((catVal) => {
-                              const catLabel = cats.find((c) => c.value === catVal)?.label ?? catVal;
-                              const csvMap = (form.meta?.categoryStepVisibility ?? {}) as Record<string, string[]>;
-                              const mappedSteps = csvMap[catVal] ?? [];
-                              const otherRows = rows.filter((r) => r.value !== form.value);
-                              if (otherRows.length === 0) return null;
-                              return (
-                                <div key={catVal} className="rounded border border-neutral-200 p-2 dark:border-neutral-700">
-                                  <div className="mb-1 text-[11px] font-medium text-neutral-600 dark:text-neutral-400">
-                                    When <span className="text-neutral-900 dark:text-neutral-100">{catLabel}</span> → show steps:
-                                  </div>
-                                  <div className="flex flex-wrap gap-x-3 gap-y-1">
-                                    {otherRows.map((or) => {
-                                      const checked = mappedSteps.includes(or.value);
-                                      return (
-                                        <label key={or.value} className="inline-flex items-center gap-1 text-xs">
-                                          <input
-                                            type="checkbox"
-                                            checked={checked}
-                                            onChange={() => {
-                                              const map = { ...csvMap };
-                                              const cur = [...(map[catVal] ?? [])];
-                                              map[catVal] = checked ? cur.filter((v) => v !== or.value) : [...cur, or.value];
-                                              setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), categoryStepVisibility: map } as StepRow["meta"] }));
-                                            }}
-                                          />
-                                          {or.label}
-                                        </label>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ) : null}
+                        );
+                        return (
                       <div>
                         <Label className="text-xs">Show only when (cross-package condition)</Label>
                         <p className="text-[10px] text-neutral-500 mb-1">Only show this package when another package&apos;s category matches. Leave empty to always show.</p>
@@ -735,11 +882,149 @@ export default function StepsManager({ flow }: { flow: string }) {
                           + Add condition
                         </Button>
                       </div>
+                        );
+                      })()}
                     </div>
                   );
                 })}
               </div>
             ) : null}
+            {/* ── Step-level show/hide condition ── */}
+            <div className="rounded-md border border-neutral-200 p-3 space-y-3 dark:border-neutral-800">
+              <div>
+                <Label>Show step only when (cross-package condition)</Label>
+                <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
+                  Hide this entire wizard step unless the selected categories match. Leave empty to always show.
+                </p>
+              </div>
+              {(() => {
+                const rules = Array.isArray(form.meta?.showWhen)
+                  ? (form.meta!.showWhen as { package: string; category?: string | string[] }[])
+                  : [];
+                return (
+                  <div className="space-y-2">
+                    {rules.map((rule, rIdx) => {
+                      const ruleCats = categoriesByPkg[rule.package] ?? [];
+                      const selectedCats = Array.isArray(rule.category)
+                        ? rule.category
+                        : rule.category
+                          ? [rule.category]
+                          : [];
+                      return (
+                        <div
+                          key={rIdx}
+                          className="rounded border border-neutral-100 p-2 space-y-2 dark:border-neutral-800"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Label className="text-xs shrink-0">Package</Label>
+                            <select
+                              className="h-8 flex-1 rounded-md border border-neutral-200 bg-white px-2 text-xs dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+                              value={rule.package}
+                              onChange={(e) => {
+                                const next = [...rules];
+                                next[rIdx] = { ...next[rIdx], package: e.target.value, category: [] };
+                                setForm((f) => ({
+                                  ...f,
+                                  meta: { ...(f.meta ?? {}), showWhen: next } as StepRow["meta"],
+                                }));
+                                const depPkg = e.target.value;
+                                if (depPkg && !categoriesByPkg[depPkg]) {
+                                  void (async () => {
+                                    try {
+                                      const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${depPkg}_category`)}`, { cache: "no-store" });
+                                      if (!res.ok) return;
+                                      const data = (await res.json()) as { label: string; value: string }[];
+                                      setCategoriesByPkg((prev) => ({ ...prev, [depPkg]: Array.isArray(data) ? data : [] }));
+                                    } catch { /* ignore */ }
+                                  })();
+                                }
+                              }}
+                            >
+                              <option value="">-- Select package --</option>
+                              {packages.map((p) => (
+                                <option key={p.value} value={p.value}>
+                                  {p.label} (other step)
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="text-xs text-red-500 hover:text-red-700"
+                              onClick={() => {
+                                const next = rules.filter((_, i) => i !== rIdx);
+                                setForm((f) => ({
+                                  ...f,
+                                  meta: { ...(f.meta ?? {}), showWhen: next } as StepRow["meta"],
+                                }));
+                              }}
+                            >
+                              &times;
+                            </button>
+                          </div>
+                          {rule.package && ruleCats.length > 0 && (
+                            <div className="ml-4 space-y-1">
+                              <Label className="text-[10px] text-neutral-500">Category</Label>
+                              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                                {ruleCats.map((cat) => (
+                                  <label
+                                    key={cat.value}
+                                    className="inline-flex items-center gap-1.5 text-xs"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedCats.includes(cat.value)}
+                                      onChange={(e) => {
+                                        const next = [...rules];
+                                        const cur = [...selectedCats];
+                                        if (e.target.checked) {
+                                          cur.push(cat.value);
+                                        } else {
+                                          const idx = cur.indexOf(cat.value);
+                                          if (idx >= 0) cur.splice(idx, 1);
+                                        }
+                                        next[rIdx] = { ...next[rIdx], category: cur };
+                                        setForm((f) => ({
+                                          ...f,
+                                          meta: {
+                                            ...(f.meta ?? {}),
+                                            showWhen: next,
+                                          } as StepRow["meta"],
+                                        }));
+                                      }}
+                                    />
+                                    {cat.label}
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {rule.package && ruleCats.length === 0 && (
+                            <p className="ml-4 text-[10px] text-neutral-400 dark:text-neutral-500 italic">
+                              (no categories — will match when any value is selected)
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        const next = [...rules, { package: "", category: [] as string[] }];
+                        setForm((f) => ({
+                          ...f,
+                          meta: { ...(f.meta ?? {}), showWhen: next } as StepRow["meta"],
+                        }));
+                      }}
+                    >
+                      + Add condition
+                    </Button>
+                  </div>
+                );
+              })()}
+            </div>
+
             <div className="grid gap-1">
               <Label>Wizard Step Label (optional)</Label>
               {(() => {

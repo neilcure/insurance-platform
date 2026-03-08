@@ -15,6 +15,7 @@ export type EntityPickerMapping = {
 export type EntityPickerConfig = {
   flow: string;
   buttonLabel?: string;
+  sourcePackage?: string;
   mappings: EntityPickerMapping[];
 };
 
@@ -22,15 +23,17 @@ export function EntityPickerConfigEditor({
   value,
   onChange,
   currentPkg,
+  targetFields: targetFieldsOverride,
 }: {
   value: EntityPickerConfig | undefined;
   onChange: (next: EntityPickerConfig | undefined) => void;
   currentPkg: string;
+  targetFields?: { label: string; value: string }[];
 }) {
   const [flows, setFlows] = React.useState<{ label: string; value: string }[]>([]);
   const { pkgFieldsCache, loadPkgFields } = usePkgFields();
   const [sourcePkgs, setSourcePkgs] = React.useState<{ label: string; value: string }[]>([]);
-  const [selectedSourcePkg, setSelectedSourcePkg] = React.useState<string>("");
+  const [selectedSourcePkg, setSelectedSourcePkg] = React.useState<string>(value?.sourcePackage ?? "");
 
   React.useEffect(() => {
     async function loadFlows() {
@@ -107,7 +110,7 @@ export function EntityPickerConfigEditor({
     );
   }
 
-  const currentPkgFields = pkgFieldsCache[currentPkg] ?? [];
+  const currentPkgFields = targetFieldsOverride ?? (pkgFieldsCache[currentPkg] ?? []);
   const sourceFields = selectedSourcePkg ? (pkgFieldsCache[selectedSourcePkg] ?? []) : [];
 
   return (
@@ -133,7 +136,7 @@ export function EntityPickerConfigEditor({
             value={value.flow}
             onChange={(e) => {
               setSelectedSourcePkg("");
-              onChange({ ...value, flow: e.target.value, mappings: [] });
+              onChange({ ...value, flow: e.target.value, sourcePackage: "", mappings: [] });
             }}
           >
             <option value="">-- Select flow --</option>
@@ -162,7 +165,10 @@ export function EntityPickerConfigEditor({
             <select
               className="h-8 w-full rounded-md border border-neutral-200 bg-white px-2 text-xs dark:border-neutral-800 dark:bg-neutral-900"
               value={selectedSourcePkg}
-              onChange={(e) => setSelectedSourcePkg(e.target.value)}
+              onChange={(e) => {
+                setSelectedSourcePkg(e.target.value);
+                onChange({ ...value, sourcePackage: e.target.value });
+              }}
             >
               <option value="">-- Select source package --</option>
               {sourcePkgs.map((p) => (

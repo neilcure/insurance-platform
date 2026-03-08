@@ -50,6 +50,7 @@ type StepRow = {
     >;
     packageGroupLabelsHidden?: Record<string, boolean>;
     categoryStepVisibility?: Record<string, string[]>;
+    categoryShowWhen?: Record<string, { package: string; category: string | string[] }[]>;
     showWhen?: {
       package: string;
       category?: string | string[];
@@ -948,7 +949,8 @@ export default function FlowNewPage() {
         if (!current) return false;
         const allowed = Array.isArray(rule.category)
           ? rule.category
-          : [rule.category];
+          : rule.category ? [rule.category] : [];
+        if (allowed.length === 0) return true;
         return allowed.includes(current);
       });
     },
@@ -960,25 +962,42 @@ export default function FlowNewPage() {
     [steps],
   );
 
-  const { groups, wizardNums } = React.useMemo(() => {
-    const visible = sorted.filter((s) =>
-      evaluateStepShowWhen(s.meta?.showWhen as any),
-    );
-    const defined = visible
-      .map((s) => Number(s.meta?.wizardStep ?? 0))
-      .filter((n) => Number.isFinite(n) && n > 0);
-    let auto = defined.length > 0 ? Math.max(...defined) : 0;
+  const { groups, wizardNums, hiddenSteps } = React.useMemo(() => {
     const grps: Record<number, StepRow[]> = {};
     const nums: number[] = [];
-    for (const s of visible) {
+    const hidden: { n: number; label: string; reason: string }[] = [];
+
+    const allDefined = sorted
+      .map((s) => Number(s.meta?.wizardStep ?? 0))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    let auto = allDefined.length > 0 ? Math.max(...allDefined) : 0;
+
+    for (const s of sorted) {
       let n = Number(s.meta?.wizardStep ?? 0);
       if (!Number.isFinite(n) || n <= 0) n = ++auto;
-      if (!grps[n]) grps[n] = [];
-      grps[n]!.push(s);
-      if (!nums.includes(n)) nums.push(n);
+
+      const rules = s.meta?.showWhen as { package: string; category?: string | string[] }[] | undefined;
+      const pass = evaluateStepShowWhen(rules);
+
+      if (pass) {
+        if (!grps[n]) grps[n] = [];
+        grps[n]!.push(s);
+        if (!nums.includes(n)) nums.push(n);
+      } else if (rules && rules.length > 0) {
+        const reasons = rules.map((r) => {
+          const pkgLabel = pkgOptions.find((p) => p.value === r.package)?.label ?? r.package;
+          const cats = Array.isArray(r.category) ? r.category : r.category ? [r.category] : [];
+          return `${pkgLabel} = ${cats.join(" or ")}`;
+        });
+        hidden.push({
+          n,
+          label: s.meta?.wizardStepLabel || s.label,
+          reason: reasons.join(", "),
+        });
+      }
     }
-    return { groups: grps, wizardNums: nums.sort((a, b) => a - b) };
-  }, [sorted, evaluateStepShowWhen]);
+    return { groups: grps, wizardNums: nums.sort((a, b) => a - b), hiddenSteps: hidden };
+  }, [sorted, evaluateStepShowWhen, pkgOptions]);
 
   const maxStep =
     wizardNums.length > 0 ? wizardNums[wizardNums.length - 1]! : 0;
@@ -1298,12 +1317,18 @@ export default function FlowNewPage() {
     void doSubmit(false);
   };
 
+  const displayNumMap = React.useMemo(() => {
+    const map: Record<number, number> = {};
+    wizardNums.forEach((n, i) => { map[n] = i + 1; });
+    return map;
+  }, [wizardNums]);
+
   const stepLabel = React.useMemo(() => {
     const group = currentGroup;
     const totalSteps = wizardNums.length;
-    const base = totalSteps <= 1 ? title : `${title} — Step ${wizardStep}`;
+    const dn = displayNumMap[wizardStep] ?? wizardStep;
+    const base = totalSteps <= 1 ? title : `${title} — Step ${dn}`;
     if (group.length === 0) return base;
-    // Prefer explicit Wizard Step Label if provided on any row in the group
     const stepLbl = String(
       group.find(
         (r) =>
@@ -1313,7 +1338,7 @@ export default function FlowNewPage() {
     ).trim();
     if (stepLbl) return totalSteps <= 1 ? `${title}: ${stepLbl}` : `${base}: ${stepLbl}`;
     return base;
-  }, [title, wizardStep, currentGroup, wizardNums]);
+  }, [title, wizardStep, currentGroup, wizardNums, displayNumMap]);
 
   if (loading) {
     return (
@@ -1376,30 +1401,45 @@ export default function FlowNewPage() {
       : currentGroup.find((r) => r.value === selectedRowValue) ?? null;
 
   const activePkgs = (() => {
-    const row = selectedRow ?? currentGroup[0];
-    if (!row) return [];
-    const pkgs = Array.isArray(row.meta?.packages)
-      ? (row.meta!.packages as string[])
-      : [];
-    const pkgShowWhen = (row.meta?.packageShowWhen ?? {}) as Record<
-      string,
-      { package: string; category: string | string[] }[]
-    >;
-    return pkgs
-      .filter((p) => pkgOptions.some((po) => po.value === p))
-      .filter((p) => {
-        const rules = pkgShowWhen[p];
-        if (!rules || rules.length === 0) return true;
-        return rules.every((rule) => {
-          const catKey = `${rule.package}__category`;
-          const currentVal = String(wizardFormValues[catKey] ?? "");
-          if (!currentVal) return false;
-          const allowed = Array.isArray(rule.category)
-            ? rule.category
-            : [rule.category];
-          return allowed.includes(currentVal);
-        });
-      });
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const row of currentGroup) {
+      const pkgs = Array.isArray(row.meta?.packages)
+        ? (row.meta!.packages as string[])
+        : [];
+      const pkgShowWhen = (row.meta?.packageShowWhen ?? {}) as Record<
+        string,
+        { package: string; category: string | string[] }[]
+      >;
+      const catShowWhen = (row.meta?.categoryShowWhen ?? {}) as Record<string, unknown[]>;
+      const isSelected = selectedRow ? row === selectedRow : row === currentGroup[0];
+      if (!isSelected && currentGroup.length > 1) continue;
+      for (const p of pkgs) {
+        if (!p || seen.has(p)) continue;
+        if (!pkgOptions.some((po) => po.value === p)) continue;
+        const hasCatConds = Object.keys(catShowWhen).some(
+          (k) => k.startsWith(`${p}__`) && (catShowWhen[k]?.length ?? 0) > 0,
+        );
+        if (!hasCatConds) {
+          const rules = pkgShowWhen[p];
+          if (rules && rules.length > 0) {
+            const pass = rules.every((rule) => {
+              const catKey = `${rule.package}__category`;
+              const currentVal = String(wizardFormValues[catKey] ?? "");
+              if (!currentVal) return false;
+              const allowed = Array.isArray(rule.category)
+                ? rule.category
+                : [rule.category];
+              return allowed.includes(currentVal);
+            });
+            if (!pass) continue;
+          }
+        }
+        seen.add(p);
+        result.push(p);
+      }
+    }
+    return result;
   })();
 
   const allSelectedBranches = new Set(
@@ -1415,10 +1455,10 @@ export default function FlowNewPage() {
     <div className="mx-auto max-w-3xl">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm">
-          {wizardNums.length > 1 ? wizardNums.map((n) => (
+          {wizardNums.length > 1 ? wizardNums.map((n, i) => (
             <StepDot
               key={n}
-              n={n}
+              n={i + 1}
               active={wizardStep === n}
               done={highestCompleted >= n}
               onClick={() => goto(n)}
@@ -1530,12 +1570,14 @@ export default function FlowNewPage() {
                   No packages configured for this step.
                 </p>
               ) : (
-                activePkgs.map((p) => {
+                activePkgs.map((p, pIdx) => {
                   const row = selectedRow ?? currentGroup[0]!;
                   const pkgCats = (row.meta?.packageCategories ??
                     {}) as Record<string, string[]>;
                   const csv = (row.meta?.categoryStepVisibility ??
                     {}) as Record<string, string[]>;
+                  const catShowWhen = (row.meta?.categoryShowWhen ??
+                    {}) as Record<string, { package: string; category: string | string[] }[]>;
                   const pkgGrpHidden = (row.meta?.packageGroupLabelsHidden ?? {}) as Record<string, boolean>;
                   const baseCats = pkgCats[p];
                   let finalCats = baseCats;
@@ -1552,15 +1594,31 @@ export default function FlowNewPage() {
                       ? baseCats.filter((c) => csvFiltered.includes(c))
                       : csvFiltered;
                   }
+                  if (finalCats && Object.keys(catShowWhen).length > 0) {
+                    finalCats = finalCats.filter((catVal) => {
+                      const rules = catShowWhen[`${p}__${catVal}`];
+                      if (!rules || rules.length === 0) return true;
+                      return rules.every((rule) => {
+                        const catKey = `${rule.package}__category`;
+                        const currentVal = String(wizardFormValues[catKey] ?? "");
+                        if (!currentVal) return false;
+                        const allowed = Array.isArray(rule.category)
+                          ? rule.category
+                          : rule.category ? [rule.category] : [];
+                        if (allowed.length === 0) return true;
+                        return allowed.includes(currentVal);
+                      });
+                    });
+                  }
+                  if (Array.isArray(finalCats) && finalCats.length === 0) return null;
                   return (
                     <PackageBlock
-                      key={p}
+                      key={`${p}_${pIdx}`}
                       form={form}
                       pkg={p}
                       allowedCategories={finalCats}
                       isAdmin={userType === "admin"}
-                      hideGroupLabels={!!pkgGrpHidden[p]}
-                    />
+                      hideGroupLabels={!!pkgGrpHidden[p]}/>
                   );
                 })
               )}

@@ -5,6 +5,60 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { normalizeKeyLike } from "@/lib/utils";
 
+function deriveValue(label: string): string {
+  return label.trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+}
+
+type OptLike = { label?: string; value?: string; children?: ChildLike[]; [k: string]: unknown };
+type ChildLike = { label?: string; options?: OptLike[]; booleanChildren?: Record<string, ChildLike[]>; [k: string]: unknown };
+
+function fixOptionValues(opts: OptLike[]): OptLike[] {
+  return opts
+    .filter((o) => (o.label ?? "").trim() !== "" || (o.value ?? "").trim() !== "")
+    .map((o) => {
+      const fixed = { ...o };
+      if ((fixed.value ?? "").trim() === "" && (fixed.label ?? "").trim() !== "") {
+        fixed.value = deriveValue(fixed.label!);
+      }
+      if (Array.isArray(fixed.children)) {
+        fixed.children = fixed.children.map((c) => fixChildOptions(c));
+      }
+      return fixed;
+    });
+}
+
+function fixChildOptions(child: ChildLike): ChildLike {
+  const c = { ...child };
+  if (Array.isArray(c.options)) {
+    c.options = fixOptionValues(c.options);
+  }
+  if (c.booleanChildren && typeof c.booleanChildren === "object") {
+    const bc = { ...c.booleanChildren };
+    for (const branch of ["true", "false"]) {
+      if (Array.isArray(bc[branch])) {
+        bc[branch] = bc[branch].map((sub: ChildLike) => fixChildOptions(sub));
+      }
+    }
+    c.booleanChildren = bc;
+  }
+  return c;
+}
+
+function sanitizeMetaOptions(meta: Record<string, unknown>): void {
+  if (Array.isArray(meta.options)) {
+    meta.options = fixOptionValues(meta.options as OptLike[]);
+  }
+  if (meta.booleanChildren && typeof meta.booleanChildren === "object") {
+    const bc = { ...(meta.booleanChildren as Record<string, ChildLike[]>) };
+    for (const branch of ["true", "false"]) {
+      if (Array.isArray(bc[branch])) {
+        bc[branch] = bc[branch].map((c) => fixChildOptions(c));
+      }
+    }
+    meta.booleanChildren = bc;
+  }
+}
+
 export async function PATCH(
   request: NextRequest,
   context: { params: Promise<{ id: string }> }
@@ -31,6 +85,11 @@ export async function PATCH(
   if (typeof body.sortOrder === "number") update.sortOrder = body.sortOrder;
   if (typeof body.isActive === "boolean") update.isActive = body.isActive;
   if (typeof body.meta === "object") update.meta = body.meta;
+
+  // Sanitize option values: auto-derive empty values from labels, strip fully empty entries
+  if (update.meta && typeof update.meta === "object") {
+    sanitizeMetaOptions(update.meta as Record<string, unknown>);
+  }
 
   const currentGroupKey = String(current.groupKey ?? "");
   const lowerGroupKey = currentGroupKey.toLowerCase();

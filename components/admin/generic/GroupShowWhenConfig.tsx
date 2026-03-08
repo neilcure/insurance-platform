@@ -31,6 +31,8 @@ function normalizeRules(val: GroupShowWhen): GswRule[] {
   return [val];
 }
 
+const CATEGORY_SENTINEL = "__category__";
+
 function RuleRow({
   rule,
   ruleIdx,
@@ -62,6 +64,23 @@ function RuleRow({
   const isCrossPkg = selectedPkg !== currentPkg;
   const fields = isCrossPkg ? (pkgFieldsCache[selectedPkg] ?? []) : localFields;
 
+  const isCategory = rule.field === "category";
+  const [catOptions, setCatOptions] = React.useState<{ label: string; value: string }[]>([]);
+
+  React.useEffect(() => {
+    if (!isCategory || !selectedPkg) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${selectedPkg}_category`)}`, { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { label: string; value: string }[];
+        if (!cancelled) setCatOptions(Array.isArray(data) ? data : []);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [isCategory, selectedPkg]);
+
   const triggerCandidates = fields.filter(
     (r) =>
       (!isCrossPkg ? r.id !== excludeFieldId : true) &&
@@ -69,11 +88,12 @@ function RuleRow({
       r.isActive !== false,
   );
 
-  const triggerField = rule.field ? fields.find((r) => r.value === rule.field) : null;
+  const triggerField = !isCategory && rule.field ? fields.find((r) => r.value === rule.field) : null;
   const triggerType = triggerField?.meta?.inputType;
 
-  const topOpts: { label?: string; value?: string; children?: ChildMeta[] }[] =
-    triggerType === "boolean"
+  const topOpts: { label?: string; value?: string; children?: ChildMeta[] }[] = isCategory
+    ? catOptions.map((c) => ({ label: c.label, value: c.value }))
+    : triggerType === "boolean"
       ? [
           { label: triggerField?.meta?.booleanLabels?.true ?? "Yes", value: "true" },
           { label: triggerField?.meta?.booleanLabels?.false ?? "No", value: "false" },
@@ -150,13 +170,15 @@ function RuleRow({
           <div className="flex-1 space-y-1">
             <select
               className={`w-full ${selectCls}`}
-              value={rule.field}
+              value={isCategory ? CATEGORY_SENTINEL : rule.field}
               onChange={(e) => {
                 const v = e.target.value;
-                onUpdate(ruleIdx, { ...rule, field: v, values: [], childKey: undefined, childValues: undefined });
+                const fieldVal = v === CATEGORY_SENTINEL ? "category" : v;
+                onUpdate(ruleIdx, { ...rule, field: fieldVal, values: [], childKey: undefined, childValues: undefined });
               }}
             >
               <option value="">-- Select field --</option>
+              <option value={CATEGORY_SENTINEL}>Category</option>
               {triggerCandidates.map((r) => (
                 <option key={r.id} value={r.value}>
                   {r.label} ({r.meta?.inputType})

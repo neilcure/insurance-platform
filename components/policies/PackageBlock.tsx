@@ -49,6 +49,373 @@ function evaluateRowFormula(
   return evaluateFormula(formula, rowValues);
 }
 
+type OptionChild = { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; currencyCode?: string; decimals?: number };
+type OptionWithChildren = { label?: string; value?: string; children?: OptionChild[]; showWhen?: unknown };
+
+function SubFieldRepeatable({
+  form,
+  name,
+  label,
+  required,
+  repeatable: rawRep,
+  entityPicker,
+}: {
+  form: UseFormReturn<Record<string, unknown>>;
+  name: string;
+  label?: string;
+  required?: boolean;
+  repeatable?: unknown;
+  entityPicker?: EntityPickerMeta;
+}) {
+  const rep = getRepeatable(rawRep);
+  const itemLabel = String(rep.itemLabel ?? "Item");
+  const min = Number.isFinite(Number(rep.min)) ? Number(rep.min) : 0;
+  const max = Number.isFinite(Number(rep.max)) ? Number(rep.max) : 0;
+  const childFields = Array.isArray(rep.fields) ? rep.fields : [];
+  const current = (form.watch(name as never) as unknown[] | undefined) ?? [];
+  const items = Array.isArray(current) ? (current as Record<string, unknown>[]) : [];
+  const canAdd = max <= 0 || items.length < max;
+  const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [pickerRowIdx, setPickerRowIdx] = React.useState<number | null>(null);
+
+  const handlePickerSelect = React.useCallback(
+    (selection: EntityPickerSelection) => {
+      if (!entityPicker || pickerRowIdx === null) return;
+      const extra = selection.extraAttributes;
+      const pkgs = (extra?.packagesSnapshot ?? {}) as Record<string, unknown>;
+      const findValue = (sourceField: string): unknown => {
+        for (const [, data] of Object.entries(pkgs)) {
+          if (!data || typeof data !== "object") continue;
+          const values = (data as { values?: Record<string, unknown> }).values ?? (data as Record<string, unknown>);
+          if (sourceField in values) return values[sourceField];
+          for (const [k, v] of Object.entries(values)) {
+            const kTail = k.includes("__") ? k.split("__").pop() : k;
+            if (kTail === sourceField) return v;
+          }
+        }
+        return undefined;
+      };
+      for (const m of entityPicker.mappings) {
+        if (!m.sourceField || !m.targetField) continue;
+        const val = findValue(m.sourceField);
+        if (val !== undefined && val !== null && val !== "") {
+          const targetKey = `${name}.${pickerRowIdx}.${m.targetField}`;
+          form.setValue(targetKey as never, val as never, { shouldDirty: true });
+        }
+      }
+      toast.success(`${entityPicker.buttonLabel || "Record"} selected: ${selection.policyNumber}`, { duration: 1500 });
+      setPickerOpen(false);
+      setPickerRowIdx(null);
+    },
+    [entityPicker, pickerRowIdx, name, form],
+  );
+
+  return (
+    <div className="col-span-2 space-y-2">
+      <div className="flex items-center justify-between">
+        <Label>{label ?? itemLabel} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}</Label>
+        <Button type="button" size="sm" variant="secondary" onClick={() => form.setValue(name as never, [...items, {}] as never, { shouldDirty: true })} disabled={!canAdd}>
+          Add {itemLabel}
+        </Button>
+      </div>
+      {items.map((_, rIdx) => {
+        const epTargetKeys = new Set(entityPicker?.mappings?.map((m) => m.targetField).filter(Boolean) ?? []);
+        const firstTarget = entityPicker?.mappings?.[0]?.targetField;
+        let pickerRendered = false;
+
+        const pickerBtn = entityPicker?.flow ? (
+          <button
+            type="button"
+            className="group/ep relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-neutral-200 bg-white text-neutral-600 transition-all duration-300 ease-out hover:w-auto hover:gap-1.5 hover:px-2.5 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+            onClick={() => { setPickerRowIdx(rIdx); setPickerOpen(true); }}
+            title={entityPicker.buttonLabel || "Browse"}
+          >
+            <Search className="h-3.5 w-3.5 shrink-0" />
+            <span className="max-w-0 overflow-hidden whitespace-nowrap text-[11px] font-medium opacity-0 transition-all duration-300 ease-out group-hover/ep:max-w-48 group-hover/ep:opacity-100">
+              {entityPicker.buttonLabel || "Browse"}
+            </span>
+          </button>
+        ) : null;
+
+        const shouldAttachPicker = (fieldValue: string) => {
+          if (!pickerBtn || pickerRendered) return false;
+          if (firstTarget && fieldValue === firstTarget) return true;
+          if (epTargetKeys.has(fieldValue)) return true;
+          return false;
+        };
+
+        return (
+          <div key={`${name}__row__${rIdx}`} className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-xs font-medium">{itemLabel} #{rIdx + 1}</div>
+              <Button type="button" size="sm" variant="outline" onClick={() => { const next = items.filter((__, i) => i !== rIdx); form.setValue(name as never, next as never, { shouldDirty: true }); }} disabled={items.length <= Math.max(1, min)}>
+                Remove
+              </Button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {childFields.map((cf, ccIdx) => {
+                const cfKey = cf?.value ?? `c${ccIdx}`;
+                const childName = `${name}.${rIdx}.${cfKey}`;
+                const ccType = String(cf?.inputType ?? "string").trim().toLowerCase();
+                const attachPicker = shouldAttachPicker(cfKey);
+                if (attachPicker) pickerRendered = true;
+
+                if (ccType === "select") {
+                  const cfOpts = Array.isArray((cf as any)?.options) ? (cf as any).options : [];
+                  return (
+                    <div key={childName} className="space-y-1">
+                      <Label>{cf?.label ?? "Select"}</Label>
+                      <div className="flex items-center gap-1.5">
+                        <select className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100" {...form.register(childName as never)}>
+                          <option value="">-- Select --</option>
+                          {cfOpts.map((o: any, oIdx: number) => <option key={`${o.value}_${oIdx}`} value={o.value}>{o.label}</option>)}
+                        </select>
+                        {attachPicker && pickerBtn}
+                      </div>
+                    </div>
+                  );
+                }
+                if (ccType === "multi_select") {
+                  const cfOpts = Array.isArray((cf as any)?.options) ? (cf as any).options : [];
+                  return (
+                    <div key={childName} className="space-y-1">
+                      <Label>{cf?.label ?? "Select"}</Label>
+                      <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
+                        {cfOpts.map((o: any, oIdx: number) => (
+                          <label key={`${o.value}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
+                            <input type="checkbox" value={o.value} {...form.register(childName as never)} />
+                            {o.label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                }
+                if (ccType === "currency") {
+                  const cc = String((cf as any)?.currencyCode ?? "").trim();
+                  const dec = Number((cf as any)?.decimals ?? 2);
+                  const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
+                  return (
+                    <div key={childName} className="space-y-1">
+                      <Label>{cf?.label ?? "Value"}</Label>
+                      <div className="flex items-center gap-1.5">
+                        {cc && <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span>}
+                        <Input type="number" step={step} placeholder="0.00" {...form.register(childName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
+                        {attachPicker && pickerBtn}
+                      </div>
+                    </div>
+                  );
+                }
+                if (ccType === "formula") {
+                  const rowVals = (items[rIdx] ?? {}) as Record<string, unknown>;
+                  const fComputed = evaluateRowFormula(String((cf as any)?.formula ?? ""), rowVals);
+                  return (
+                    <div key={childName} className="space-y-1">
+                      <Label>{cf?.label ?? "Value"}</Label>
+                      <Input type="text" readOnly value={fComputed} className="bg-neutral-50 dark:bg-neutral-800 cursor-default" />
+                    </div>
+                  );
+                }
+                const isNum = ccType === "number";
+                const isDate = ccType === "date";
+                const rfRegOpts: Record<string, unknown> = {};
+                if (isNum) rfRegOpts.setValueAs = (v: unknown) => (v === "" ? undefined : Number(v as number));
+                if (isDate) {
+                  rfRegOpts.validate = (v: unknown) => { if (v === undefined || v === null || v === "") return true; return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY"; };
+                  rfRegOpts.onChange = (e: unknown) => { const t = e as { target?: { value?: string } }; form.setValue(childName as never, maskDDMMYYYY(t?.target?.value ?? "") as never, { shouldDirty: true }); };
+                }
+                return (
+                  <div key={childName} className="space-y-1">
+                    <Label>{cf?.label ?? "Value"}</Label>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        className="flex-1"
+                        type={isNum ? "number" : "text"}
+                        placeholder={isDate ? "DD-MM-YYYY" : undefined}
+                        inputMode={isDate ? "numeric" : undefined}
+                        {...form.register(childName as never, rfRegOpts)}
+                      />
+                      {attachPicker && pickerBtn}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      {entityPicker?.flow && pickerOpen && (
+        <EntityPickerDrawer
+          open={pickerOpen}
+          onClose={() => { setPickerOpen(false); setPickerRowIdx(null); }}
+          flowKey={entityPicker.flow}
+          title={entityPicker.buttonLabel || "Select Record"}
+          onSelect={handlePickerSelect}
+        />
+      )}
+    </div>
+  );
+}
+
+function SelectWithOptionChildren({
+  form,
+  name,
+  label,
+  options,
+  allFormValues,
+}: {
+  form: UseFormReturn<Record<string, unknown>>;
+  name: string;
+  label: string;
+  options: OptionWithChildren[];
+  allFormValues: Record<string, unknown>;
+}) {
+  const selectedVal = useWatch({ control: form.control, name: name as string }) as string | undefined;
+  const visibleOpts = options.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
+  const matchedOpt = options.find((o) => o.value === selectedVal);
+  const optChildren = Array.isArray(matchedOpt?.children) ? matchedOpt.children : [];
+
+  return (
+    <div className="col-span-2 space-y-2">
+      <div className="space-y-1">
+        <Label>{label}</Label>
+        <select
+          className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+          {...form.register(name as never)}
+        >
+          <option value="">-- Select --</option>
+          {visibleOpts.map((o, oIdx) => (
+            <option key={`${o.value ?? ""}_${oIdx}`} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+      {selectedVal && optChildren.length > 0 && (
+        <div className="grid grid-cols-2 gap-3 rounded-md border border-neutral-100 bg-neutral-50/50 p-3 dark:border-neutral-800 dark:bg-neutral-900/50">
+          {optChildren.map((oc, ocIdx) => {
+            const ocName = `${name}__opt_${selectedVal}__sc${ocIdx}`;
+            const ocType = oc?.inputType ?? "string";
+            if (ocType === "select") {
+              const ocOpts = Array.isArray(oc?.options) ? oc.options : [];
+              return (
+                <div key={ocName} className="space-y-1">
+                  <Label>{oc?.label ?? "Details"}</Label>
+                  <select
+                    className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+                    {...form.register(ocName as never)}
+                  >
+                    <option value="">-- Select --</option>
+                    {ocOpts.map((so, soIdx) => (
+                      <option key={`${so.value ?? ""}_${soIdx}`} value={so.value}>{so.label}</option>
+                    ))}
+                  </select>
+                </div>
+              );
+            }
+            if (ocType === "multi_select") {
+              const ocOpts = Array.isArray(oc?.options) ? oc.options : [];
+              return (
+                <div key={ocName} className="space-y-1">
+                  <Label>{oc?.label ?? "Details"}</Label>
+                  <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
+                    {ocOpts.map((so, soIdx) => (
+                      <label key={`${so.value ?? ""}_${soIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
+                        <input type="checkbox" value={so.value} {...form.register(ocName as never)} />
+                        {so.label}
+                      </label>
+                    ))}
+                    {ocOpts.length === 0 && <p className="text-xs text-neutral-500">No options configured.</p>}
+                  </div>
+                </div>
+              );
+            }
+            if (ocType === "boolean") {
+              const yesL = String((oc as any)?.booleanLabels?.true ?? "").trim() || "Yes";
+              const noL = String((oc as any)?.booleanLabels?.false ?? "").trim() || "No";
+              return (
+                <div key={ocName} className="space-y-1">
+                  <Label>{oc?.label ?? "Details"}</Label>
+                  <div className="flex items-center gap-6">
+                    <label className="inline-flex items-center gap-2 text-sm">
+                      <input type="radio" className="accent-neutral-900 dark:accent-white" value="true" {...form.register(ocName as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
+                      {yesL}
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-sm">
+                      <input type="radio" className="accent-neutral-900 dark:accent-white" value="false" {...form.register(ocName as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
+                      {noL}
+                    </label>
+                  </div>
+                  <BooleanBranchFields form={form} name={ocName} booleanChildren={(oc as any)?.booleanChildren} />
+                </div>
+              );
+            }
+            if (ocType === "formula") {
+              return (
+                <FormulaField key={ocName} form={form} name={ocName} formula={String((oc as any)?.formula ?? "")} label={oc?.label ?? "Value"} pkg="" />
+              );
+            }
+            if (ocType === "repeatable" || String(ocType).includes("repeat")) {
+              const epConfig = (oc as any)?.entityPicker as EntityPickerMeta | undefined;
+              return (
+                <SubFieldRepeatable
+                  key={ocName}
+                  form={form}
+                  name={ocName}
+                  label={oc?.label}
+                  repeatable={(oc as any)?.repeatable}
+                  entityPicker={epConfig}
+                />
+              );
+            }
+            if (ocType === "currency") {
+              const cc = String(oc?.currencyCode ?? "").trim();
+              const dec = Number(oc?.decimals ?? 2);
+              const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
+              return (
+                <div key={ocName} className="space-y-1">
+                  <Label>{oc?.label ?? "Value"}</Label>
+                  <div className="flex items-center gap-2">
+                    {cc && <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span>}
+                    <Input type="number" step={step} placeholder="0.00" {...form.register(ocName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
+                  </div>
+                </div>
+              );
+            }
+            const isNum = ocType === "number";
+            const isDate = ocType === "date";
+            const regOpts: Record<string, unknown> = {};
+            if (isNum) regOpts.setValueAs = (v: unknown) => (v === "" ? undefined : Number(v as number));
+            if (isDate) {
+              regOpts.validate = (v: unknown) => { if (v === undefined || v === null || v === "") return true; return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY"; };
+              regOpts.onChange = (e: unknown) => { const t = e as { target?: { value?: string } }; form.setValue(ocName as never, maskDDMMYYYY(t?.target?.value ?? "") as never, { shouldDirty: true }); };
+            }
+            return (
+              <div key={ocName} className="space-y-1">
+                <Label>{oc?.label ?? "Details"}</Label>
+                <Input
+                  type={isNum ? "number" : "text"}
+                  placeholder={isDate ? "DD-MM-YYYY" : undefined}
+                  inputMode={isDate ? "numeric" : undefined}
+                  {...form.register(ocName as never, regOpts)}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DefaultValueSetter({ form, name, defaultValue }: { form: UseFormReturn<Record<string, unknown>>; name: string; defaultValue: string }) {
+  React.useEffect(() => {
+    const cur: unknown = form.getValues(name as never);
+    if (cur === undefined || cur === null || cur === "") {
+      form.setValue(name as never, defaultValue as never, { shouldDirty: false });
+    }
+  }, [form, name, defaultValue]);
+  return null;
+}
+
 function FormulaField({
   form,
   name,
@@ -272,9 +639,9 @@ function AdminAddOption({
             Manage options ({existingOptions.length})
           </summary>
           <div className="mt-1 flex flex-wrap gap-1">
-            {existingOptions.map((o) => (
+            {existingOptions.map((o, oIdx) => (
               <span
-                key={o.value}
+                key={`${o.value ?? ""}_${oIdx}`}
                 className="inline-flex items-center gap-1 rounded bg-neutral-100 px-1.5 py-0.5 text-xs dark:bg-neutral-800 dark:text-neutral-200"
               >
                 {o.label ?? o.value}
@@ -768,7 +1135,17 @@ export function PackageBlock({
                 return true;
               });
             });
-          const groupedElements = entries.map(([groupLabel, bucket]) => (
+          const seenInGroups = new Set<number>();
+          for (const [, bucket] of entries) {
+            bucket.fields = bucket.fields.filter((f) => {
+              if (seenInGroups.has((f as any).id)) return false;
+              seenInGroups.add((f as any).id);
+              return true;
+            });
+          }
+          const groupedElements = entries
+            .filter(([, bucket]) => bucket.fields.length > 0)
+            .map(([groupLabel, bucket]) => (
             <div key={groupLabel || "default"} className="space-y-2">
               {groupLabel && !hideGroupLabels ? (
                 <div className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{groupLabel}</div>
@@ -809,130 +1186,17 @@ export function PackageBlock({
                   const nameBase = `${pkg}__${fieldKey}`;
                   // Repeatable (list) support
                   if (inputType === "repeatable" || typeof meta.repeatable !== "undefined") {
-                    const rep = getRepeatable(meta.repeatable);
-                    const itemLabel = String(rep.itemLabel ?? "Item");
-                    const min = Number.isFinite(Number(rep.min)) ? Number(rep.min) : 0;
-                    const max = Number.isFinite(Number(rep.max)) ? Number(rep.max) : 0;
-                    const childFields = Array.isArray(rep.fields) ? (rep.fields ?? []) : [];
-                    const current = (form.watch(nameBase as never) as unknown[] | undefined) ?? [];
-                    const items = Array.isArray(current) ? (current as Record<string, unknown>[]) : [];
-                    const canAdd = max <= 0 || items.length < max;
-                    const canRemove = (idx: number) => items.length > Math.max(1, min) - 0 && idx >= 0;
-                    const addItem = () => {
-                      const next = [...items, {}];
-                      form.setValue(nameBase as never, next as never, { shouldDirty: true });
-                    };
-                    const removeItem = (idx: number) => {
-                      if (!canRemove(idx)) return;
-                      const next = items.filter((_, i) => i !== idx);
-                      form.setValue(nameBase as never, next as never, { shouldDirty: true });
-                    };
+                    const epMeta = meta.entityPicker as EntityPickerMeta | undefined;
                     return (
-                      <div key={nameBase} className="col-span-2 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <Label>
-                            {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
-                          </Label>
-                          <Button type="button" size="sm" variant="secondary" onClick={addItem} disabled={!canAdd}>
-                            Add {itemLabel}
-                          </Button>
-                        </div>
-                        <div className="space-y-2">
-                          {(items.length === 0 ? Array.from({ length: Math.max(0, min) }) : items).map((_, idx) => {
-                            const baseRowKey = `${nameBase}__row__${idx}`;
-                            return (
-                              <div key={baseRowKey} className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-                                <div className="mb-2 flex items-center justify-between">
-                                  <div className="text-xs font-medium">
-                                    {itemLabel} #{idx + 1}
-                                  </div>
-                                  <Button type="button" size="sm" variant="outline" onClick={() => removeItem(idx)} disabled={!canRemove(idx)}>
-                                    Remove
-                                  </Button>
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                  {childFields.map((cf, cIdx) => {
-                                    const cType = String(cf?.inputType ?? "string").trim().toLowerCase();
-                                    const childName = `${nameBase}.${idx}.${cf?.value ?? `c${cIdx}`}`;
-                                    if (cType === "select") {
-                                      const opts = (Array.isArray(cf.options) ? cf.options : []) as { label?: string; value?: string }[];
-                                      return (
-                                        <div key={`${childName}__sel`} className="space-y-1">
-                                          <Label>{cf.label ?? "Select"}</Label>
-                                          <select
-                                            className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
-                                            {...form.register(childName as never)}
-                                          >
-                                            <option value="">-- Select --</option>
-                                            {opts.map((o) => (
-                                              <option key={o.value} value={o.value}>
-                                                {o.label}
-                                              </option>
-                                            ))}
-                                          </select>
-                                        </div>
-                                      );
-                                    }
-                                    if (cType === "multi_select") {
-                                      const opts = (Array.isArray(cf.options) ? cf.options : []) as { label?: string; value?: string }[];
-                                      return (
-                                        <div key={`${childName}__ms`} className="space-y-1">
-                                          <Label>{cf.label ?? "Select"}</Label>
-                                          <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                            {opts.map((o) => (
-                                              <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                                <input type="checkbox" value={o.value} {...form.register(childName as never)} />
-                                                {o.label}
-                                              </label>
-                                            ))}
-                                            {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
-                                          </div>
-                                        </div>
-                                      );
-                                    }
-                                    if (cType === "formula") {
-                                      const rowVals = (items[idx] ?? {}) as Record<string, unknown>;
-                                      const computed = evaluateRowFormula(String((cf as any)?.formula ?? ""), rowVals);
-                                      return (
-                                        <div key={`${childName}__formula`} className="space-y-1">
-                                          <Label>{cf.label ?? "Value"}</Label>
-                                          <Input type="text" readOnly value={computed} className="bg-neutral-50 dark:bg-neutral-800 cursor-default" />
-                                        </div>
-                                      );
-                                    }
-                                    const regOpts: Record<string, unknown> = {};
-                                    if (cType === "number") {
-                                      regOpts.setValueAs = (v: unknown) => (v === "" ? undefined : Number(v as number));
-                                    }
-                                    if (cType === "date") {
-                                      regOpts.validate = (v: unknown) => {
-                                        if (v === undefined || v === null || v === "") return true;
-                                        return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY";
-                                      };
-                                      regOpts.onChange = (e: unknown) => {
-                                        const t = e as { target?: { value?: string } };
-                                        const formatted = maskDDMMYYYY(t?.target?.value ?? "");
-                                        form.setValue(childName as never, formatted as never, { shouldDirty: true });
-                                      };
-                                    }
-                                    return (
-                                      <div key={`${childName}__fld`} className="space-y-1">
-                                        <Label>{cf.label ?? "Value"}</Label>
-                                        <Input
-                                          type={cType === "number" ? "number" : cType === "date" ? "text" : "text"}
-                                          placeholder={cType === "date" ? "DD-MM-YYYY" : undefined}
-                                          inputMode={cType === "date" ? "numeric" : undefined}
-                                          {...form.register(childName as never, regOpts)}
-                                        />
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
+                      <SubFieldRepeatable
+                        key={nameBase}
+                        form={form}
+                        name={nameBase}
+                        label={displayLabel}
+                        required={Boolean(meta.required)}
+                        repeatable={meta.repeatable}
+                        entityPicker={epMeta}
+                      />
                     );
                   }
                   if (inputType === "select") {
@@ -1003,8 +1267,8 @@ export function PackageBlock({
                             {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                           </Label>
                           <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                            {options.map((o) => (
-                              <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                            {options.map((o, oIdx) => (
+                              <label key={`${o.value ?? ""}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
                                 <input
                                   type="checkbox"
                                   value={o.value}
@@ -1089,8 +1353,8 @@ export function PackageBlock({
                                           {...form.register(name as never)}
                                         >
                                           <option value="">-- Select --</option>
-                                          {opts.map((o) => (
-                                            <option key={o.value} value={o.value}>
+                                          {opts.map((o, oIdx) => (
+                                            <option key={`${o.value ?? ""}_${oIdx}`} value={o.value}>
                                               {o.label}
                                             </option>
                                           ))}
@@ -1107,8 +1371,8 @@ export function PackageBlock({
                                       <div key={name} className="space-y-1">
                                         <Label>{child?.label ?? "Details"}</Label>
                                         <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                          {opts.map((o) => (
-                                            <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                          {opts.map((o, oIdx) => (
+                                            <label key={`${o.value ?? ""}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
                                               <input type="checkbox" value={o.value} {...form.register(name as never)} />
                                               {o.label}
                                             </label>
@@ -1214,21 +1478,38 @@ export function PackageBlock({
                         </div>
                         {isYes && yesChildren.length > 0 ? (
                           <div className="grid grid-cols-2 gap-4">
-                            {yesChildren.map((child: { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; booleanLabels?: { true?: string; false?: string }; booleanDisplay?: "radio" | "dropdown"; showWhen?: { package: string; category: string | string[] }[] }, cIdx: number) => {
+                            {yesChildren.map((child: { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; booleanLabels?: { true?: string; false?: string }; booleanDisplay?: "radio" | "dropdown"; showWhen?: { package: string; category: string | string[] }[]; defaultValue?: string; readOnly?: boolean }, cIdx: number) => {
                               if (!evaluateShowWhen(child?.showWhen, allFormValues)) return null;
                               const name = `${nameBase}__true__c${cIdx}`;
+                              const hasDefault = child?.defaultValue !== undefined && child.defaultValue !== "";
+                              const dvNode = hasDefault ? <DefaultValueSetter form={form} name={name} defaultValue={child.defaultValue!} /> : null;
+                              if (child?.readOnly && child?.defaultValue) {
+                                return (
+                                  <React.Fragment key={name}>
+                                    {dvNode}
+                                    <div className="space-y-1">
+                                      <Label>{child?.label ?? "Value"}</Label>
+                                      <div className="flex h-9 items-center rounded-md border border-neutral-200 bg-neutral-50 px-3 text-sm font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                                        {child.defaultValue}
+                                      </div>
+                                    </div>
+                                  </React.Fragment>
+                                );
+                              }
                               const cType = child?.inputType ?? "string";
                               if (cType === "formula") {
                                 return (
-                                  <FormulaField
-                                    key={name}
-                                    form={form}
-                                    name={name}
-                                    formula={String((child as any)?.formula ?? "")}
-                                    label={child?.label ?? "Value"}
-                                    pkg={pkg}
+                                  <React.Fragment key={name}>
+                                    {dvNode}
+                                    <FormulaField
+                                      form={form}
+                                      name={name}
+                                      formula={String((child as any)?.formula ?? "")}
+                                      label={child?.label ?? "Value"}
+                                      pkg={pkg}
             
-                                  />
+                                    />
+                                  </React.Fragment>
                                 );
                               }
                               if (cType === "boolean") {
@@ -1239,6 +1520,7 @@ export function PackageBlock({
                                 if (bDisp === "dropdown") {
                                   return (
                                     <div key={name} className="space-y-1">
+                                      {dvNode}
                                       <Label>{child?.label ?? "Details"}</Label>
                                       <select
                                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -1276,146 +1558,16 @@ export function PackageBlock({
                                 String(cType).toLowerCase().includes("repeat") ||
                                 Boolean((child as { repeatable?: RepeatableConfig | RepeatableConfig[] } | undefined)?.repeatable);
                               if (isRepeatableChild) {
-                                const rep = getRepeatable(
-                                  (child as { repeatable?: RepeatableConfig | RepeatableConfig[] } | undefined)?.repeatable
-                                );
-                                const itemLabel = String(rep.itemLabel ?? "Item");
-                                const min = Number.isFinite(Number(rep.min)) ? Number(rep.min) : 0;
-                                const max = Number.isFinite(Number(rep.max)) ? Number(rep.max) : 0;
-                                const childFields = Array.isArray(rep.fields) ? (rep.fields ?? []) : [];
-                                const current = (form.watch(name as never) as unknown[] | undefined) ?? [];
-                                const items = Array.isArray(current) ? (current as Record<string, unknown>[]) : [];
-                                const canAdd = max <= 0 || items.length < max;
-                                const canRemove = (idx: number) => items.length > Math.max(1, min) - 0 && idx >= 0;
-                                const addItem = () => {
-                                  const next = [...items, {}];
-                                  form.setValue(name as never, next as never, { shouldDirty: true });
-                                };
-                                const removeItem = (idx: number) => {
-                                  if (!canRemove(idx)) return;
-                                  const next = items.filter((_, i) => i !== idx);
-                                  form.setValue(name as never, next as never, { shouldDirty: true });
-                                };
+                                const childEp = ((child as any)?.entityPicker ?? meta.entityPicker) as EntityPickerMeta | undefined;
                                 return (
-                                  <div key={`${name}__rep`} className="col-span-2 space-y-2">
-                                    <div className="flex items-center justify-between">
-                                      <Label>{child?.label ?? itemLabel}</Label>
-                                      <Button type="button" size="sm" variant="secondary" onClick={addItem} disabled={!canAdd}>
-                                        Add {itemLabel}
-                                      </Button>
-                                    </div>
-                                    <div className="space-y-2">
-                                      {(items.length === 0 ? [] : items).map((_, rIdx) => {
-                                        const baseRowKey = `${name}__row__${rIdx}`;
-                                        return (
-                                          <div key={baseRowKey} className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-                                            <div className="mb-2 flex items-center justify-between">
-                                              <div className="text-xs font-medium">
-                                                {itemLabel} #{rIdx + 1}
-                                              </div>
-                                              <Button type="button" size="sm" variant="outline" onClick={() => removeItem(rIdx)} disabled={!canRemove(rIdx)}>
-                                                Remove
-                                              </Button>
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-3">
-                                              {childFields.map((cf, ccIdx) => {
-                                                const ccType = String(cf?.inputType ?? "string").trim().toLowerCase();
-                                                const childName = `${name}.${rIdx}.${cf?.value ?? `c${ccIdx}`}`;
-                                                if (ccType === "select") {
-                                                  const cfOptsSel =
-                                                    (cf as { options?: { label?: string; value?: string }[] } | undefined)?.options ?? [];
-                                                  const opts = (Array.isArray(cfOptsSel) ? cfOptsSel : []) as { label?: string; value?: string }[];
-                                                  return (
-                                                    <div key={`${childName}__sel`} className="space-y-1">
-                                                      <Label>{cf?.label ?? "Select"}</Label>
-                                                      <select
-                                                        className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
-                                                        {...form.register(childName as never)}
-                                                      >
-                                                        <option value="">-- Select --</option>
-                                                        {opts.map((o) => (
-                                                          <option key={o.value} value={o.value}>
-                                                            {o.label}
-                                                          </option>
-                                                        ))}
-                                                      </select>
-                                                    </div>
-                                                  );
-                                                }
-                                                if (ccType === "multi_select") {
-                                                  const cfOptsMs =
-                                                    (cf as { options?: { label?: string; value?: string }[] } | undefined)?.options ?? [];
-                                                  const opts = (Array.isArray(cfOptsMs) ? cfOptsMs : []) as { label?: string; value?: string }[];
-                                                  return (
-                                                    <div key={`${childName}__ms`} className="space-y-1">
-                                                      <Label>{cf?.label ?? "Select"}</Label>
-                                                      <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                                        {opts.map((o) => (
-                                                          <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                                            <input type="checkbox" value={o.value} {...form.register(childName as never)} />
-                                                            {o.label}
-                                                          </label>
-                                                        ))}
-                                                        {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
-                                                      </div>
-                                                    </div>
-                                                  );
-                                                }
-                                                if (ccType === "currency") {
-                                                  const cc = String((cf as any)?.currencyCode ?? "").trim();
-                                                  const dec = Number((cf as any)?.decimals ?? 2);
-                                                  const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
-                                                  return (
-                                                    <div key={`${childName}__cur`} className="space-y-1">
-                                                      <Label>{cf?.label ?? "Value"}</Label>
-                                                      <div className="flex items-center gap-2">
-                                                        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
-                                                        <Input type="number" step={step} placeholder="0.00" {...form.register(childName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
-                                                      </div>
-                                                    </div>
-                                                  );
-                                                }
-                                                if (ccType === "formula") {
-                                                  const rowVals = (items[rIdx] ?? {}) as Record<string, unknown>;
-                                                  const fComputed = evaluateRowFormula(String((cf as any)?.formula ?? ""), rowVals);
-                                                  return (
-                                                    <div key={`${childName}__formula`} className="space-y-1">
-                                                      <Label>{cf?.label ?? "Value"}</Label>
-                                                      <Input type="text" readOnly value={fComputed} className="bg-neutral-50 dark:bg-neutral-800 cursor-default" />
-                                                    </div>
-                                                  );
-                                                }
-                                                const regChildOpts: Record<string, unknown> = {};
-                                                if (ccType === "number") regChildOpts.setValueAs = (v: unknown) => (v === "" ? undefined : Number(v as number));
-                                                if (ccType === "date") {
-                                                  regChildOpts.validate = (v: unknown) => {
-                                                    if (v === undefined || v === null || v === "") return true;
-                                                    return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY";
-                                                  };
-                                                  regChildOpts.onChange = (e: unknown) => {
-                                                    const t = e as { target?: { value?: string } };
-                                                    const formatted = maskDDMMYYYY(t?.target?.value ?? "");
-                                                    form.setValue(childName as never, formatted as never, { shouldDirty: true });
-                                                  };
-                                                }
-                                                return (
-                                                  <div key={`${childName}__fld`} className="space-y-1">
-                                                    <Label>{cf?.label ?? "Value"}</Label>
-                                                    <Input
-                                                      type={ccType === "number" ? "number" : ccType === "date" ? "text" : "text"}
-                                                      placeholder={ccType === "date" ? "DD-MM-YYYY" : undefined}
-                                                      inputMode={ccType === "date" ? "numeric" : undefined}
-                                                      {...form.register(childName as never, regChildOpts)}
-                                                    />
-                                                  </div>
-                                                );
-                                              })}
-                                            </div>
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
+                                  <SubFieldRepeatable
+                                    key={`${name}__rep`}
+                                    form={form}
+                                    name={name}
+                                    label={child?.label}
+                                    repeatable={(child as { repeatable?: unknown })?.repeatable}
+                                    entityPicker={childEp}
+                                  />
                                 );
                               }
                               if (cType === "currency") {
@@ -1433,18 +1585,28 @@ export function PackageBlock({
                                 );
                               }
                               if (cType === "select") {
-                                const allOpts = (Array.isArray(child?.options) ? child.options : []) as { label?: string; value?: string; showWhen?: unknown }[];
+                                const allOpts = (Array.isArray(child?.options) ? child.options : []) as OptionWithChildren[];
+                                const hasAnyChildren = allOpts.some((o) => Array.isArray(o.children) && o.children.length > 0);
+                                if (hasAnyChildren) {
+                                  return (
+                                    <React.Fragment key={name}>
+                                      {dvNode}
+                                      <SelectWithOptionChildren form={form} name={name} label={child?.label ?? "Select"} options={allOpts} allFormValues={allFormValues} />
+                                    </React.Fragment>
+                                  );
+                                }
                                 const opts = allOpts.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
                                 return (
                                   <div key={name} className="space-y-1">
+                                    {dvNode}
                                     <Label>{child?.label ?? "Select"}</Label>
                                     <select
                                       className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
                                       {...form.register(name as never)}
                                     >
                                       <option value="">-- Select --</option>
-                                      {opts.map((o) => (
-                                        <option key={o.value} value={o.value}>{o.label}</option>
+                                      {opts.map((o, oIdx) => (
+                                        <option key={`${o.value ?? ""}_${oIdx}`} value={o.value}>{o.label}</option>
                                       ))}
                                     </select>
                                   </div>
@@ -1455,10 +1617,11 @@ export function PackageBlock({
                                 const opts = allOpts.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
                                 return (
                                   <div key={name} className="space-y-1">
+                                    {dvNode}
                                     <Label>{child?.label ?? "Select"}</Label>
                                     <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                      {opts.map((o) => (
-                                        <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                      {opts.map((o, oIdx) => (
+                                        <label key={`${o.value ?? ""}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
                                           <input type="checkbox" value={o.value} {...form.register(name as never)} />
                                           {o.label}
                                         </label>
@@ -1484,37 +1647,57 @@ export function PackageBlock({
                                 };
                               }
                               return (
-                                <div key={name}>
-                                  <Field
-                                    label={child?.label ?? "Details"}
-                                    required={false}
-                                    type={cIsNum ? "number" : cIsDate ? "text" : "text"}
-                                    placeholder={cIsDate ? "DD-MM-YYYY" : undefined}
-                                    inputMode={cIsDate ? "numeric" : undefined}
-                                    {...form.register(name as never, regOpts)}
-                                  />
-                                </div>
+                                <React.Fragment key={name}>
+                                  {dvNode}
+                                  <div>
+                                    <Field
+                                      label={child?.label ?? "Details"}
+                                      required={false}
+                                      type={cIsNum ? "number" : cIsDate ? "text" : "text"}
+                                      placeholder={cIsDate ? "DD-MM-YYYY" : undefined}
+                                      inputMode={cIsDate ? "numeric" : undefined}
+                                      {...form.register(name as never, regOpts)}
+                                    />
+                                  </div>
+                                </React.Fragment>
                               );
                             })}
                           </div>
                         ) : null}
                         {isNo && noChildren.length > 0 ? (
                           <div className="grid grid-cols-2 gap-4">
-                            {noChildren.map((child: { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; booleanLabels?: { true?: string; false?: string }; booleanDisplay?: "radio" | "dropdown"; showWhen?: { package: string; category: string | string[] }[] }, cIdx: number) => {
+                            {noChildren.map((child: { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; booleanLabels?: { true?: string; false?: string }; booleanDisplay?: "radio" | "dropdown"; showWhen?: { package: string; category: string | string[] }[]; defaultValue?: string; readOnly?: boolean }, cIdx: number) => {
                               if (!evaluateShowWhen(child?.showWhen, allFormValues)) return null;
                               const name = `${nameBase}__false__c${cIdx}`;
+                              const hasDefault = child?.defaultValue !== undefined && child.defaultValue !== "";
+                              const dvNode = hasDefault ? <DefaultValueSetter form={form} name={name} defaultValue={child.defaultValue!} /> : null;
+                              if (child?.readOnly && child?.defaultValue) {
+                                return (
+                                  <React.Fragment key={name}>
+                                    {dvNode}
+                                    <div className="space-y-1">
+                                      <Label>{child?.label ?? "Value"}</Label>
+                                      <div className="flex h-9 items-center rounded-md border border-neutral-200 bg-neutral-50 px-3 text-sm font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                                        {child.defaultValue}
+                                      </div>
+                                    </div>
+                                  </React.Fragment>
+                                );
+                              }
                               const cType = child?.inputType ?? "string";
                               if (cType === "formula") {
                                 return (
-                                  <FormulaField
-                                    key={name}
-                                    form={form}
-                                    name={name}
-                                    formula={String((child as any)?.formula ?? "")}
-                                    label={child?.label ?? "Value"}
-                                    pkg={pkg}
+                                  <React.Fragment key={name}>
+                                    {dvNode}
+                                    <FormulaField
+                                      form={form}
+                                      name={name}
+                                      formula={String((child as any)?.formula ?? "")}
+                                      label={child?.label ?? "Value"}
+                                      pkg={pkg}
             
-                                  />
+                                    />
+                                  </React.Fragment>
                                 );
                               }
                               if (cType === "boolean") {
@@ -1525,6 +1708,7 @@ export function PackageBlock({
                                 if (bDisp === "dropdown") {
                                   return (
                                     <div key={name} className="space-y-1">
+                                      {dvNode}
                                       <Label>{child?.label ?? "Details"}</Label>
                                       <select
                                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -1562,146 +1746,16 @@ export function PackageBlock({
                                 String(cType).toLowerCase().includes("repeat") ||
                                 Boolean((child as { repeatable?: RepeatableConfig | RepeatableConfig[] } | undefined)?.repeatable);
                               if (isRepeatableChild) {
-                                const rep = getRepeatable(
-                                  (child as { repeatable?: RepeatableConfig | RepeatableConfig[] } | undefined)?.repeatable
-                                );
-                                const itemLabel = String(rep.itemLabel ?? "Item");
-                                const min = Number.isFinite(Number(rep.min)) ? Number(rep.min) : 0;
-                                const max = Number.isFinite(Number(rep.max)) ? Number(rep.max) : 0;
-                                const childFields = Array.isArray(rep.fields) ? (rep.fields ?? []) : [];
-                                const current = (form.watch(name as never) as unknown[] | undefined) ?? [];
-                                const items = Array.isArray(current) ? (current as Record<string, unknown>[]) : [];
-                                const canAdd = max <= 0 || items.length < max;
-                                const canRemove = (idx: number) => items.length > Math.max(1, min) - 0 && idx >= 0;
-                                const addItem = () => {
-                                  const next = [...items, {}];
-                                  form.setValue(name as never, next as never, { shouldDirty: true });
-                                };
-                                const removeItem = (idx: number) => {
-                                  if (!canRemove(idx)) return;
-                                  const next = items.filter((_, i) => i !== idx);
-                                  form.setValue(name as never, next as never, { shouldDirty: true });
-                                };
+                                const childEp = ((child as any)?.entityPicker ?? meta.entityPicker) as EntityPickerMeta | undefined;
                                 return (
-                                  <div key={`${name}__rep`} className="col-span-2 space-y-2">
-                                    <div className="flex items-center justify-between">
-                                      <Label>{child?.label ?? itemLabel}</Label>
-                                      <Button type="button" size="sm" variant="secondary" onClick={addItem} disabled={!canAdd}>
-                                        Add {itemLabel}
-                                      </Button>
-                                    </div>
-                                    <div className="space-y-2">
-                                      {(items.length === 0 ? [] : items).map((_, rIdx) => {
-                                        const baseRowKey = `${name}__row__${rIdx}`;
-                                        return (
-                                          <div key={baseRowKey} className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-                                            <div className="mb-2 flex items-center justify-between">
-                                              <div className="text-xs font-medium">
-                                                {itemLabel} #{rIdx + 1}
-                                              </div>
-                                              <Button type="button" size="sm" variant="outline" onClick={() => removeItem(rIdx)} disabled={!canRemove(rIdx)}>
-                                                Remove
-                                              </Button>
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-3">
-                                              {childFields.map((cf, ccIdx) => {
-                                                const ccType = String(cf?.inputType ?? "string").trim().toLowerCase();
-                                                const childName = `${name}.${rIdx}.${cf?.value ?? `c${ccIdx}`}`;
-                                                if (ccType === "select") {
-                                                  const cfOptsSel =
-                                                    (cf as { options?: { label?: string; value?: string }[] } | undefined)?.options ?? [];
-                                                  const opts = (Array.isArray(cfOptsSel) ? cfOptsSel : []) as { label?: string; value?: string }[];
-                                                  return (
-                                                    <div key={`${childName}__sel`} className="space-y-1">
-                                                      <Label>{cf?.label ?? "Select"}</Label>
-                                                      <select
-                                                        className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
-                                                        {...form.register(childName as never)}
-                                                      >
-                                                        <option value="">-- Select --</option>
-                                                        {opts.map((o) => (
-                                                          <option key={o.value} value={o.value}>
-                                                            {o.label}
-                                                          </option>
-                                                        ))}
-                                                      </select>
-                                                    </div>
-                                                  );
-                                                }
-                                                if (ccType === "multi_select") {
-                                                  const cfOptsMs =
-                                                    (cf as { options?: { label?: string; value?: string }[] } | undefined)?.options ?? [];
-                                                  const opts = (Array.isArray(cfOptsMs) ? cfOptsMs : []) as { label?: string; value?: string }[];
-                                                  return (
-                                                    <div key={`${childName}__ms`} className="space-y-1">
-                                                      <Label>{cf?.label ?? "Select"}</Label>
-                                                      <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                                        {opts.map((o) => (
-                                                          <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                                            <input type="checkbox" value={o.value} {...form.register(childName as never)} />
-                                                            {o.label}
-                                                          </label>
-                                                        ))}
-                                                        {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
-                                                      </div>
-                                                    </div>
-                                                  );
-                                                }
-                                                if (ccType === "currency") {
-                                                  const cc = String((cf as any)?.currencyCode ?? "").trim();
-                                                  const dec = Number((cf as any)?.decimals ?? 2);
-                                                  const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
-                                                  return (
-                                                    <div key={`${childName}__cur`} className="space-y-1">
-                                                      <Label>{cf?.label ?? "Value"}</Label>
-                                                      <div className="flex items-center gap-2">
-                                                        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
-                                                        <Input type="number" step={step} placeholder="0.00" {...form.register(childName as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
-                                                      </div>
-                                                    </div>
-                                                  );
-                                                }
-                                                if (ccType === "formula") {
-                                                  const rowVals = (items[rIdx] ?? {}) as Record<string, unknown>;
-                                                  const fComputed = evaluateRowFormula(String((cf as any)?.formula ?? ""), rowVals);
-                                                  return (
-                                                    <div key={`${childName}__formula`} className="space-y-1">
-                                                      <Label>{cf?.label ?? "Value"}</Label>
-                                                      <Input type="text" readOnly value={fComputed} className="bg-neutral-50 dark:bg-neutral-800 cursor-default" />
-                                                    </div>
-                                                  );
-                                                }
-                                                const regChildOpts: Record<string, unknown> = {};
-                                                if (ccType === "number") regChildOpts.setValueAs = (v: unknown) => (v === "" ? undefined : Number(v as number));
-                                                if (ccType === "date") {
-                                                  regChildOpts.validate = (v: unknown) => {
-                                                    if (v === undefined || v === null || v === "") return true;
-                                                    return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY";
-                                                  };
-                                                  regChildOpts.onChange = (e: unknown) => {
-                                                    const t = e as { target?: { value?: string } };
-                                                    const formatted = maskDDMMYYYY(t?.target?.value ?? "");
-                                                    form.setValue(childName as never, formatted as never, { shouldDirty: true });
-                                                  };
-                                                }
-                                                return (
-                                                  <div key={`${childName}__fld`} className="space-y-1">
-                                                    <Label>{cf?.label ?? "Value"}</Label>
-                                                    <Input
-                                                      type={ccType === "number" ? "number" : ccType === "date" ? "text" : "text"}
-                                                      placeholder={ccType === "date" ? "DD-MM-YYYY" : undefined}
-                                                      inputMode={ccType === "date" ? "numeric" : undefined}
-                                                      {...form.register(childName as never, regChildOpts)}
-                                                    />
-                                                  </div>
-                                                );
-                                              })}
-                                            </div>
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
+                                  <SubFieldRepeatable
+                                    key={`${name}__rep`}
+                                    form={form}
+                                    name={name}
+                                    label={child?.label}
+                                    repeatable={(child as { repeatable?: unknown })?.repeatable}
+                                    entityPicker={childEp}
+                                  />
                                 );
                               }
                               if (cType === "currency") {
@@ -1719,18 +1773,28 @@ export function PackageBlock({
                                 );
                               }
                               if (cType === "select") {
-                                const allOpts = (Array.isArray(child?.options) ? child.options : []) as { label?: string; value?: string; showWhen?: unknown }[];
+                                const allOpts = (Array.isArray(child?.options) ? child.options : []) as OptionWithChildren[];
+                                const hasAnyChildren = allOpts.some((o) => Array.isArray(o.children) && o.children.length > 0);
+                                if (hasAnyChildren) {
+                                  return (
+                                    <React.Fragment key={name}>
+                                      {dvNode}
+                                      <SelectWithOptionChildren form={form} name={name} label={child?.label ?? "Select"} options={allOpts} allFormValues={allFormValues} />
+                                    </React.Fragment>
+                                  );
+                                }
                                 const opts = allOpts.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
                                 return (
                                   <div key={name} className="space-y-1">
+                                    {dvNode}
                                     <Label>{child?.label ?? "Select"}</Label>
                                     <select
                                       className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
                                       {...form.register(name as never)}
                                     >
                                       <option value="">-- Select --</option>
-                                      {opts.map((o) => (
-                                        <option key={o.value} value={o.value}>{o.label}</option>
+                                      {opts.map((o, oIdx) => (
+                                        <option key={`${o.value ?? ""}_${oIdx}`} value={o.value}>{o.label}</option>
                                       ))}
                                     </select>
                                   </div>
@@ -1741,10 +1805,11 @@ export function PackageBlock({
                                 const opts = allOpts.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
                                 return (
                                   <div key={name} className="space-y-1">
+                                    {dvNode}
                                     <Label>{child?.label ?? "Select"}</Label>
                                     <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                      {opts.map((o) => (
-                                        <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                      {opts.map((o, oIdx) => (
+                                        <label key={`${o.value ?? ""}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
                                           <input type="checkbox" value={o.value} {...form.register(name as never)} />
                                           {o.label}
                                         </label>
@@ -1770,16 +1835,19 @@ export function PackageBlock({
                                 };
                               }
                               return (
-                                <div key={name}>
-                                  <Field
-                                    label={child?.label ?? "Details"}
-                                    required={false}
-                                    type={cIsNum ? "number" : cIsDate ? "text" : "text"}
-                                    placeholder={cIsDate ? "DD-MM-YYYY" : undefined}
-                                    inputMode={cIsDate ? "numeric" : undefined}
-                                    {...form.register(name as never, regOpts)}
-                                  />
-                                </div>
+                                <React.Fragment key={name}>
+                                  {dvNode}
+                                  <div>
+                                    <Field
+                                      label={child?.label ?? "Details"}
+                                      required={false}
+                                      type={cIsNum ? "number" : cIsDate ? "text" : "text"}
+                                      placeholder={cIsDate ? "DD-MM-YYYY" : undefined}
+                                      inputMode={cIsDate ? "numeric" : undefined}
+                                      {...form.register(name as never, regOpts)}
+                                    />
+                                  </div>
+                                </React.Fragment>
                               );
                             })}
                           </div>

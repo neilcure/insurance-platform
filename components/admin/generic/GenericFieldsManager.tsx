@@ -108,6 +108,11 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
   const [renamingGroup, setRenamingGroup] = React.useState<string | null>(null);
   const [renameValue, setRenameValue] = React.useState("");
   const [confirmDeleteGroup, setConfirmDeleteGroup] = React.useState<string | null>(null);
+  const [editingGroupCondition, setEditingGroupCondition] = React.useState<string | null>(null);
+  const [pendingGroupCondition, setPendingGroupCondition] = React.useState<unknown>(null);
+  const [groupConditionDirty, setGroupConditionDirty] = React.useState(false);
+  const [savingGroupCondition, setSavingGroupCondition] = React.useState(false);
+  const [allPackagesForGroups, setAllPackagesForGroups] = React.useState<{ label: string; value: string }[]>([]);
 
   const [form, setForm] = React.useState<Partial<FieldRow>>({
     label: "",
@@ -582,6 +587,47 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     }
   }
 
+  function getGroupCondition(groupName: string) {
+    const group = groups.find((g) => g.name === groupName);
+    if (!group) return null;
+    for (const id of group.ids) {
+      const row = rows.find((r) => r.id === id);
+      const meta = row?.meta as FieldMeta & { groupShowWhenMap?: Record<string, unknown> } | null;
+      const mapVal = meta?.groupShowWhenMap?.[groupName];
+      if (mapVal !== undefined) return mapVal;
+      if (meta?.groupShowWhen !== undefined) return meta.groupShowWhen;
+    }
+    return null;
+  }
+
+  async function saveGroupCondition(groupName: string, condition: unknown) {
+    const group = groups.find((g) => g.name === groupName);
+    if (!group) return;
+    const updates: Promise<Response>[] = [];
+    for (const id of group.ids) {
+      const row = rows.find((r) => r.id === id);
+      if (!row) continue;
+      const meta = { ...(row.meta ?? {}) } as Record<string, unknown>;
+      const gswMap = { ...((meta.groupShowWhenMap ?? {}) as Record<string, unknown>) };
+      gswMap[groupName] = condition;
+      meta.groupShowWhenMap = gswMap;
+      updates.push(
+        fetch(`/api/admin/form-options/${id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ meta }),
+        }),
+      );
+    }
+    try {
+      await Promise.all(updates);
+      await load();
+      toast.success(`"${groupName}" group condition updated (${updates.length} field${updates.length === 1 ? "" : "s"})`);
+    } catch {
+      toast.error("Failed to update group condition");
+    }
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -631,7 +677,8 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
               const canUp = i > 0;
               const canDown = i < groups.length - 1;
               return (
-                <li key={`${g.name}::${i}`} className="relative flex min-h-[28px] items-center justify-between gap-1 sm:gap-2">
+                <li key={`${g.name}::${i}`} className="relative">
+                  <div className="flex min-h-[28px] items-center justify-between gap-1 sm:gap-2">
                   <div className="min-w-0 flex-1 truncate pr-9 sm:pr-0">
                     {renamingGroup === g.name && g.name ? (
                       <span className="inline-flex items-center gap-1">
@@ -697,8 +744,39 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                     <span className="font-mono">order {g.order}</span>
                     <span className="px-1 sm:px-2 text-neutral-500 dark:text-neutral-400">•</span>
                     <span>{g.count} field{g.count === 1 ? "" : "s"}</span>
+                    {g.name && (
+                      <>
+                        <span className="px-1 sm:px-2 text-neutral-500 dark:text-neutral-400">•</span>
+                        <button
+                          type="button"
+                          className={`text-[10px] rounded px-1.5 py-0.5 ${getGroupCondition(g.name) ? "bg-amber-100 text-amber-700 font-medium dark:bg-amber-900 dark:text-amber-300" : "text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 dark:text-neutral-500 dark:hover:text-neutral-300 dark:hover:bg-neutral-800"}`}
+                          onClick={() => {
+                            if (editingGroupCondition === g.name) {
+                              setEditingGroupCondition(null);
+                              setGroupConditionDirty(false);
+                            } else {
+                              setEditingGroupCondition(g.name);
+                              setPendingGroupCondition(getGroupCondition(g.name));
+                              setGroupConditionDirty(false);
+                            }
+                            if (allPackagesForGroups.length === 0) {
+                              void (async () => {
+                                try {
+                                  const res = await fetch("/api/form-options?groupKey=packages", { cache: "no-store" });
+                                  if (!res.ok) return;
+                                  const data = (await res.json()) as { label: string; value: string }[];
+                                  setAllPackagesForGroups(Array.isArray(data) ? data : []);
+                                } catch { /* ignore */ }
+                              })();
+                            }
+                          }}
+                        >
+                          {getGroupCondition(g.name) ? "Show when ✓" : "+ Show when…"}
+                        </button>
+                      </>
+                    )}
                   </div>
-                  <div className="absolute right-0.5 top-1/2 -translate-y-1/2 flex shrink-0 gap-0.5 sm:static sm:right-auto sm:top-auto sm:translate-y-0 sm:gap-2">
+                  <div className="flex shrink-0 gap-0.5 sm:gap-2">
                     <Button
                       type="button"
                       size="iconCompact"
@@ -719,6 +797,62 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                     >
                       <ChevronDown className="h-3 w-3" />
                     </Button>
+                  </div>
+                  </div>
+                  <div
+                    className="overflow-hidden transition-all duration-300 ease-in-out"
+                    style={{
+                      maxHeight: editingGroupCondition === g.name ? "500px" : "0px",
+                      opacity: editingGroupCondition === g.name ? 1 : 0,
+                    }}
+                  >
+                    <div className="mt-1 rounded border border-yellow-400 bg-yellow-50 p-2 dark:border-yellow-400 dark:bg-yellow-400/10">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300">
+                          &quot;{g.name}&quot; Group Visibility
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {groupConditionDirty && (
+                            <span className="text-[10px] text-amber-600 dark:text-amber-400">Unsaved</span>
+                          )}
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-6 px-2 text-[11px]"
+                            disabled={savingGroupCondition}
+                            onClick={async () => {
+                              setSavingGroupCondition(true);
+                              await saveGroupCondition(g.name, pendingGroupCondition);
+                              setSavingGroupCondition(false);
+                              setGroupConditionDirty(false);
+                              setEditingGroupCondition(null);
+                            }}
+                          >
+                            {savingGroupCondition ? "Saving…" : "Save"}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-[11px]"
+                            onClick={() => { setEditingGroupCondition(null); setGroupConditionDirty(false); }}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                      <GroupShowWhenConfig
+                        groupLabel={g.name}
+                        value={pendingGroupCondition as Parameters<typeof GroupShowWhenConfig>[0]["value"]}
+                        onChange={(next) => {
+                          setPendingGroupCondition(next);
+                          setGroupConditionDirty(true);
+                        }}
+                        fields={rows as Parameters<typeof GroupShowWhenConfig>[0]["fields"]}
+                        allPackages={allPackagesForGroups}
+                        currentPkg={pkg}
+                      />
+                    </div>
                   </div>
                 </li>
               );

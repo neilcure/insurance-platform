@@ -36,6 +36,7 @@ export type SelectChild = {
   booleanDisplay?: "radio" | "dropdown";
   booleanChildren?: { true?: BooleanBranchChild[]; false?: BooleanBranchChild[] };
   showWhen?: ShowWhenRule[];
+  showWhenLogic?: "and" | "or";
 };
 
 export type RepeatableFieldConfig = {

@@ -341,6 +341,7 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
                 allPackages={allPackages}
                 crossPkgCategories={crossPkgCategories}
                 onLoadCategories={loadCrossPkgCats}
+                currentPkg={pkg}
               />
               <AutoFillConfigEditor
                 value={form.meta?.autoFill}

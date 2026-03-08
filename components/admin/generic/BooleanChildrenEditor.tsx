@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ShowWhenConfig } from "@/components/admin/generic/ShowWhenConfig";
+import { EntityPickerConfigEditor, type EntityPickerConfig as EPConfig } from "@/components/admin/generic/EntityPickerConfig";
 import type { ShowWhenRule } from "@/lib/types/form";
 
 type InputType = "string" | "number" | "currency" | "date" | "select" | "multi_select" | "boolean" | "repeatable" | "formula";
@@ -16,6 +17,8 @@ type BoolChild = {
   currencyCode?: string;
   decimals?: number;
   formula?: string;
+  defaultValue?: string;
+  readOnly?: boolean;
   booleanLabels?: { true?: string; false?: string };
   booleanDisplay?: "radio" | "dropdown";
   booleanChildren?: { true?: BoolChild[]; false?: BoolChild[] };
@@ -34,6 +37,7 @@ export type SharedProps = {
   allPackages: { label: string; value: string }[];
   crossPkgCategories: Record<string, { label: string; value: string }[]>;
   onLoadCategories: (pkg: string) => void;
+  currentPkg?: string;
 };
 
 type BranchEditorProps = SharedProps & {
@@ -57,6 +61,15 @@ function updateChildOption(arr: BoolChild[], childIdx: number, optIdx: number, p
   return next;
 }
 
+/** Derive a slug-like value from a label (lowercase, underscored, alphanumeric). */
+export function deriveOptionValue(label: string): string {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
+}
+
 export function parseImportedOptions(text: string): OptionRow[] {
   return text
     .split(/\r?\n/)
@@ -70,14 +83,32 @@ export function parseImportedOptions(text: string): OptionRow[] {
     });
 }
 
+type OptionChildConfig = {
+  label?: string;
+  inputType?: string;
+  options?: OptionRow[];
+  [key: string]: unknown;
+};
+
 export function SelectOptionsEditor({
   options,
   onChange,
+  enableChildren,
   ...shared
 }: SharedProps & {
   options: OptionRow[];
   onChange: (next: OptionRow[]) => void;
+  enableChildren?: boolean;
 }) {
+  const autoFillValue = (idx: number) => {
+    const o = options[idx];
+    if (o && (o.value ?? "").trim() === "" && (o.label ?? "").trim() !== "") {
+      const next = [...options];
+      next[idx] = { ...next[idx], value: deriveOptionValue(o.label ?? "") };
+      onChange(next);
+    }
+  };
+
   return (
     <div className="col-span-12 mt-2 space-y-2">
       <div className="flex items-center justify-between">
@@ -107,56 +138,82 @@ export function SelectOptionsEditor({
         </div>
       </div>
       <div className="grid gap-2">
-        {options.map((o, oi) => (
-          <div key={oi} className="space-y-1">
-            <div className="grid grid-cols-12 items-center gap-2">
-              <div className="col-span-5">
-                <Input
-                  placeholder="Label"
-                  value={o.label ?? ""}
-                  onChange={(e) => {
+        {options.map((o, oi) => {
+          const valueEmpty = (o.value ?? "").trim() === "";
+          const labelFilled = (o.label ?? "").trim() !== "";
+          return (
+            <div key={oi} className="space-y-1">
+              <div className="grid grid-cols-12 items-center gap-2">
+                <div className="col-span-5">
+                  <Input
+                    placeholder="Label"
+                    value={o.label ?? ""}
+                    onChange={(e) => {
+                      const next = [...options];
+                      next[oi] = { ...next[oi], label: e.target.value };
+                      onChange(next);
+                    }}
+                    onBlur={() => autoFillValue(oi)}
+                  />
+                </div>
+                <div className="col-span-5">
+                  <Input
+                    placeholder="Value (auto-filled from label)"
+                    value={o.value ?? ""}
+                    className={valueEmpty && labelFilled ? "border-amber-500 dark:border-amber-500" : ""}
+                    onChange={(e) => {
+                      const next = [...options];
+                      next[oi] = { ...next[oi], value: e.target.value };
+                      onChange(next);
+                    }}
+                    onBlur={() => autoFillValue(oi)}
+                  />
+                  {valueEmpty && labelFilled && (
+                    <p className="mt-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                      Value will be auto-filled on save
+                    </p>
+                  )}
+                </div>
+                <div className="col-span-2 flex justify-end">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => onChange(options.filter((_, i) => i !== oi))}
+                  >
+                    Remove
+                  </Button>
+                </div>
+              </div>
+              <ShowWhenConfig
+                compact
+                value={Array.isArray(o?.showWhen) ? o.showWhen : []}
+                onChange={(sw) => {
+                  const next = [...options];
+                  next[oi] = { ...next[oi], showWhen: sw };
+                  onChange(next);
+                }}
+                allPackages={shared.allPackages}
+                crossPkgCategories={shared.crossPkgCategories}
+                onLoadCategories={shared.onLoadCategories}
+              />
+              {enableChildren && (
+                <InlineOptionChildrenEditor
+                  optionChildren={Array.isArray((o as any)?.children) ? (o as any).children : []}
+                  onChange={(ch) => {
                     const next = [...options];
-                    next[oi] = { ...next[oi], label: e.target.value };
+                    next[oi] = { ...next[oi], children: ch };
                     onChange(next);
                   }}
+                  allPackages={shared.allPackages}
+                  crossPkgCategories={shared.crossPkgCategories}
+                  onLoadCategories={shared.onLoadCategories}
+                  currentPkg={shared.currentPkg}
                 />
-              </div>
-              <div className="col-span-5">
-                <Input
-                  placeholder="Value"
-                  value={o.value ?? ""}
-                  onChange={(e) => {
-                    const next = [...options];
-                    next[oi] = { ...next[oi], value: e.target.value };
-                    onChange(next);
-                  }}
-                />
-              </div>
-              <div className="col-span-2 flex justify-end">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="destructive"
-                  onClick={() => onChange(options.filter((_, i) => i !== oi))}
-                >
-                  Remove
-                </Button>
-              </div>
+              )}
             </div>
-            <ShowWhenConfig
-              compact
-              value={Array.isArray(o?.showWhen) ? o.showWhen : []}
-              onChange={(sw) => {
-                const next = [...options];
-                next[oi] = { ...next[oi], showWhen: sw };
-                onChange(next);
-              }}
-              allPackages={shared.allPackages}
-              crossPkgCategories={shared.crossPkgCategories}
-              onLoadCategories={shared.onLoadCategories}
-            />
-          </div>
-        ))}
+          );
+        })}
         {options.length === 0 && (
           <p className="text-xs text-neutral-500 dark:text-neutral-400">
             No options yet. Click &quot;Add option&quot; or &quot;Import&quot;.
@@ -164,6 +221,178 @@ export function SelectOptionsEditor({
         )}
       </div>
     </div>
+  );
+}
+
+function InlineOptionChildrenEditor({
+  optionChildren,
+  onChange,
+  ...shared
+}: SharedProps & {
+  optionChildren: OptionChildConfig[];
+  onChange: (next: OptionChildConfig[]) => void;
+}) {
+  return (
+    <details className="mt-1 rounded border border-dashed border-neutral-300 p-2 dark:border-neutral-700">
+      <summary className="cursor-pointer text-xs font-medium text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200">
+        Sub-fields ({optionChildren.length}) — shown when this option is selected
+      </summary>
+      <div className="mt-2 space-y-2">
+        {optionChildren.map((ch, ci) => (
+          <div key={ci} className="rounded border border-neutral-200 p-2 dark:border-neutral-800">
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-xs font-medium">Sub-field #{ci + 1}</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => onChange(optionChildren.filter((_, i) => i !== ci))}
+              >
+                Remove
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-[180px] flex-1">
+                <Label className="text-xs">Label</Label>
+                <Input
+                  placeholder="Sub-field label"
+                  value={ch?.label ?? ""}
+                  onChange={(e) => {
+                    const next = [...optionChildren];
+                    next[ci] = { ...next[ci], label: e.target.value };
+                    onChange(next);
+                  }}
+                />
+              </div>
+              <div className="w-[160px]">
+                <Label className="text-xs">Type</Label>
+                <select
+                  className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  value={ch?.inputType ?? "string"}
+                  onChange={(e) => {
+                    const next = [...optionChildren];
+                    const t = e.target.value;
+                    next[ci] = {
+                      ...next[ci],
+                      inputType: t,
+                      options: t === "select" || t === "multi_select" ? (next[ci]?.options ?? []) : undefined,
+                    };
+                    onChange(next);
+                  }}
+                >
+                  <option value="string">String</option>
+                  <option value="number">Number</option>
+                  <option value="currency">Currency</option>
+                  <option value="date">Date</option>
+                  <option value="select">Select</option>
+                  <option value="multi_select">Multi Select</option>
+                  <option value="boolean">Boolean (Yes/No)</option>
+                  <option value="repeatable">Repeatable (List)</option>
+                  <option value="formula">Formula</option>
+                </select>
+              </div>
+            </div>
+            {ch?.inputType && ["select", "multi_select"].includes(ch.inputType) && (
+              <SelectOptionsEditor
+                options={Array.isArray(ch?.options) ? ch.options : []}
+                onChange={(opts) => {
+                  const next = [...optionChildren];
+                  next[ci] = { ...next[ci], options: opts };
+                  onChange(next);
+                }}
+                allPackages={shared.allPackages}
+                crossPkgCategories={shared.crossPkgCategories}
+                onLoadCategories={shared.onLoadCategories}
+              />
+            )}
+            {ch?.inputType === "repeatable" && (() => {
+              const rep = (ch as any)?.repeatable as RepeatableConfig | undefined;
+              const repFields = Array.isArray(rep?.fields) ? rep!.fields : [];
+              const targetFields = repFields
+                .filter((f) => f?.value)
+                .map((f) => ({ label: `${f.label ?? f.value} (${f.value})`, value: f.value! }));
+              return (
+                <>
+                  <RepeatableEditor
+                    repeatable={rep}
+                    onChange={(r) => {
+                      const next = [...optionChildren];
+                      next[ci] = { ...next[ci], repeatable: r };
+                      onChange(next);
+                    }}
+                  />
+                  {shared.currentPkg && (
+                    <div className="mt-2">
+                      <EntityPickerConfigEditor
+                        value={(ch as any)?.entityPicker as EPConfig | undefined}
+                        onChange={(ep) => {
+                          const next = [...optionChildren];
+                          next[ci] = { ...next[ci], entityPicker: ep };
+                          onChange(next);
+                        }}
+                        currentPkg={shared.currentPkg}
+                        targetFields={targetFields}
+                      />
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+            {ch?.inputType === "formula" && (
+              <div className="mt-2">
+                <Label className="text-xs">Formula Expression</Label>
+                <Input
+                  placeholder="e.g. {field_key} * 0.05"
+                  value={String((ch as any)?.formula ?? "")}
+                  onChange={(e) => {
+                    const next = [...optionChildren];
+                    next[ci] = { ...next[ci], formula: e.target.value };
+                    onChange(next);
+                  }}
+                />
+              </div>
+            )}
+            {ch?.inputType === "currency" && (
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div className="grid gap-1">
+                  <Label className="text-xs">Currency Code</Label>
+                  <Input
+                    placeholder="e.g. HKD"
+                    value={String((ch as any)?.currencyCode ?? "")}
+                    onChange={(e) => {
+                      const next = [...optionChildren];
+                      next[ci] = { ...next[ci], currencyCode: e.target.value };
+                      onChange(next);
+                    }}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <Label className="text-xs">Decimal Places</Label>
+                  <Input
+                    type="number"
+                    placeholder="2"
+                    value={String((ch as any)?.decimals ?? 2)}
+                    onChange={(e) => {
+                      const next = [...optionChildren];
+                      next[ci] = { ...next[ci], decimals: Number(e.target.value) || 0 };
+                      onChange(next);
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          onClick={() => onChange([...optionChildren, { label: "", inputType: "string" }])}
+        >
+          + Add sub-field
+        </Button>
+      </div>
+    </details>
   );
 }
 
@@ -540,6 +769,26 @@ function SingleChildEditor({
           </select>
         </div>
 
+        <div className="w-[160px]">
+          <Label>Default Value</Label>
+          <Input
+            placeholder="(none)"
+            value={String(child?.defaultValue ?? "")}
+            onChange={(e) => onUpdate({ defaultValue: e.target.value || undefined })}
+          />
+          <p className="mt-0.5 text-[10px] text-neutral-400">Auto-filled when this branch is active</p>
+        </div>
+        {child?.defaultValue && (
+          <label className="inline-flex items-center gap-1.5 text-xs text-neutral-600 dark:text-neutral-400 self-center pt-5">
+            <input
+              type="checkbox"
+              checked={Boolean(child?.readOnly)}
+              onChange={(e) => onUpdate({ readOnly: e.target.checked || undefined })}
+            />
+            Read-only
+          </label>
+        )}
+
         {child?.inputType === "formula" && (
           <div className="col-span-12 mt-2">
             <Label>Formula Expression</Label>
@@ -592,20 +841,41 @@ function SingleChildEditor({
           />
         )}
 
-        {String(child?.inputType ?? "") === "repeatable" && (
-          <RepeatableEditor
-            repeatable={(child as any)?.repeatable}
-            onChange={(rep) => onUpdate({ repeatable: rep } as any)}
-          />
-        )}
+        {String(child?.inputType ?? "") === "repeatable" && (() => {
+          const rep = (child as any)?.repeatable as RepeatableConfig | undefined;
+          const repFields = Array.isArray(rep?.fields) ? rep!.fields : [];
+          const targetFields = repFields
+            .filter((f) => f?.value)
+            .map((f) => ({ label: `${f.label ?? f.value} (${f.value})`, value: f.value! }));
+          return (
+            <>
+              <RepeatableEditor
+                repeatable={rep}
+                onChange={(r) => onUpdate({ repeatable: r } as any)}
+              />
+              {shared.currentPkg && (
+                <div className="mt-2">
+                  <EntityPickerConfigEditor
+                    value={(child as any)?.entityPicker as EPConfig | undefined}
+                    onChange={(ep) => onUpdate({ entityPicker: ep } as any)}
+                    currentPkg={shared.currentPkg}
+                    targetFields={targetFields.length > 0 ? targetFields : undefined}
+                  />
+                </div>
+              )}
+            </>
+          );
+        })()}
 
         {child?.inputType && ["select", "multi_select"].includes(child.inputType) && (
           <SelectOptionsEditor
             options={Array.isArray(child?.options) ? child.options : []}
             onChange={(opts) => onUpdate({ options: opts })}
+            enableChildren={child.inputType === "select"}
             allPackages={shared.allPackages}
             crossPkgCategories={shared.crossPkgCategories}
             onLoadCategories={shared.onLoadCategories}
+            currentPkg={shared.currentPkg}
           />
         )}
 

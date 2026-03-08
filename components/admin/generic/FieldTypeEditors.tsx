@@ -8,6 +8,7 @@ import { ShowWhenConfig } from "@/components/admin/generic/ShowWhenConfig";
 import {
   SelectOptionsEditor,
   parseImportedOptions,
+  deriveOptionValue,
   type SharedProps,
   type OptionRow,
 } from "@/components/admin/generic/BooleanChildrenEditor";
@@ -64,6 +65,15 @@ export function TopLevelSelectEditor({
   children?: ChildField[][];
   onChildrenChange?: (optIdx: number, next: ChildField[]) => void;
 }) {
+  const autoFillValue = (idx: number) => {
+    const o = options[idx];
+    if (o && (o.value ?? "").trim() === "" && (o.label ?? "").trim() !== "") {
+      const next = [...options];
+      next[idx] = { ...next[idx], value: deriveOptionValue(o.label ?? "") };
+      onOptionsChange(next);
+    }
+  };
+
   return (
     <div className="grid gap-2">
       <div className="grid gap-1">
@@ -128,53 +138,65 @@ export function TopLevelSelectEditor({
         </div>
       </div>
       <div className="grid gap-2">
-        {options.map((opt, idx) => (
-          <div key={idx}>
-            <div className="grid grid-cols-12 items-center gap-2">
-              <div className="col-span-5">
-                <Input
-                  placeholder="Label"
-                  value={opt.label ?? ""}
-                  onChange={(e) => {
-                    const next = [...options];
-                    next[idx] = { ...next[idx], label: e.target.value };
-                    onOptionsChange(next);
-                  }}
+        {options.map((opt, idx) => {
+          const valueEmpty = (opt.value ?? "").trim() === "";
+          const labelFilled = (opt.label ?? "").trim() !== "";
+          return (
+            <div key={idx}>
+              <div className="grid grid-cols-12 items-center gap-2">
+                <div className="col-span-5">
+                  <Input
+                    placeholder="Label"
+                    value={opt.label ?? ""}
+                    onChange={(e) => {
+                      const next = [...options];
+                      next[idx] = { ...next[idx], label: e.target.value };
+                      onOptionsChange(next);
+                    }}
+                    onBlur={() => autoFillValue(idx)}
+                  />
+                </div>
+                <div className="col-span-5">
+                  <Input
+                    placeholder="Value (auto-filled from label)"
+                    value={opt.value ?? ""}
+                    className={valueEmpty && labelFilled ? "border-amber-500 dark:border-amber-500" : ""}
+                    onChange={(e) => {
+                      const next = [...options];
+                      next[idx] = { ...next[idx], value: e.target.value };
+                      onOptionsChange(next);
+                    }}
+                    onBlur={() => autoFillValue(idx)}
+                  />
+                  {valueEmpty && labelFilled && (
+                    <p className="mt-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                      Value will be auto-filled on save
+                    </p>
+                  )}
+                </div>
+                <div className="col-span-2 flex justify-end">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => onOptionsChange(options.filter((_, i) => i !== idx))}
+                  >
+                    Remove
+                  </Button>
+                </div>
+              </div>
+              {onChildrenChange && (
+                <OptionChildrenEditor
+                  children={optionChildren?.[idx] ?? []}
+                  onChange={(next) => onChildrenChange(idx, next)}
+                  allPackages={shared.allPackages}
+                  crossPkgCategories={shared.crossPkgCategories}
+                  onLoadCategories={shared.onLoadCategories}
                 />
-              </div>
-              <div className="col-span-5">
-                <Input
-                  placeholder="Value"
-                  value={opt.value ?? ""}
-                  onChange={(e) => {
-                    const next = [...options];
-                    next[idx] = { ...next[idx], value: e.target.value };
-                    onOptionsChange(next);
-                  }}
-                />
-              </div>
-              <div className="col-span-2 flex justify-end">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="destructive"
-                  onClick={() => onOptionsChange(options.filter((_, i) => i !== idx))}
-                >
-                  Remove
-                </Button>
-              </div>
+              )}
             </div>
-            {onChildrenChange && (
-              <OptionChildrenEditor
-                children={optionChildren?.[idx] ?? []}
-                onChange={(next) => onChildrenChange(idx, next)}
-                allPackages={shared.allPackages}
-                crossPkgCategories={shared.crossPkgCategories}
-                onLoadCategories={shared.onLoadCategories}
-              />
-            )}
-          </div>
-        ))}
+          );
+        })}
         {options.length === 0 && (
           <p className="text-xs text-neutral-500 dark:text-neutral-400">
             No options yet. Click &quot;Add option&quot; or &quot;Import&quot;.

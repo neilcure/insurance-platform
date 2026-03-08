@@ -16,6 +16,8 @@ export function ShowWhenConfig({
   crossPkgCategories,
   onLoadCategories,
   compact,
+  logic = "and",
+  onLogicChange,
 }: {
   value: ShowWhenRule[];
   onChange: (next: ShowWhenRule[]) => void;
@@ -23,6 +25,8 @@ export function ShowWhenConfig({
   crossPkgCategories: Record<string, { label: string; value: string }[]>;
   onLoadCategories: (pkg: string) => void;
   compact?: boolean;
+  logic?: "and" | "or";
+  onLogicChange?: (logic: "and" | "or") => void;
 }) {
   const labelSize = compact ? "text-[11px]" : "text-xs";
   const selectCls = "h-7 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100";
@@ -66,7 +70,8 @@ export function ShowWhenConfig({
         const selectedFieldValues = rule.fieldValues ?? [];
 
         return (
-          <div key={rIdx} className="flex items-start gap-2 rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
+          <React.Fragment key={rIdx}>
+          <div className="flex items-start gap-2 rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
             <div className="flex-1 space-y-2">
               <div className="flex items-center gap-2">
                 <Label className={`w-16 shrink-0 ${labelSize}`}>Package</Label>
@@ -178,6 +183,22 @@ export function ShowWhenConfig({
               <X className="h-3 w-3" />
             </Button>
           </div>
+          {rIdx < value.length - 1 && value.length > 1 && (
+            <div className="flex justify-center">
+              <button
+                type="button"
+                className={`rounded-full px-3 py-0.5 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                  logic === "or"
+                    ? "bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-800/50"
+                    : "bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-300 dark:hover:bg-blue-800/50"
+                }`}
+                onClick={() => onLogicChange?.(logic === "and" ? "or" : "and")}
+              >
+                {logic === "and" ? "AND" : "OR"}
+              </button>
+            </div>
+          )}
+          </React.Fragment>
         );
       })}
       <Button

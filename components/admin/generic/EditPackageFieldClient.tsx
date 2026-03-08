@@ -380,6 +380,7 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
                 allPackages={allPackages}
                 crossPkgCategories={crossPkgCategories}
                 onLoadCategories={loadCrossPkgCats}
+                currentPkg={pkg}
               />
               <AutoFillConfigEditor
                 value={form.meta?.autoFill}
@@ -431,6 +432,34 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
             value={form.meta?.entityPicker}
             onChange={(next) => updateMeta("entityPicker", next as any)}
             currentPkg={pkg}
+            targetFields={(() => {
+              const extra: { label: string; value: string }[] = [];
+              const addRepFields = (rep: { fields?: { label?: string; value?: string }[] } | undefined) => {
+                if (!rep?.fields) return;
+                for (const f of rep.fields) {
+                  if (f?.value) extra.push({ label: `${f.label ?? f.value} (${f.value})`, value: f.value });
+                }
+              };
+              addRepFields(form.meta?.repeatable);
+              const bc = form.meta?.booleanChildren as Record<string, { inputType?: string; options?: { children?: { inputType?: string; repeatable?: { fields?: { label?: string; value?: string }[] } }[] }[] }[]> | undefined;
+              if (bc) {
+                for (const branch of Object.values(bc)) {
+                  if (!Array.isArray(branch)) continue;
+                  for (const child of branch) {
+                    if (child?.inputType === "repeatable") addRepFields((child as any)?.repeatable);
+                    if (child?.inputType === "select" && Array.isArray(child?.options)) {
+                      for (const opt of child.options) {
+                        if (!Array.isArray(opt?.children)) continue;
+                        for (const sc of opt.children) {
+                          if (sc?.inputType === "repeatable") addRepFields(sc?.repeatable);
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              return extra.length > 0 ? extra : undefined;
+            })()}
           />
 
           <div className="grid gap-1">
