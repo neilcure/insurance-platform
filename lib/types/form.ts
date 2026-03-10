@@ -7,7 +7,8 @@ export type InputType =
   | "multi_select"
   | "boolean"
   | "repeatable"
-  | "formula";
+  | "formula"
+  | "list";
 
 export type SelectOption = { label?: string; value?: string };
 

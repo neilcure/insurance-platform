@@ -4,6 +4,7 @@ import * as React from "react";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { normalizeFieldKey, isHiddenPackage } from "@/lib/utils";
 import { ClientLinkedPolicies } from "@/components/policies/ClientLinkedPolicies";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 type FieldMeta = {
   labels: Record<string, string>;
@@ -392,55 +393,153 @@ function PackageSection({
         </div>
       </div>
       <div className="grid grid-cols-1 gap-1">
-        {kvs.map(([k, v]) => {
-          const rk = resolve(k);
-          const fieldLabel = label(k);
-          const type = getType(k);
-          const fmt = getFmt(k);
-
-          const recent = isRecentKey(k);
-
-          if (type === "repeatable" && Array.isArray(v)) {
-            const items = (v as unknown[]).filter(it => it && typeof it === "object") as Array<Record<string, unknown>>;
-            const pickKey = (obj: Record<string, unknown>, pri: string[]) => {
-              const keys = Object.keys(obj);
-              return keys.find(kk => pri.includes(kk.toLowerCase())) ?? keys.find(kk => pri.some(p => kk.toLowerCase().includes(p)));
-            };
-            const code = (fmt?.currencyCode || "HKD").toUpperCase();
-            const names: string[] = [];
-            const prices: string[] = [];
-            for (const it of items) {
-              const nk = pickKey(it, ["name", "tname", "label", "title", "item", "desc"]) ?? Object.keys(it)[0];
-              const pk = pickKey(it, ["price", "aprice", "amount", "cost", "value"]);
-              if (nk) names.push(String(it[nk] ?? ""));
-              if (pk) {
-                const num = Number(it[pk]);
-                prices.push(Number.isFinite(num) ? formatCurrency(num, code) : String(it[pk] ?? ""));
+        {(() => {
+          const childOptPattern = /__opt_[^_]+__c\d+$/;
+          const parentMultiSelectKeys = new Set<string>();
+          for (const [k] of kvs) {
+            const type = getType(k);
+            if (type === "multi_select" && !childOptPattern.test(k)) {
+              parentMultiSelectKeys.add(k);
+            }
+          }
+          const renderedChildKeys = new Set<string>();
+          for (const parentKey of parentMultiSelectKeys) {
+            for (const [ck] of kvs) {
+              if (ck.startsWith(`${parentKey}__opt_`) && childOptPattern.test(ck)) {
+                renderedChildKeys.add(ck);
               }
             }
-            return (
-              <React.Fragment key={k}>
-                <div className="flex items-start justify-between gap-3 text-xs">
-                  <div className="text-neutral-500 dark:text-neutral-400">{`${fieldLabel} — Name`}</div>
-                  <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{names.filter(Boolean).join(", ")}</div>
-                </div>
-                <div className="flex items-start justify-between gap-3 text-xs">
-                  <div className="text-neutral-500 dark:text-neutral-400">{`${fieldLabel} — Price`}</div>
-                  <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{prices.filter(Boolean).join(", ")}</div>
-                </div>
-              </React.Fragment>
-            );
           }
 
-          const valueText = formatFieldValue(v, type, getOptMap(k), fmt);
-          return (
-            <div key={k} className="flex items-start justify-between gap-3 text-xs">
-              <div className="text-neutral-500 dark:text-neutral-400">{fieldLabel}</div>
-              <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{valueText}</div>
-            </div>
-          );
-        })}
+          return kvs.map(([k, v]) => {
+            if (renderedChildKeys.has(k)) return null;
+
+            const rk = resolve(k);
+            const fieldLabel = label(k);
+            const type = getType(k);
+            const fmt = getFmt(k);
+            const recent = isRecentKey(k);
+
+            if (type === "repeatable" && Array.isArray(v)) {
+              const items = (v as unknown[]).filter(it => it && typeof it === "object") as Array<Record<string, unknown>>;
+              const pickKey = (obj: Record<string, unknown>, pri: string[]) => {
+                const keys = Object.keys(obj);
+                return keys.find(kk => pri.includes(kk.toLowerCase())) ?? keys.find(kk => pri.some(p => kk.toLowerCase().includes(p)));
+              };
+              const code = (fmt?.currencyCode || "HKD").toUpperCase();
+              const names: string[] = [];
+              const prices: string[] = [];
+              for (const it of items) {
+                const nk = pickKey(it, ["name", "tname", "label", "title", "item", "desc"]) ?? Object.keys(it)[0];
+                const pk = pickKey(it, ["price", "aprice", "amount", "cost", "value"]);
+                if (nk) names.push(String(it[nk] ?? ""));
+                if (pk) {
+                  const num = Number(it[pk]);
+                  prices.push(Number.isFinite(num) ? formatCurrency(num, code) : String(it[pk] ?? ""));
+                }
+              }
+              return (
+                <React.Fragment key={k}>
+                  <div className="flex items-start justify-between gap-3 text-xs">
+                    <div className="text-neutral-500 dark:text-neutral-400">{`${fieldLabel} — Name`}</div>
+                    <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{names.filter(Boolean).join(", ")}</div>
+                  </div>
+                  <div className="flex items-start justify-between gap-3 text-xs">
+                    <div className="text-neutral-500 dark:text-neutral-400">{`${fieldLabel} — Price`}</div>
+                    <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{prices.filter(Boolean).join(", ")}</div>
+                  </div>
+                </React.Fragment>
+              );
+            }
+
+            if (type === "multi_select") {
+              const arr = Array.isArray(v) ? v : String(v ?? "").split(",").map(s => s.trim()).filter(Boolean);
+              const optMap = getOptMap(k);
+              const groups: { label: string; children: string[] }[] = [];
+              for (const raw of arr) {
+                const val = String(raw);
+                const parentLabel = optMap[val] ?? val;
+                const children: string[] = [];
+                for (const [ck, cv] of kvs) {
+                  const optPrefix = `${k}__opt_${val}__c`;
+                  if (ck.startsWith(optPrefix)) {
+                    const childArr = Array.isArray(cv) ? cv : String(cv ?? "").split(",").map(s => s.trim()).filter(Boolean);
+                    const childOptMap = getOptMap(ck);
+                    for (const cv2 of childArr) {
+                      children.push(childOptMap[String(cv2)] ?? String(cv2));
+                    }
+                  }
+                }
+                groups.push({ label: parentLabel, children });
+              }
+              if (groups.length > 0) {
+                return <MultiSelectViewRow key={k} fieldLabel={fieldLabel} groups={groups} />;
+              }
+            }
+
+            const valueText = formatFieldValue(v, type, getOptMap(k), fmt);
+            return (
+              <div key={k} className="flex items-start justify-between gap-3 text-xs">
+                <div className="text-neutral-500 dark:text-neutral-400">{fieldLabel}</div>
+                <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{valueText}</div>
+              </div>
+            );
+          });
+        })()}
       </div>
+    </div>
+  );
+}
+
+function MultiSelectViewRow({ fieldLabel, groups }: {
+  fieldLabel: string;
+  groups: { label: string; children: string[] }[];
+}) {
+  const [open, setOpen] = React.useState(false);
+  const hasChildren = groups.some(g => g.children.length > 0);
+  return (
+    <div className="flex items-start justify-between gap-3 text-xs">
+      <div className="text-neutral-500 dark:text-neutral-400">{fieldLabel}</div>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-[11px] hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
+      >
+        View
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <div className="flex items-start justify-between">
+            <DialogHeader>
+              <DialogTitle>{fieldLabel}</DialogTitle>
+            </DialogHeader>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="shrink-0 rounded-full p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div className="space-y-3">
+            {groups.map((g, idx) => (
+              <div key={idx}>
+                <div className={`text-sm ${hasChildren ? "font-medium" : ""}`}>{g.label}</div>
+                {g.children.length > 0 && (
+                  <ul className="mt-1 space-y-1 pl-4">
+                    {g.children.map((child, cIdx) => (
+                      <li key={cIdx} className="flex items-start gap-2 text-sm text-neutral-600 dark:text-neutral-400">
+                        <span className="mt-0.5 shrink-0">&ndash;</span>
+                        <span>{child}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

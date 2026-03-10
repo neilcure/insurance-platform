@@ -13,6 +13,7 @@ export const INPUT_TYPE_OPTIONS: { value: InputType; label: string }[] = [
   { value: "boolean", label: "Boolean (Yes/No)" },
   { value: "repeatable", label: "Repeatable (List)" },
   { value: "formula", label: "Formula" },
+  { value: "list", label: "List (Add Items)" },
 ];
 
 export function InputTypeSelect({

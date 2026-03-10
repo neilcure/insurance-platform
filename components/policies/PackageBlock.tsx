@@ -558,6 +558,88 @@ async function removeOptionFromField(
   }
 }
 
+function ListField({
+  form,
+  name,
+  label,
+  required,
+}: {
+  form: UseFormReturn<Record<string, unknown>>;
+  name: string;
+  label: string;
+  required?: boolean;
+}) {
+  const [inputValue, setInputValue] = React.useState("");
+  const raw = useWatch({ control: form.control, name: name as string });
+  const items: string[] = React.useMemo(() => {
+    if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === "string" && v.trim() !== "");
+    if (typeof raw === "string" && raw.trim()) return raw.split("\n").filter(Boolean);
+    return [];
+  }, [raw]);
+
+  const addItem = () => {
+    const trimmed = inputValue.trim();
+    if (!trimmed) return;
+    if (items.includes(trimmed)) return;
+    const next = [...items, trimmed];
+    form.setValue(name as never, next as never, { shouldDirty: true });
+    setInputValue("");
+  };
+
+  const removeItem = (idx: number) => {
+    const next = items.filter((_, i) => i !== idx);
+    form.setValue(name as never, next as never, { shouldDirty: true });
+  };
+
+  return (
+    <div className="col-span-2 space-y-2">
+      <Label>
+        {label} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+      </Label>
+      <div className="flex items-center gap-1.5">
+        <Input
+          type="text"
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addItem();
+            }
+          }}
+          placeholder="Type and press Enter to add..."
+          className="flex-1"
+        />
+        <Button type="button" size="sm" variant="secondary" disabled={!inputValue.trim()} onClick={addItem}>
+          Add
+        </Button>
+      </div>
+      {items.length > 0 && (
+        <ul className="space-y-1">
+          {items.map((item, idx) => (
+            <li
+              key={`${item}_${idx}`}
+              className="flex items-center justify-between rounded-md border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+            >
+              <span>{item}</span>
+              <button
+                type="button"
+                onClick={() => removeItem(idx)}
+                className="ml-2 shrink-0 rounded text-neutral-400 hover:text-red-600 dark:hover:text-red-400"
+              >
+                &times;
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {required && items.length === 0 && (
+        <input type="hidden" {...form.register(name as never, { validate: () => items.length > 0 || `${label} is required` })} />
+      )}
+    </div>
+  );
+}
+
 function AdminAddOption({
   fieldId,
   existingOptions,
@@ -1261,27 +1343,137 @@ export function PackageBlock({
                         ? [currentRaw]
                         : [];
                     return (
-                      <div key={nameBase} className="space-y-2">
+                      <div key={nameBase} className="col-span-2 space-y-2">
                         <div className="space-y-1">
                           <Label>
                             {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                           </Label>
-                          <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                            {options.map((o, oIdx) => (
-                              <label key={`${o.value ?? ""}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                <input
-                                  type="checkbox"
-                                  value={o.value}
-                                  {...form.register(nameBase as never, {
-                                    validate: (v) =>
-                                      !Boolean(meta.required) ||
-                                      (Array.isArray(v) && (v as unknown[]).length > 0) ||
-                                      `${displayLabel} is required`,
-                                  })}
-                                />
-                                {o.label}
-                              </label>
-                            ))}
+                          <div className="space-y-4 pt-1">
+                            {options.map((o, oIdx) => {
+                              const isChecked = current.includes(o.value as unknown);
+                              const children = isChecked && Array.isArray(o.children) ? o.children : [];
+                              return (
+                                <div key={`${o.value ?? ""}_${oIdx}`} className="space-y-3">
+                                  <label className="flex items-start gap-2 text-sm leading-snug">
+                                    <input
+                                      type="checkbox"
+                                      value={o.value}
+                                      className="mt-0.5 shrink-0"
+                                      {...form.register(nameBase as never, {
+                                        validate: (v) =>
+                                          !Boolean(meta.required) ||
+                                          (Array.isArray(v) && (v as unknown[]).length > 0) ||
+                                          `${displayLabel} is required`,
+                                      })}
+                                    />
+                                    <span>{o.label}</span>
+                                  </label>
+                                  {children.length > 0 && (
+                                    <div className="ml-6 grid grid-cols-2 gap-4 border-l-2 border-neutral-200 pl-4 dark:border-neutral-700">
+                                      {children.map((child, cIdx) => {
+                                        if (!evaluateShowWhen((child as any)?.showWhen, allFormValues)) return null;
+                                        const cType = child?.inputType ?? "string";
+                                        const cIsNum = cType === "number";
+                                        const cIsDate = cType === "date";
+                                        const name = `${nameBase}__opt_${o.value}__c${cIdx}`;
+                                        const regOpts: Record<string, unknown> = {};
+                                        if (cIsNum) regOpts.setValueAs = (v: unknown) => (v === "" ? undefined : Number(v as number));
+                                        if (cIsDate) {
+                                          regOpts.validate = (v: unknown) => {
+                                            if (v === undefined || v === null || v === "") return true;
+                                            return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY";
+                                          };
+                                          regOpts.onChange = (e: unknown) => {
+                                            const t = e as { target?: { value?: string } };
+                                            const formatted = maskDDMMYYYY(t?.target?.value ?? "");
+                                            form.setValue(name as never, formatted as never, { shouldDirty: true });
+                                          };
+                                        }
+                                        if (cType === "formula") {
+                                          return (
+                                            <FormulaField
+                                              key={name}
+                                              form={form}
+                                              name={name}
+                                              formula={String((child as any)?.formula ?? "")}
+                                              label={child?.label ?? "Value"}
+                                              pkg={pkg}
+                                            />
+                                          );
+                                        }
+                                        if (cType === "select") {
+                                          const opts = (Array.isArray(child?.options) ? child?.options ?? [] : []) as {
+                                            label?: string;
+                                            value?: string;
+                                          }[];
+                                          return (
+                                            <div key={name} className="space-y-1">
+                                              <Label>{child?.label ?? "Details"}</Label>
+                                              <select
+                                                className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+                                                {...form.register(name as never)}
+                                              >
+                                                <option value="">-- Select --</option>
+                                                {opts.map((so, soIdx) => (
+                                                  <option key={`${so.value ?? ""}_${soIdx}`} value={so.value}>
+                                                    {so.label}
+                                                  </option>
+                                                ))}
+                                              </select>
+                                            </div>
+                                          );
+                                        }
+                                        if (cType === "multi_select") {
+                                          const opts = (Array.isArray(child?.options) ? child?.options ?? [] : []) as {
+                                            label?: string;
+                                            value?: string;
+                                          }[];
+                                          return (
+                                            <div key={name} className="col-span-2 space-y-2">
+                                              <Label>{child?.label ?? "Details"}</Label>
+                                              <div className="space-y-3">
+                                                {opts.map((so, soIdx) => (
+                                                  <label key={`${so.value ?? ""}_${soIdx}`} className="flex items-start gap-2 text-sm leading-snug">
+                                                    <input type="checkbox" value={so.value} className="mt-0.5 shrink-0" {...form.register(name as never)} />
+                                                    <span>{so.label}</span>
+                                                  </label>
+                                                ))}
+                                                {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
+                                              </div>
+                                            </div>
+                                          );
+                                        }
+                                        if (cType === "currency") {
+                                          const cc = String((child as any)?.currencyCode ?? "").trim();
+                                          const dec = Number((child as any)?.decimals ?? 2);
+                                          const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
+                                          return (
+                                            <div key={name} className="space-y-1">
+                                              <Label>{child?.label ?? "Details"}</Label>
+                                              <div className="flex items-center gap-2">
+                                                {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
+                                                <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
+                                              </div>
+                                            </div>
+                                          );
+                                        }
+                                        return (
+                                          <Field
+                                            key={name}
+                                            label={child?.label ?? "Details"}
+                                            required={false}
+                                            type={cIsNum ? "number" : cIsDate ? "text" : "text"}
+                                            placeholder={cIsDate ? "DD-MM-YYYY" : undefined}
+                                            inputMode={cIsDate ? "numeric" : undefined}
+                                            {...form.register(name as never, regOpts)}
+                                          />
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                             {options.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                           </div>
                           {isAdmin && fieldId && (
@@ -1299,119 +1491,6 @@ export function PackageBlock({
                             />
                           )}
                         </div>
-                        {(() => {
-                          const childrenTuples =
-                            options
-                              .filter((o) => current.includes(o.value as unknown))
-                              .map((o) => ({ opt: o, children: Array.isArray(o.children) ? (o.children ?? []) : [] })) ?? [];
-                          if (childrenTuples.length === 0) return null;
-                          return (
-                            <div className="grid grid-cols-2 gap-4">
-                              {childrenTuples.flatMap(({ opt, children }) =>
-                                children.map((child, cIdx) => {
-                                  if (!evaluateShowWhen((child as any)?.showWhen, allFormValues)) return null;
-                                  const cType = child?.inputType ?? "string";
-                                  const cIsNum = cType === "number";
-                                  const cIsDate = cType === "date";
-                                  const name = `${nameBase}__opt_${opt.value}__c${cIdx}`;
-                                  const regOpts: Record<string, unknown> = {};
-                                  if (cIsNum) regOpts.setValueAs = (v: unknown) => (v === "" ? undefined : Number(v as number));
-                                  if (cIsDate) {
-                                    regOpts.validate = (v: unknown) => {
-                                      if (v === undefined || v === null || v === "") return true;
-                                      return /^\d{2}-\d{2}-\d{4}$/.test(String(v)) || "Use DD-MM-YYYY";
-                                    };
-                                    regOpts.onChange = (e: unknown) => {
-                                      const t = e as { target?: { value?: string } };
-                                      const formatted = maskDDMMYYYY(t?.target?.value ?? "");
-                                      form.setValue(name as never, formatted as never, { shouldDirty: true });
-                                    };
-                                  }
-                                  if (cType === "formula") {
-                                    return (
-                                      <FormulaField
-                                        key={name}
-                                        form={form}
-                                        name={name}
-                                        formula={String((child as any)?.formula ?? "")}
-                                        label={child?.label ?? "Value"}
-                                        pkg={pkg}
-                
-                                      />
-                                    );
-                                  }
-                                  if (cType === "select") {
-                                    const opts = (Array.isArray(child?.options) ? child?.options ?? [] : []) as {
-                                      label?: string;
-                                      value?: string;
-                                    }[];
-                                    return (
-                                      <div key={name} className="space-y-1">
-                                        <Label>{child?.label ?? "Details"}</Label>
-                                        <select
-                                          className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
-                                          {...form.register(name as never)}
-                                        >
-                                          <option value="">-- Select --</option>
-                                          {opts.map((o, oIdx) => (
-                                            <option key={`${o.value ?? ""}_${oIdx}`} value={o.value}>
-                                              {o.label}
-                                            </option>
-                                          ))}
-                                        </select>
-                                      </div>
-                                    );
-                                  }
-                                  if (cType === "multi_select") {
-                                    const opts = (Array.isArray(child?.options) ? child?.options ?? [] : []) as {
-                                      label?: string;
-                                      value?: string;
-                                    }[];
-                                    return (
-                                      <div key={name} className="space-y-1">
-                                        <Label>{child?.label ?? "Details"}</Label>
-                                        <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                          {opts.map((o, oIdx) => (
-                                            <label key={`${o.value ?? ""}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                              <input type="checkbox" value={o.value} {...form.register(name as never)} />
-                                              {o.label}
-                                            </label>
-                                          ))}
-                                          {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
-                                        </div>
-                                      </div>
-                                    );
-                                  }
-                                  if (cType === "currency") {
-                                    const cc = String((child as any)?.currencyCode ?? "").trim();
-                                    const dec = Number((child as any)?.decimals ?? 2);
-                                    const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
-                                    return (
-                                      <div key={name} className="space-y-1">
-                                        <Label>{child?.label ?? "Details"}</Label>
-                                        <div className="flex items-center gap-2">
-                                          {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
-                                          <Input type="number" step={step} placeholder="0.00" {...form.register(name as never, { setValueAs: (v: unknown) => (v === "" ? undefined : Number(v as number)) })} />
-                                        </div>
-                                      </div>
-                                    );
-                                  }
-                                  return (
-                                    <Field
-                                      key={name}
-                                      label={child?.label ?? "Details"}
-                                      required={false}
-                                      type={cIsNum ? "number" : cIsDate ? "text" : "text"}
-                                      placeholder={cIsDate ? "DD-MM-YYYY" : undefined}
-                                      inputMode={cIsDate ? "numeric" : undefined}
-                                      {...form.register(name as never, regOpts)}
-                                    />
-                                  );
-                                }),
-                              )}
-                            </div>
-                          );
-                        })()}
                       </div>
                     );
                   }
@@ -1866,6 +1945,17 @@ export function PackageBlock({
                         required={Boolean(meta.required)}
                         pkg={pkg}
 
+                      />
+                    );
+                  }
+                  if (inputType === "list") {
+                    return (
+                      <ListField
+                        key={nameBase}
+                        form={form}
+                        name={nameBase}
+                        label={displayLabel}
+                        required={Boolean(meta.required)}
                       />
                     );
                   }
