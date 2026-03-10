@@ -394,6 +394,20 @@ export function AppSidebar(
                             </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton tooltip="Document Templates" asChild>
+                            <Link href="/admin/policy-settings/document-templates">
+                              <BookOpen className="h-3.5 w-3.5 shrink-0" />
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton tooltip="Workflow Actions" asChild>
+                            <Link href="/admin/policy-settings/workflow-actions">
+                              <Frame className="h-3.5 w-3.5 shrink-0" />
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
                       </>
                     )}
                     {/* Packages group — toggle */}
@@ -482,6 +496,22 @@ export function AppSidebar(
                                           <Link href="/admin/policy-settings/flows">
                                             <GitBranch className="h-4 w-4 shrink-0" />
                                             <span>Flows</span>
+                                          </Link>
+                                        </SidebarMenuButton>
+                                      </li>
+                                      <li>
+                                        <SidebarMenuButton tooltip="Document Templates" asChild>
+                                          <Link href="/admin/policy-settings/document-templates">
+                                            <BookOpen className="h-4 w-4 shrink-0" />
+                                            <span>Document Templates</span>
+                                          </Link>
+                                        </SidebarMenuButton>
+                                      </li>
+                                      <li>
+                                        <SidebarMenuButton tooltip="Workflow Actions" asChild>
+                                          <Link href="/admin/policy-settings/workflow-actions">
+                                            <Frame className="h-4 w-4 shrink-0" />
+                                            <span>Workflow Actions</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>

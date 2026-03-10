@@ -32,6 +32,18 @@ export default async function PolicySettingsPage() {
           >
             Vehicle Fields
           </Link>
+          <Link
+            href="/admin/policy-settings/document-templates"
+            className="rounded-md border border-neutral-200 px-3 py-2 text-sm hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-900"
+          >
+            Document Templates
+          </Link>
+          <Link
+            href="/admin/policy-settings/workflow-actions"
+            className="rounded-md border border-neutral-200 px-3 py-2 text-sm hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-900"
+          >
+            Workflow Actions
+          </Link>
         </CardContent>
       </Card>
     </main>

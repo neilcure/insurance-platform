@@ -18,6 +18,13 @@ import { PolicySnapshotView } from "@/components/policies/PolicySnapshotView";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { RecordDetailsDrawer } from "@/components/ui/record-details-drawer";
 import { FieldEditDialog, loadEditFields, type EditField } from "@/components/ui/field-edit-dialog";
+import { StatusTab } from "@/components/policies/tabs/StatusTab";
+import { ActionsTab } from "@/components/policies/tabs/ActionsTab";
+import { DocumentsTab } from "@/components/policies/tabs/DocumentsTab";
+import { Activity, Zap, FileText } from "lucide-react";
+import type { DrawerTab } from "@/components/ui/drawer-tabs";
+import type { WorkflowActionRow } from "@/lib/types/workflow-action";
+import type { DocumentTemplateRow } from "@/lib/types/document-template";
 
 type Row = {
   policyId: number;
@@ -97,6 +104,9 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
   // Toggle active confirm dialog
   const [toggleConfirm, setToggleConfirm] = React.useState<{ id: number; currentlyActive: boolean } | null>(null);
   const [toggling, setToggling] = React.useState(false);
+  const [hasActions, setHasActions] = React.useState(false);
+  const [hasDocs, setHasDocs] = React.useState(false);
+
   // Sorting
   const hasNames = rows.some((r) => !!r.displayName);
   const [sortKey, setSortKey] = React.useState<"createdAt" | "policyNumber" | "displayName">("policyNumber");
@@ -170,6 +180,42 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
       setRefreshing(false);
     }
   }
+
+  const detailFlowKey = React.useMemo(
+    () => ((detail?.extraAttributes as Record<string, unknown> | undefined)?.flowKey as string) ?? undefined,
+    [detail],
+  );
+
+  React.useEffect(() => {
+    if (!detail) {
+      setHasActions(false);
+      setHasDocs(false);
+      return;
+    }
+    let cancelled = false;
+    const fk = detailFlowKey;
+
+    function matches(flows: string[] | undefined): boolean {
+      if (!flows || flows.length === 0) return true;
+      if (!fk) return false;
+      return flows.includes(fk);
+    }
+
+    Promise.all([
+      fetch(`/api/form-options?groupKey=workflow_actions&_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+      fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+    ]).then(([actions, docs]: [WorkflowActionRow[], DocumentTemplateRow[]]) => {
+      if (cancelled) return;
+      setHasActions(actions.some((a) => a.meta && matches(a.meta.flows)));
+      setHasDocs(docs.some((d) => d.meta && matches(d.meta.flows)));
+    });
+
+    return () => { cancelled = true; };
+  }, [detail, detailFlowKey]);
 
   async function openEditDialog(pkgName: string, pkgLabel: string, currentValues: Record<string, unknown>) {
     setEditPkg(pkgName);
@@ -413,6 +459,53 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
         extraAttributes={detail?.extraAttributes as Record<string, unknown> | undefined}
         onRefresh={refreshCurrent}
         refreshing={refreshing}
+        functionTabs={detail ? ([
+          {
+            id: "status",
+            label: "Status",
+            icon: <Activity className="h-3 w-3" />,
+            content: (
+              <StatusTab
+                policyId={detail.policyId}
+                currentStatus={
+                  ((detail.extraAttributes as Record<string, unknown> | undefined)?.status as string) ?? undefined
+                }
+                statusHistory={
+                  ((detail.extraAttributes as Record<string, unknown> | undefined)?.statusHistory as Array<{
+                    status: string; changedAt: string; changedBy?: string; note?: string;
+                  }>) ?? undefined
+                }
+                onStatusChange={refreshCurrent}
+              />
+            ),
+          },
+          ...(hasActions ? [{
+            id: "actions",
+            label: "Actions",
+            icon: <Zap className="h-3 w-3" />,
+            content: (
+              <ActionsTab
+                policyId={detail.policyId}
+                policyNumber={detail.policyNumber}
+                detail={detail}
+                currentAgent={detail.agent}
+                flowKey={detailFlowKey}
+                onActionComplete={refreshCurrent}
+              />
+            ),
+          }] : []),
+          ...(hasDocs ? [{
+            id: "documents",
+            label: "Documents",
+            icon: <FileText className="h-3 w-3" />,
+            content: (
+              <DocumentsTab
+                detail={detail}
+                flowKey={detailFlowKey}
+              />
+            ),
+          }] : []),
+        ] satisfies Omit<DrawerTab, "permanent">[]) : undefined}
       >
         {detail ? (
           <PolicySnapshotView detail={detail} entityLabel={label} onEditPackage={openEditDialog} />

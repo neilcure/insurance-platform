@@ -1,0 +1,774 @@
+"use client";
+
+import * as React from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
+import { Plus, Trash2 } from "lucide-react";
+import type {
+  DocumentTemplateMeta,
+  DocumentTemplateRow,
+  TemplateSection,
+  TemplateFieldMapping,
+} from "@/lib/types/document-template";
+
+const GROUP_KEY = "document_templates";
+
+const TEMPLATE_TYPES: { value: DocumentTemplateMeta["type"]; label: string }[] =
+  [
+    { value: "quotation", label: "Quotation" },
+    { value: "invoice", label: "Invoice" },
+    { value: "receipt", label: "Receipt" },
+    { value: "certificate", label: "Certificate" },
+    { value: "letter", label: "Letter" },
+    { value: "custom", label: "Custom" },
+  ];
+
+const SOURCE_OPTIONS: { value: TemplateSection["source"]; label: string }[] = [
+  { value: "insured", label: "Insured Info" },
+  { value: "contactinfo", label: "Contact Info" },
+  { value: "package", label: "Package (custom)" },
+  { value: "policy", label: "Policy Info" },
+  { value: "agent", label: "Agent Info" },
+];
+
+const FORMAT_OPTIONS: {
+  value: NonNullable<TemplateFieldMapping["format"]>;
+  label: string;
+}[] = [
+  { value: "text", label: "Text" },
+  { value: "currency", label: "Currency" },
+  { value: "date", label: "Date" },
+  { value: "boolean", label: "Yes/No" },
+  { value: "number", label: "Number" },
+];
+
+function newSection(): TemplateSection {
+  return {
+    id: crypto.randomUUID(),
+    title: "",
+    source: "policy",
+    fields: [],
+  };
+}
+
+function newField(): TemplateFieldMapping {
+  return { key: "", label: "", format: "text" };
+}
+
+function defaultMeta(): DocumentTemplateMeta {
+  return {
+    type: "quotation",
+    flows: [],
+    header: {
+      title: "Quotation",
+      subtitle: "",
+      showDate: true,
+      showPolicyNumber: true,
+    },
+    sections: [newSection()],
+    footer: { text: "", showSignature: false },
+  };
+}
+
+export default function DocumentTemplatesManager() {
+  const [rows, setRows] = React.useState<DocumentTemplateRow[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [open, setOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState<DocumentTemplateRow | null>(
+    null,
+  );
+
+  const [formLabel, setFormLabel] = React.useState("");
+  const [formValue, setFormValue] = React.useState("");
+  const [formSort, setFormSort] = React.useState(0);
+  const [meta, setMeta] = React.useState<DocumentTemplateMeta>(defaultMeta());
+
+  const [packages, setPackages] = React.useState<
+    { label: string; value: string }[]
+  >([]);
+  const [flows, setFlows] = React.useState<
+    { label: string; value: string }[]
+  >([]);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const res = await fetch(
+        `/api/admin/form-options?groupKey=${GROUP_KEY}&all=true`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        setRows([]);
+        return;
+      }
+      const json = await res.json();
+      setRows(Array.isArray(json) ? json : []);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadLookups() {
+    const [pkgRes, flowRes] = await Promise.all([
+      fetch("/api/form-options?groupKey=packages", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+      fetch("/api/form-options?groupKey=flows", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+    ]);
+    setPackages(
+      (pkgRes as { label: string; value: string }[]).map((p) => ({
+        label: p.label,
+        value: p.value,
+      })),
+    );
+    setFlows(
+      (flowRes as { label: string; value: string }[]).map((f) => ({
+        label: f.label,
+        value: f.value,
+      })),
+    );
+  }
+
+  React.useEffect(() => {
+    void load();
+    void loadLookups();
+  }, []);
+
+  function startCreate() {
+    setEditing(null);
+    setFormLabel("");
+    setFormValue("");
+    setFormSort(0);
+    setMeta(defaultMeta());
+    setOpen(true);
+  }
+
+  function startEdit(row: DocumentTemplateRow) {
+    setEditing(row);
+    setFormLabel(row.label);
+    setFormValue(row.value);
+    setFormSort(row.sortOrder);
+    setMeta(row.meta ?? defaultMeta());
+    setOpen(true);
+  }
+
+  async function save() {
+    if (!formLabel.trim() || !formValue.trim()) {
+      toast.error("Label and key are required");
+      return;
+    }
+    const payload = {
+      groupKey: GROUP_KEY,
+      label: formLabel.trim(),
+      value: formValue.trim(),
+      sortOrder: formSort,
+      isActive: true,
+      valueType: "json",
+      meta,
+    };
+    try {
+      if (editing) {
+        const res = await fetch(`/api/admin/form-options/${editing.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        toast.success("Template updated");
+      } else {
+        const res = await fetch("/api/admin/form-options", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        toast.success("Template created");
+      }
+      setOpen(false);
+      await load();
+    } catch (err: unknown) {
+      toast.error(
+        (err as { message?: string })?.message ?? "Save failed",
+      );
+    }
+  }
+
+  async function toggleActive(row: DocumentTemplateRow) {
+    try {
+      const res = await fetch(`/api/admin/form-options/${row.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ isActive: !row.isActive }),
+      });
+      if (!res.ok) throw new Error("Failed");
+      await load();
+    } catch {
+      toast.error("Update failed");
+    }
+  }
+
+  async function remove(row: DocumentTemplateRow) {
+    if (!window.confirm(`Delete template "${row.label}"?`)) return;
+    try {
+      const res = await fetch(`/api/admin/form-options/${row.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      toast.success("Deleted");
+      await load();
+    } catch (err: unknown) {
+      toast.error(
+        (err as { message?: string })?.message ?? "Delete failed",
+      );
+    }
+  }
+
+  function updateSection(idx: number, patch: Partial<TemplateSection>) {
+    setMeta((m) => ({
+      ...m,
+      sections: m.sections.map((s, i) =>
+        i === idx ? { ...s, ...patch } : s,
+      ),
+    }));
+  }
+
+  function removeSection(idx: number) {
+    setMeta((m) => ({
+      ...m,
+      sections: m.sections.filter((_, i) => i !== idx),
+    }));
+  }
+
+  function addField(sectionIdx: number) {
+    setMeta((m) => ({
+      ...m,
+      sections: m.sections.map((s, i) =>
+        i === sectionIdx ? { ...s, fields: [...s.fields, newField()] } : s,
+      ),
+    }));
+  }
+
+  function updateField(
+    sectionIdx: number,
+    fieldIdx: number,
+    patch: Partial<TemplateFieldMapping>,
+  ) {
+    setMeta((m) => ({
+      ...m,
+      sections: m.sections.map((s, si) =>
+        si === sectionIdx
+          ? {
+              ...s,
+              fields: s.fields.map((f, fi) =>
+                fi === fieldIdx ? { ...f, ...patch } : f,
+              ),
+            }
+          : s,
+      ),
+    }));
+  }
+
+  function removeField(sectionIdx: number, fieldIdx: number) {
+    setMeta((m) => ({
+      ...m,
+      sections: m.sections.map((s, si) =>
+        si === sectionIdx
+          ? { ...s, fields: s.fields.filter((_, fi) => fi !== fieldIdx) }
+          : s,
+      ),
+    }));
+  }
+
+  const [seeding, setSeeding] = React.useState(false);
+
+  async function seedExamples() {
+    setSeeding(true);
+    try {
+      const res = await fetch("/api/dev/seed-document-templates", {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const json = await res.json();
+      toast.success(
+        (json.results as string[]).join("; ") || "Examples loaded",
+      );
+      await load();
+    } catch (err: unknown) {
+      toast.error(
+        (err as { message?: string })?.message ?? "Failed to seed examples",
+      );
+    } finally {
+      setSeeding(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-neutral-500 dark:text-neutral-400">
+          {rows.length} template{rows.length !== 1 ? "s" : ""}
+        </div>
+        <div className="flex items-center gap-2">
+          {rows.length === 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={seedExamples}
+              disabled={seeding}
+            >
+              {seeding ? "Loading..." : "Load Examples"}
+            </Button>
+          )}
+          <Button size="sm" onClick={startCreate}>
+            Create Template
+          </Button>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Template</TableHead>
+              <TableHead className="hidden sm:table-cell">Type</TableHead>
+              <TableHead className="hidden sm:table-cell">Sections</TableHead>
+              <TableHead className="text-right">Manage</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r) => (
+              <TableRow key={r.id} className={r.isActive ? "" : "opacity-50"}>
+                <TableCell>
+                  <div className="font-medium">{r.label}</div>
+                  <div className="text-xs text-neutral-500 dark:text-neutral-400 font-mono">
+                    {r.value}
+                  </div>
+                </TableCell>
+                <TableCell className="hidden sm:table-cell capitalize">
+                  {r.meta?.type ?? "—"}
+                </TableCell>
+                <TableCell className="hidden sm:table-cell">
+                  {r.meta?.sections?.length ?? 0}
+                </TableCell>
+                <TableCell className="text-right">
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => startEdit(r)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={r.isActive ? "outline" : "default"}
+                      onClick={() => toggleActive(r)}
+                    >
+                      {r.isActive ? "Disable" : "Enable"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => remove(r)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+            {!loading && rows.length === 0 && (
+              <TableRow>
+                <TableCell
+                  colSpan={4}
+                  className="py-8 text-center text-sm text-neutral-500 dark:text-neutral-400"
+                >
+                  No templates yet. Create one to get started.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {editing ? "Edit Template" : "Create Template"}
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="grid gap-4">
+            {/* Basic info */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1">
+                <Label>Template Name</Label>
+                <Input
+                  value={formLabel}
+                  onChange={(e) => setFormLabel(e.target.value)}
+                  placeholder="Motor Quotation"
+                />
+              </div>
+              <div className="grid gap-1">
+                <Label>Key</Label>
+                <Input
+                  value={formValue}
+                  onChange={(e) => setFormValue(e.target.value)}
+                  placeholder="motor_quotation"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1">
+                <Label>Type</Label>
+                <select
+                  className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  value={meta.type}
+                  onChange={(e) =>
+                    setMeta((m) => ({
+                      ...m,
+                      type: e.target.value as DocumentTemplateMeta["type"],
+                    }))
+                  }
+                >
+                  {TEMPLATE_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid gap-1">
+                <Label>Sort Order</Label>
+                <Input
+                  type="number"
+                  value={String(formSort)}
+                  onChange={(e) => setFormSort(Number(e.target.value))}
+                />
+              </div>
+            </div>
+
+            {/* Flow restriction */}
+            <div className="grid gap-1">
+              <Label>
+                Restrict to Flows{" "}
+                <span className="text-xs text-neutral-400">(optional)</span>
+              </Label>
+              <div className="flex flex-wrap gap-2">
+                {flows.map((f) => (
+                  <label
+                    key={f.value}
+                    className="flex items-center gap-1.5 text-xs"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={meta.flows?.includes(f.value) ?? false}
+                      onChange={(e) =>
+                        setMeta((m) => ({
+                          ...m,
+                          flows: e.target.checked
+                            ? [...(m.flows ?? []), f.value]
+                            : (m.flows ?? []).filter((v) => v !== f.value),
+                        }))
+                      }
+                    />
+                    {f.label}
+                  </label>
+                ))}
+                {flows.length === 0 && (
+                  <span className="text-xs text-neutral-400">
+                    No flows defined
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Header */}
+            <fieldset className="rounded-md border border-neutral-200 p-3 dark:border-neutral-700">
+              <legend className="px-1 text-sm font-medium">Header</legend>
+              <div className="grid gap-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-1">
+                    <Label>Title</Label>
+                    <Input
+                      value={meta.header.title}
+                      onChange={(e) =>
+                        setMeta((m) => ({
+                          ...m,
+                          header: { ...m.header, title: e.target.value },
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-1">
+                    <Label>Subtitle</Label>
+                    <Input
+                      value={meta.header.subtitle ?? ""}
+                      onChange={(e) =>
+                        setMeta((m) => ({
+                          ...m,
+                          header: { ...m.header, subtitle: e.target.value },
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-1.5 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={meta.header.showDate !== false}
+                      onChange={(e) =>
+                        setMeta((m) => ({
+                          ...m,
+                          header: { ...m.header, showDate: e.target.checked },
+                        }))
+                      }
+                    />
+                    Show Date
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={meta.header.showPolicyNumber !== false}
+                      onChange={(e) =>
+                        setMeta((m) => ({
+                          ...m,
+                          header: {
+                            ...m.header,
+                            showPolicyNumber: e.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    Show Policy #
+                  </label>
+                </div>
+              </div>
+            </fieldset>
+
+            {/* Sections */}
+            <fieldset className="rounded-md border border-neutral-200 p-3 dark:border-neutral-700">
+              <legend className="px-1 text-sm font-medium">
+                Sections &amp; Fields
+              </legend>
+              <p className="mb-3 text-[11px] text-neutral-500 dark:text-neutral-400">
+                Each section pulls data from a specific source in the policy
+                snapshot. Add fields with the exact key names used in your
+                packages.
+              </p>
+
+              <div className="space-y-4">
+                {meta.sections.map((section, sIdx) => (
+                  <div
+                    key={section.id}
+                    className="rounded border border-neutral-200 p-2 dark:border-neutral-700"
+                  >
+                    <div className="mb-2 flex items-center gap-2">
+                      <Input
+                        className="h-7 flex-1 text-xs"
+                        placeholder="Section title"
+                        value={section.title}
+                        onChange={(e) =>
+                          updateSection(sIdx, { title: e.target.value })
+                        }
+                      />
+                      <select
+                        className="h-7 rounded border border-neutral-300 bg-white px-1 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                        value={section.source}
+                        onChange={(e) =>
+                          updateSection(sIdx, {
+                            source: e.target
+                              .value as TemplateSection["source"],
+                          })
+                        }
+                      >
+                        {SOURCE_OPTIONS.map((s) => (
+                          <option key={s.value} value={s.value}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                      {section.source === "package" && (
+                        <select
+                          className="h-7 rounded border border-neutral-300 bg-white px-1 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                          value={section.packageName ?? ""}
+                          onChange={(e) =>
+                            updateSection(sIdx, {
+                              packageName: e.target.value,
+                            })
+                          }
+                        >
+                          <option value="">Pick package...</option>
+                          {packages.map((p) => (
+                            <option key={p.value} value={p.value}>
+                              {p.label}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <Button
+                        size="iconCompact"
+                        variant="ghost"
+                        onClick={() => removeSection(sIdx)}
+                        className="h-6 w-6 shrink-0 text-red-500"
+                        aria-label="Remove section"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
+
+                    {/* Fields */}
+                    <div className="space-y-1">
+                      {section.fields.map((field, fIdx) => (
+                        <div
+                          key={fIdx}
+                          className="flex items-center gap-1"
+                        >
+                          <Input
+                            className="h-6 flex-1 text-[11px]"
+                            placeholder="Field key (e.g. companyName)"
+                            value={field.key}
+                            onChange={(e) =>
+                              updateField(sIdx, fIdx, {
+                                key: e.target.value,
+                              })
+                            }
+                          />
+                          <Input
+                            className="h-6 flex-1 text-[11px]"
+                            placeholder="Display label"
+                            value={field.label}
+                            onChange={(e) =>
+                              updateField(sIdx, fIdx, {
+                                label: e.target.value,
+                              })
+                            }
+                          />
+                          <select
+                            className="h-6 rounded border border-neutral-300 bg-white px-1 text-[11px] dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                            value={field.format ?? "text"}
+                            onChange={(e) =>
+                              updateField(sIdx, fIdx, {
+                                format:
+                                  e.target.value as TemplateFieldMapping["format"],
+                              })
+                            }
+                          >
+                            {FORMAT_OPTIONS.map((f) => (
+                              <option key={f.value} value={f.value}>
+                                {f.label}
+                              </option>
+                            ))}
+                          </select>
+                          <Button
+                            size="iconCompact"
+                            variant="ghost"
+                            onClick={() => removeField(sIdx, fIdx)}
+                            className="h-5 w-5 shrink-0 text-red-500"
+                            aria-label="Remove field"
+                          >
+                            <Trash2 className="h-2.5 w-2.5" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="mt-1 h-6 gap-1 text-[11px]"
+                      onClick={() => addField(sIdx)}
+                    >
+                      <Plus className="h-3 w-3" /> Add Field
+                    </Button>
+                  </div>
+                ))}
+              </div>
+
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-3 gap-1"
+                onClick={() =>
+                  setMeta((m) => ({
+                    ...m,
+                    sections: [...m.sections, newSection()],
+                  }))
+                }
+              >
+                <Plus className="h-3 w-3" /> Add Section
+              </Button>
+            </fieldset>
+
+            {/* Footer */}
+            <fieldset className="rounded-md border border-neutral-200 p-3 dark:border-neutral-700">
+              <legend className="px-1 text-sm font-medium">Footer</legend>
+              <div className="grid gap-2">
+                <div className="grid gap-1">
+                  <Label>Footer Text</Label>
+                  <Input
+                    value={meta.footer?.text ?? ""}
+                    onChange={(e) =>
+                      setMeta((m) => ({
+                        ...m,
+                        footer: { ...m.footer, text: e.target.value },
+                      }))
+                    }
+                    placeholder="Terms and conditions apply..."
+                  />
+                </div>
+                <label className="flex items-center gap-1.5 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={meta.footer?.showSignature ?? false}
+                    onChange={(e) =>
+                      setMeta((m) => ({
+                        ...m,
+                        footer: {
+                          ...m.footer,
+                          showSignature: e.target.checked,
+                        },
+                      }))
+                    }
+                  />
+                  Show Signature Lines
+                </label>
+              </div>
+            </fieldset>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={save}>
+              {editing ? "Save" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

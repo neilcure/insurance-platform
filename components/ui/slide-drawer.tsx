@@ -18,6 +18,8 @@ interface SlideDrawerProps {
    * behind it (used for stacked drawers that sit above another drawer).
    */
   passthrough?: boolean;
+  /** Vertical tab strip rendered outside the drawer's right edge (full height) */
+  tabStrip?: React.ReactNode;
   children: React.ReactNode;
 }
 
@@ -32,14 +34,18 @@ export function SlideDrawer({
   widthClass,
   zClass = "z-50",
   passthrough = false,
+  tabStrip,
   children,
 }: SlideDrawerProps) {
   const width = widthClass ?? (side === "left" ? LEFT_WIDTH : RIGHT_WIDTH);
   const isLeft = side === "left";
 
+  const borderClass = isLeft
+    ? tabStrip ? "" : "border-r"
+    : "border-l";
   const posClass = isLeft
-    ? "left-0 top-0 border-r"
-    : "right-0 top-0 border-l";
+    ? `left-0 top-0 ${borderClass}`
+    : `right-0 top-0 ${borderClass}`;
 
   const translateHidden = isLeft ? "-translate-x-full" : "translate-x-full";
   const translateVisible = "translate-x-0";
@@ -54,7 +60,7 @@ export function SlideDrawer({
         aria-label={`Close ${title}`}
       />
       <aside
-        className={`${passthrough ? "pointer-events-auto" : ""} absolute ${posClass} h-full ${width} bg-white dark:bg-neutral-950/40 dark:backdrop-blur-xl border-neutral-200 dark:border-neutral-800 shadow-xl transform transition-transform duration-300 ease-out will-change-transform ${
+        className={`${passthrough ? "pointer-events-auto" : ""} absolute ${posClass} h-full ${width} bg-neutral-100 dark:bg-neutral-950/40 dark:backdrop-blur-xl border-neutral-200 dark:border-neutral-800 shadow-xl transform transition-transform duration-300 ease-out will-change-transform overflow-visible ${
           open ? translateVisible : translateHidden
         }`}
       >
@@ -65,6 +71,13 @@ export function SlideDrawer({
           </Button>
         </div>
         {children}
+
+        {/* Full-height tab strip outside the drawer right edge */}
+        {tabStrip && (
+          <div className="absolute top-0 left-full h-full flex flex-col">
+            {tabStrip}
+          </div>
+        )}
       </aside>
     </div>
   );
