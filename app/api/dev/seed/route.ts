@@ -71,39 +71,6 @@ export async function POST(request: Request) {
       await db.delete(formOptions).where(eq(formOptions.groupKey, groupKey));
     }
 
-    // Seed declarations group/options if missing
-    await db
-      .insert(formOptionGroups)
-      .values({ key: "declarations", label: "Declarations" })
-      .onConflictDoNothing();
-
-    if (force || !(await groupHasAnyOption("declarations"))) {
-      await maybeClearGroup("declarations");
-      const baseOptions = [
-        { label: "Left-hand drive vehicle", value: "leftHandDrive", sortOrder: 10 },
-        { label: "Vehicle modified", value: "modifiedVehicle", sortOrder: 20 },
-        { label: "Accessories added", value: "accessoriesAdded", sortOrder: 30 },
-        { label: "Lapse in insurance", value: "lapseInInsurance", sortOrder: 40 },
-        { label: "No valid HK license", value: "noValidHKLicense", sortOrder: 50 },
-        { label: "Denied/cancelled insurance before", value: "deniedOrCancelledBefore", sortOrder: 60 },
-        { label: "Accident or conviction history", value: "accidentOrConviction", sortOrder: 70 },
-      ];
-      for (const opt of baseOptions) {
-        await db
-          .insert(formOptions)
-          .values({
-            groupKey: "declarations",
-            label: opt.label,
-            value: opt.value,
-            valueType: "boolean",
-            sortOrder: opt.sortOrder,
-            isActive: true,
-            meta: null,
-          })
-          .onConflictDoNothing();
-      }
-    }
-
     // Seed vehicle_category group/options if missing
     await db
       .insert(formOptionGroups)

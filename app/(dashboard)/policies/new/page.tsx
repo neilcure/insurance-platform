@@ -21,7 +21,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Field } from "@/components/ui/form-field";
 import { VehicleStep } from "@/components/policies/vehicle-step";
 import { PolicyStep } from "@/components/policies/policy-step";
-import { DeclarationsStep } from "@/components/policies/declarations-step";
 import { AddressTool } from "@/components/policies/address-tool";
 import { PackageBlock } from "@/components/policies/PackageBlock";
 import { InsuredStep } from "@/components/policies/InsuredStep";
@@ -37,7 +36,6 @@ type WizardState = {
   insured?: Record<string, unknown>;
   vehicle?: Record<string, unknown>;
   policy?: Record<string, unknown>;
-  declarations?: Record<string, unknown>;
   highestCompletedStep: number;
 };
 
@@ -5424,56 +5422,6 @@ export default function NewPolicyStep1Page() {
         </>
       ) : null}
 
-      {Array.isArray(steps) && steps.length === 0 && wizard.step >= 4 ? (
-        <>
-          <div className="py-8">
-            <Separator />
-          </div>
-          {wizard.step === 4 ? (
-            <DeclarationsStep
-              onSubmitFinal={async (d) => {
-                const valuesNow = form.getValues() as Record<string, unknown>;
-                const dirtyAllNames = (() => {
-                  try {
-                    const dirtyRaw = (form.formState.dirtyFields ?? {}) as unknown;
-                    return collectDirtyFieldNames(dirtyRaw);
-                  } catch {
-                    return [] as string[];
-                  }
-                })();
-                const dirtyAllSet = new Set(
-                  (dirtyAllNames ?? [])
-                    .map((k) => String(k ?? "").split(".")[0] ?? "")
-                    .filter((s) => Boolean(s))
-                );
-                const snapshot = extractClientSnapshotFromValues(valuesNow, dirtyAllSet);
-                const insuredCanonical = normalizePrefixedKeysForClientUpdate(snapshot, dirtyAllSet);
-                const payload = {
-                  insured: insuredCanonical,
-                  vehicle: wizard.vehicle,
-                  policy: wizard.policy,
-                  declarations: d,
-                  ...(flowKey ? { flowKey } : {}),
-                };
-                try {
-                  const res = await fetch("/api/policies", {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify(payload),
-                  });
-                  const json = await res.json();
-                  if (!res.ok) throw new Error(json?.error ?? "Submit failed");
-                  toast.success("Policy submitted", { duration: 1000 });
-                  router.push(flowKey ? `/dashboard/flows/${encodeURIComponent(flowKey)}` : "/dashboard");
-                } catch (err: unknown) {
-                  const message = (err as { message?: string } | undefined)?.message ?? "Submit failed";
-                  toast.error(message);
-                }
-              }}
-            />
-          ) : null}
-        </>
-      ) : null}
 
       <Dialog
         open={clientUpdateConfirmOpen}

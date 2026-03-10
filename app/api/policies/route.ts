@@ -4,7 +4,6 @@ import { cars, policies } from "@/db/schema/insurance";
 import { memberships, organisations, clients, appSettings } from "@/db/schema/core";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { policyCreateSchema } from "@/lib/validation/policy";
-import { normalizeDeclarations, DeclarationsDynamicSchema } from "@/lib/validation/declarations";
 import { requireUser } from "@/lib/auth/require-user";
 import { canCreatePolicy } from "@/lib/auth/rbac";
 import { getPolicyColumns } from "@/lib/db/column-check";
@@ -30,7 +29,6 @@ type FinalPolicyPayload = {
     currency?: string;
     [k: string]: unknown;
   };
-  declarations?: any;
 };
 
 export async function POST(request: Request) {
@@ -40,7 +38,7 @@ export async function POST(request: Request) {
     const json = await request.json();
 
     // Support enhanced wizard payload OR legacy payload
-    if (json?.insured || json?.vehicle || json?.policy || json?.declarations || json?.packages) {
+    if (json?.insured || json?.vehicle || json?.policy || json?.packages) {
       const extractClientExtraFromInsured = (insured: unknown): Record<string, unknown> => {
         if (!insured || typeof insured !== "object") return {};
         const obj = insured as Record<string, unknown>;
@@ -167,14 +165,6 @@ export async function POST(request: Request) {
         (policy as any)?.covernoteNo ||
         `${recordPrefix}-${Date.now()}`;
 
-      // Normalize declarations shape (support legacy and new)
-      let normalizedDeclarations: { answers: Record<string, boolean>; notes?: string } | null = null;
-      if (typeof body.declarations !== "undefined") {
-        normalizedDeclarations = normalizeDeclarations(body.declarations);
-        if (!normalizedDeclarations) {
-          return NextResponse.json({ error: "Invalid declarations" }, { status: 400 });
-        }
-      }
 
       // Try to construct an insured candidate from either body.insured or packages snapshot
       function buildInsuredCandidate(): any | null {
@@ -383,7 +373,6 @@ export async function POST(request: Request) {
         })();
         const snapshot = {
           ...(vehicle || {}),
-          declarations: normalizedDeclarations ?? (body as any).declarations,
           insuredSnapshot: (body as any).insured,
           clientId: ensuredClientId,
           packagesSnapshot: packages,

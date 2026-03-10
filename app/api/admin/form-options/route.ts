@@ -28,7 +28,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   const { searchParams } = new URL(request.url);
-  const groupKey = searchParams.get("groupKey") ?? "declarations";
+  const groupKey = searchParams.get("groupKey") ?? "packages";
   const includeInactive = searchParams.get("all") === "true" || searchParams.get("includeInactive") === "true";
 
   const rows = await db

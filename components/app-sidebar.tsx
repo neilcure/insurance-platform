@@ -17,7 +17,6 @@ import {
   PieChart,
   LayoutDashboard,
   Folder,
-  ScrollText,
   Package,
   GitBranch,
   UserPlus,
@@ -382,13 +381,6 @@ export function AppSidebar(
                     {policyCollapsedOpen && (
                       <>
                         <SidebarMenuItem>
-                          <SidebarMenuButton tooltip="Declarations" asChild>
-                            <Link href="/admin/policy-settings/declarations">
-                              <ScrollText className="h-3.5 w-3.5 shrink-0" />
-                            </Link>
-                          </SidebarMenuButton>
-                        </SidebarMenuItem>
-                        <SidebarMenuItem>
                           <SidebarMenuButton tooltip="Packages" asChild>
                             <Link href="/admin/policy-settings/packages">
                               <Package className="h-3.5 w-3.5 shrink-0" />
@@ -477,14 +469,6 @@ export function AppSidebar(
                                   </CollapsibleTrigger>
                                   <CollapsibleContent>
                                     <ul className="ml-4 grid gap-1 py-1">
-                                      <li>
-                                        <SidebarMenuButton tooltip="Declarations" asChild>
-                                          <Link href="/admin/policy-settings/declarations">
-                                            <ScrollText className="h-4 w-4 shrink-0" />
-                                            <span>Declarations</span>
-                                          </Link>
-                                        </SidebarMenuButton>
-                                      </li>
                                       <li>
                                         <SidebarMenuButton tooltip="Packages" asChild>
                                           <Link href="/admin/policy-settings/packages">

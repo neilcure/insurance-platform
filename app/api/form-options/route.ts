@@ -11,7 +11,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   await requireUser();
   const { searchParams } = new URL(request.url);
-  const groupKey = searchParams.get("groupKey") ?? "declarations";
+  const groupKey = searchParams.get("groupKey") ?? "packages";
   const rows = await db
     .select({
       id: formOptions.id,
