@@ -20,7 +20,7 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <AuthSessionProvider>
             {children}
-            <Toaster richColors position="top-right" />
+            <Toaster richColors position="top-right" duration={2000} />
           </AuthSessionProvider>
         </ThemeProvider>
       </body>

@@ -14,6 +14,7 @@ export const INPUT_TYPE_OPTIONS: { value: InputType; label: string }[] = [
   { value: "repeatable", label: "Repeatable (List)" },
   { value: "formula", label: "Formula" },
   { value: "list", label: "List (Add Items)" },
+  { value: "agent_picker", label: "Agent Picker" },
 ];
 
 export function InputTypeSelect({

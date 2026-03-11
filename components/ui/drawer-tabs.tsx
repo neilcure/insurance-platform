@@ -75,7 +75,7 @@ export function DrawerTabStrip() {
             key={tab.id}
             type="button"
             onClick={() => ctx.setActiveTab(tab.id)}
-            className={`flex w-10 flex-col items-center gap-1.5 px-1.5 py-3.5 transition-colors border-r border-neutral-200 dark:border-neutral-800 ${
+            className={`flex w-10 flex-col items-center gap-1.5 px-1.5 py-3.5 transition-all duration-300 ease-out border-r border-neutral-200 dark:border-neutral-800 ${
               !isLast ? "border-b" : ""
             } ${isFirst ? "border-t rounded-tr-lg" : ""} ${isLast ? "border-b rounded-br-lg" : ""} ${
               isActive
@@ -84,11 +84,18 @@ export function DrawerTabStrip() {
             }`}
             title={tab.label}
           >
+            {/* Key includes active state to force re-mount and replay animation */}
             <span
-              className="whitespace-nowrap text-[11px] font-medium leading-none tracking-wide"
+              key={isActive ? `${tab.id}-active` : tab.id}
+              className={`whitespace-nowrap text-[11px] leading-none transition-all duration-300 ${
+                isActive
+                  ? "font-semibold tracking-wide"
+                  : "font-medium tracking-wide opacity-75 hover:opacity-100"
+              }`}
               style={{
                 writingMode: "vertical-rl",
                 transform: "rotate(180deg)",
+                animation: isActive ? "tab-text-in 0.35s ease-out" : "none",
               }}
             >
               {tab.label}

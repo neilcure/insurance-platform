@@ -25,6 +25,75 @@ import { Activity, Zap, FileText } from "lucide-react";
 import type { DrawerTab } from "@/components/ui/drawer-tabs";
 import type { WorkflowActionRow } from "@/lib/types/workflow-action";
 import type { DocumentTemplateRow } from "@/lib/types/document-template";
+import { formatDDMMYYYYHHMM } from "@/lib/format/date";
+import { StickyNote, ChevronDown, ChevronUp, X } from "lucide-react";
+
+type NoteEntry = { text: string; at: string; by?: { id?: number; email?: string } };
+
+function NotesPanel({ notes, onDelete }: { notes: NoteEntry[]; onDelete?: (index: number) => void }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const [deletingIdx, setDeletingIdx] = React.useState<number | null>(null);
+  if (notes.length === 0) return null;
+
+  const visible = expanded ? notes : notes.slice(-3);
+  const hasMore = notes.length > 3;
+  const offset = expanded ? 0 : Math.max(0, notes.length - 3);
+
+  return (
+    <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <StickyNote className="h-3.5 w-3.5" />
+          Notes
+          <span className="text-[10px] font-normal text-neutral-400">({notes.length})</span>
+        </div>
+        {hasMore && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 gap-1 text-[11px]"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            {expanded ? "Show less" : `Show all ${notes.length}`}
+          </Button>
+        )}
+      </div>
+      <div className="space-y-2">
+        {visible.map((n, visIdx) => {
+          const realIdx = offset + visIdx;
+          return (
+            <div
+              key={`note-${realIdx}`}
+              className="group relative rounded border border-neutral-100 bg-neutral-50 p-2 text-xs dark:border-neutral-800 dark:bg-neutral-900/50"
+            >
+              {onDelete && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (deletingIdx !== null) return;
+                    setDeletingIdx(realIdx);
+                    onDelete(realIdx);
+                  }}
+                  disabled={deletingIdx === realIdx}
+                  className="absolute right-1.5 top-1.5 rounded p-0.5 text-neutral-400 opacity-0 transition-opacity hover:bg-neutral-200 hover:text-neutral-600 group-hover:opacity-100 dark:hover:bg-neutral-700 dark:hover:text-neutral-300"
+                  title="Delete note"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+              <div className="whitespace-pre-wrap pr-5">{n.text}</div>
+              <div className="mt-1 flex items-center gap-2 text-[10px] text-neutral-400 dark:text-neutral-500">
+                <span>{formatDDMMYYYYHHMM(n.at)}</span>
+                {n.by?.email && <span>{n.by.email}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 type Row = {
   policyId: number;
@@ -178,6 +247,22 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
       await openDetails(openId, { silent: true });
     } finally {
       setRefreshing(false);
+    }
+  }
+
+  async function deleteNote(noteIndex: number) {
+    if (!detail) return;
+    try {
+      const res = await fetch(`/api/policies/${detail.policyId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ deleteNoteIndex: noteIndex }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      toast.success("Note deleted");
+      await openDetails(detail.policyId, { silent: true });
+    } catch (err: unknown) {
+      toast.error((err as { message?: string })?.message ?? "Failed to delete note");
     }
   }
 
@@ -508,7 +593,17 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
         ] satisfies Omit<DrawerTab, "permanent">[]) : undefined}
       >
         {detail ? (
-          <PolicySnapshotView detail={detail} entityLabel={label} onEditPackage={openEditDialog} />
+          <>
+            <PolicySnapshotView detail={detail} entityLabel={label} onEditPackage={openEditDialog} />
+            <NotesPanel
+              notes={
+                (Array.isArray((detail.extraAttributes as Record<string, unknown> | undefined)?.notes)
+                  ? (detail.extraAttributes as Record<string, unknown>).notes as NoteEntry[]
+                  : [])
+              }
+              onDelete={deleteNote}
+            />
+          </>
         ) : (
           <div className="text-neutral-500 dark:text-neutral-400">No details.</div>
         )}

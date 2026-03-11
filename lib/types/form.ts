@@ -8,7 +8,8 @@ export type InputType =
   | "boolean"
   | "repeatable"
   | "formula"
-  | "list";
+  | "list"
+  | "agent_picker";
 
 export type SelectOption = { label?: string; value?: string };
 

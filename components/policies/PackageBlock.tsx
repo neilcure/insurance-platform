@@ -14,6 +14,7 @@ import { Field } from "@/components/ui/form-field";
 import { resolveFieldValue, evaluateFormula } from "@/lib/formula";
 import type { SelectOption, RepeatableFieldConfig, RepeatableConfig } from "@/lib/types/form";
 import { EntityPickerDrawer, type EntityPickerSelection } from "@/components/policies/EntityPickerDrawer";
+import { AgentPickerDrawer, type AgentPickerSelection } from "@/components/policies/AgentPickerDrawer";
 import { Search } from "lucide-react";
 
 type EntityPickerFieldMapping = {
@@ -1027,6 +1028,18 @@ export function PackageBlock({
   }, [allFormValues, pkgFields, pkg, form]);
 
   const [activeEntityPicker, setActiveEntityPicker] = React.useState<EntityPickerMeta | null>(null);
+  const [agentPickerOpen, setAgentPickerOpen] = React.useState(false);
+  const [agentPickerTarget, setAgentPickerTarget] = React.useState<string>("");
+
+  const handleAgentPickerSelect = React.useCallback(
+    (agent: AgentPickerSelection) => {
+      const display = (agent.userNumber ? `${agent.userNumber} — ` : "") + (agent.name ?? agent.email);
+      form.setValue(agentPickerTarget as never, display as never, { shouldDirty: true });
+      form.setValue("_agentId" as never, agent.id as never, { shouldDirty: true });
+      toast.success(`Agent selected: ${display}`, { duration: 1500 });
+    },
+    [form, agentPickerTarget],
+  );
 
   const handleEntityPickerSelect = React.useCallback(
     (picker: EntityPickerMeta, selection: EntityPickerSelection) => {
@@ -1994,6 +2007,35 @@ export function PackageBlock({
                       </div>
                     );
                   }
+                  if (inputType === "agent_picker") {
+                    const apLabel = String((meta as any)?.agentPickerLabel ?? "").trim() || "Browse";
+                    return (
+                      <div key={nameBase} className="col-span-2 space-y-1">
+                        <Label>
+                          {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                        </Label>
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            className="flex-1"
+                            readOnly
+                            placeholder="Select an agent…"
+                            {...form.register(nameBase as never, options)}
+                          />
+                          <button
+                            type="button"
+                            className="group/ep relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-neutral-200 bg-white text-neutral-600 transition-all duration-300 ease-out hover:w-auto hover:gap-1.5 hover:px-3 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+                            onClick={() => { setAgentPickerTarget(nameBase); setAgentPickerOpen(true); }}
+                            title={apLabel}
+                          >
+                            <Search className="h-3.5 w-3.5 shrink-0" />
+                            <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium opacity-0 transition-all duration-300 ease-out group-hover/ep:max-w-48 group-hover/ep:opacity-100">
+                              {apLabel}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
                   if (meta.entityPicker?.flow) {
                     return (
                       <div key={nameBase} className="col-span-2 space-y-1">
@@ -2081,6 +2123,13 @@ export function PackageBlock({
           flowKey={activeEntityPicker.flow}
           title={activeEntityPicker.buttonLabel || "Select Record"}
           onSelect={(sel) => handleEntityPickerSelect(activeEntityPicker, sel)}
+        />
+      )}
+      {agentPickerOpen && (
+        <AgentPickerDrawer
+          open={agentPickerOpen}
+          onClose={() => setAgentPickerOpen(false)}
+          onSelect={handleAgentPickerSelect}
         />
       )}
     </section>

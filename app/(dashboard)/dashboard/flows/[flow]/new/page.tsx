@@ -1254,6 +1254,11 @@ export default function FlowNewPage() {
         if (selectedClientNumber) insuredSnapshot.clientPolicyNumber = selectedClientNumber;
       }
 
+      const selectedAgentId = Number(values._agentId);
+      const agentIdPayload = Number.isFinite(selectedAgentId) && selectedAgentId > 0
+        ? { policy: { agentId: selectedAgentId } }
+        : {};
+
       if (isUpdate && selectedRecordId) {
         const res = await fetch(`/api/policies/${selectedRecordId}`, {
           method: "PATCH",
@@ -1262,6 +1267,7 @@ export default function FlowNewPage() {
             packages: packagesPayload,
             insured: insuredSnapshot,
             flowKey,
+            ...agentIdPayload,
           }),
         });
         const json = await res.json().catch(() => ({}));
@@ -1279,6 +1285,7 @@ export default function FlowNewPage() {
             packages: packagesPayload,
             insured: insuredSnapshot,
             flowKey,
+            ...agentIdPayload,
           }),
         });
         const json = await res.json().catch(() => ({}));

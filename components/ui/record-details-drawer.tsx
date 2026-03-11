@@ -30,6 +30,8 @@ export type RecordDetailsDrawerProps = {
    * Overview is always the first tab, rendered from `children`.
    */
   functionTabs?: Omit<DrawerTab, "permanent">[];
+  /** Custom log panel content — replaces the default AuditLogPanel when provided */
+  logContent?: React.ReactNode;
   children: React.ReactNode;
 };
 
@@ -44,6 +46,7 @@ export function RecordDetailsDrawer({
   refreshing,
   auditProps,
   functionTabs,
+  logContent,
   children,
 }: RecordDetailsDrawerProps) {
   const [auditOpen, setAuditOpen] = React.useState(false);
@@ -158,7 +161,9 @@ export function RecordDetailsDrawer({
           passthrough
         >
           <div className="p-3 text-xs">
-            {!extraAttributes ? (
+            {logContent ? (
+              logContent
+            ) : !extraAttributes ? (
               <div className="text-neutral-500 dark:text-neutral-400">
                 No details.
               </div>

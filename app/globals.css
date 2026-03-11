@@ -175,6 +175,17 @@
   background: #404040;
 }
 
+/* Drawer vertical-tab text animation */
+@keyframes tab-text-in {
+  0% {
+    opacity: 0.4;
+    letter-spacing: 0.18em;
+  }
+  100% {
+    opacity: 1;
+    letter-spacing: 0.05em;
+  }
+}
 /* Radix RadioGroup checked fill to match native radios (light/dark) */
 .rg-item[data-state="checked"] {
   background-color: oklch(0.141 0.005 285.823);

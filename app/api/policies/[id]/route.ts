@@ -355,6 +355,11 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       insured?: Record<string, unknown>;
       flowKey?: string;
       isActive?: boolean;
+      note?: string;
+      noteAction?: string;
+      deleteNoteIndex?: number;
+      status?: string;
+      statusNote?: string;
     };
 
     // Handle isActive toggle on the policies table
@@ -363,7 +368,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       if (cols.hasIsActive) {
         await db.update(policies).set({ isActive: body.isActive }).where(eq(policies.id, id));
       }
-      if (body.packages === undefined && body.insured === undefined) {
+      if (body.packages === undefined && body.insured === undefined && !body.note && !body.status) {
         return NextResponse.json({ ok: true, policyId: id, isActive: body.isActive }, { status: 200 });
       }
     }
@@ -379,6 +384,89 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
     }
 
     const existing = (carRow.extraAttributes ?? {}) as Record<string, unknown>;
+    const userInfo = { id: Number(user.id), email: (user as { email?: string }).email ?? "" };
+
+    function appendAudit(
+      base: Record<string, unknown>,
+      changes: { key: string; from: unknown; to: unknown }[],
+    ): unknown[] {
+      const arr = Array.isArray(base._audit) ? [...(base._audit as unknown[])] : [];
+      arr.push({ at: new Date().toISOString(), by: userInfo, changes });
+      return arr;
+    }
+
+    // Handle note append
+    if (body.note && body.noteAction === "append") {
+      const notesArr = Array.isArray(existing.notes) ? [...(existing.notes as unknown[])] : [];
+      notesArr.push({
+        text: body.note,
+        at: new Date().toISOString(),
+        by: userInfo,
+      });
+      const updated: Record<string, unknown> = {
+        ...existing,
+        notes: notesArr,
+        _audit: appendAudit(existing, [{ key: "note", from: null, to: body.note }]),
+        _lastEditedAt: new Date().toISOString(),
+      };
+      await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
+      if (!body.packages && !body.insured && !body.status) {
+        return NextResponse.json({ ok: true, policyId: id }, { status: 200 });
+      }
+    }
+
+    // Handle note deletion by index
+    if (typeof body.deleteNoteIndex === "number") {
+      const notesArr = Array.isArray(existing.notes) ? [...(existing.notes as unknown[])] : [];
+      if (body.deleteNoteIndex >= 0 && body.deleteNoteIndex < notesArr.length) {
+        const deleted = notesArr[body.deleteNoteIndex] as { text?: string };
+        notesArr.splice(body.deleteNoteIndex, 1);
+        const updated: Record<string, unknown> = {
+          ...existing,
+          notes: notesArr,
+          _audit: appendAudit(existing, [{ key: "note", from: deleted?.text ?? "(note)", to: null }]),
+          _lastEditedAt: new Date().toISOString(),
+        };
+        await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
+      }
+      if (!body.packages && !body.insured && !body.status) {
+        return NextResponse.json({ ok: true, policyId: id }, { status: 200 });
+      }
+    }
+
+    // Handle status change
+    if (body.status) {
+      const oldStatus = (existing.status as string) ?? "active";
+      const historyArr = Array.isArray(existing.statusHistory)
+        ? [...(existing.statusHistory as unknown[])]
+        : [];
+      historyArr.push({
+        status: body.status,
+        changedAt: new Date().toISOString(),
+        changedBy: userInfo.email || `user:${user.id}`,
+        note: body.statusNote ?? undefined,
+      });
+      const refreshed = (
+        await db
+          .select({ extraAttributes: cars.extraAttributes })
+          .from(cars)
+          .where(eq(cars.id, carRow.id))
+          .limit(1)
+      )[0];
+      const base = ((refreshed?.extraAttributes ?? existing) as Record<string, unknown>);
+      const updated: Record<string, unknown> = {
+        ...base,
+        status: body.status,
+        statusHistory: historyArr,
+        _audit: appendAudit(base, [{ key: "status", from: oldStatus, to: body.status }]),
+        _lastEditedAt: new Date().toISOString(),
+      };
+      await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
+      if (!body.packages && !body.insured) {
+        return NextResponse.json({ ok: true, policyId: id, status: body.status, previousStatus: oldStatus }, { status: 200 });
+      }
+    }
+
     const oldPkgs = (existing.packagesSnapshot ?? {}) as Record<string, unknown>;
     const newPkgs = (body.packages ?? oldPkgs) as Record<string, unknown>;
 

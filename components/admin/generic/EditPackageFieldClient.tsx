@@ -298,6 +298,20 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
             />
           </div>
 
+          {form.meta?.inputType === "agent_picker" ? (
+            <div className="grid gap-1">
+              <Label>Picker Button Label</Label>
+              <Input
+                placeholder="e.g. Browse Agents"
+                value={String(((form.meta as any)?.agentPickerLabel ?? "") || "")}
+                onChange={(e) => updateMeta("agentPickerLabel" as any, e.target.value as any)}
+              />
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                Label shown on the search button. Defaults to &ldquo;Browse&rdquo; if left empty.
+              </p>
+            </div>
+          ) : null}
+
           {form.meta?.inputType === "formula" ? (
             <div className="grid gap-2">
               <div className="grid gap-1">

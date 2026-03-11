@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
-import { policies } from "@/db/schema/insurance";
+import { policies, cars } from "@/db/schema/insurance";
 import { users, memberships } from "@/db/schema/core";
 import { and, eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
 
 export const dynamic = "force-dynamic";
+
+const REASSIGNABLE_STATUSES = new Set(["draft", "pending"]);
 
 export async function POST(
   request: Request,
@@ -49,6 +51,21 @@ export async function POST(
       .limit(1);
     if (!policy) {
       return NextResponse.json({ error: "Policy not found" }, { status: 404 });
+    }
+
+    const [carRow] = await db
+      .select({ extraAttributes: cars.extraAttributes })
+      .from(cars)
+      .where(eq(cars.policyId, id))
+      .limit(1);
+    const policyStatus = String(
+      (carRow?.extraAttributes as Record<string, unknown> | null)?.status ?? "active",
+    );
+    if (!REASSIGNABLE_STATUSES.has(policyStatus)) {
+      return NextResponse.json(
+        { error: `Cannot reassign agent on a policy with status "${policyStatus}". Only draft or pending policies can be reassigned.` },
+        { status: 409 },
+      );
     }
 
     const [agent] = await db
