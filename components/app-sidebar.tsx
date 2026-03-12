@@ -22,6 +22,7 @@ import {
   UserPlus,
   User,
   Upload,
+  Stamp,
   type LucideIcon,
 } from "lucide-react";
 import { getIcon } from "@/lib/icons";
@@ -416,6 +417,13 @@ export function AppSidebar(
                             </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton tooltip="PDF Mail Merge" asChild>
+                            <Link href="/admin/policy-settings/pdf-templates">
+                              <Stamp className="h-3.5 w-3.5 shrink-0" />
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
                       </>
                     )}
                     {/* Packages group — toggle */}
@@ -528,6 +536,14 @@ export function AppSidebar(
                                           <Link href="/admin/policy-settings/upload-documents">
                                             <Upload className="h-4 w-4 shrink-0" />
                                             <span>Upload Documents</span>
+                                          </Link>
+                                        </SidebarMenuButton>
+                                      </li>
+                                      <li>
+                                        <SidebarMenuButton tooltip="PDF Mail Merge" asChild>
+                                          <Link href="/admin/policy-settings/pdf-templates">
+                                            <Stamp className="h-4 w-4 shrink-0" />
+                                            <span>PDF Mail Merge</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>

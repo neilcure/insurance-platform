@@ -3,7 +3,8 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { FileText, Printer, ChevronLeft } from "lucide-react";
+import { FileText, Printer, ChevronLeft, Stamp, Download, Loader2 } from "lucide-react";
+import type { PdfTemplateRow, PdfTemplateMeta } from "@/lib/types/pdf-template";
 import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
@@ -224,6 +225,65 @@ function DocumentPreview({
   );
 }
 
+function PdfMergeButton({
+  tpl,
+  policyId,
+}: {
+  tpl: PdfTemplateRow;
+  policyId: number;
+}) {
+  const [generating, setGenerating] = React.useState(false);
+  const meta = tpl.meta as unknown as PdfTemplateMeta | null;
+
+  async function handleGenerate() {
+    setGenerating(true);
+    try {
+      const res = await fetch(`/api/pdf-templates/${tpl.id}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ policyId }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Generation failed");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to generate PDF");
+    }
+    setGenerating(false);
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleGenerate}
+      disabled={generating || !meta?.fields?.length}
+      className="flex w-full items-center gap-3 rounded-md border border-neutral-200 p-3 text-left transition-colors hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50 disabled:opacity-50"
+    >
+      <Stamp className="h-5 w-5 shrink-0 text-emerald-500 dark:text-emerald-400" />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium">{tpl.label}</div>
+        <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+          PDF Mail Merge
+          {meta?.fields ? ` \u00b7 ${meta.fields.length} field${meta.fields.length !== 1 ? "s" : ""}` : ""}
+          {meta?.description ? ` \u00b7 ${meta.description}` : ""}
+        </div>
+      </div>
+      <div className="shrink-0">
+        {generating ? (
+          <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
+        ) : (
+          <Download className="h-4 w-4 text-neutral-400" />
+        )}
+      </div>
+    </button>
+  );
+}
+
 export function DocumentsTab({
   detail,
   flowKey,
@@ -232,6 +292,7 @@ export function DocumentsTab({
   flowKey?: string;
 }) {
   const [templates, setTemplates] = React.useState<DocumentTemplateRow[]>([]);
+  const [pdfTemplates, setPdfTemplates] = React.useState<PdfTemplateRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [selected, setSelected] = React.useState<DocumentTemplateRow | null>(
     null,
@@ -242,9 +303,8 @@ export function DocumentsTab({
   React.useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, {
-      cache: "no-store",
-    })
+
+    const loadHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : []))
       .then((rows: DocumentTemplateRow[]) => {
         if (cancelled) return;
@@ -257,13 +317,29 @@ export function DocumentsTab({
         });
         setTemplates(applicable);
       })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+      .catch(() => {});
+
+    const loadPdf = fetch(`/api/form-options?groupKey=pdf_merge_templates&_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: PdfTemplateRow[]) => {
+        if (cancelled) return;
+        const applicable = rows.filter((r) => {
+          const meta = r.meta as unknown as PdfTemplateMeta | null;
+          if (!meta?.fields?.length) return false;
+          const flows = meta.flows;
+          if (!flows || flows.length === 0) return true;
+          if (!flowKey) return false;
+          return flows.includes(flowKey);
+        });
+        setPdfTemplates(applicable);
+      })
+      .catch(() => {});
+
+    Promise.all([loadHtml, loadPdf]).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    return () => { cancelled = true; };
   }, [flowKey]);
 
   if (loading) {
@@ -295,7 +371,9 @@ export function DocumentsTab({
     );
   }
 
-  if (templates.length === 0) {
+  const hasAny = templates.length > 0 || pdfTemplates.length > 0;
+
+  if (!hasAny) {
     return (
       <div className="rounded-md border border-dashed border-neutral-300 p-6 text-center dark:border-neutral-700">
         <FileText className="mx-auto mb-2 h-8 w-8 text-neutral-400 dark:text-neutral-500" />
@@ -303,8 +381,8 @@ export function DocumentsTab({
           No document templates
         </div>
         <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-          Go to Admin &rarr; Policy Settings &rarr; Document Templates to create
-          templates like quotations, invoices, or certificates.
+          Go to Admin &rarr; Policy Settings &rarr; Document Templates or PDF Mail Merge
+          to create templates.
         </p>
       </div>
     );
@@ -312,28 +390,41 @@ export function DocumentsTab({
 
   return (
     <div className="space-y-2">
-      <div className="text-sm font-medium">Available Templates</div>
-      {templates.map((tpl) => (
-        <button
-          key={tpl.id}
-          type="button"
-          onClick={() => setSelected(tpl)}
-          className="flex w-full items-center gap-3 rounded-md border border-neutral-200 p-3 text-left transition-colors hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50"
-        >
-          <FileText className="h-5 w-5 shrink-0 text-neutral-400 dark:text-neutral-500" />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium">{tpl.label}</div>
-            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-              {tpl.meta?.type
-                ? tpl.meta.type.charAt(0).toUpperCase() + tpl.meta.type.slice(1)
-                : "Document"}
-              {tpl.meta?.sections
-                ? ` \u00b7 ${tpl.meta.sections.length} section${tpl.meta.sections.length !== 1 ? "s" : ""}`
-                : ""}
-            </div>
-          </div>
-        </button>
-      ))}
+      {templates.length > 0 && (
+        <>
+          <div className="text-sm font-medium">Document Templates</div>
+          {templates.map((tpl) => (
+            <button
+              key={tpl.id}
+              type="button"
+              onClick={() => setSelected(tpl)}
+              className="flex w-full items-center gap-3 rounded-md border border-neutral-200 p-3 text-left transition-colors hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50"
+            >
+              <FileText className="h-5 w-5 shrink-0 text-neutral-400 dark:text-neutral-500" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">{tpl.label}</div>
+                <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  {tpl.meta?.type
+                    ? tpl.meta.type.charAt(0).toUpperCase() + tpl.meta.type.slice(1)
+                    : "Document"}
+                  {tpl.meta?.sections
+                    ? ` \u00b7 ${tpl.meta.sections.length} section${tpl.meta.sections.length !== 1 ? "s" : ""}`
+                    : ""}
+                </div>
+              </div>
+            </button>
+          ))}
+        </>
+      )}
+
+      {pdfTemplates.length > 0 && (
+        <>
+          <div className="text-sm font-medium mt-3">PDF Mail Merge</div>
+          {pdfTemplates.map((tpl) => (
+            <PdfMergeButton key={tpl.id} tpl={tpl} policyId={detail.policyId} />
+          ))}
+        </>
+      )}
     </div>
   );
 }
