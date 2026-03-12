@@ -21,11 +21,14 @@ import { FieldEditDialog, loadEditFields, type EditField } from "@/components/ui
 import { StatusTab } from "@/components/policies/tabs/StatusTab";
 import { ActionsTab } from "@/components/policies/tabs/ActionsTab";
 import { DocumentsTab } from "@/components/policies/tabs/DocumentsTab";
-import { Activity, Zap, FileText } from "lucide-react";
+import { UploadDocumentsTab } from "@/components/policies/tabs/UploadDocumentsTab";
+import { Activity, Zap, FileText, Upload } from "lucide-react";
 import type { DrawerTab } from "@/components/ui/drawer-tabs";
 import type { WorkflowActionRow } from "@/lib/types/workflow-action";
 import type { DocumentTemplateRow } from "@/lib/types/document-template";
+import type { UploadDocumentTypeRow } from "@/lib/types/upload-document";
 import { formatDDMMYYYYHHMM } from "@/lib/format/date";
+import { useSession } from "next-auth/react";
 import { StickyNote, ChevronDown, ChevronUp, X } from "lucide-react";
 
 type NoteEntry = { text: string; at: string; by?: { id?: number; email?: string } };
@@ -154,6 +157,9 @@ function extractNameFromExtra(extra: Record<string, unknown> | null | undefined)
 
 export default function PoliciesTableClient({ initialRows, entityLabel }: { initialRows: Row[]; entityLabel?: string }) {
   const label = entityLabel || "Policy";
+  const session = useSession();
+  const sessionUserType = (session.data?.user as any)?.userType as string | undefined;
+  const isAdmin = sessionUserType === "admin" || sessionUserType === "internal_staff";
   const [rows, setRows] = React.useState<Row[]>(initialRows);
   const [query, setQuery] = React.useState("");
   const [openId, setOpenId] = React.useState<number | null>(null);
@@ -175,6 +181,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
   const [toggling, setToggling] = React.useState(false);
   const [hasActions, setHasActions] = React.useState(false);
   const [hasDocs, setHasDocs] = React.useState(false);
+  const [hasUploads, setHasUploads] = React.useState(false);
 
   // Sorting
   const hasNames = rows.some((r) => !!r.displayName);
@@ -275,6 +282,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
     if (!detail) {
       setHasActions(false);
       setHasDocs(false);
+      setHasUploads(false);
       return;
     }
     let cancelled = false;
@@ -293,10 +301,14 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
       fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
-    ]).then(([actions, docs]: [WorkflowActionRow[], DocumentTemplateRow[]]) => {
+      fetch(`/api/form-options?groupKey=upload_document_types&_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+    ]).then(([actions, docs, uploadTypes]: [WorkflowActionRow[], DocumentTemplateRow[], UploadDocumentTypeRow[]]) => {
       if (cancelled) return;
       setHasActions(actions.some((a) => a.meta && matches(a.meta.flows)));
       setHasDocs(docs.some((d) => d.meta && matches(d.meta.flows)));
+      setHasUploads(uploadTypes.some((u) => matches(u.meta?.flows)));
     });
 
     return () => { cancelled = true; };
@@ -587,6 +599,18 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
               <DocumentsTab
                 detail={detail}
                 flowKey={detailFlowKey}
+              />
+            ),
+          }] : []),
+          ...(hasUploads ? [{
+            id: "uploads",
+            label: "Uploads",
+            icon: <Upload className="h-3 w-3" />,
+            content: (
+              <UploadDocumentsTab
+                policyId={detail.policyId}
+                flowKey={detailFlowKey}
+                isAdmin={isAdmin}
               />
             ),
           }] : []),

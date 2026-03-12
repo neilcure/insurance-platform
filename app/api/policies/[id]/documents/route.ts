@@ -1,0 +1,164 @@
+import { NextResponse } from "next/server";
+import { db } from "@/db/client";
+import { policyDocuments } from "@/db/schema/documents";
+import { policies } from "@/db/schema/insurance";
+import { users, memberships } from "@/db/schema/core";
+import { and, eq, sql } from "drizzle-orm";
+import { requireUser } from "@/lib/auth/require-user";
+import { getPolicyColumns } from "@/lib/db/column-check";
+import { validateFile, saveFile } from "@/lib/storage";
+import { appendPolicyAudit } from "@/lib/audit";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+async function canAccessPolicy(userId: number, userType: string, policyId: number): Promise<boolean> {
+  if (userType === "admin" || userType === "internal_staff") return true;
+
+  const polCols = await getPolicyColumns();
+  if (userType === "agent") {
+    if (!polCols.hasAgentId) return false;
+    const result = await db.execute(sql`
+      SELECT 1 FROM "policies" WHERE id = ${policyId} AND agent_id = ${userId} LIMIT 1
+    `);
+    const rows = Array.isArray(result) ? result : (result as any)?.rows ?? [];
+    return rows.length > 0;
+  }
+
+  const rows = await db
+    .select({ id: policies.id })
+    .from(policies)
+    .innerJoin(memberships, and(eq(memberships.organisationId, policies.organisationId), eq(memberships.userId, userId)))
+    .where(eq(policies.id, policyId))
+    .limit(1);
+  return rows.length > 0;
+}
+
+export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await requireUser();
+    const { id: idParam } = await ctx.params;
+    const policyId = Number(idParam);
+    if (!Number.isFinite(policyId) || policyId <= 0) {
+      return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+    }
+
+    const hasAccess = await canAccessPolicy(Number(user.id), user.userType, policyId);
+    if (!hasAccess) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const uploaderAlias = db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .as("uploader");
+
+    const verifierAlias = db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .as("verifier");
+
+    const rows = await db
+      .select({
+        id: policyDocuments.id,
+        policyId: policyDocuments.policyId,
+        documentTypeKey: policyDocuments.documentTypeKey,
+        fileName: policyDocuments.fileName,
+        storedPath: policyDocuments.storedPath,
+        fileSize: policyDocuments.fileSize,
+        mimeType: policyDocuments.mimeType,
+        status: policyDocuments.status,
+        uploadedBy: policyDocuments.uploadedBy,
+        uploadedByRole: policyDocuments.uploadedByRole,
+        verifiedBy: policyDocuments.verifiedBy,
+        verifiedAt: policyDocuments.verifiedAt,
+        rejectionNote: policyDocuments.rejectionNote,
+        createdAt: policyDocuments.createdAt,
+        uploadedByEmail: uploaderAlias.email,
+        verifiedByEmail: verifierAlias.email,
+      })
+      .from(policyDocuments)
+      .leftJoin(uploaderAlias, eq(uploaderAlias.id, policyDocuments.uploadedBy))
+      .leftJoin(verifierAlias, eq(verifierAlias.id, policyDocuments.verifiedBy))
+      .where(eq(policyDocuments.policyId, policyId))
+      .orderBy(policyDocuments.createdAt);
+
+    return NextResponse.json(rows, {
+      status: 200,
+      headers: { "Cache-Control": "no-store, max-age=0" },
+    });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await requireUser();
+    const { id: idParam } = await ctx.params;
+    const policyId = Number(idParam);
+    if (!Number.isFinite(policyId) || policyId <= 0) {
+      return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+    }
+
+    const hasAccess = await canAccessPolicy(Number(user.id), user.userType, policyId);
+    if (!hasAccess) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const formData = await request.formData();
+    const file = formData.get("file") as File | null;
+    const documentTypeKey = formData.get("documentTypeKey") as string | null;
+
+    if (!file || !documentTypeKey) {
+      return NextResponse.json({ error: "file and documentTypeKey are required" }, { status: 400 });
+    }
+
+    const validation = validateFile(file.name, file.type, file.size);
+    if (!validation.valid) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
+    }
+
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const { storedPath } = await saveFile(policyId, file.name, buffer);
+
+    const isAdmin = user.userType === "admin" || user.userType === "internal_staff";
+    const status = isAdmin ? "verified" : "uploaded";
+    const role = user.userType === "admin" || user.userType === "internal_staff"
+      ? "admin"
+      : user.userType;
+
+    const [row] = await db
+      .insert(policyDocuments)
+      .values({
+        policyId,
+        documentTypeKey: documentTypeKey.trim(),
+        fileName: file.name,
+        storedPath,
+        fileSize: file.size,
+        mimeType: file.type,
+        status,
+        uploadedBy: Number(user.id),
+        uploadedByRole: role,
+        ...(isAdmin ? { verifiedBy: Number(user.id), verifiedAt: new Date().toISOString() } : {}),
+      })
+      .returning();
+
+    const userEmail = (user as { email?: string }).email ?? "";
+    await appendPolicyAudit(policyId, { id: Number(user.id), email: userEmail }, [
+      { key: "document_upload", from: null, to: `${file.name} (${documentTypeKey.trim()})` },
+      ...(isAdmin ? [{ key: "document_status", from: null, to: "verified (auto)" }] : []),
+    ]);
+
+    if (isAdmin) {
+      const { checkAndAutoComplete } = await import("@/lib/reminder-sender");
+      await checkAndAutoComplete(policyId, documentTypeKey.trim());
+    }
+
+    return NextResponse.json(row, { status: 201 });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
