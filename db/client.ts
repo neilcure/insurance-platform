@@ -29,7 +29,7 @@ export const db = new Proxy({} as ReturnType<typeof drizzle>, {
       const queryClient = postgres(getDatabaseUrl(), { max: 1 });
       _db = drizzle(queryClient);
     }
-    return (_db as Record<string | symbol, unknown>)[prop];
+    return (_db as unknown as Record<string | symbol, unknown>)[prop];
   },
 });
 
