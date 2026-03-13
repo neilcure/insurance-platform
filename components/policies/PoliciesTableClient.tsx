@@ -304,10 +304,18 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
       fetch(`/api/form-options?groupKey=upload_document_types&_t=${Date.now()}`, { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
-    ]).then(([actions, docs, uploadTypes]: [WorkflowActionRow[], DocumentTemplateRow[], UploadDocumentTypeRow[]]) => {
+      fetch(`/api/form-options?groupKey=pdf_merge_templates&_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+    ]).then(([actions, docs, uploadTypes, pdfTpls]: [WorkflowActionRow[], DocumentTemplateRow[], UploadDocumentTypeRow[], unknown[]]) => {
       if (cancelled) return;
       setHasActions(actions.some((a) => a.meta && matches(a.meta.flows)));
-      setHasDocs(docs.some((d) => d.meta && matches(d.meta.flows)));
+      const hasHtmlDocs = docs.some((d) => d.meta && matches(d.meta.flows));
+      const hasPdfDocs = pdfTpls.some((p) => {
+        const meta = (p as Record<string, unknown>)?.meta as { fields?: unknown[]; flows?: string[] } | null;
+        return meta?.fields?.length && matches(meta.flows);
+      });
+      setHasDocs(hasHtmlDocs || hasPdfDocs);
       setHasUploads(uploadTypes.some((u) => matches(u.meta?.flows)));
     });
 

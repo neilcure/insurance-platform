@@ -1,11 +1,17 @@
+export type EmailAttachment = {
+  content: string;
+  name: string;
+};
+
 type SendEmailInput = {
   to: string;
   subject: string;
   html: string;
   text?: string;
+  attachments?: EmailAttachment[];
 };
 
-export async function sendEmail({ to, subject, html, text }: SendEmailInput): Promise<{ ok: boolean; error?: string }> {
+export async function sendEmail({ to, subject, html, text, attachments }: SendEmailInput): Promise<{ ok: boolean; error?: string }> {
   const apiKey = process.env.BREVO_API_KEY;
   const senderEmail = process.env.BREVO_SENDER;
   const senderName = process.env.BREVO_SENDER_NAME || "No-Reply";
@@ -15,19 +21,28 @@ export async function sendEmail({ to, subject, html, text }: SendEmailInput): Pr
   }
 
   try {
+    const payload: Record<string, unknown> = {
+      sender: { email: senderEmail, name: senderName },
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,
+      textContent: text,
+    };
+
+    if (attachments?.length) {
+      payload.attachment = attachments.map((a) => ({
+        content: a.content,
+        name: a.name,
+      }));
+    }
+
     const res = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
       headers: {
         "api-key": apiKey,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        sender: { email: senderEmail, name: senderName },
-        to: [{ email: to }],
-        subject,
-        htmlContent: html,
-        textContent: text,
-      }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       const msg = await res.text();

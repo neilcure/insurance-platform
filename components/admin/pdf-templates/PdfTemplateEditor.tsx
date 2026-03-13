@@ -7,9 +7,10 @@ import "react-pdf/dist/Page/TextLayer.css";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SlideDrawer } from "@/components/ui/slide-drawer";
 import { toast } from "sonner";
 import {
-  ChevronLeft, Plus, Trash2, Save, GripVertical, Eye, Crosshair,
+  ChevronLeft, Plus, Trash2, Save, Crosshair, Copy,
 } from "lucide-react";
 import type {
   PdfTemplateRow, PdfTemplateMeta, PdfFieldMapping,
@@ -21,7 +22,6 @@ import {
 pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
 const DEFAULT_FONT_SIZE = 10;
-const SCALE = 1.0;
 
 type Props = {
   template: PdfTemplateRow;
@@ -57,7 +57,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const pageDims = meta.pages?.[currentPage];
   const pdfWidth = pageDims?.width ?? 595;
   const pdfHeight = pageDims?.height ?? 842;
-  const displayWidth = containerWidth > 0 ? Math.min(containerWidth, 700) : 700;
+  const displayWidth = containerWidth > 0 ? Math.min(containerWidth, 800) : 800;
   const scale = displayWidth / pdfWidth;
   const displayHeight = pdfHeight * scale;
 
@@ -72,8 +72,35 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     if (selectedId === id) setSelectedId(null);
   }
 
+  function duplicateField(field: PdfFieldMapping) {
+    const dup: PdfFieldMapping = {
+      ...field,
+      id: crypto.randomUUID(),
+      label: `${field.label} (copy)`,
+      y: field.y - 15,
+    };
+    setFields((prev) => [...prev, dup]);
+    setSelectedId(dup.id);
+  }
+
+  function addFieldAtCenter() {
+    const newField: PdfFieldMapping = {
+      id: crypto.randomUUID(),
+      label: `Field ${fields.length + 1}`,
+      page: currentPage,
+      x: Math.round(pdfWidth * 0.1),
+      y: Math.round(pdfHeight * 0.5),
+      fontSize: DEFAULT_FONT_SIZE,
+      source: "policy",
+      fieldKey: "policyNumber",
+      format: "text",
+    };
+    setFields((prev) => [...prev, newField]);
+    setSelectedId(newField.id);
+    setPlacingMode(false);
+  }
+
   function handlePageClick(e: React.MouseEvent<HTMLDivElement>) {
-    if (!placingMode) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
@@ -81,21 +108,24 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     const pdfX = clickX / scale;
     const pdfY = pdfHeight - clickY / scale;
 
-    const newField: PdfFieldMapping = {
-      id: crypto.randomUUID(),
-      label: `Field ${fields.length + 1}`,
-      page: currentPage,
-      x: Math.round(pdfX * 100) / 100,
-      y: Math.round(pdfY * 100) / 100,
-      fontSize: DEFAULT_FONT_SIZE,
-      source: "policy",
-      fieldKey: "policyNumber",
-      format: "text",
-    };
-
-    setFields((prev) => [...prev, newField]);
-    setSelectedId(newField.id);
-    setPlacingMode(false);
+    if (placingMode) {
+      const newField: PdfFieldMapping = {
+        id: crypto.randomUUID(),
+        label: `Field ${fields.length + 1}`,
+        page: currentPage,
+        x: Math.round(pdfX * 100) / 100,
+        y: Math.round(pdfY * 100) / 100,
+        fontSize: DEFAULT_FONT_SIZE,
+        source: "policy",
+        fieldKey: "policyNumber",
+        format: "text",
+      };
+      setFields((prev) => [...prev, newField]);
+      setSelectedId(newField.id);
+      setPlacingMode(false);
+    } else {
+      setSelectedId(null);
+    }
   }
 
   function handleFieldMouseDown(fieldId: string, e: React.MouseEvent) {
@@ -138,6 +168,8 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
       });
       if (!res.ok) throw new Error("Save failed");
       toast.success("Fields saved");
+      onClose();
+      return;
     } catch {
       toast.error("Failed to save");
     }
@@ -158,12 +190,21 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
         </div>
         <Button
           size="sm"
-          variant={placingMode ? "default" : "outline"}
+          variant="outline"
+          onClick={addFieldAtCenter}
+          className="gap-1.5"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Add Field</span>
+        </Button>
+        <Button
+          size="sm"
+          variant={placingMode ? "default" : "ghost"}
           onClick={() => setPlacingMode(!placingMode)}
           className="gap-1.5"
         >
-          {placingMode ? <Crosshair className="h-3.5 w-3.5 animate-pulse" /> : <Plus className="h-3.5 w-3.5" />}
-          <span className="hidden sm:inline">{placingMode ? "Click on PDF..." : "Add Field"}</span>
+          <Crosshair className={`h-3.5 w-3.5 ${placingMode ? "animate-pulse" : ""}`} />
+          <span className="hidden sm:inline">{placingMode ? "Cancel" : "Place on PDF"}</span>
         </Button>
         <Button size="sm" variant="outline" onClick={handleSave} disabled={saving} className="gap-1.5">
           <Save className="h-3.5 w-3.5" />
@@ -188,220 +229,244 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
         </div>
       )}
 
-      <div className="flex flex-col lg:flex-row gap-4">
-        {/* PDF Preview with field overlays */}
-        <div className="flex-1 min-w-0" ref={pageContainerRef}>
-          <div
-            className={`relative border border-neutral-300 dark:border-neutral-700 rounded-md overflow-hidden bg-neutral-100 dark:bg-neutral-800 ${
-              placingMode ? "cursor-crosshair" : ""
-            }`}
-            style={{ width: displayWidth, height: displayHeight }}
-            onClick={handlePageClick}
+      {/* PDF Preview with field overlays */}
+      <div ref={pageContainerRef}>
+        <div
+          className={`relative border border-neutral-300 dark:border-neutral-700 rounded-md overflow-hidden bg-neutral-100 dark:bg-neutral-800 mx-auto ${
+            placingMode ? "cursor-crosshair" : ""
+          }`}
+          style={{ width: displayWidth, height: displayHeight }}
+        >
+          <Document
+            file={pdfUrl}
+            onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+            loading={<div className="flex items-center justify-center h-full text-sm text-neutral-500">Loading PDF...</div>}
+            error={<div className="flex items-center justify-center h-full text-sm text-red-500 dark:text-red-400">Failed to load PDF</div>}
           >
-            <Document
-              file={pdfUrl}
-              onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-              loading={<div className="flex items-center justify-center h-full text-sm text-neutral-500">Loading PDF...</div>}
-              error={<div className="flex items-center justify-center h-full text-sm text-red-500 dark:text-red-400">Failed to load PDF</div>}
+            <Page
+              pageNumber={currentPage + 1}
+              width={displayWidth}
+              renderTextLayer={false}
+              renderAnnotationLayer={false}
+            />
+          </Document>
+
+          {/* Transparent overlay to capture clicks in placing mode */}
+          {placingMode && (
+            <div
+              className="absolute inset-0 z-30 cursor-crosshair"
+              onClick={handlePageClick}
             >
-              <Page
-                pageNumber={currentPage + 1}
-                width={displayWidth}
-                renderTextLayer={false}
-                renderAnnotationLayer={false}
-              />
-            </Document>
-
-            {/* Field markers */}
-            {pageFields.map((field) => {
-              const screenX = field.x * scale;
-              const screenY = (pdfHeight - field.y) * scale;
-              const isSelected = field.id === selectedId;
-              const fontSize = (field.fontSize ?? DEFAULT_FONT_SIZE) * scale;
-
-              return (
-                <div
-                  key={field.id}
-                  className={`absolute flex items-center gap-0.5 select-none group ${
-                    isSelected
-                      ? "z-20 ring-2 ring-blue-500"
-                      : "z-10 hover:ring-2 hover:ring-blue-300 dark:hover:ring-blue-600"
-                  }`}
-                  style={{
-                    left: screenX,
-                    top: screenY - fontSize - 4,
-                    cursor: "move",
-                  }}
-                  onMouseDown={(e) => handleFieldMouseDown(field.id, e)}
-                >
-                  <GripVertical className="h-3 w-3 text-blue-500 opacity-0 group-hover:opacity-100 shrink-0" />
-                  <div
-                    className={`px-1 rounded text-[10px] leading-tight whitespace-nowrap ${
-                      isSelected
-                        ? "bg-blue-500 text-white"
-                        : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-                    }`}
-                    style={{ fontSize: Math.max(10, fontSize * 0.8) }}
-                  >
-                    {field.label || field.fieldKey}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Field configuration panel */}
-        <div className="w-full lg:w-80 shrink-0 space-y-3">
-          <div className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            Fields on page {currentPage + 1} ({pageFields.length})
-          </div>
-
-          {/* Field list */}
-          <div className="max-h-48 overflow-y-auto space-y-1 border rounded-md p-2 border-neutral-200 dark:border-neutral-800">
-            {pageFields.length === 0 && (
-              <p className="text-xs text-neutral-500 dark:text-neutral-400 text-center py-2">
-                No fields. Click &quot;Add Field&quot; then click on the PDF.
-              </p>
-            )}
-            {pageFields.map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                onClick={() => setSelectedId(f.id)}
-                className={`w-full flex items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs transition-colors ${
-                  f.id === selectedId
-                    ? "bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
-                    : "hover:bg-neutral-50 dark:hover:bg-neutral-900 text-neutral-700 dark:text-neutral-300"
-                }`}
-              >
-                <span className="truncate">{f.label || f.fieldKey}</span>
-                <span className="text-[10px] text-neutral-400 shrink-0">{f.source}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* All-fields summary (across pages) */}
-          {fields.length > pageFields.length && (
-            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-              Total across all pages: {fields.length} fields
+              <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-xs px-3 py-1 rounded-full shadow-lg pointer-events-none animate-pulse">
+                Click anywhere on the PDF to place a field
+              </div>
             </div>
           )}
 
-          {/* Selected field editor */}
-          {selectedField && (
-            <div className="border rounded-md p-3 space-y-3 border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Edit Field</span>
-                <Button
-                  size="icon-xs"
-                  variant="ghost"
-                  className="text-red-600 dark:text-red-400"
-                  onClick={() => deleteField(selectedField.id)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              </div>
+          {/* Field markers — sized to match actual PDF output */}
+          {pageFields.map((field) => {
+            const screenX = field.x * scale;
+            const screenY = (pdfHeight - field.y) * scale;
+            const isSelected = field.id === selectedId;
+            const realFontPx = (field.fontSize ?? DEFAULT_FONT_SIZE) * scale;
+            const fieldWidth = field.width ? field.width * scale : undefined;
 
+            return (
+              <div
+                key={field.id}
+                className={`absolute select-none group ${
+                  isSelected ? "z-20" : "z-10"
+                }`}
+                style={{
+                  left: screenX,
+                  top: screenY - realFontPx,
+                  cursor: "move",
+                  width: fieldWidth,
+                  minWidth: fieldWidth ? undefined : 20,
+                }}
+                onMouseDown={(e) => handleFieldMouseDown(field.id, e)}
+              >
+                <div
+                  className={`border-b-2 whitespace-nowrap overflow-hidden ${
+                    isSelected
+                      ? "border-blue-500 bg-blue-500/15"
+                      : "border-blue-400/60 bg-blue-400/10 group-hover:bg-blue-400/20"
+                  }`}
+                  style={{
+                    fontSize: realFontPx,
+                    lineHeight: `${realFontPx + 2}px`,
+                    height: realFontPx + 4,
+                    color: field.fontColor ?? "#000",
+                    textAlign: field.align ?? "left",
+                  }}
+                >
+                  <span className="opacity-60">{field.label || field.fieldKey}</span>
+                </div>
+                <div
+                  className={`absolute left-0 px-1 rounded-b text-[9px] leading-none py-0.5 whitespace-nowrap transition-opacity ${
+                    isSelected
+                      ? "opacity-100 bg-blue-500 text-white"
+                      : "opacity-0 group-hover:opacity-100 bg-blue-600 text-white"
+                  }`}
+                  style={{ top: "100%" }}
+                >
+                  {field.source === "package" ? `${field.packageName}.${field.fieldKey}` : `${field.source}.${field.fieldKey}`}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Field list below the PDF */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+            Fields on page {currentPage + 1} ({pageFields.length})
+          </div>
+          {fields.length > pageFields.length && (
+            <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
+              {fields.length} total across all pages
+            </span>
+          )}
+        </div>
+
+        <div className="max-h-52 overflow-y-auto space-y-0.5 border rounded-md p-1.5 border-neutral-200 dark:border-neutral-800">
+          {pageFields.length === 0 && (
+            <p className="text-xs text-neutral-500 dark:text-neutral-400 text-center py-3">
+              No fields. Click &quot;Add Field&quot; then click on the PDF.
+            </p>
+          )}
+          {pageFields.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => setSelectedId(f.id)}
+              className={`w-full flex items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors ${
+                f.id === selectedId
+                  ? "bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 ring-1 ring-blue-300 dark:ring-blue-700"
+                  : "hover:bg-neutral-50 dark:hover:bg-neutral-900 text-neutral-700 dark:text-neutral-300"
+              }`}
+            >
+              <span className="truncate font-medium">{f.label || f.fieldKey}</span>
+              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
+                {f.source === "package" ? `${f.packageName}.${f.fieldKey}` : `${f.source}.${f.fieldKey}`}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Right-side drawer for field editing — only mounted when a field is selected */}
+      {selectedField && (
+        <SlideDrawer
+          open
+          onClose={() => setSelectedId(null)}
+          title={`Edit: ${selectedField.label || selectedField.fieldKey}`}
+          side="right"
+          widthClass="w-[300px] sm:w-[340px]"
+        >
+          <div className="overflow-y-auto p-3 space-y-3 h-[calc(100%-49px)]">
+            {/* Quick actions */}
+            <div className="flex gap-1.5">
+              <Button
+                size="xs"
+                variant="outline"
+                className="gap-1 text-xs flex-1"
+                onClick={() => duplicateField(selectedField)}
+              >
+                <Copy className="h-3 w-3" /> Duplicate
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                className="gap-1 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950"
+                onClick={() => deleteField(selectedField.id)}
+              >
+                <Trash2 className="h-3 w-3" /> Delete
+              </Button>
+            </div>
+
+            <div>
+              <Label className="text-xs">Label</Label>
+              <Input
+                value={selectedField.label}
+                onChange={(e) => updateField(selectedField.id, { label: e.target.value })}
+                className="h-7 text-xs"
+              />
+            </div>
+
+            <div>
+              <Label className="text-xs">Data Source</Label>
+              <select
+                value={selectedField.source}
+                onChange={(e) =>
+                  updateField(selectedField.id, {
+                    source: e.target.value as PdfFieldMapping["source"],
+                    fieldKey: "",
+                    packageName: undefined,
+                  })
+                }
+                className="w-full h-7 text-xs rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 dark:text-neutral-100 px-2"
+              >
+                {DATA_SOURCE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                {DATA_SOURCE_OPTIONS.find((o) => o.value === selectedField.source)?.description}
+              </p>
+            </div>
+
+            {selectedField.source === "package" && (
               <div>
-                <Label className="text-xs">Label</Label>
+                <Label className="text-xs">Package Name</Label>
                 <Input
-                  value={selectedField.label}
-                  onChange={(e) => updateField(selectedField.id, { label: e.target.value })}
+                  value={selectedField.packageName ?? ""}
+                  onChange={(e) => updateField(selectedField.id, { packageName: e.target.value })}
+                  placeholder="e.g. vehicleinfo, policyinfo"
                   className="h-7 text-xs"
                 />
               </div>
+            )}
 
+            {selectedField.source === "static" ? (
               <div>
-                <Label className="text-xs">Data Source</Label>
-                <select
-                  value={selectedField.source}
-                  onChange={(e) =>
-                    updateField(selectedField.id, {
-                      source: e.target.value as PdfFieldMapping["source"],
-                      fieldKey: "",
-                      packageName: undefined,
-                    })
-                  }
-                  className="w-full h-7 text-xs rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 dark:text-neutral-100 px-2"
-                >
-                  {DATA_SOURCE_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
+                <Label className="text-xs">Static Value</Label>
+                <Input
+                  value={selectedField.staticValue ?? ""}
+                  onChange={(e) => updateField(selectedField.id, { staticValue: e.target.value })}
+                  className="h-7 text-xs"
+                />
               </div>
-
-              {selectedField.source === "package" && (
-                <div>
-                  <Label className="text-xs">Package Name</Label>
-                  <Input
-                    value={selectedField.packageName ?? ""}
-                    onChange={(e) => updateField(selectedField.id, { packageName: e.target.value })}
-                    placeholder="e.g. vehicleinfo, policyinfo"
-                    className="h-7 text-xs"
-                  />
-                </div>
-              )}
-
-              {selectedField.source === "static" ? (
-                <div>
-                  <Label className="text-xs">Static Value</Label>
-                  <Input
-                    value={selectedField.staticValue ?? ""}
-                    onChange={(e) => updateField(selectedField.id, { staticValue: e.target.value })}
-                    className="h-7 text-xs"
-                  />
-                </div>
-              ) : (
-                <div>
-                  <Label className="text-xs">Field Key</Label>
-                  <Input
-                    value={selectedField.fieldKey}
-                    onChange={(e) => updateField(selectedField.id, { fieldKey: e.target.value })}
-                    placeholder="e.g. fullName"
-                    className="h-7 text-xs"
-                    list={`hints-${selectedField.id}`}
-                  />
-                  {FIELD_KEY_HINTS[selectedField.source]?.length > 0 && (
+            ) : (
+              <div>
+                <Label className="text-xs">Field Key</Label>
+                <Input
+                  value={selectedField.fieldKey}
+                  onChange={(e) => updateField(selectedField.id, { fieldKey: e.target.value })}
+                  placeholder="e.g. fullName"
+                  className="h-7 text-xs"
+                  list={`hints-${selectedField.id}`}
+                />
+                {FIELD_KEY_HINTS[selectedField.source]?.length > 0 && (
+                  <>
                     <datalist id={`hints-${selectedField.id}`}>
                       {FIELD_KEY_HINTS[selectedField.source].map((h) => (
                         <option key={h} value={h} />
                       ))}
                     </datalist>
-                  )}
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-xs">Format</Label>
-                  <select
-                    value={selectedField.format ?? "text"}
-                    onChange={(e) =>
-                      updateField(selectedField.id, {
-                        format: e.target.value as PdfFieldMapping["format"],
-                      })
-                    }
-                    className="w-full h-7 text-xs rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 dark:text-neutral-100 px-2"
-                  >
-                    {FORMAT_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <Label className="text-xs">Font Size</Label>
-                  <Input
-                    type="number"
-                    value={selectedField.fontSize ?? DEFAULT_FONT_SIZE}
-                    onChange={(e) => updateField(selectedField.id, { fontSize: Number(e.target.value) || DEFAULT_FONT_SIZE })}
-                    className="h-7 text-xs"
-                    min={4}
-                    max={72}
-                  />
-                </div>
+                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                      Suggestions: {FIELD_KEY_HINTS[selectedField.source].slice(0, 5).join(", ")}
+                      {FIELD_KEY_HINTS[selectedField.source].length > 5 ? ", ..." : ""}
+                    </p>
+                  </>
+                )}
               </div>
+            )}
 
+            <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+              <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-2">Position &amp; Size</div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <Label className="text-xs">X (pts)</Label>
@@ -424,8 +489,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                   />
                 </div>
               </div>
-
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2 mt-2">
                 <div>
                   <Label className="text-xs">Max Width (pts)</Label>
                   <Input
@@ -451,8 +515,71 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                   </select>
                 </div>
               </div>
+            </div>
 
+            <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+              <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-2">Appearance</div>
               <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-xs">Font Size</Label>
+                  <Input
+                    type="number"
+                    value={selectedField.fontSize ?? DEFAULT_FONT_SIZE}
+                    onChange={(e) => updateField(selectedField.id, { fontSize: Number(e.target.value) || DEFAULT_FONT_SIZE })}
+                    className="h-7 text-xs"
+                    min={4}
+                    max={72}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Font Color</Label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="color"
+                      value={selectedField.fontColor ?? "#000000"}
+                      onChange={(e) => updateField(selectedField.id, { fontColor: e.target.value })}
+                      className="h-7 w-8 rounded border border-neutral-200 dark:border-neutral-700 cursor-pointer"
+                    />
+                    <span className="text-[10px] text-neutral-500 dark:text-neutral-400 font-mono">
+                      {selectedField.fontColor ?? "#000000"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+              <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-2">Formatting</div>
+              <div>
+                <Label className="text-xs">Format</Label>
+                <select
+                  value={selectedField.format ?? "text"}
+                  onChange={(e) =>
+                    updateField(selectedField.id, {
+                      format: e.target.value as PdfFieldMapping["format"],
+                    })
+                  }
+                  className="w-full h-7 text-xs rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 dark:text-neutral-100 px-2"
+                >
+                  {FORMAT_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedField.format === "currency" && (
+                <div className="mt-2">
+                  <Label className="text-xs">Currency Code</Label>
+                  <Input
+                    value={selectedField.currencyCode ?? "HKD"}
+                    onChange={(e) => updateField(selectedField.id, { currencyCode: e.target.value })}
+                    className="h-7 text-xs"
+                    placeholder="HKD"
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2 mt-2">
                 <div>
                   <Label className="text-xs">Prefix</Label>
                   <Input
@@ -472,37 +599,23 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                   />
                 </div>
               </div>
-
-              {selectedField.format === "currency" && (
-                <div>
-                  <Label className="text-xs">Currency Code</Label>
-                  <Input
-                    value={selectedField.currencyCode ?? "HKD"}
-                    onChange={(e) => updateField(selectedField.id, { currencyCode: e.target.value })}
-                    className="h-7 text-xs"
-                    placeholder="HKD"
-                  />
-                </div>
-              )}
-
-              <div>
-                <Label className="text-xs">Font Color</Label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="color"
-                    value={selectedField.fontColor ?? "#000000"}
-                    onChange={(e) => updateField(selectedField.id, { fontColor: e.target.value })}
-                    className="h-7 w-10 rounded border border-neutral-200 dark:border-neutral-700 cursor-pointer"
-                  />
-                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400">
-                    {selectedField.fontColor ?? "#000000"}
-                  </span>
-                </div>
-              </div>
             </div>
-          )}
-        </div>
-      </div>
+
+            {/* Save button pinned at bottom of drawer */}
+            <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3 pb-1">
+              <Button
+                size="sm"
+                className="w-full gap-1.5"
+                onClick={handleSave}
+                disabled={saving}
+              >
+                <Save className="h-3.5 w-3.5" />
+                {saving ? "Saving..." : "Save All Fields"}
+              </Button>
+            </div>
+          </div>
+        </SlideDrawer>
+      )}
     </div>
   );
 }

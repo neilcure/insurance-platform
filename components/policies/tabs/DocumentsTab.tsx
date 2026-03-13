@@ -2,8 +2,12 @@
 
 import * as React from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { FileText, Printer, ChevronLeft, Stamp, Download, Loader2 } from "lucide-react";
+import { FileText, Printer, ChevronLeft, Stamp, Download, Loader2, Mail, MessageCircle } from "lucide-react";
 import type { PdfTemplateRow, PdfTemplateMeta } from "@/lib/types/pdf-template";
 import type {
   DocumentTemplateMeta,
@@ -228,9 +232,13 @@ function DocumentPreview({
 function PdfMergeButton({
   tpl,
   policyId,
+  onEmailClick,
+  onWhatsAppClick,
 }: {
   tpl: PdfTemplateRow;
   policyId: number;
+  onEmailClick: (tpl: PdfTemplateRow) => void;
+  onWhatsAppClick: (tpl: PdfTemplateRow) => void;
 }) {
   const [generating, setGenerating] = React.useState(false);
   const meta = tpl.meta as unknown as PdfTemplateMeta | null;
@@ -258,29 +266,205 @@ function PdfMergeButton({
   }
 
   return (
-    <button
-      type="button"
-      onClick={handleGenerate}
-      disabled={generating || !meta?.fields?.length}
-      className="flex w-full items-center gap-3 rounded-md border border-neutral-200 p-3 text-left transition-colors hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50 disabled:opacity-50"
-    >
-      <Stamp className="h-5 w-5 shrink-0 text-emerald-500 dark:text-emerald-400" />
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium">{tpl.label}</div>
-        <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-          PDF Mail Merge
-          {meta?.fields ? ` \u00b7 ${meta.fields.length} field${meta.fields.length !== 1 ? "s" : ""}` : ""}
-          {meta?.description ? ` \u00b7 ${meta.description}` : ""}
+    <div className="flex w-full items-center gap-2 rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+      <button
+        type="button"
+        onClick={handleGenerate}
+        disabled={generating || !meta?.fields?.length}
+        className="flex min-w-0 flex-1 items-center gap-3 text-left transition-colors hover:opacity-80 disabled:opacity-50"
+      >
+        <Stamp className="h-5 w-5 shrink-0 text-emerald-500 dark:text-emerald-400" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">{tpl.label}</div>
+          <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+            PDF Mail Merge
+            {meta?.fields ? ` \u00b7 ${meta.fields.length} field${meta.fields.length !== 1 ? "s" : ""}` : ""}
+            {meta?.description ? ` \u00b7 ${meta.description}` : ""}
+          </div>
         </div>
+        <div className="shrink-0">
+          {generating ? (
+            <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
+          ) : (
+            <Download className="h-4 w-4 text-neutral-400" />
+          )}
+        </div>
+      </button>
+      <div className="flex shrink-0 items-center gap-1 border-l border-neutral-200 pl-2 dark:border-neutral-700">
+        <button
+          type="button"
+          title="Send via Email"
+          onClick={() => onEmailClick(tpl)}
+          className="rounded p-1.5 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+        >
+          <Mail className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          title="Send via WhatsApp"
+          onClick={() => onWhatsAppClick(tpl)}
+          className="rounded p-1.5 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-green-600 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-green-400"
+        >
+          <MessageCircle className="h-4 w-4" />
+        </button>
       </div>
-      <div className="shrink-0">
-        {generating ? (
-          <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
-        ) : (
-          <Download className="h-4 w-4 text-neutral-400" />
-        )}
-      </div>
-    </button>
+    </div>
+  );
+}
+
+function SendEmailDialog({
+  open,
+  onOpenChange,
+  policyId,
+  policyNumber,
+  pdfTemplates,
+  preSelectedId,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  policyId: number;
+  policyNumber: string;
+  pdfTemplates: PdfTemplateRow[];
+  preSelectedId?: number;
+}) {
+  const [email, setEmail] = React.useState("");
+  const [subject, setSubject] = React.useState("");
+  const [message, setMessage] = React.useState("");
+  const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
+  const [sending, setSending] = React.useState(false);
+
+  React.useEffect(() => {
+    if (open) {
+      setSubject(`Policy ${policyNumber} - Documents`);
+      if (preSelectedId) {
+        setSelectedIds(new Set([preSelectedId]));
+      } else {
+        setSelectedIds(new Set(pdfTemplates.map((t) => t.id)));
+      }
+    }
+  }, [open, policyNumber, preSelectedId, pdfTemplates]);
+
+  function toggleId(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function handleSend() {
+    if (!email.includes("@")) {
+      toast.error("Please enter a valid email address");
+      return;
+    }
+    if (selectedIds.size === 0) {
+      toast.error("Please select at least one document");
+      return;
+    }
+    setSending(true);
+    try {
+      const res = await fetch("/api/pdf-templates/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          policyId,
+          templateIds: Array.from(selectedIds),
+          email: email.trim(),
+          subject: subject.trim(),
+          message: message.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to send");
+      }
+      const data = await res.json();
+      toast.success(`Email sent with ${data.sent} document${data.sent !== 1 ? "s" : ""} to ${email}`);
+      onOpenChange(false);
+      setEmail("");
+      setMessage("");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to send email");
+    }
+    setSending(false);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Email Documents</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label htmlFor="send-email-to">Recipient Email</Label>
+            <Input
+              id="send-email-to"
+              type="email"
+              placeholder="client@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="send-email-subject">Subject</Label>
+            <Input
+              id="send-email-subject"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="send-email-msg">Message (optional)</Label>
+            <textarea
+              id="send-email-msg"
+              rows={3}
+              placeholder="Add a personal note..."
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              className="mt-1 w-full rounded-md border border-neutral-200 bg-transparent px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700"
+            />
+          </div>
+          {pdfTemplates.length > 1 && (
+            <div>
+              <Label>Attach Documents</Label>
+              <div className="mt-1 space-y-1.5">
+                {pdfTemplates.map((tpl) => (
+                  <label key={tpl.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                    <Checkbox
+                      checked={selectedIds.has(tpl.id)}
+                      onChange={() => toggleId(tpl.id)}
+                    />
+                    <span>{tpl.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={sending}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={handleSend} disabled={sending || !email.trim()}>
+            {sending ? (
+              <>
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                Sending...
+              </>
+            ) : (
+              <>
+                <Mail className="mr-1.5 h-3.5 w-3.5" />
+                Send Email
+              </>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -297,8 +481,27 @@ export function DocumentsTab({
   const [selected, setSelected] = React.useState<DocumentTemplateRow | null>(
     null,
   );
+  const [emailDialogOpen, setEmailDialogOpen] = React.useState(false);
+  const [emailPreSelectedId, setEmailPreSelectedId] = React.useState<number | undefined>();
 
   const snapshot = (detail.extraAttributes ?? {}) as SnapshotData;
+
+  function handleEmailClick(tpl: PdfTemplateRow) {
+    setEmailPreSelectedId(tpl.id);
+    setEmailDialogOpen(true);
+  }
+
+  function handleWhatsAppClick(tpl: PdfTemplateRow) {
+    const phone = (detail.extraAttributes?.insuredSnapshot as Record<string, unknown> | undefined)?.contactPhone
+      ?? (detail.extraAttributes?.insuredSnapshot as Record<string, unknown> | undefined)?.phone
+      ?? "";
+    const phoneStr = String(phone).replace(/[^0-9+]/g, "");
+    const text = encodeURIComponent(`Hi, please find the document "${tpl.label}" for Policy ${detail.policyNumber}.`);
+    const url = phoneStr
+      ? `https://wa.me/${phoneStr.replace(/^\+/, "")}?text=${text}`
+      : `https://wa.me/?text=${text}`;
+    window.open(url, "_blank");
+  }
 
   React.useEffect(() => {
     let cancelled = false;
@@ -419,12 +622,38 @@ export function DocumentsTab({
 
       {pdfTemplates.length > 0 && (
         <>
-          <div className="text-sm font-medium mt-3">PDF Mail Merge</div>
+          {templates.length > 0 && <div className="border-t border-neutral-200 dark:border-neutral-800 mt-3 pt-3" />}
           {pdfTemplates.map((tpl) => (
-            <PdfMergeButton key={tpl.id} tpl={tpl} policyId={detail.policyId} />
+            <PdfMergeButton
+              key={tpl.id}
+              tpl={tpl}
+              policyId={detail.policyId}
+              onEmailClick={handleEmailClick}
+              onWhatsAppClick={handleWhatsAppClick}
+            />
           ))}
+          {pdfTemplates.length > 1 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full gap-1.5"
+              onClick={() => { setEmailPreSelectedId(undefined); setEmailDialogOpen(true); }}
+            >
+              <Mail className="h-3.5 w-3.5" />
+              Email All Documents ({pdfTemplates.length})
+            </Button>
+          )}
         </>
       )}
+
+      <SendEmailDialog
+        open={emailDialogOpen}
+        onOpenChange={setEmailDialogOpen}
+        policyId={detail.policyId}
+        policyNumber={detail.policyNumber}
+        pdfTemplates={pdfTemplates}
+        preSelectedId={emailPreSelectedId}
+      />
     </div>
   );
 }

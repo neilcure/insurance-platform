@@ -11,7 +11,7 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Plus, Trash2, Pencil, FileText } from "lucide-react";
+import { Plus, Trash2, Pencil, FileText, UploadCloud } from "lucide-react";
 import type { PdfTemplateRow } from "@/lib/types/pdf-template";
 import dynamic from "next/dynamic";
 
@@ -179,13 +179,31 @@ export default function PdfTemplateManager() {
               />
             </div>
             <div>
-              <Label htmlFor="tpl-file">PDF File</Label>
-              <Input
-                id="tpl-file"
-                type="file"
-                accept=".pdf"
-                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
-              />
+              <Label>PDF File</Label>
+              <label
+                className={`flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed px-4 py-6 cursor-pointer transition-colors ${
+                  uploadFile
+                    ? "border-blue-400 bg-blue-50 dark:border-blue-600 dark:bg-blue-950"
+                    : "border-neutral-300 hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-600"
+                }`}
+              >
+                <UploadCloud className="h-6 w-6 text-neutral-400 dark:text-neutral-500" />
+                {uploadFile ? (
+                  <span className="text-sm text-blue-700 dark:text-blue-300 font-medium truncate max-w-full">
+                    {uploadFile.name}
+                  </span>
+                ) : (
+                  <span className="text-sm text-neutral-500 dark:text-neutral-400">
+                    Click to select a PDF file
+                  </span>
+                )}
+                <input
+                  type="file"
+                  accept=".pdf"
+                  className="hidden"
+                  onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                />
+              </label>
             </div>
           </div>
           <DialogFooter>
