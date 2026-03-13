@@ -13,6 +13,9 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
+ENV NEXTAUTH_URL="http://localhost:3000"
+ENV NEXTAUTH_SECRET="build-time-placeholder-secret-not-used-at-runtime"
 RUN npm run build
 
 # --- Production stage ---
