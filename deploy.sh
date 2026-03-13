@@ -3,6 +3,19 @@ set -e
 
 echo "=== Insurance Platform - Hostinger VPS Deployment ==="
 
+# Detect docker compose command
+if docker compose version > /dev/null 2>&1; then
+  DC="docker compose"
+elif docker-compose --version > /dev/null 2>&1; then
+  DC="docker-compose"
+else
+  echo "Docker Compose not found. Installing..."
+  apt-get update && apt-get install -y docker-compose-plugin
+  DC="docker compose"
+fi
+
+echo "Using: $DC"
+
 # Check if .env exists
 if [ ! -f .env ]; then
   echo "ERROR: .env file not found. Copy .env.example to .env and fill in your values:"
@@ -24,32 +37,24 @@ if [ -z "$NEXTAUTH_SECRET" ]; then
   exit 1
 fi
 
-echo "1/4 - Building Docker images..."
-docker compose build --no-cache
+echo "1/3 - Building Docker images..."
+$DC build
 
-echo "2/4 - Starting services..."
-docker compose up -d
+echo "2/3 - Starting services..."
+$DC up -d
 
-echo "3/4 - Waiting for database to be ready..."
-sleep 5
-
-echo "4/4 - Running database migrations..."
-docker compose exec app node -e "
-const { execSync } = require('child_process');
-try {
-  console.log('Migrations would run here via drizzle-kit');
-} catch(e) {
-  console.error('Migration note:', e.message);
-}
-"
+echo "3/3 - Waiting for services to be ready..."
+sleep 10
 
 echo ""
 echo "=== Deployment complete! ==="
 echo "App is running at: ${NEXTAUTH_URL:-http://localhost:3000}"
 echo ""
+echo "Check logs with: $DC logs -f app"
+echo ""
 echo "Useful commands:"
-echo "  docker compose logs -f app    # View app logs"
-echo "  docker compose logs -f db     # View database logs"
-echo "  docker compose restart app    # Restart the app"
-echo "  docker compose down           # Stop everything"
-echo "  docker compose up -d --build  # Rebuild and restart"
+echo "  $DC logs -f app       # View app logs"
+echo "  $DC logs -f db        # View database logs"
+echo "  $DC restart app       # Restart the app"
+echo "  $DC down              # Stop everything"
+echo "  $DC up -d --build     # Rebuild and restart"
