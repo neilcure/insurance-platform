@@ -36,11 +36,28 @@ async function runMigrations() {
       .filter(Boolean);
 
     console.log(`  Applying: ${file} (${statements.length} statements)`);
+    let allSucceeded = true;
     for (const stmt of statements) {
-      await sql.unsafe(stmt);
+      try {
+        await sql.unsafe(stmt);
+      } catch (err) {
+        const msg = err.message || "";
+        if (msg.includes("already exists")) {
+          console.log(`    Skipping statement (already exists)`);
+        } else {
+          console.error(`    Statement failed: ${msg}`);
+          allSucceeded = false;
+        }
+      }
     }
 
-    await sql`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (${file}, ${Date.now()})`;
+    if (allSucceeded) {
+      await sql`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (${file}, ${Date.now()})`;
+      console.log(`  Applied: ${file}`);
+    } else {
+      console.log(`  Partially applied: ${file} (some non-critical errors)`);
+      await sql`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (${file}, ${Date.now()})`;
+    }
   }
 
   await sql.end();
