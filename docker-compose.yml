@@ -1,16 +1,46 @@
 services:
-  postgres:
-    image: postgres:16
-    container_name: insurance_postgres
-    restart: unless-stopped
+  db:
+    image: postgres:16-alpine
+    restart: always
     environment:
-      POSTGRES_USER: insurance_admin
-      POSTGRES_PASSWORD: S0m3_Str0ng_pass!
+      POSTGRES_USER: insurance_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: insurance_platform
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U insurance_user -d insurance_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://insurance_user:${POSTGRES_PASSWORD}@db:5432/insurance_platform
+      NEXTAUTH_URL: ${NEXTAUTH_URL}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      BREVO_SENDER: ${BREVO_SENDER:-}
+      BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-Insurance Platform}
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      APP_URL: ${APP_URL}
+      CRON_SECRET: ${CRON_SECRET:-}
+    volumes:
+      - uploads:/app/.uploads
 
 volumes:
   pgdata:
+  uploads:
