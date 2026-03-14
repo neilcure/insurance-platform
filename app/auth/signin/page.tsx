@@ -3,17 +3,22 @@
 import { getProviders, signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import Link from "next/link";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useSession } from "next-auth/react";
 import { Separator } from "@/components/ui/separator";
-import { Chrome } from "lucide-react";
+import { Chrome, ShieldCheck } from "lucide-react";
 
 export default function SignInPage() {
   return (
     <Suspense
       fallback={
-        <main className="mx-auto max-w-md px-6 py-10">Loading...</main>
+        <main className="flex min-h-screen items-center justify-center bg-neutral-50 dark:bg-neutral-950">
+          <div className="text-sm text-neutral-500">Loading...</div>
+        </main>
       }
     >
       <SignInContent />
@@ -29,27 +34,22 @@ function SignInContent() {
   const errorFromUrl = searchParams.get("error") ?? "";
   const { status } = useSession();
 
-  const [email, setEmail] = useState(emailFromLink ?? "agent@example.com");
-  const [password, setPassword] = useState(emailFromLink ? "" : "demo1234");
+  const [email, setEmail] = useState(emailFromLink ?? "");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [hasGoogle, setHasGoogle] = useState<boolean>(false);
   const emailRef = useRef<HTMLInputElement>(null);
-  const passwordRef = useRef<HTMLInputElement>(null);
 
-  // Focus and select the email field on load so users can type immediately
   useEffect(() => {
     const el = emailRef.current;
     if (!el) return;
-    // Defer to ensure it runs after paint
     const id = window.requestAnimationFrame(() => {
       el.focus();
-      el.select();
     });
     return () => window.cancelAnimationFrame(id);
   }, []);
 
-  // Detect whether Google provider is configured server-side
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -67,7 +67,6 @@ function SignInContent() {
     };
   }, []);
 
-  // If already authenticated, go to callbackUrl
   useEffect(() => {
     if (status === "authenticated") {
       router.push(callbackUrl);
@@ -75,7 +74,6 @@ function SignInContent() {
     }
   }, [status, router, callbackUrl]);
 
-  // Surface OAuth errors (e.g. AccessDenied when Google account isn't invited/active)
   useEffect(() => {
     if (!errorFromUrl) return;
     if (errorFromUrl === "AccessDenied") {
@@ -85,18 +83,10 @@ function SignInContent() {
     setError(`Sign in error: ${errorFromUrl}`);
   }, [errorFromUrl]);
 
-  function selectAll(ref: React.RefObject<HTMLInputElement | null>) {
-    const el = ref.current;
-    if (!el) return;
-    el.focus({ preventScroll: true });
-    el.select();
-  }
-
   async function handleGoogleSignIn() {
     setLoading(true);
     setError("");
     try {
-      // Redirect-based flow; NextAuth will send the user to Google
       await signIn("google", { callbackUrl });
     } catch {
       setError("Google sign-in failed. Please try again.");
@@ -105,7 +95,8 @@ function SignInContent() {
     }
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(e?: React.FormEvent) {
+    e?.preventDefault();
     setLoading(true);
     setError("");
     try {
@@ -121,13 +112,13 @@ function SignInContent() {
         return;
       }
       if (result.error) {
-        setError(result.error === "CredentialsSignin" ? "Email 或密碼錯誤" : result.error);
+        setError(result.error === "CredentialsSignin" ? "Invalid email or password." : result.error);
         return;
       }
 
       router.push(result.url ?? callbackUrl);
       router.refresh();
-    } catch (err) {
+    } catch {
       setError("Sign in failed. Please try again.");
     } finally {
       setLoading(false);
@@ -135,82 +126,90 @@ function SignInContent() {
   }
 
   return (
-    <main className="mx-auto max-w-md px-6 py-10">
-      <Card>
-        <CardHeader>
-          <CardTitle>Login</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4">
-          <div className="grid gap-2">
-            <label htmlFor="email" className="text-sm font-medium">
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-              autoFocus
-              ref={emailRef}
-              onMouseEnter={() => selectAll(emailRef)}
-              onFocus={() => selectAll(emailRef)}
-              className="block w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 placeholder-neutral-500 outline-none ring-0 focus:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder-neutral-400"
-            />
+    <main className="flex min-h-screen items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 flex flex-col items-center gap-2">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-neutral-900 dark:bg-neutral-100">
+            <ShieldCheck className="h-6 w-6 text-white dark:text-neutral-900" />
           </div>
-          <div className="grid gap-2">
-            <label htmlFor="password" className="text-sm font-medium">
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              ref={passwordRef}
-              onMouseEnter={() => selectAll(passwordRef)}
-              onFocus={() => selectAll(passwordRef)}
-              className="block w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 placeholder-neutral-500 outline-none ring-0 focus:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder-neutral-400"
-            />
-          </div>
-          <Button className="w-full" disabled={loading} onClick={handleSubmit}>
-            {loading ? "Signing in..." : "Sign in"}
-          </Button>
+          <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Welcome back</h1>
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">Sign in to your account to continue</p>
+        </div>
 
-          <div className="relative py-1">
-            <div className="absolute inset-0 flex items-center">
-              <Separator className="w-full" />
-            </div>
-            <div className="relative flex justify-center text-xs">
-              <span className="bg-card px-2 text-muted-foreground">or</span>
-            </div>
-          </div>
+        <Card className="border-neutral-200 dark:border-neutral-800">
+          <CardContent className="pt-6">
+            <form onSubmit={handleSubmit} className="grid gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                  ref={emailRef}
+                />
+              </div>
+              <div className="grid gap-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password">Password</Label>
+                  <Link
+                    href="/forgot-password"
+                    className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline dark:text-neutral-400 dark:hover:text-neutral-100"
+                  >
+                    Forgot password?
+                  </Link>
+                </div>
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </div>
 
-          {hasGoogle ? (
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full"
-              disabled={loading}
-              onClick={handleGoogleSignIn}
-            >
-              <Chrome className="mr-2 h-4 w-4" />
-              Continue with Google
-            </Button>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              Google login is not configured on this environment.
-            </p>
-          )}
+              {error ? (
+                <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950 dark:text-red-400">{error}</p>
+              ) : null}
 
-          {error ? (
-            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-          ) : null}
-        </CardContent>
-      </Card>
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? "Signing in..." : "Sign in"}
+              </Button>
+            </form>
+
+            {hasGoogle ? (
+              <>
+                <div className="relative my-4">
+                  <div className="absolute inset-0 flex items-center">
+                    <Separator className="w-full" />
+                  </div>
+                  <div className="relative flex justify-center text-xs">
+                    <span className="bg-card px-2 text-muted-foreground">or</span>
+                  </div>
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={loading}
+                  onClick={handleGoogleSignIn}
+                >
+                  <Chrome className="mr-2 h-4 w-4" />
+                  Continue with Google
+                </Button>
+              </>
+            ) : null}
+          </CardContent>
+        </Card>
+
+        <p className="mt-4 text-center text-xs text-neutral-500 dark:text-neutral-400">
+          Don&apos;t have an account? Contact your administrator.
+        </p>
+      </div>
     </main>
   );
 }
-
-
