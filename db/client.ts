@@ -26,7 +26,12 @@ let _db: ReturnType<typeof drizzle> | null = null;
 export const db = new Proxy({} as ReturnType<typeof drizzle>, {
   get(_target, prop) {
     if (!_db) {
-      const queryClient = postgres(getDatabaseUrl(), { max: 1 });
+      const queryClient = postgres(getDatabaseUrl(), {
+        max: 1,
+        types: {
+          date: { to: 1184, from: [1082, 1083, 1114, 1184], serialize: (v: unknown) => v, parse: (v: string) => v },
+        },
+      });
       _db = drizzle(queryClient);
     }
     return (_db as unknown as Record<string | symbol, unknown>)[prop];
