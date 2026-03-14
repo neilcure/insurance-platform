@@ -42,9 +42,9 @@ export default async function DashboardPage() {
       const hasOrg = Boolean(orgRow);
       const hasContact = Boolean((orgRow as any)?.contactEmail || (orgRow as any)?.contactPhone);
       accountComplete = hasUserName && hasOrg && hasContact;
-      const ts: string | undefined = (orgRow?.updatedAt as any) ?? (u?.updatedAt as any);
-      if (ts) {
-        updatedAtIso = ts as any;
+      const rawTs = (orgRow?.updatedAt as any) ?? (u?.updatedAt as any);
+      if (rawTs) {
+        updatedAtIso = rawTs instanceof Date ? rawTs.toISOString() : String(rawTs);
       }
       userTimeZone = (u?.timezone as any) ?? undefined;
     }

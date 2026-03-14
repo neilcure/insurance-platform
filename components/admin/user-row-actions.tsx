@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import ReissueInviteButton from "@/components/admin/reissue-invite-button";
 import { useRouter } from "next/navigation";
-import { Power, Trash2 } from "lucide-react";
+import { KeyRound, Power, Trash2 } from "lucide-react";
 
 type UserType = "admin" | "agent" | "direct_client" | "service_provider" | "internal_staff" | "accounting";
 
@@ -41,6 +41,30 @@ export function UserRowActions({
       router.refresh();
     } catch (err: any) {
       toast.error(err?.message ?? "Update failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function resetPassword() {
+    const newPassword = prompt("Enter new password for this user (min 6 characters):");
+    if (!newPassword) return;
+    if (newPassword.length < 6) {
+      toast.error("Password must be at least 6 characters");
+      return;
+    }
+    try {
+      setLoading(true);
+      const res = await fetch(`/api/admin/users/${userId}/reset-password`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ newPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Reset failed");
+      toast.success("Password has been reset");
+    } catch (err: any) {
+      toast.error(err?.message ?? "Reset failed");
     } finally {
       setLoading(false);
     }
@@ -107,6 +131,16 @@ export function UserRowActions({
       >
         <Power className="h-4 w-4 sm:hidden lg:inline" />
         <span className="hidden sm:inline">{active ? "Deactivate" : "Activate"}</span>
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        className="inline-flex items-center gap-2 whitespace-nowrap"
+        onClick={resetPassword}
+        disabled={loading}
+      >
+        <KeyRound className="h-4 w-4 sm:hidden lg:inline" />
+        <span className="hidden sm:inline">Reset PW</span>
       </Button>
       {!active ? <ReissueInviteButton userId={userId} /> : null}
       <Button
