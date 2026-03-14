@@ -7,10 +7,9 @@ import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Eye, EyeOff } from "lucide-react";
 
 const ResetSchema = z
   .object({
@@ -25,8 +24,6 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
   const { token } = React.use(props.params);
   const router = useRouter();
   const [submitting, setSubmitting] = React.useState(false);
-  const [showPassword, setShowPassword] = React.useState(false);
-  const [showConfirm, setShowConfirm] = React.useState(false);
 
   const form = useForm<ResetInput>({
     resolver: zodResolver(ResetSchema),
@@ -73,27 +70,15 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
           <CardTitle>Reset Password</CardTitle>
         </CardHeader>
         <CardContent>
-          <form onSubmit={form.handleSubmit(onSubmit, onInvalid)} className="space-y-4">
+          <form onSubmit={form.handleSubmit(onSubmit, onInvalid)} className="space-y-4" autoComplete="off">
             <div className="grid gap-1.5">
               <Label htmlFor="password">New Password</Label>
-              <div className="relative">
-                <Input
-                  id="password"
-                  type={showPassword ? "text" : "password"}
-                  autoComplete="new-password"
-                  placeholder="At least 10 characters"
-                  className="pr-10"
-                  {...form.register("password")}
-                />
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
+              <PasswordInput
+                id="password"
+                autoComplete="off"
+                placeholder="At least 10 characters"
+                {...form.register("password")}
+              />
               <div className="flex items-center justify-between">
                 {form.formState.errors.password ? (
                   <p className="text-sm text-destructive">{form.formState.errors.password.message}</p>
@@ -108,24 +93,12 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
 
             <div className="grid gap-1.5">
               <Label htmlFor="confirm">Confirm Password</Label>
-              <div className="relative">
-                <Input
-                  id="confirm"
-                  type={showConfirm ? "text" : "password"}
-                  autoComplete="new-password"
-                  placeholder="Re-enter your password"
-                  className="pr-10"
-                  {...form.register("confirm")}
-                />
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onClick={() => setShowConfirm((v) => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {showConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
+              <PasswordInput
+                id="confirm"
+                autoComplete="off"
+                placeholder="Re-enter your password"
+                {...form.register("confirm")}
+              />
               {form.formState.errors.confirm && (
                 <p className="text-sm text-destructive">{form.formState.errors.confirm.message}</p>
               )}
