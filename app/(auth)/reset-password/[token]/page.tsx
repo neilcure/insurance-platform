@@ -2,45 +2,66 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Button } from "@/components/ui/button";
+import { Loader2, Check, X } from "lucide-react";
 import { toast } from "sonner";
-
-const ResetSchema = z
-  .object({
-    password: z.string().min(10, "Password must be at least 10 characters"),
-    confirm: z.string().min(1, "Please confirm your password"),
-  })
-  .refine((d) => d.password === d.confirm, { path: ["confirm"], message: "Passwords do not match" });
-
-type ResetInput = z.infer<typeof ResetSchema>;
+import {
+  type PasswordPolicy,
+  DEFAULT_PASSWORD_POLICY,
+  validatePassword,
+  policyDescription,
+} from "@/lib/password-policy";
 
 export default function ResetPasswordPage(props: { params: Promise<{ token: string }> }) {
   const { token } = React.use(props.params);
   const router = useRouter();
   const [submitting, setSubmitting] = React.useState(false);
+  const [policy, setPolicy] = React.useState<PasswordPolicy>(DEFAULT_PASSWORD_POLICY);
+  const [policyLoaded, setPolicyLoaded] = React.useState(false);
 
-  const form = useForm<ResetInput>({
-    resolver: zodResolver(ResetSchema),
-    defaultValues: { password: "", confirm: "" },
-    mode: "onChange",
-  });
+  const [password, setPassword] = React.useState("");
+  const [confirm, setConfirm] = React.useState("");
+  const [touched, setTouched] = React.useState(false);
 
-  const passwordValue = form.watch("password");
-  const charCount = passwordValue?.length ?? 0;
+  React.useEffect(() => {
+    fetch("/api/admin/password-policy")
+      .then((r) => r.json())
+      .then((data: PasswordPolicy) => setPolicy(data))
+      .catch(() => {})
+      .finally(() => setPolicyLoaded(true));
+  }, []);
 
-  async function onSubmit(values: ResetInput) {
+  const policyErrors = validatePassword(password, policy);
+  const mismatch = confirm.length > 0 && password !== confirm;
+  const isValid = policyErrors.length === 0 && password === confirm && confirm.length > 0;
+
+  const rules = React.useMemo(() => {
+    const list: { label: string; met: boolean }[] = [
+      { label: `At least ${policy.minLength} characters`, met: password.length >= policy.minLength },
+    ];
+    if (policy.requireUppercase) list.push({ label: "Uppercase letter (A-Z)", met: /[A-Z]/.test(password) });
+    if (policy.requireLowercase) list.push({ label: "Lowercase letter (a-z)", met: /[a-z]/.test(password) });
+    if (policy.requireNumber) list.push({ label: "Number (0-9)", met: /\d/.test(password) });
+    if (policy.requireSpecial) list.push({ label: "Special character (!@#...)", met: /[^A-Za-z0-9]/.test(password) });
+    return list;
+  }, [password, policy]);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!isValid) {
+      const msg = policyErrors[0] || (mismatch ? "Passwords do not match" : "Please fill in all fields");
+      toast.error(msg);
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await fetch("/api/auth/reset-password", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token, password: values.password }),
+        body: JSON.stringify({ token, password }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -57,10 +78,12 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
     }
   }
 
-  function onInvalid() {
-    const errs = form.formState.errors;
-    const first = errs.password?.message || errs.confirm?.message;
-    if (first) toast.error(first);
+  if (!policyLoaded) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-4">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
   }
 
   return (
@@ -68,27 +91,36 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>Reset Password</CardTitle>
+          <p className="text-sm text-muted-foreground">{policyDescription(policy)}</p>
         </CardHeader>
         <CardContent>
-          <form onSubmit={form.handleSubmit(onSubmit, onInvalid)} className="space-y-4" autoComplete="off">
+          <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
             <div className="grid gap-1.5">
               <Label htmlFor="password">New Password</Label>
               <PasswordInput
                 id="password"
                 autoComplete="off"
-                placeholder="At least 10 characters"
-                {...form.register("password")}
+                placeholder={`At least ${policy.minLength} characters`}
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (!touched) setTouched(true);
+                }}
               />
-              <div className="flex items-center justify-between">
-                {form.formState.errors.password ? (
-                  <p className="text-sm text-destructive">{form.formState.errors.password.message}</p>
-                ) : (
-                  <span />
-                )}
-                <span className={`text-xs tabular-nums ${charCount >= 10 ? "text-green-500" : "text-muted-foreground"}`}>
-                  {charCount}/10
-                </span>
-              </div>
+              {touched && password.length > 0 && (
+                <ul className="space-y-1 pt-1">
+                  {rules.map((r) => (
+                    <li key={r.label} className="flex items-center gap-2 text-xs">
+                      {r.met ? (
+                        <Check className="h-3 w-3 text-green-500" />
+                      ) : (
+                        <X className="h-3 w-3 text-destructive" />
+                      )}
+                      <span className={r.met ? "text-green-500" : "text-muted-foreground"}>{r.label}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             <div className="grid gap-1.5">
@@ -97,14 +129,15 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
                 id="confirm"
                 autoComplete="off"
                 placeholder="Re-enter your password"
-                {...form.register("confirm")}
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
               />
-              {form.formState.errors.confirm && (
-                <p className="text-sm text-destructive">{form.formState.errors.confirm.message}</p>
+              {mismatch && (
+                <p className="text-sm text-destructive">Passwords do not match</p>
               )}
             </div>
 
-            <Button type="submit" className="w-full" disabled={submitting}>
+            <Button type="submit" className="w-full" disabled={submitting || !isValid}>
               {submitting ? "Updating..." : "Update Password"}
             </Button>
           </form>

@@ -10,6 +10,7 @@ import { ServerSuccessToast } from "@/components/ui/ServerSuccessToast";
 import { ClearQueryParam } from "@/components/ui/ClearQueryParam";
 import { serverFetch } from "@/lib/auth/server-fetch";
 import { ClientPrefixDialog, FlowPrefixDialog } from "@/components/admin/ClientPrefixDialog";
+import { PasswordPolicyCard } from "@/components/admin/PasswordPolicyCard";
 
 type UserTypePrefixes = {
   admin: string;
@@ -253,6 +254,9 @@ export default async function ClientSettingsPage({ searchParams }: { searchParam
           </form>
         </CardContent>
       </Card>
+      <div className="mt-6">
+        <PasswordPolicyCard />
+      </div>
     </main>
   );
 }

@@ -1,15 +1,29 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/db/client";
-import { users, passwordResets } from "@/db/schema/core";
+import { users, passwordResets, appSettings } from "@/db/schema/core";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
+import { type PasswordPolicy, DEFAULT_PASSWORD_POLICY, validatePassword } from "@/lib/password-policy";
 
 const ResetBody = z.object({
   token: z.string().min(1),
-  password: z.string().min(10, "Password must be at least 10 characters"),
+  password: z.string().min(1, "Password is required"),
 });
+
+async function loadPolicy(): Promise<PasswordPolicy> {
+  try {
+    const [row] = await db
+      .select()
+      .from(appSettings)
+      .where(eq(appSettings.key, "password_policy"))
+      .limit(1);
+    return (row?.value as PasswordPolicy | undefined) ?? DEFAULT_PASSWORD_POLICY;
+  } catch {
+    return DEFAULT_PASSWORD_POLICY;
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -19,6 +33,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid request" }, { status: 400 });
     }
     const { token, password } = parsed.data;
+
+    const policy = await loadPolicy();
+    const policyErrors = validatePassword(password, policy);
+    if (policyErrors.length > 0) {
+      return NextResponse.json({ error: policyErrors[0] }, { status: 400 });
+    }
 
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const nowIso = new Date().toISOString();

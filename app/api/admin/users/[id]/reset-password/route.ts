@@ -1,14 +1,28 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/db/client";
-import { users } from "@/db/schema/core";
+import { users, appSettings } from "@/db/schema/core";
 import { requireUser } from "@/lib/auth/require-user";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
+import { type PasswordPolicy, DEFAULT_PASSWORD_POLICY, validatePassword } from "@/lib/password-policy";
 
 const Body = z.object({
-  newPassword: z.string().min(6, "Password must be at least 6 characters"),
+  newPassword: z.string().min(1, "Password is required"),
 });
+
+async function loadPolicy(): Promise<PasswordPolicy> {
+  try {
+    const [row] = await db
+      .select()
+      .from(appSettings)
+      .where(eq(appSettings.key, "password_policy"))
+      .limit(1);
+    return (row?.value as PasswordPolicy | undefined) ?? DEFAULT_PASSWORD_POLICY;
+  } catch {
+    return DEFAULT_PASSWORD_POLICY;
+  }
+}
 
 export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
@@ -27,6 +41,12 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const parsed = Body.safeParse(json);
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Invalid body" }, { status: 400 });
+    }
+
+    const policy = await loadPolicy();
+    const policyErrors = validatePassword(parsed.data.newPassword, policy);
+    if (policyErrors.length > 0) {
+      return NextResponse.json({ error: policyErrors.join(". ") }, { status: 400 });
     }
 
     const passwordHash = await bcrypt.hash(parsed.data.newPassword, 10);
