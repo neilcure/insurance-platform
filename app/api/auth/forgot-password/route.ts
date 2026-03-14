@@ -3,8 +3,8 @@ import { db } from "@/db/client";
 import { users, passwordResets } from "@/db/schema/core";
 import { and, eq } from "drizzle-orm";
 import crypto from "crypto";
-import bcrypt from "bcryptjs";
 import { z } from "zod";
+import { sendEmail, getBaseUrlFromRequestUrl } from "@/lib/email";
 
 // Simple in-memory rate limiter by email hash; resets when server reloads
 const rateBucket = new Map<string, { count: number; resetAt: number }>();
@@ -59,11 +59,30 @@ export async function POST(request: NextRequest) {
         expiresAt: expiresAt.toISOString() as unknown as any,
       });
 
-      const resetLink = `/reset-password/${token}`;
+      const resetPath = `/reset-password/${token}`;
       const isDev = process.env.NODE_ENV !== "production";
+
       if (isDev) {
-        return NextResponse.json({ ok: true, resetLink });
+        return NextResponse.json({ ok: true, resetLink: resetPath });
       }
+
+      const baseUrl = getBaseUrlFromRequestUrl(request.url);
+      const resetLink = `${baseUrl}${resetPath}`;
+
+      await sendEmail({
+        to: u.email,
+        subject: "Reset your password",
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
+            <h2 style="margin-bottom: 16px;">Reset your password</h2>
+            <p>We received a request to reset the password for your account.</p>
+            <p>Click the button below to set a new password. This link expires in 1 hour.</p>
+            <a href="${resetLink}" style="display: inline-block; background: #171717; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin: 16px 0;">Reset Password</a>
+            <p style="color: #666; font-size: 13px;">If you didn't request this, you can safely ignore this email.</p>
+          </div>
+        `,
+        text: `Reset your password: ${resetLink}`,
+      });
     }
 
     // Always return ok
