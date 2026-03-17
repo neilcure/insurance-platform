@@ -11,17 +11,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 import { Field } from "@/components/ui/form-field";
 import { toast } from "sonner";
 import { Button as UIButton } from "@/components/ui/button";
 
-export function PolicyStep({ onComplete, initialValues }: { onComplete: (data: PolicyStepInput) => void; initialValues?: Partial<PolicyStepInput> }) {
+export function PolicyStep({ onComplete, initialValues, flowKey }: { onComplete: (data: PolicyStepInput) => void; initialValues?: Partial<PolicyStepInput>; flowKey?: string | null }) {
   const form = useForm<PolicyStepInput>({
     resolver: zodResolver(PolicyStepSchema),
     defaultValues: {
-      coverType: "third_party",
       currency: "HKD",
       ...(initialValues ?? {}),
     } as any,
@@ -29,7 +27,6 @@ export function PolicyStep({ onComplete, initialValues }: { onComplete: (data: P
     reValidateMode: "onSubmit",
   });
 
-  const coverType = form.watch("coverType");
   const [userType, setUserType] = React.useState<string>("");
   const [agents, setAgents] = React.useState<Array<{ id: number; userNumber?: string | null; name?: string | null; email: string }>>([]);
   const [loadingAgents, setLoadingAgents] = React.useState(false);
@@ -61,6 +58,7 @@ export function PolicyStep({ onComplete, initialValues }: { onComplete: (data: P
       mounted = false;
     };
   }, []);
+
 
   function onSubmit(data: PolicyStepInput) {
     // eslint-disable-next-line no-console
@@ -124,24 +122,6 @@ export function PolicyStep({ onComplete, initialValues }: { onComplete: (data: P
           </section>
         ) : null}
 
-        <section className="space-y-2">
-          <Label>Cover Type</Label>
-          <RadioGroup
-            value={coverType}
-            onValueChange={(v) => form.setValue("coverType", v as any)}
-            className="flex gap-6"
-          >
-            <div className="flex items-center space-x-2">
-              <RadioGroupItem value="third_party" id="ct-tp" />
-              <Label htmlFor="ct-tp">Third Party</Label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <RadioGroupItem value="comprehensive" id="ct-comp" />
-              <Label htmlFor="ct-comp">Comprehensive</Label>
-            </div>
-          </RadioGroup>
-        </section>
-
         <Separator />
 
         <section className="grid grid-cols-2 gap-4">
@@ -160,22 +140,6 @@ export function PolicyStep({ onComplete, initialValues }: { onComplete: (data: P
           <Field label="TPPD" type="number" {...form.register("tppd", { setValueAs: (v) => (v === "" ? undefined : Number(v)) })} />
         </section>
 
-        {coverType === "comprehensive" ? (
-          <>
-            <Separator />
-            <section className="space-y-2">
-              <Label>Excess Section 1</Label>
-              <div className="grid grid-cols-3 gap-4">
-                <Field label="OD" type="number" {...form.register("excessSection1.od", { setValueAs: (v) => (v === "" ? undefined : Number(v)) })} />
-                <Field label="T" type="number" {...form.register("excessSection1.t", { setValueAs: (v) => (v === "" ? undefined : Number(v)) })} />
-                <Field label="Y" type="number" {...form.register("excessSection1.y", { setValueAs: (v) => (v === "" ? undefined : Number(v)) })} />
-                <Field label="I" type="number" {...form.register("excessSection1.i", { setValueAs: (v) => (v === "" ? undefined : Number(v)) })} />
-                <Field label="U" type="number" {...form.register("excessSection1.u", { setValueAs: (v) => (v === "" ? undefined : Number(v)) })} />
-                <Field label="P" type="number" {...form.register("excessSection1.p", { setValueAs: (v) => (v === "" ? undefined : Number(v)) })} />
-              </div>
-            </section>
-          </>
-        ) : null}
 
         <Separator />
         <div className="flex justify-end">

@@ -1266,7 +1266,8 @@ export function PackageBlock({
                   const displayLabel = applyLabelCase(f.label, meta.labelCase);
                   const inputType = meta.inputType ?? "string";
                   const isCurrency = inputType === "currency";
-                  const isNumber = inputType === "number" || isCurrency;
+                  const isPercent = inputType === "percent";
+                  const isNumber = inputType === "number" || isCurrency || isPercent;
                   const isDate = inputType === "date";
                   // Field keys in `${pkg}_fields` should be stored as the *field key* (unprefixed),
                   // since we namespace them in the form as `${pkg}__${fieldKey}`.
@@ -2007,6 +2008,26 @@ export function PackageBlock({
                       </div>
                     );
                   }
+                  if (isPercent) {
+                    const decimals = Number((meta as any)?.decimals ?? 2);
+                    const step = `0.${"0".repeat(Math.max(0, decimals - 1))}1`;
+                    return (
+                      <div key={nameBase} className="space-y-1">
+                        <Label>
+                          {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                        </Label>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            step={step}
+                            placeholder={`0.${"0".repeat(decimals)}`}
+                            {...form.register(nameBase as never, options)}
+                          />
+                          <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">%</span>
+                        </div>
+                      </div>
+                    );
+                  }
                   if (inputType === "agent_picker") {
                     const apLabel = String((meta as any)?.agentPickerLabel ?? "").trim() || "Browse";
                     return (
@@ -2071,7 +2092,7 @@ export function PackageBlock({
                       label={displayLabel}
                       required={Boolean(meta.required)}
                       type={isNumber ? "number" : isDate ? "text" : "text"}
-                      placeholder={isDate ? "DD-MM-YYYY" : isCurrency ? "0.00" : undefined}
+                      placeholder={isDate ? "DD-MM-YYYY" : (isCurrency || isPercent) ? "0.00" : undefined}
                       inputMode={isDate ? "numeric" : undefined}
                       {...form.register(nameBase as never, options)}
                     />

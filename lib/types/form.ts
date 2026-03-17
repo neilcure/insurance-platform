@@ -2,6 +2,7 @@ export type InputType =
   | "string"
   | "number"
   | "currency"
+  | "percent"
   | "date"
   | "select"
   | "multi_select"

@@ -7,6 +7,7 @@ export const INPUT_TYPE_OPTIONS: { value: InputType; label: string }[] = [
   { value: "string", label: "String" },
   { value: "number", label: "Number" },
   { value: "currency", label: "Currency" },
+  { value: "percent", label: "Percent (%)" },
   { value: "date", label: "Date" },
   { value: "select", label: "Select" },
   { value: "multi_select", label: "Multi Select" },

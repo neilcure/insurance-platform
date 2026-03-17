@@ -318,6 +318,7 @@ export default function FlowsManager() {
                 )}
               </div>
             </div>
+
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>

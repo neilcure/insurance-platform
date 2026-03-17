@@ -259,6 +259,12 @@ function formatFieldValue(
     const f = fmtMeta?.booleanLabels?.false ?? "No";
     return (value === true || value === "true") ? t : f;
   }
+  if (type === "percent") {
+    const n = typeof value === "number" ? value : Number(value as any);
+    if (!Number.isFinite(n)) return String(value ?? "");
+    const d = typeof fmtMeta?.decimals === "number" ? fmtMeta.decimals : 2;
+    return `${n.toFixed(d)}%`;
+  }
   if (type === "currency" || type === "number") {
     const n = typeof value === "number" ? value : Number(value as any);
     if (!Number.isFinite(n)) return String(value ?? "");

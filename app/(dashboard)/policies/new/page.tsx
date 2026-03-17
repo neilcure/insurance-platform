@@ -468,7 +468,8 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                   const displayLabel = applyLabelCase(f.label, meta.labelCase);
                   const inputType = meta.inputType ?? "string";
                   const isCurrency = inputType === "currency";
-                  const isNumber = inputType === "number" || isCurrency;
+                  const isPercent = inputType === "percent";
+                  const isNumber = inputType === "number" || isCurrency || isPercent;
                   const isDate = inputType === "date";
                   const nameBase = `${pkg}__${f.value}`;
                   // Repeatable (list) support
@@ -1291,6 +1292,26 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                             placeholder={`0.${"0".repeat(decimals)}`}
                             {...form.register(nameBase as never, options)}
                           />
+                        </div>
+                      </div>
+                    );
+                  }
+                  if (isPercent) {
+                    const decimals = Number((meta as any)?.decimals ?? 2);
+                    const step = `0.${"0".repeat(Math.max(0, decimals - 1))}1`;
+                    return (
+                      <div key={nameBase} className="space-y-1">
+                        <Label>
+                          {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                        </Label>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            step={step}
+                            placeholder={`0.${"0".repeat(decimals)}`}
+                            {...form.register(nameBase as never, options)}
+                          />
+                          <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">%</span>
                         </div>
                       </div>
                     );
@@ -2763,7 +2784,7 @@ export default function NewPolicyStep1Page() {
                 defaultBoolean?: boolean | null;
               };
               const inputType = meta.inputType ?? "string";
-              const isNumber = inputType === "number";
+              const isNumber = inputType === "number" || inputType === "percent";
               const isDate = inputType === "date";
               const nameBase = `${pkg}__${f.value}`;
               if (inputType === "select") {
@@ -5409,6 +5430,7 @@ export default function NewPolicyStep1Page() {
           {wizard.step === 3 ? (
             <PolicyStep
               initialValues={wizard.policy as Partial<Record<string, unknown>>}
+              flowKey={flowKey}
               onComplete={(p) =>
                 setWizard((w) => ({
                   ...w,

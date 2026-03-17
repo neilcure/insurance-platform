@@ -21,6 +21,12 @@ export default async function PolicySettingsPage() {
         </CardHeader>
         <CardContent className="grid gap-3">
           <Link
+            href="/admin/policy-settings/policy/category"
+            className="rounded-md border border-neutral-200 px-3 py-2 text-sm hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-900"
+          >
+            Accounting Rules
+          </Link>
+          <Link
             href="/admin/policy-settings/vehicle/category"
             className="rounded-md border border-neutral-200 px-3 py-2 text-sm hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-900"
           >

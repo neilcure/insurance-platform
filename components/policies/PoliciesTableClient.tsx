@@ -22,7 +22,8 @@ import { StatusTab } from "@/components/policies/tabs/StatusTab";
 import { ActionsTab } from "@/components/policies/tabs/ActionsTab";
 import { DocumentsTab } from "@/components/policies/tabs/DocumentsTab";
 import { UploadDocumentsTab } from "@/components/policies/tabs/UploadDocumentsTab";
-import { Activity, Zap, FileText, Upload } from "lucide-react";
+import { AccountingTab } from "@/components/policies/tabs/AccountingTab";
+import { Activity, Zap, FileText, Upload, DollarSign } from "lucide-react";
 import type { DrawerTab } from "@/components/ui/drawer-tabs";
 import type { WorkflowActionRow } from "@/lib/types/workflow-action";
 import type { DocumentTemplateRow } from "@/lib/types/document-template";
@@ -622,6 +623,19 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
               />
             ),
           }] : []),
+          {
+            id: "accounting",
+            label: "Accounting",
+            icon: <DollarSign className="h-3 w-3" />,
+            content: (
+              <AccountingTab
+                policyId={detail.policyId}
+                canEdit={isAdmin || sessionUserType === "accounting"}
+                policyExtra={detail.extraAttributes as Record<string, unknown> | null | undefined}
+                onUpdate={refreshCurrent}
+              />
+            ),
+          },
         ] satisfies Omit<DrawerTab, "permanent">[]) : undefined}
       >
         {detail ? (

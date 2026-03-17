@@ -7,6 +7,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { Plus, Trash2 } from "lucide-react";
+
+type AccountingLine = { key: string; label: string };
+
+type MetaType = {
+  labelCase?: "original" | "upper" | "lower" | "title";
+  accountingLines?: AccountingLine[];
+  [k: string]: unknown;
+};
 
 type OptionRow = {
   id: number;
@@ -16,9 +25,7 @@ type OptionRow = {
   valueType: string;
   sortOrder: number;
   isActive: boolean;
-  meta?: {
-    labelCase?: "original" | "upper" | "lower" | "title";
-  } | null;
+  meta?: MetaType | null;
 };
 
 export default function GenericCategoryManager({ groupKey }: { groupKey: string }) {
@@ -33,6 +40,9 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
     isActive: true,
     meta: { labelCase: "original" },
   });
+  const [acctLines, setAcctLines] = React.useState<AccountingLine[]>([]);
+
+  const showAccountingLines = groupKey === "policy_category";
 
   async function load() {
     setLoading(true);
@@ -54,20 +64,33 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
 
   function startCreate() {
     setEditing(null);
-    setForm({ label: "", value: "", sortOrder: 0, isActive: true });
+    setForm({ label: "", value: "", sortOrder: 0, isActive: true, meta: { labelCase: "original" } });
+    setAcctLines([]);
     setOpen(true);
   }
   function startEdit(row: OptionRow) {
     setEditing(row);
     setForm({ ...row, meta: row.meta ?? { labelCase: "original" } });
+    setAcctLines(row.meta?.accountingLines ?? []);
     setOpen(true);
   }
+
+  function buildMeta(): MetaType {
+    const base: MetaType = { ...(form.meta ?? {}), labelCase: form.meta?.labelCase ?? "original" };
+    if (showAccountingLines) {
+      const validLines = acctLines.filter((l) => l.key.trim() && l.label.trim());
+      base.accountingLines = validLines.length > 0 ? validLines : undefined;
+    }
+    return base;
+  }
+
   async function save() {
     try {
       if (!form.label || !form.value) {
         toast.error("Label and value are required");
         return;
       }
+      const meta = buildMeta();
       if (editing) {
         const res = await fetch(`/api/admin/form-options/${editing.id}`, {
           method: "PATCH",
@@ -77,7 +100,7 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
             value: form.value,
             sortOrder: Number(form.sortOrder) || 0,
             isActive: !!form.isActive,
-            meta: form.meta ?? { labelCase: "original" },
+            meta,
           }),
         });
         if (!res.ok) throw new Error("Update failed");
@@ -93,7 +116,7 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
             sortOrder: Number(form.sortOrder) || 0,
             isActive: !!form.isActive,
             valueType: "string",
-            meta: form.meta ?? { labelCase: "original" },
+            meta,
           }),
         });
         if (!res.ok) throw new Error("Create failed");
@@ -135,6 +158,21 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
       toast.error(message);
     }
   }
+
+  function slugify(text: string): string {
+    return text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "line";
+  }
+
+  function addAcctLine() {
+    setAcctLines((prev) => [...prev, { key: "", label: "" }]);
+  }
+  function removeAcctLine(idx: number) {
+    setAcctLines((prev) => prev.filter((_, i) => i !== idx));
+  }
+  function updateAcctLineLabel(idx: number, val: string) {
+    setAcctLines((prev) => prev.map((l, i) => (i === idx ? { key: slugify(val), label: val } : l)));
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -149,6 +187,7 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
             <TableHead className="p-2 sm:p-4">Label</TableHead>
             <TableHead className="p-2 sm:p-4">Value</TableHead>
             <TableHead className="p-2 sm:p-4">Sort</TableHead>
+            {showAccountingLines && <TableHead className="p-2 sm:p-4">Acct Lines</TableHead>}
             <TableHead className="hidden text-right sm:table-cell p-2 sm:p-4">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -176,6 +215,21 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
               </TableCell>
               <TableCell className="hidden font-mono text-xs p-2 sm:table-cell sm:p-4">{r.value}</TableCell>
               <TableCell className="hidden p-2 sm:table-cell sm:p-4">{r.sortOrder}</TableCell>
+              {showAccountingLines && (
+                <TableCell className="hidden p-2 sm:table-cell sm:p-4">
+                  {r.meta?.accountingLines && r.meta.accountingLines.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {r.meta.accountingLines.map((l, i) => (
+                        <span key={i} className="rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900 dark:text-blue-300">
+                          {l.label}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-neutral-400">—</span>
+                  )}
+                </TableCell>
+              )}
               <TableCell className="hidden text-right sm:table-cell p-2 sm:p-4">
                 <div className="flex justify-end gap-2">
                   <Button size="sm" variant="secondary" onClick={() => startEdit(r)}>
@@ -193,7 +247,7 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
           ))}
           {!loading && rows.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={4} className="text-center text-sm text-neutral-500 dark:text-neutral-400">
+              <TableCell colSpan={showAccountingLines ? 5 : 4} className="text-center text-sm text-neutral-500 dark:text-neutral-400">
                 No categories defined.
               </TableCell>
             </TableRow>
@@ -202,18 +256,34 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
       </Table>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit Category" : "Add Category"}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3">
             <div className="grid gap-1">
               <Label>Label</Label>
-              <Input value={form.label ?? ""} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} />
+              <Input
+                value={form.label ?? ""}
+                onChange={(e) => {
+                  const label = e.target.value;
+                  setForm((f) => {
+                    const autoKey = !editing;
+                    return { ...f, label, ...(autoKey ? { value: slugify(label) } : {}) };
+                  });
+                }}
+              />
             </div>
             <div className="grid gap-1">
-              <Label>Value (key)</Label>
-              <Input value={form.value ?? ""} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} />
+              <Label className="flex items-center gap-2">
+                Value (key)
+                <span className="text-[10px] font-normal text-neutral-400">auto-generated from label</span>
+              </Label>
+              <Input
+                value={form.value ?? ""}
+                onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))}
+                className="font-mono text-xs"
+              />
             </div>
             <div className="grid gap-1">
               <Label>Sort Order</Label>
@@ -223,24 +293,24 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
                 onChange={(e) => setForm((f) => ({ ...f, sortOrder: Number(e.target.value) }))}
               />
             </div>
-          <div className="grid gap-1">
-            <Label>Label Case</Label>
-            <select
-              className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-              value={(form.meta?.labelCase ?? "original") as any}
-              onChange={(e) =>
-                setForm((f) => ({
-                  ...f,
-                  meta: { ...(f.meta ?? {}), labelCase: e.target.value as "original" | "upper" | "lower" | "title" },
-                }))
-              }
-            >
-              <option value="original">Original</option>
-              <option value="upper">UPPERCASE</option>
-              <option value="lower">lowercase</option>
-              <option value="title">Title Case</option>
-            </select>
-          </div>
+            <div className="grid gap-1">
+              <Label>Label Case</Label>
+              <select
+                className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                value={(form.meta?.labelCase ?? "original") as string}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    meta: { ...(f.meta ?? {}), labelCase: e.target.value as "original" | "upper" | "lower" | "title" },
+                  }))
+                }
+              >
+                <option value="original">Original</option>
+                <option value="upper">UPPERCASE</option>
+                <option value="lower">lowercase</option>
+                <option value="title">Title Case</option>
+              </select>
+            </div>
             <div className="grid gap-1">
               <label className="flex items-center gap-2 text-sm">
                 <input
@@ -251,6 +321,40 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
                 Active
               </label>
             </div>
+
+            {showAccountingLines && (
+              <div className="grid gap-2 rounded-md border border-neutral-200 p-3 dark:border-neutral-700">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold">Accounting Sections</Label>
+                  <Button type="button" size="sm" variant="outline" className="h-6 text-[11px]" onClick={addAcctLine}>
+                    <Plus className="mr-1 h-3 w-3" /> Add Section
+                  </Button>
+                </div>
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  How many accounting sections should appear in the Accounting tab when a policy uses this cover type?
+                </p>
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  <span className="font-medium">Example:</span> &quot;Third Party&quot; has 1 section. &quot;TPO + Own Damage&quot; has 2 sections (one for Third Party, one for Own Vehicle Damage).
+                </p>
+                {acctLines.length === 0 && (
+                  <p className="py-2 text-center text-xs text-neutral-400">No sections defined. A single default section will be used.</p>
+                )}
+                {acctLines.map((line, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <span className="shrink-0 text-xs font-medium text-neutral-400">{idx + 1}.</span>
+                    <Input
+                      placeholder="Section name (e.g. Third Party)"
+                      value={line.label}
+                      onChange={(e) => updateAcctLineLabel(idx, e.target.value)}
+                      className="h-7 text-xs"
+                    />
+                    <Button type="button" size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0" onClick={() => removeAcctLine(idx)}>
+                      <Trash2 className="h-3 w-3 text-red-500" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
@@ -263,10 +367,3 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
     </div>
   );
 }
-
-
-
-
-
-
-

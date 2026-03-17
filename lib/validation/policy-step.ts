@@ -39,13 +39,8 @@ const basePolicyFields = {
   tppd: optionalNumber,
 };
 
-export const ThirdPartyPolicySchema = z.object({
-  coverType: z.literal("third_party"),
-  ...basePolicyFields,
-});
-
-export const ComprehensivePolicySchema = z.object({
-  coverType: z.literal("comprehensive"),
+export const PolicyStepSchema = z.object({
+  coverType: z.string().optional().default(""),
   ...basePolicyFields,
   excessSection1: z.object({
     od: optionalNumber,
@@ -54,13 +49,8 @@ export const ComprehensivePolicySchema = z.object({
     i: optionalNumber,
     u: optionalNumber,
     p: optionalNumber,
-  }),
+  }).optional(),
 });
-
-export const PolicyStepSchema = z.discriminatedUnion("coverType", [
-  ThirdPartyPolicySchema,
-  ComprehensivePolicySchema,
-]);
 
 export type PolicyStepInput = z.infer<typeof PolicyStepSchema>;
 

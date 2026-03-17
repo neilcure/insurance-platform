@@ -93,23 +93,29 @@ export function FieldEditDialog({
                   );
                 }
 
-                if (f.inputType === "number" || f.inputType === "currency") {
+                if (f.inputType === "number" || f.inputType === "currency" || f.inputType === "percent") {
                   return (
                     <div key={f.key}>
                       <label className="text-sm text-neutral-600 dark:text-neutral-300">
                         {f.label}
                       </label>
-                      <Input
-                        type="number"
-                        value={String(value ?? "")}
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          onValuesChange((s) => ({
-                            ...s,
-                            [f.key]: raw === "" ? "" : Number(raw),
-                          }));
-                        }}
-                      />
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          step={f.inputType === "currency" || f.inputType === "percent" ? "0.01" : undefined}
+                          value={String(value ?? "")}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            onValuesChange((s) => ({
+                              ...s,
+                              [f.key]: raw === "" ? "" : Number(raw),
+                            }));
+                          }}
+                        />
+                        {f.inputType === "percent" && (
+                          <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">%</span>
+                        )}
+                      </div>
                     </div>
                   );
                 }

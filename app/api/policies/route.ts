@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { cars, policies } from "@/db/schema/insurance";
 import { memberships, organisations, clients, appSettings } from "@/db/schema/core";
+import { policyPremiums } from "@/db/schema/premiums";
+import { formOptions } from "@/db/schema/form_options";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { policyCreateSchema } from "@/lib/validation/policy";
 import { requireUser } from "@/lib/auth/require-user";
@@ -19,7 +21,7 @@ type FinalPolicyPayload = {
   } & Record<string, unknown>;
   policy?: {
     insurerOrgId: number;
-    coverType: "third_party" | "comprehensive";
+    coverType: string;
     clientId?: number;
     covernoteNo?: string;
     insurerPolicyNo?: string;
@@ -376,6 +378,7 @@ export async function POST(request: Request) {
           insuredSnapshot: (body as any).insured,
           clientId: ensuredClientId,
           packagesSnapshot: packages,
+          coverType: (policy as any)?.coverType ?? undefined,
           excessSection1: (policy as any)?.coverType === "comprehensive" ? (policy as any).excessSection1 : undefined,
           ...(flowKey ? { flowKey } : {}),
         } as Record<string, unknown>;
@@ -488,6 +491,150 @@ export async function POST(request: Request) {
 
         return { policy: createdPolicy };
       });
+
+      // Extract accounting fields and persist to policy_premiums, respecting line config
+      try {
+        const CENTS_KEYS: Record<string, string> = {
+          grossPremium: "grossPremiumCents",
+          netPremium: "netPremiumCents",
+          clientPremium: "clientPremiumCents",
+          agentCommission: "agentCommissionCents",
+        };
+
+        const acctPkg = (packages as any)?.accounting;
+        const acctValues =
+          acctPkg && typeof acctPkg === "object"
+            ? ("values" in acctPkg ? (acctPkg as any).values : acctPkg)
+            : null;
+        const policyPkg = (packages as any)?.policy;
+        const policyValues =
+          policyPkg && typeof policyPkg === "object"
+            ? ("values" in policyPkg ? (policyPkg as any).values : policyPkg)
+            : null;
+
+        const source = { ...(policy ?? {}), ...(policyValues ?? {}), ...(acctValues ?? {}) } as Record<string, unknown>;
+
+        const normalized: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(source)) {
+          const bare = k.includes("__") ? k.split("__").pop()! : k;
+          if (!(bare in normalized) || normalized[bare] === null || normalized[bare] === undefined || normalized[bare] === "") {
+            normalized[bare] = v;
+          }
+        }
+
+        const toCents = (key: string): number | null => {
+          const v = normalized[key];
+          if (v === null || v === undefined || v === "") return null;
+          const n = Number(v);
+          return Number.isFinite(n) ? Math.round(n * 100) : null;
+        };
+
+        const buildPremiumPayload = () => {
+          const structuredCents: Record<string, number | null> = {};
+          for (const [fieldKey, colName] of Object.entries(CENTS_KEYS)) {
+            structuredCents[colName] = toCents(fieldKey);
+          }
+          const rateRaw = Number(normalized.commissionRate);
+          const commRate = Number.isFinite(rateRaw) ? rateRaw.toFixed(2) : null;
+          const currency =
+            typeof normalized.currency === "string" && normalized.currency.trim()
+              ? normalized.currency.trim().toUpperCase()
+              : "HKD";
+          const knownKeys = new Set([...Object.keys(CENTS_KEYS), "commissionRate", "currency"]);
+          const extraValues: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(normalized)) {
+            if (!knownKeys.has(k) && v !== null && v !== undefined && v !== "") {
+              extraValues[k] = v;
+            }
+          }
+          return { structuredCents, commRate, currency, extraValues };
+        };
+
+        // Load line templates from policy_category form options
+        type LineTemplate = { key: string; label: string };
+        let lineTemplates: LineTemplate[] = [{ key: "main", label: "Premium" }];
+        try {
+          const coverTypeVal = String(normalized.coverType ?? (policy as any)?.coverType ?? "").trim();
+          if (coverTypeVal) {
+            const catRows = await db
+              .select()
+              .from(formOptions)
+              .where(and(eq(formOptions.groupKey, "policy_category"), eq(formOptions.isActive, true)));
+
+            // Check for "with Own Vehicle Damage" boolean in the submitted data
+            let hasOwnVehicleDamage = false;
+            for (const [k, v] of Object.entries(normalized)) {
+              const lower = k.toLowerCase();
+              if (
+                (lower.includes("ownvehicle") || lower.includes("own_vehicle") || lower === "withownvehicledamage") &&
+                (v === true || v === "true" || v === "Yes" || v === "yes")
+              ) {
+                hasOwnVehicleDamage = true;
+                break;
+              }
+            }
+
+            let effectiveVal = coverTypeVal;
+            if (coverTypeVal.toLowerCase() === "tpo" && hasOwnVehicleDamage) {
+              const odMatch = catRows.find((r) => r.value === "tpo_with_od");
+              if (odMatch) effectiveVal = "tpo_with_od";
+            }
+
+            const norm = effectiveVal.toLowerCase().replace(/[\s_-]+/g, "_");
+            const match = catRows.find((r) => {
+              const rNorm = String(r.value ?? "").toLowerCase().replace(/[\s_-]+/g, "_");
+              return r.value === effectiveVal || rNorm === norm;
+            });
+            if (match) {
+              const meta = (match.meta ?? {}) as Record<string, unknown>;
+              const acctLines = Array.isArray(meta.accountingLines) ? (meta.accountingLines as LineTemplate[]) : null;
+              if (acctLines && acctLines.length > 0) {
+                lineTemplates = acctLines;
+              } else {
+                lineTemplates = [{ key: match.value ?? "main", label: match.label ?? "Premium" }];
+              }
+            }
+          }
+        } catch { /* config not set yet */ }
+
+        const payload = buildPremiumPayload();
+        const hasAnyValue = Object.values(payload.structuredCents).some((v) => v !== null) || payload.commRate !== null;
+
+        if (hasAnyValue || Object.keys(payload.extraValues).length > 0) {
+          // Create a premium row for each expected line template
+          for (const tmpl of lineTemplates) {
+            await db
+              .insert(policyPremiums)
+              .values({
+                policyId: result.policy.id,
+                lineKey: tmpl.key,
+                lineLabel: tmpl.label,
+                currency: payload.currency,
+                ...payload.structuredCents,
+                commissionRate: payload.commRate,
+                extraValues: Object.keys(payload.extraValues).length > 0 ? payload.extraValues : null,
+                updatedBy: Number(user.id),
+              })
+              .onConflictDoNothing();
+          }
+        } else if (lineTemplates.length > 0) {
+          // Even without values, create empty line stubs so accounting tab shows the right sections
+          for (const tmpl of lineTemplates) {
+            await db
+              .insert(policyPremiums)
+              .values({
+                policyId: result.policy.id,
+                lineKey: tmpl.key,
+                lineLabel: tmpl.label,
+                currency: "HKD",
+                updatedBy: Number(user.id),
+              })
+              .onConflictDoNothing();
+          }
+        }
+      } catch {
+        // Best-effort; don't fail policy creation
+      }
 
       return NextResponse.json({ success: true, policyId: result.policy.id }, { status: 201 });
     } else {
