@@ -111,12 +111,6 @@ export function parseHongKongAddress(input: string): ParsedHongKongAddress {
   const blockNumMatch = text.match(/\b(?:BLK|BLOCK)\s*([A-Z0-9\-]+)\b/i);
   if (blockNumMatch) result.blockNumber = blockNumMatch[1];
 
-  // Block/Building name (take the phrase before "Block" or end after "Building/Court/Tower/Phase/Estate")
-  const blockNameMatch =
-    text.match(/\b([A-Z0-9\s\-\&']+?)\s+(?:BUILDING|COURT|TOWER|ESTATE|PHASE)\b/i) ||
-    text.match(/\b(?:BLOCK|BLK)\s*[A-Z0-9\-]+\s+([A-Z0-9\s\-\&']+?)\b/i);
-  if (blockNameMatch) result.blockName = cleanup(blockNameMatch[1]);
-
   // Street number and name
   // Examples:
   // - "123 King's Road", "12A Nathan Road"
@@ -133,11 +127,38 @@ export function parseHongKongAddress(input: string): ParsedHongKongAddress {
     result.streetName = expandAbbreviation(cleanup(streetMatch[2]));
   }
 
-  // Property name (pick a prominent building/estate name if present, including the suffix)
-  const propertyMatch = text.match(
-    /\b([A-Z][A-Z0-9\s'\-]+?\s+(?:BUILDING|TOWER|ESTATE|MANSION|COURT|GARDEN|RESIDENCE|RESIDENCES|PLAZA|CENTRE|CENTER|HOUSE|TERRACE|LODGE|VILLAS?))\b/i,
-  );
-  if (propertyMatch) result.propertyName = cleanup(propertyMatch[1]);
+  // Block/Building name & Property/Estate name
+  // Finds all "[Name] [SUFFIX]" phrases, then classifies them:
+  //   Building-level (HOUSE/TOWER/BUILDING) → blockName (a block within an estate)
+  //   Estate-level (COURT/ESTATE/GARDEN/…) → propertyName
+  // When both exist the building is the block and the estate is the property.
+  {
+    const bldgSuf = 'HOUSE|TOWER|BUILDING';
+    const estateSuf = 'COURT|ESTATE|GARDEN|PLAZA|CENTRE|CENTER|MANSION|RESIDENCE|RESIDENCES|VILLAS?|TERRACE|LODGE|PHASE';
+    const propRe = new RegExp(
+      `\\b([A-Z][A-Z\\s'\\-&]*?\\s+(?:${bldgSuf}|${estateSuf}))\\b`,
+      'gi',
+    );
+    const bldgSet = new Set(['HOUSE', 'TOWER', 'BUILDING']);
+    const found: { name: string; isBldg: boolean }[] = [];
+    let pm: RegExpExecArray | null;
+    while ((pm = propRe.exec(text)) !== null) {
+      found.push({
+        name: cleanup(pm[1]),
+        isBldg: bldgSet.has((pm[1].split(/\s+/).pop() ?? '').toUpperCase()),
+      });
+    }
+    const bldgs = found.filter((p) => p.isBldg);
+    const estates = found.filter((p) => !p.isBldg);
+    if (bldgs.length > 0 && estates.length > 0) {
+      result.blockName = bldgs[0].name;
+      result.propertyName = estates[0].name;
+    } else if (estates.length > 0) {
+      result.propertyName = estates[0].name;
+    } else if (bldgs.length > 0) {
+      result.propertyName = bldgs[0].name;
+    }
+  }
 
   // District - match by list presence
   const lower = text.toLowerCase();

@@ -202,17 +202,29 @@ function LineEditor({
             }
 
             if (f.inputType === "number" || f.inputType === "currency" || f.inputType === "percent") {
+              const maxDecimals = f.inputType === "currency" ? 2 : f.inputType === "percent" ? 2 : undefined;
               return (
                 <div key={f.key}>
                   <label className="text-xs text-neutral-600 dark:text-neutral-300">{f.label}</label>
                   <div className="mt-1 flex items-center gap-2">
+                    {f.inputType === "currency" && (
+                      <span className="shrink-0 text-xs font-medium text-neutral-500 dark:text-neutral-400">{currency}</span>
+                    )}
                     <Input
                       type="number"
-                      step="0.01"
+                      step={f.inputType === "currency" || f.inputType === "percent" ? "0.01" : "any"}
                       value={String(val ?? "")}
                       onChange={(e) => {
                         const raw = e.target.value;
-                        setValues((s) => ({ ...s, [f.key]: raw === "" ? "" : Number(raw) }));
+                        if (raw === "") {
+                          setValues((s) => ({ ...s, [f.key]: "" }));
+                          return;
+                        }
+                        if (maxDecimals !== undefined) {
+                          const dotIdx = raw.indexOf(".");
+                          if (dotIdx !== -1 && raw.length - dotIdx - 1 > maxDecimals) return;
+                        }
+                        setValues((s) => ({ ...s, [f.key]: Number(raw) }));
                       }}
                       className="h-8 text-xs"
                       placeholder="0.00"

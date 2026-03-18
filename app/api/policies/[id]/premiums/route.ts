@@ -7,6 +7,7 @@ import { formOptions } from "@/db/schema/form_options";
 import { and, eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
+import { appendPolicyAudit } from "@/lib/audit";
 import { sql } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -248,10 +249,30 @@ export async function PUT(request: Request, ctx: Ctx) {
       .limit(1);
 
     let row;
-    if (existing) {
+    const isUpdate = !!existing;
+    if (isUpdate) {
       [row] = await db.update(policyPremiums).set(dbPayload).where(and(eq(policyPremiums.policyId, policyId), eq(policyPremiums.lineKey, lineKey))).returning();
     } else {
       [row] = await db.insert(policyPremiums).values({ policyId, lineKey, ...dbPayload }).returning();
+    }
+
+    const auditChanges: { key: string; from: unknown; to: unknown }[] = [];
+    const sectionLabel = lineLabel || lineKey;
+    for (const f of fields) {
+      const val = incomingValues[f.key];
+      if (val !== null && val !== undefined && val !== "" && val !== 0) {
+        auditChanges.push({
+          key: `accounting_${sectionLabel}_${f.label}`,
+          from: isUpdate ? undefined : null,
+          to: val,
+        });
+      }
+    }
+    if (auditChanges.length > 0) {
+      const userEmail = (user as unknown as { email?: string }).email ?? "";
+      try {
+        await appendPolicyAudit(policyId, { id: Number(user.id), email: userEmail }, auditChanges);
+      } catch { /* non-fatal */ }
     }
 
     return NextResponse.json({ policyId, line: rowToLineData(row, fields) });

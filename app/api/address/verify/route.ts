@@ -83,6 +83,26 @@ function cleanText(x: unknown): string | undefined {
   return s ? s : undefined;
 }
 
+function splitCombinedPremise(premise?: string): { estate?: string; building?: string } | null {
+  if (!premise) return null;
+  if (
+    !/\b(?:HOUSE|TOWER|BUILDING)\b/i.test(premise) ||
+    !/\b(?:COURT|ESTATE|GARDEN|PLAZA|CENTRE|CENTER|MANSION|RESIDENCE|RESIDENCES|VILLAS?|TERRACE|LODGE)\b/i.test(premise)
+  ) {
+    return null;
+  }
+  const estateMatch = premise.match(
+    /([A-Z][A-Za-z\s'\-&]*?\s+(?:COURT|ESTATE|GARDEN|PLAZA|CENTRE|CENTER|MANSION|RESIDENCE|RESIDENCES|VILLAS?|TERRACE|LODGE))/i,
+  );
+  const buildingMatch = premise.match(
+    /([A-Z][A-Za-z\s'\-&]*?\s+(?:HOUSE|TOWER|BUILDING))/i,
+  );
+  return {
+    estate: estateMatch?.[1]?.trim(),
+    building: buildingMatch?.[1]?.trim(),
+  };
+}
+
 function pickComponent(
   components: Array<{ long_name?: unknown; short_name?: unknown; types?: unknown }> | null | undefined,
   wantType: string,
@@ -202,15 +222,16 @@ export async function POST(request: Request) {
   const parsed = parseHongKongAddress(query);
   const parsedArea = deriveAreaFromDistrict(parsed?.districtName);
 
+  const premiseSplit = splitCombinedPremise(propertyName);
+
   const merged = {
     flatNumber: flatNumber ?? parsed?.flatNumber,
     floorNumber: floorNumber ?? parsed?.floorNumber,
-    // Google usually doesn't provide block number/name for HK addresses; prefer parsed.
     blockNumber: parsed?.blockNumber,
-    blockName: parsed?.blockName,
+    blockName: parsed?.blockName ?? premiseSplit?.building,
     streetNumber: streetNumber ?? parsed?.streetNumber,
     streetName: streetName ?? parsed?.streetName,
-    propertyName: propertyName ?? parsed?.propertyName,
+    propertyName: premiseSplit?.estate ?? propertyName ?? parsed?.propertyName,
     districtName: districtName ?? parsed?.districtName,
     area: area ?? parsedArea,
   };
