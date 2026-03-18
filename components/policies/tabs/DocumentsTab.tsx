@@ -44,12 +44,67 @@ function resolveFieldValue(
   if (section.source === "insured" || section.source === "contactinfo") {
     const insured = snapshot.insuredSnapshot ?? {};
     const prefix = section.source;
-    return (
-      insured[fieldKey] ??
-      insured[`${prefix}__${fieldKey}`] ??
-      insured[`${prefix}_${fieldKey}`] ??
-      ""
-    );
+
+    const stripPfx = (k: string): string =>
+      k.replace(/^(insured|contactinfo)(__?|_)/i, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    const robustGet = (pfx: string, key: string): string => {
+      const direct = insured[key] ?? insured[`${pfx}__${key}`] ?? insured[`${pfx}_${key}`];
+      if (direct !== undefined && direct !== null && String(direct).trim()) return String(direct).trim();
+      const norm = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+      for (const [k, v] of Object.entries(insured)) {
+        if (stripPfx(k) === norm && v !== undefined && v !== null && String(v).trim()) return String(v).trim();
+      }
+      return "";
+    };
+
+    if (section.source === "insured" && fieldKey === "displayName") {
+      const iType = (robustGet("insured", "insuredType") || robustGet("insured", "category")).toLowerCase();
+      if (iType === "personal") {
+        const combined = [robustGet("insured", "lastName"), robustGet("insured", "firstName")].filter(Boolean).join(" ");
+        return combined || robustGet("insured", "fullName");
+      }
+      if (iType === "company") return robustGet("insured", "companyName") || robustGet("insured", "organisationName");
+      return robustGet("insured", "companyName") || robustGet("insured", "organisationName") || robustGet("insured", "fullName") ||
+        [robustGet("insured", "lastName"), robustGet("insured", "firstName")].filter(Boolean).join(" ");
+    }
+
+    if (section.source === "insured" && fieldKey === "primaryId") {
+      const iType = (robustGet("insured", "insuredType") || robustGet("insured", "category")).toLowerCase();
+      if (iType === "personal") return robustGet("insured", "idNumber");
+      if (iType === "company") return robustGet("insured", "brNumber");
+      return robustGet("insured", "idNumber") || robustGet("insured", "brNumber");
+    }
+
+    if (section.source === "contactinfo" && fieldKey === "fullAddress") {
+      const g = (k: string) => robustGet("contactinfo", k);
+      const first = (...keys: string[]) => { for (const k of keys) { const v = g(k); if (v) return v; } return ""; };
+      const tc = (s: string) => {
+        if (!s) return s;
+        const lo = s.toLowerCase();
+        return (lo === s || s.toUpperCase() === s) ? lo.replace(/(?:^|\s|[-'/])\S/g, (ch) => ch.toUpperCase()) : s;
+      };
+      const parts: string[] = [];
+      const flat = first("flatNumber", "flatNo", "flat");
+      const floor = first("floorNumber", "floorNo", "floor", "foorNo");
+      const block = first("blockNumber", "blockNo");
+      const blockName = tc(first("blockName", "block"));
+      const streetNum = first("streetNumber", "streetNo");
+      const street = tc(first("streetName", "street"));
+      const prop = tc(first("propertyName", "property"));
+      const district = tc(first("districtName", "district"));
+      const area = tc(first("area", "region"));
+      if (flat) parts.push(`Flat ${flat}`);
+      if (floor) parts.push(`${floor}/F`);
+      if (block || blockName) parts.push([block, blockName].filter(Boolean).join(" "));
+      if (streetNum || street) parts.push([streetNum, street].filter(Boolean).join(" "));
+      if (prop) parts.push(prop);
+      if (district) parts.push(district);
+      if (area) parts.push(area);
+      return parts.join(", ");
+    }
+
+    return robustGet(prefix, fieldKey) || "";
   }
 
   if (section.source === "package" && section.packageName) {

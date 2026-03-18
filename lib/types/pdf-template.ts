@@ -77,10 +77,12 @@ export const DATA_SOURCE_OPTIONS: {
 export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
   policy: ["policyNumber", "createdAt"],
   insured: [
+    "displayName", "primaryId",
     "fullName", "lastName", "firstName", "idNumber", "companyName",
     "brNumber", "organisationName", "hasDrivingLicense", "insuredType",
   ],
   contactinfo: [
+    "fullAddress",
     "name", "personalTitle", "tel", "mobile", "fax", "email",
     "flatNumber", "floorNumber", "blockNumber", "blockName",
     "streetNumber", "streetName", "propertyName", "districtName", "area",
@@ -96,6 +98,7 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
   agent: ["name", "email", "userNumber"],
   client: ["clientNumber", "category", "displayName", "primaryId", "contactPhone"],
   organisation: [
+    "fullAddress",
     "name", "contactName", "contactEmail", "contactPhone",
     "flatNumber", "floorNumber", "blockNumber", "blockName",
     "streetNumber", "streetName", "propertyName", "districtName", "area",

@@ -34,26 +34,152 @@ function fuzzyGet(obj: Record<string, unknown>, key: string): unknown {
   return undefined;
 }
 
+function stripPrefix(k: string): string {
+  let s = k;
+  // Strip known prefixes repeatedly (handles insured__contactinfo__key)
+  while (/^(insured|contactinfo)(_+)/i.test(s)) {
+    s = s.replace(/^(insured|contactinfo)(_+)/i, "");
+  }
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function prefixedGet(
+  obj: Record<string, unknown>,
+  key: string,
+  prefix: string,
+): unknown {
+  const direct = fuzzyGet(obj, key);
+  if (direct !== undefined) return direct;
+  for (const sep of ["__", "_"]) {
+    const v = fuzzyGet(obj, `${prefix}${sep}${key}`);
+    if (v !== undefined) return v;
+  }
+  const norm = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  for (const [k, v] of Object.entries(obj)) {
+    if (stripPrefix(k) === norm && v !== undefined && v !== null) return v;
+  }
+  return "";
+}
+
+function insuredGet(insured: Record<string, unknown>, key: string): unknown {
+  return prefixedGet(insured, key, "insured");
+}
+
+function resolveInsuredDisplayName(insured: Record<string, unknown>): string {
+  const insuredType = String(
+    insuredGet(insured, "insuredType") ||
+    insuredGet(insured, "category") ||
+    ""
+  ).trim().toLowerCase();
+
+  if (insuredType === "personal") {
+    const last = String(insuredGet(insured, "lastName") ?? "").trim();
+    const first = String(insuredGet(insured, "firstName") ?? "").trim();
+    const combined = [last, first].filter(Boolean).join(" ");
+    if (combined) return combined;
+    const full = String(insuredGet(insured, "fullName") ?? "").trim();
+    if (full) return full;
+  }
+
+  if (insuredType === "company") {
+    const company = String(insuredGet(insured, "companyName") ?? "").trim();
+    if (company) return company;
+    const org = String(insuredGet(insured, "organisationName") ?? "").trim();
+    if (org) return org;
+  }
+
+  // Fallback: try all name fields regardless of type
+  for (const k of ["companyName", "organisationName", "fullName"]) {
+    const v = String(insuredGet(insured, k) ?? "").trim();
+    if (v) return v;
+  }
+  const last = String(insuredGet(insured, "lastName") ?? "").trim();
+  const first = String(insuredGet(insured, "firstName") ?? "").trim();
+  return [last, first].filter(Boolean).join(" ");
+}
+
+function resolveInsuredPrimaryId(insured: Record<string, unknown>): string {
+  const insuredType = String(
+    insuredGet(insured, "insuredType") ||
+    insuredGet(insured, "category") ||
+    ""
+  ).trim().toLowerCase();
+
+  if (insuredType === "personal") {
+    return String(insuredGet(insured, "idNumber") ?? "").trim();
+  }
+  if (insuredType === "company") {
+    return String(insuredGet(insured, "brNumber") ?? "").trim();
+  }
+  // Fallback
+  const id = String(insuredGet(insured, "idNumber") ?? "").trim();
+  if (id) return id;
+  return String(insuredGet(insured, "brNumber") ?? "").trim();
+}
+
 function resolveInsured(snapshot: SnapshotData, key: string): unknown {
   const insured = snapshot.insuredSnapshot;
   if (!insured || typeof insured !== "object") return "";
-  return (
-    fuzzyGet(insured, key) ??
-    fuzzyGet(insured, `insured__${key}`) ??
-    fuzzyGet(insured, `insured_${key}`) ??
-    ""
-  );
+
+  if (key === "displayName") return resolveInsuredDisplayName(insured);
+  if (key === "primaryId") return resolveInsuredPrimaryId(insured);
+
+  return insuredGet(insured, key);
+}
+
+function contactGet(insured: Record<string, unknown>, key: string): unknown {
+  return prefixedGet(insured, key, "contactinfo");
+}
+
+function firstNonEmpty(getter: (key: string) => unknown, ...keys: string[]): string {
+  for (const k of keys) {
+    const v = String(getter(k) ?? "").trim();
+    if (v) return v;
+  }
+  return "";
+}
+
+function toTitleCase(s: string): string {
+  if (!s) return s;
+  const lower = s.toLowerCase();
+  if (lower === s || s.toUpperCase() === s) {
+    return lower.replace(/(?:^|\s|[-'/])\S/g, (ch) => ch.toUpperCase());
+  }
+  return s;
+}
+
+function buildAddressFromGetter(
+  getter: (key: string) => unknown,
+): string {
+  const parts: string[] = [];
+  const flat = firstNonEmpty(getter, "flatNumber", "flatNo", "flat");
+  const floor = firstNonEmpty(getter, "floorNumber", "floorNo", "floor", "foorNo");
+  const block = firstNonEmpty(getter, "blockNumber", "blockNo");
+  const blockName = toTitleCase(firstNonEmpty(getter, "blockName", "block"));
+  const streetNum = firstNonEmpty(getter, "streetNumber", "streetNo");
+  const street = toTitleCase(firstNonEmpty(getter, "streetName", "street"));
+  const prop = toTitleCase(firstNonEmpty(getter, "propertyName", "property"));
+  const district = toTitleCase(firstNonEmpty(getter, "districtName", "district"));
+  const area = toTitleCase(firstNonEmpty(getter, "area", "region"));
+  if (flat) parts.push(`Flat ${flat}`);
+  if (floor) parts.push(`${floor}/F`);
+  if (block || blockName) parts.push([block, blockName].filter(Boolean).join(" "));
+  if (streetNum || street) parts.push([streetNum, street].filter(Boolean).join(" "));
+  if (prop) parts.push(prop);
+  if (district) parts.push(district);
+  if (area) parts.push(area);
+  return parts.join(", ");
 }
 
 function resolveContact(snapshot: SnapshotData, key: string): unknown {
   const insured = snapshot.insuredSnapshot;
   if (!insured || typeof insured !== "object") return "";
-  return (
-    fuzzyGet(insured, key) ??
-    fuzzyGet(insured, `contactinfo__${key}`) ??
-    fuzzyGet(insured, `contactinfo_${key}`) ??
-    ""
-  );
+
+  if (key === "fullAddress") {
+    return buildAddressFromGetter((k) => contactGet(insured, k));
+  }
+
+  return contactGet(insured, key);
 }
 
 function resolvePackage(
@@ -173,9 +299,13 @@ export function resolveFieldValue(
       raw = ctx.client ? fuzzyGet(ctx.client, field.fieldKey) ?? "" : "";
       break;
     case "organisation":
-      raw = ctx.organisation
-        ? fuzzyGet(ctx.organisation, field.fieldKey) ?? ""
-        : "";
+      if (!ctx.organisation) {
+        raw = "";
+      } else if (field.fieldKey === "fullAddress") {
+        raw = buildAddress(ctx.organisation);
+      } else {
+        raw = fuzzyGet(ctx.organisation, field.fieldKey) ?? "";
+      }
       break;
     case "accounting":
       raw = resolveAccounting(ctx.accountingLines, field.lineKey, field.fieldKey);
