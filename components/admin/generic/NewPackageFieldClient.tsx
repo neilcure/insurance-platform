@@ -49,7 +49,7 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
         max?: number;
         fields?: { label?: string; value?: string; inputType?: InputType; options?: { label: string; value: string }[] }[];
       };
-      showWhen?: { package: string; category: string | string[] }[];
+      showWhen?: { package: string; category: string | string[]; field?: string; fieldValues?: string[]; childKey?: string; childValues?: string[] }[];
       groupShowWhen?: { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null;
       groupShowWhenMap?: Record<string, { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null>;
       autoFill?: AutoFillConfig;

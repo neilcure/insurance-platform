@@ -27,6 +27,8 @@ export type ShowWhenRule = {
   category: string | string[];
   field?: string;
   fieldValues?: string[];
+  childKey?: string;
+  childValues?: string[];
 };
 
 export type SelectChild = {

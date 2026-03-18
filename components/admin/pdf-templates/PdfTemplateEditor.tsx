@@ -310,7 +310,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                   }`}
                   style={{ top: "100%" }}
                 >
-                  {field.source === "package" ? `${field.packageName}.${field.fieldKey}` : `${field.source}.${field.fieldKey}`}
+                  {field.source === "package" ? `${field.packageName}.${field.fieldKey}` : field.source === "accounting" ? `accounting${field.lineKey ? `[${field.lineKey}]` : ""}.${field.fieldKey}` : `${field.source}.${field.fieldKey}`}
                 </div>
               </div>
             );
@@ -350,7 +350,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
             >
               <span className="truncate font-medium">{f.label || f.fieldKey}</span>
               <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
-                {f.source === "package" ? `${f.packageName}.${f.fieldKey}` : `${f.source}.${f.fieldKey}`}
+                {f.source === "package" ? `${f.packageName}.${f.fieldKey}` : f.source === "accounting" ? `accounting${f.lineKey ? `[${f.lineKey}]` : ""}.${f.fieldKey}` : `${f.source}.${f.fieldKey}`}
               </span>
             </button>
           ))}
@@ -405,6 +405,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                     source: e.target.value as PdfFieldMapping["source"],
                     fieldKey: "",
                     packageName: undefined,
+                    lineKey: undefined,
                   })
                 }
                 className="w-full h-7 text-xs rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 dark:text-neutral-100 px-2"
@@ -427,6 +428,21 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                   placeholder="e.g. vehicleinfo, policyinfo"
                   className="h-7 text-xs"
                 />
+              </div>
+            )}
+
+            {selectedField.source === "accounting" && (
+              <div>
+                <Label className="text-xs">Line Key</Label>
+                <Input
+                  value={selectedField.lineKey ?? ""}
+                  onChange={(e) => updateField(selectedField.id, { lineKey: e.target.value })}
+                  placeholder="e.g. tpo, own_vehicle_damage, main"
+                  className="h-7 text-xs"
+                />
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                  Which accounting section to pull from. Leave empty for the first/only line.
+                </p>
               </div>
             )}
 

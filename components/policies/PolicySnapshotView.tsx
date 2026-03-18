@@ -588,13 +588,56 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage }: {
         insuredValues[k] = v;
       }
     }
-    if (Object.keys(insuredValues).length > 0 && !merged["insured"]) {
-      merged["insured"] = insuredCategory
-        ? { category: insuredCategory, values: insuredValues }
-        : insuredValues;
+
+    const normForMerge = (k: string) => k.toLowerCase().replace(/_+/g, "");
+    const mergeOverride = (target: Record<string, unknown>, source: Record<string, unknown>) => {
+      const result = { ...target };
+      const targetNorms = new Map<string, string>();
+      for (const k of Object.keys(result)) targetNorms.set(normForMerge(k), k);
+      for (const [k, v] of Object.entries(source)) {
+        const existingKey = targetNorms.get(normForMerge(k));
+        if (existingKey) {
+          result[existingKey] = v;
+        } else {
+          result[k] = v;
+        }
+      }
+      return result;
+    };
+
+    if (Object.keys(insuredValues).length > 0) {
+      if (merged["insured"] && typeof merged["insured"] === "object") {
+        const existing = merged["insured"] as Record<string, unknown>;
+        const isStruct = "values" in existing || "category" in existing;
+        if (isStruct) {
+          const vals = (existing as { values?: Record<string, unknown> }).values ?? {};
+          merged["insured"] = {
+            ...existing,
+            values: mergeOverride(vals, insuredValues),
+            ...(insuredCategory ? { category: insuredCategory } : {}),
+          };
+        } else {
+          merged["insured"] = mergeOverride(existing, insuredValues);
+        }
+      } else {
+        merged["insured"] = insuredCategory
+          ? { category: insuredCategory, values: insuredValues }
+          : insuredValues;
+      }
     }
-    if (Object.keys(contactValues).length > 0 && !merged["contactinfo"]) {
-      merged["contactinfo"] = contactValues;
+    if (Object.keys(contactValues).length > 0) {
+      if (merged["contactinfo"] && typeof merged["contactinfo"] === "object") {
+        const existing = merged["contactinfo"] as Record<string, unknown>;
+        const isStruct = "values" in existing || "category" in existing;
+        if (isStruct) {
+          const vals = (existing as { values?: Record<string, unknown> }).values ?? {};
+          merged["contactinfo"] = { ...existing, values: mergeOverride(vals, contactValues) };
+        } else {
+          merged["contactinfo"] = mergeOverride(existing, contactValues);
+        }
+      } else {
+        merged["contactinfo"] = contactValues;
+      }
     }
     return merged;
   }, [pkgs, insuredSnap]);

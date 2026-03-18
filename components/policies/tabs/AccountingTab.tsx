@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
-import { Loader2, Pencil, Save, X } from "lucide-react";
+import { Building2, Loader2, Pencil, Save, Users, X } from "lucide-react";
 
 type FieldDef = {
   key: string;
@@ -24,12 +24,18 @@ type CoverTypeOption = {
   accountingLines?: LineTemplate[];
 };
 
+type EntityOption = { id: number; name: string };
+
 type LineData = {
   lineKey: string;
   lineLabel: string;
   values: Record<string, unknown>;
   margin: number | null;
   updatedAt: string | null;
+  insurerId: number | null;
+  insurerName: string | null;
+  collaboratorId: number | null;
+  collaboratorName: string | null;
 };
 
 const fmtCurrency = (val: unknown, currency: string): string => {
@@ -66,10 +72,6 @@ function SummaryRow({ label, value, className }: { label: string; value: string;
   );
 }
 
-/**
- * Resolve which line templates to use based on the policy's cover type
- * and the admin-configured cover type options (from policy_category form options).
- */
 function resolveTemplates(
   coverTypeOptions: CoverTypeOption[],
   policyExtra: Record<string, unknown> | null | undefined,
@@ -77,7 +79,6 @@ function resolveTemplates(
   const fallback: LineTemplate[] = [{ key: "main", label: "Premium" }];
   if (!coverTypeOptions.length) return fallback;
 
-  // Scan all package values from the snapshot to find coverType and related fields
   let coverTypeValue: string | undefined;
   let hasOwnVehicleDamage = false;
 
@@ -87,7 +88,7 @@ function resolveTemplates(
       if (bare === "coverType" && typeof v === "string" && v.trim()) {
         coverTypeValue = v.trim();
       }
-      // Detect "with Own Vehicle Damage" boolean child (various possible key patterns)
+      const lower = k.toLowerCase();
       const lowerBare = bare.toLowerCase();
       if (
         (lowerBare.includes("ownvehicle") || lowerBare.includes("own_vehicle") || lowerBare === "withownvehicledamage") &&
@@ -95,13 +96,18 @@ function resolveTemplates(
       ) {
         hasOwnVehicleDamage = true;
       }
+      // Detect child field under coverType=tpo that is true (e.g. coverType__opt_tpo__c0 = true)
+      if (lower.includes("covertype__opt_tpo__c") && (v === true || v === "true")) {
+        hasOwnVehicleDamage = true;
+      }
+      // Detect PD-suffixed entity fields with values (insCompanyPD, insColloratorsPD)
+      if (lowerBare.endsWith("pd") && typeof v === "string" && v.trim()) {
+        hasOwnVehicleDamage = true;
+      }
     }
   };
 
-  // Check top-level
   if (policyExtra) scanValues(policyExtra as Record<string, unknown>);
-
-  // Scan packagesSnapshot.*.values
   const pkgs = (policyExtra?.packagesSnapshot ?? {}) as Record<string, unknown>;
   for (const entry of Object.values(pkgs)) {
     if (!entry || typeof entry !== "object") continue;
@@ -111,29 +117,33 @@ function resolveTemplates(
 
   if (!coverTypeValue) return fallback;
 
-  // If TPO + own vehicle damage boolean is true, look for a "tpo_with_od" option first
   let effectiveValue = coverTypeValue;
   if (coverTypeValue.toLowerCase() === "tpo" && hasOwnVehicleDamage) {
     const odMatch = coverTypeOptions.find((opt) => opt.value === "tpo_with_od");
     if (odMatch) effectiveValue = "tpo_with_od";
   }
 
-  // Match effective value to the options
   const normalized = effectiveValue.toLowerCase().replace(/[\s_-]+/g, "_");
   const match = coverTypeOptions.find((opt) => {
     const optNorm = opt.value.toLowerCase().replace(/[\s_-]+/g, "_");
     return opt.value === effectiveValue || optNorm === normalized;
   });
 
-  if (match?.accountingLines && match.accountingLines.length > 0) {
-    return match.accountingLines;
-  }
-
-  if (match) {
-    return [{ key: match.value, label: match.label }];
-  }
-
+  if (match?.accountingLines && match.accountingLines.length > 0) return match.accountingLines;
+  if (match) return [{ key: match.value, label: match.label }];
   return fallback;
+}
+
+// --- Entity badge (read-only) ---
+function EntityBadge({ icon: Icon, label, name }: { icon: React.ElementType; label: string; name: string | null }) {
+  if (!name) return null;
+  return (
+    <div className="flex items-center gap-1.5 text-[11px]">
+      <Icon className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+      <span className="text-neutral-500 dark:text-neutral-400">{label}:</span>
+      <span className="font-medium text-neutral-700 dark:text-neutral-300">{name}</span>
+    </div>
+  );
 }
 
 // --- Line editor ---
@@ -142,6 +152,10 @@ function LineEditor({
   lineKey,
   lineLabel,
   initialValues,
+  initialInsurerId,
+  initialCollabId,
+  availableInsurers,
+  availableCollabs,
   onSave,
   onCancel,
   saving,
@@ -150,11 +164,17 @@ function LineEditor({
   lineKey: string;
   lineLabel: string;
   initialValues: Record<string, unknown>;
-  onSave: (lineKey: string, lineLabel: string, values: Record<string, unknown>) => void;
+  initialInsurerId: number | null;
+  initialCollabId: number | null;
+  availableInsurers: EntityOption[];
+  availableCollabs: EntityOption[];
+  onSave: (lineKey: string, lineLabel: string, values: Record<string, unknown>, insurerId: number | null, collabId: number | null) => void;
   onCancel: () => void;
   saving: boolean;
 }) {
   const [values, setValues] = React.useState<Record<string, unknown>>({ ...initialValues });
+  const [insurerId, setInsurerId] = React.useState<number | null>(initialInsurerId);
+  const [collabId, setCollabId] = React.useState<number | null>(initialCollabId);
 
   const liveMargin = React.useMemo(() => {
     const client = Number(values.clientPremium) || 0;
@@ -174,7 +194,7 @@ function LineEditor({
           <Button size="sm" variant="ghost" onClick={onCancel} disabled={saving}>
             <X className="mr-1 h-3 w-3" /> Cancel
           </Button>
-          <Button size="sm" onClick={() => onSave(lineKey, lineLabel, values)} disabled={saving}>
+          <Button size="sm" onClick={() => onSave(lineKey, lineLabel, values, insurerId, collabId)} disabled={saving}>
             {saving ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
             Save
           </Button>
@@ -183,6 +203,44 @@ function LineEditor({
 
       <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
         <div className="space-y-3">
+          {/* Entity pickers */}
+          <div className="space-y-2 rounded-md bg-neutral-50 p-2.5 dark:bg-neutral-900/50">
+            <div>
+              <label className="flex items-center gap-1.5 text-xs text-neutral-600 dark:text-neutral-300">
+                <Users className="h-3 w-3" /> Collaborator
+              </label>
+              <select
+                className="mt-1 h-8 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                value={collabId ?? ""}
+                onChange={(e) => setCollabId(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="">— Select —</option>
+                {availableCollabs.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="flex items-center gap-1.5 text-xs text-neutral-600 dark:text-neutral-300">
+                <Building2 className="h-3 w-3" /> Insurance Company
+              </label>
+              <select
+                className="mt-1 h-8 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                value={insurerId ?? ""}
+                onChange={(e) => setInsurerId(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="">— Select —</option>
+                {availableInsurers.map((o) => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Dynamic accounting fields */}
           {fields.map((f) => {
             const val = values[f.key];
 
@@ -300,8 +358,17 @@ function LineView({ line, fields, canEdit, onEdit }: { line: LineData; fields: F
           </Button>
         )}
       </div>
+
+      {/* Entity associations */}
+      {(line.insurerName || line.collaboratorName) && (
+        <div className="space-y-0.5 border-b border-neutral-100 px-3 py-1.5 dark:border-neutral-800">
+          <EntityBadge icon={Users} label="Collaborator" name={line.collaboratorName} />
+          <EntityBadge icon={Building2} label="Insurer" name={line.insurerName} />
+        </div>
+      )}
+
       <div className="px-3 py-1">
-        {!hasData ? (
+        {!hasData && !line.insurerName ? (
           <div className="py-3 text-center text-xs text-neutral-400 dark:text-neutral-500">
             Not filled in yet
             {canEdit && (
@@ -355,6 +422,10 @@ export function AccountingTab({
   const [fields, setFields] = React.useState<FieldDef[]>([]);
   const [lines, setLines] = React.useState<LineData[]>([]);
   const [coverTypeOptions, setCoverTypeOptions] = React.useState<CoverTypeOption[]>([]);
+  const [availableInsurers, setAvailableInsurers] = React.useState<EntityOption[]>([]);
+  const [availableCollabs, setAvailableCollabs] = React.useState<EntityOption[]>([]);
+  type EntityHint = { insurerId: number | null; insurerName: string | null; collabId: number | null; collabName: string | null };
+  const [snapshotEntities, setSnapshotEntities] = React.useState<Record<string, EntityHint>>({});
   const [loading, setLoading] = React.useState(true);
   const [editingKey, setEditingKey] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
@@ -368,6 +439,9 @@ export function AccountingTab({
       setFields(json.fields ?? []);
       setLines(json.lines ?? []);
       setCoverTypeOptions(json.coverTypeOptions ?? []);
+      setAvailableInsurers(json.availableInsurers ?? []);
+      setAvailableCollabs(json.availableCollabs ?? []);
+      setSnapshotEntities(json.snapshotEntities ?? {});
     } catch {
       setFields([]);
       setLines([]);
@@ -378,15 +452,22 @@ export function AccountingTab({
 
   React.useEffect(() => { void load(); }, [load]);
 
-  // Determine which lines SHOULD exist based on the policy's cover type
   const expectedTemplates = React.useMemo(
     () => resolveTemplates(coverTypeOptions, policyExtra),
     [coverTypeOptions, policyExtra],
   );
 
-  // Merge expected templates with existing DB lines
   const displayLines = React.useMemo(() => {
     const result: LineData[] = [];
+    const hasOdHint = "od" in snapshotEntities;
+    const hintForLine = (lineKey: string, lineLabel: string, idx: number): EntityHint => {
+      const k = (lineKey + lineLabel).toLowerCase().replace(/[^a-z]/g, "");
+      let isOd = k.includes("owndamage") || k.includes("ownvehicle");
+      if (!isOd && idx > 0 && hasOdHint) isOd = true;
+      const hint = snapshotEntities[isOd ? "od" : "main"] ?? snapshotEntities["main"];
+      return hint ?? { insurerId: null, insurerName: null, collabId: null, collabName: null };
+    };
+    let templateIdx = 0;
     for (const tmpl of expectedTemplates) {
       const existing = lines.find((l) => l.lineKey === tmpl.key);
       if (existing) {
@@ -394,25 +475,35 @@ export function AccountingTab({
       } else {
         const emptyValues: Record<string, unknown> = {};
         for (const f of fields) emptyValues[f.key] = null;
-        result.push({ lineKey: tmpl.key, lineLabel: tmpl.label, values: emptyValues, margin: null, updatedAt: null });
+        const entities = hintForLine(tmpl.key, tmpl.label, templateIdx);
+        result.push({
+          lineKey: tmpl.key, lineLabel: tmpl.label, values: emptyValues,
+          margin: null, updatedAt: null,
+          insurerId: entities.insurerId,
+          insurerName: entities.insurerName,
+          collaboratorId: entities.collabId,
+          collaboratorName: entities.collabName,
+        });
       }
+      templateIdx++;
     }
-    // Include any existing lines not in the templates (legacy data)
     for (const line of lines) {
-      if (!result.some((r) => r.lineKey === line.lineKey)) {
-        result.push(line);
-      }
+      if (result.some((r) => r.lineKey === line.lineKey)) continue;
+      const hasPremiumData = Object.entries(line.values).some(
+        ([k, v]) => k !== "currency" && v !== null && v !== undefined && v !== "" && v !== 0,
+      ) || line.insurerId !== null || line.collaboratorId !== null;
+      if (hasPremiumData) result.push(line);
     }
     return result;
-  }, [expectedTemplates, lines, fields]);
+  }, [expectedTemplates, lines, fields, snapshotEntities]);
 
-  async function handleSave(lineKey: string, lineLabel: string, values: Record<string, unknown>) {
+  async function handleSave(lineKey: string, lineLabel: string, values: Record<string, unknown>, insurerId: number | null, collabId: number | null) {
     setSaving(true);
     try {
       const res = await fetch(`/api/policies/${policyId}/premiums`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lineKey, lineLabel, values }),
+        body: JSON.stringify({ lineKey, lineLabel, values, insurerId, collaboratorId: collabId }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Save failed" }));
@@ -448,7 +539,6 @@ export function AccountingTab({
     );
   }
 
-  // Editing a line
   if (editingKey !== null) {
     const line = displayLines.find((l) => l.lineKey === editingKey);
     if (!line) { setEditingKey(null); return null; }
@@ -458,6 +548,10 @@ export function AccountingTab({
         lineKey={line.lineKey}
         lineLabel={line.lineLabel}
         initialValues={line.values}
+        initialInsurerId={line.insurerId}
+        initialCollabId={line.collaboratorId}
+        availableInsurers={availableInsurers}
+        availableCollabs={availableCollabs}
         onSave={handleSave}
         onCancel={() => setEditingKey(null)}
         saving={saving}
@@ -465,7 +559,6 @@ export function AccountingTab({
     );
   }
 
-  // Read-only
   return (
     <div className="space-y-3">
       <div className="text-sm font-medium">Accounting</div>
@@ -480,7 +573,6 @@ export function AccountingTab({
         />
       ))}
 
-      {/* Totals across all lines */}
       {displayLines.length > 1 && (() => {
         const currency = (typeof displayLines[0]?.values?.currency === "string" && displayLines[0].values.currency) || "HKD";
         let totalMargin = 0;

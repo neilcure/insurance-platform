@@ -168,7 +168,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
       const res = await fetch("/api/form-options?groupKey=packages", { cache: "no-store" });
       if (!res.ok) return;
       const data = (await res.json()) as { label: string; value: string }[];
-      setAvailablePackages((Array.isArray(data) ? data : []).filter((p) => p.value !== pkg));
+      setAvailablePackages(Array.isArray(data) ? data : []);
     } catch { /* ignore */ }
     setCopySourcePkg("");
     setCopySourceFields([]);
@@ -3361,7 +3361,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
       <Dialog open={copyDialogOpen} onOpenChange={setCopyDialogOpen}>
         <DialogContent className="max-h-[80vh] flex flex-col">
           <DialogHeader>
-            <DialogTitle>Copy Fields from Another Package</DialogTitle>
+            <DialogTitle>Copy Fields from Package</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 flex-1 overflow-hidden">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">

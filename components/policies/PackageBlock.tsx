@@ -487,7 +487,7 @@ function FormulaField({
 }
 
 function evaluateShowWhen(
-  showWhen: { package: string; category: string | string[]; field?: string; fieldValues?: string[] }[] | undefined,
+  showWhen: { package: string; category: string | string[]; field?: string; fieldValues?: string[]; childKey?: string; childValues?: string[] }[] | undefined,
   formValues: Record<string, unknown>,
 ): boolean {
   if (!showWhen || !Array.isArray(showWhen) || showWhen.length === 0) return true;
@@ -503,6 +503,18 @@ function evaluateShowWhen(
       const fv = String(formValues[`${otherPkg}__${rule.field}`] ?? "").trim().toLowerCase();
       const allowedVals = (rule.fieldValues ?? []).map((v) => String(v).trim().toLowerCase()).filter(Boolean);
       if (allowedVals.length > 0 && !allowedVals.includes(fv)) return false;
+    }
+    if (rule.childKey && rule.field) {
+      const parentVal = String(formValues[`${otherPkg}__${rule.field}`] ?? "").trim();
+      const idxMatch = rule.childKey.match(/[cs]c?(\d+)$/);
+      if (idxMatch && parentVal) {
+        const childFormKey = `${otherPkg}__${rule.field}__opt_${parentVal}__c${idxMatch[1]}`;
+        const cv = String(formValues[childFormKey] ?? "").trim().toLowerCase();
+        const allowedChildVals = (rule.childValues ?? []).map((v) => String(v).trim().toLowerCase()).filter(Boolean);
+        if (allowedChildVals.length > 0 && !allowedChildVals.includes(cv)) return false;
+      } else if (!parentVal) {
+        return false;
+      }
     }
     return true;
   });
@@ -1028,6 +1040,7 @@ export function PackageBlock({
   }, [allFormValues, pkgFields, pkg, form]);
 
   const [activeEntityPicker, setActiveEntityPicker] = React.useState<EntityPickerMeta | null>(null);
+  const [activeEntityPickerField, setActiveEntityPickerField] = React.useState<string>("");
   const [agentPickerOpen, setAgentPickerOpen] = React.useState(false);
   const [agentPickerTarget, setAgentPickerTarget] = React.useState<string>("");
 
@@ -1042,7 +1055,7 @@ export function PackageBlock({
   );
 
   const handleEntityPickerSelect = React.useCallback(
-    (picker: EntityPickerMeta, selection: EntityPickerSelection) => {
+    (picker: EntityPickerMeta, selection: EntityPickerSelection, triggerField?: string) => {
       const extra = selection.extraAttributes;
       const pkgs = (extra?.packagesSnapshot ?? {}) as Record<string, unknown>;
 
@@ -1060,11 +1073,24 @@ export function PackageBlock({
         return undefined;
       };
 
+      const triggerFieldInMappings = triggerField
+        ? picker.mappings.some((m) => {
+            if (!m.targetField) return false;
+            const tk = m.targetField.includes("__") ? m.targetField : `${pkg}__${m.targetField}`;
+            return tk === triggerField;
+          })
+        : true;
+
+      let firstMappingRedirected = false;
       for (const m of picker.mappings) {
         if (!m.sourceField || !m.targetField) continue;
         const val = findValue(m.sourceField);
         if (val !== undefined && val !== null && val !== "") {
-          const targetKey = m.targetField.includes("__") ? m.targetField : `${pkg}__${m.targetField}`;
+          let targetKey = m.targetField.includes("__") ? m.targetField : `${pkg}__${m.targetField}`;
+          if (triggerField && !triggerFieldInMappings && !firstMappingRedirected) {
+            targetKey = triggerField;
+            firstMappingRedirected = true;
+          }
           form.setValue(targetKey as never, val as never, { shouldDirty: true });
         }
       }
@@ -1102,7 +1128,7 @@ export function PackageBlock({
               };
               group?: string;
               groupOrder?: number;
-              showWhen?: { package: string; category: string | string[]; field?: string; fieldValues?: string[] } | { package: string; category: string | string[]; field?: string; fieldValues?: string[] }[];
+              showWhen?: { package: string; category: string | string[]; field?: string; fieldValues?: string[]; childKey?: string; childValues?: string[] } | { package: string; category: string | string[]; field?: string; fieldValues?: string[]; childKey?: string; childValues?: string[] }[];
             };
             const cats = (meta.categories ?? []) as string[];
             const canonCats = cats.map((c) => String(c ?? "").trim().toLowerCase()).filter(Boolean);
@@ -1124,6 +1150,13 @@ export function PackageBlock({
                 if (r.field) {
                   const fv = String(allFormValues[`${p}__${r.field}`] ?? "").trim();
                   detail += ` field="${r.field}" val="${fv}" allowedVals=[${(r.fieldValues ?? []).join(",")}]`;
+                }
+                if (r.childKey && r.field) {
+                  const pv = String(allFormValues[`${p}__${r.field}`] ?? "").trim();
+                  const idxM = r.childKey.match(/[cs]c?(\d+)$/);
+                  const ck = idxM && pv ? `${p}__${r.field}__opt_${pv}__c${idxM[1]}` : `${p}__${r.field}__${r.childKey}`;
+                  const childVal = String(allFormValues[ck] ?? "").trim();
+                  detail += ` childKey="${r.childKey}" resolvedKey="${ck}" childVal="${childVal}" allowedChildVals=[${(r.childValues ?? []).join(",")}]`;
                 }
                 return detail;
               }).join(" | ");
@@ -1330,7 +1363,7 @@ export function PackageBlock({
                           <button
                             type="button"
                             className="group/ep relative inline-flex h-8 w-8 items-center justify-center rounded-md border border-neutral-200 bg-white text-neutral-600 transition-all duration-300 ease-out hover:w-auto hover:gap-1.5 hover:px-3 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
-                            onClick={() => setActiveEntityPicker(meta.entityPicker!)}
+                            onClick={() => { setActiveEntityPicker(meta.entityPicker!); setActiveEntityPickerField(nameBase); }}
                             title={meta.entityPicker.buttonLabel || "Browse"}
                           >
                             <Search className="h-3.5 w-3.5 shrink-0" />
@@ -2074,7 +2107,7 @@ export function PackageBlock({
                           <button
                             type="button"
                             className="group/ep relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-neutral-200 bg-white text-neutral-600 transition-all duration-300 ease-out hover:w-auto hover:gap-1.5 hover:px-3 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
-                            onClick={() => setActiveEntityPicker(meta.entityPicker!)}
+                            onClick={() => { setActiveEntityPicker(meta.entityPicker!); setActiveEntityPickerField(nameBase); }}
                             title={meta.entityPicker.buttonLabel || "Browse"}
                           >
                             <Search className="h-3.5 w-3.5 shrink-0" />
@@ -2140,10 +2173,10 @@ export function PackageBlock({
       {activeEntityPicker && (
         <EntityPickerDrawer
           open={!!activeEntityPicker}
-          onClose={() => setActiveEntityPicker(null)}
+          onClose={() => { setActiveEntityPicker(null); setActiveEntityPickerField(""); }}
           flowKey={activeEntityPicker.flow}
           title={activeEntityPicker.buttonLabel || "Select Record"}
-          onSelect={(sel) => handleEntityPickerSelect(activeEntityPicker, sel)}
+          onSelect={(sel) => handleEntityPickerSelect(activeEntityPicker, sel, activeEntityPickerField)}
         />
       )}
       {agentPickerOpen && (

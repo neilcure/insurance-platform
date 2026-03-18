@@ -18,8 +18,11 @@ export type PdfFieldMapping = {
     | "agent"
     | "client"
     | "organisation"
+    | "accounting"
     | "static";
   packageName?: string;
+  /** For accounting source: which premium line to pull from (e.g. "tpo", "main") */
+  lineKey?: string;
   fieldKey: string;
   staticValue?: string;
 
@@ -64,9 +67,10 @@ export const DATA_SOURCE_OPTIONS: {
   { value: "insured", label: "Insured (Snapshot)", description: "Insured name, ID, etc. from policy snapshot" },
   { value: "contactinfo", label: "Contact Info (Snapshot)", description: "Phone, address, etc. from policy snapshot" },
   { value: "package", label: "Package (Snapshot)", description: "Any package field from policy snapshot" },
+  { value: "accounting", label: "Accounting (Premiums)", description: "Premium amounts, insurer/collaborator per line" },
   { value: "agent", label: "Agent", description: "Agent name, email, user number" },
   { value: "client", label: "Client", description: "Client number, display name, primary ID, etc." },
-  { value: "organisation", label: "Organisation / Insurer", description: "Company name, contact, address" },
+  { value: "organisation", label: "Organisation / Insurer", description: "Company name, contact, address (policy-level)" },
   { value: "static", label: "Static Text", description: "Fixed text value" },
 ];
 
@@ -82,6 +86,13 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
     "streetNumber", "streetName", "propertyName", "districtName", "area",
   ],
   package: [],
+  accounting: [
+    "grossPremium", "netPremium", "clientPremium", "agentCommission",
+    "commissionRate", "currency", "margin", "lineLabel",
+    "insurerName", "insurerContactName", "insurerContactEmail", "insurerContactPhone",
+    "insurerAddress",
+    "collaboratorName",
+  ],
   agent: ["name", "email", "userNumber"],
   client: ["clientNumber", "category", "displayName", "primaryId", "contactPhone"],
   organisation: [

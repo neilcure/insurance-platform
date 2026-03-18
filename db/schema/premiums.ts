@@ -1,23 +1,25 @@
 import { integer, jsonb, numeric, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 import { policies } from "./insurance";
-import { users } from "./core";
+import { users, organisations } from "./core";
 
 export const policyPremiums = pgTable("policy_premiums", {
   id: serial("id").primaryKey(),
   policyId: integer("policy_id").notNull().references(() => policies.id, { onDelete: "cascade" }),
-  // Identifies the premium line within a policy (e.g. "tpo", "od", or "main" for single-line)
   lineKey: varchar("line_key", { length: 64 }).notNull().default("main"),
   lineLabel: varchar("line_label", { length: 128 }),
   currency: varchar("currency", { length: 8 }).notNull().default("HKD"),
 
-  // Structured columns for known financial fields (stored in cents for precision)
+  // Per-line entity associations (TPO + OD may have different insurer/collaborator per line)
+  organisationId: integer("organisation_id").references(() => organisations.id, { onDelete: "set null" }),
+  collaboratorId: integer("collaborator_id").references(() => policies.id, { onDelete: "set null" }),
+  insurerPolicyId: integer("insurer_policy_id").references(() => policies.id, { onDelete: "set null" }),
+
   grossPremiumCents: integer("gross_premium_cents"),
   netPremiumCents: integer("net_premium_cents"),
   clientPremiumCents: integer("client_premium_cents"),
   agentCommissionCents: integer("agent_commission_cents"),
   commissionRate: numeric("commission_rate", { precision: 6, scale: 2 }),
 
-  // Additional admin-configured fields stored as JSONB
   extraValues: jsonb("extra_values").$type<Record<string, unknown> | null>().default(null),
 
   note: text("note"),

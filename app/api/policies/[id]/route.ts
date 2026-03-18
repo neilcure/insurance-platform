@@ -468,7 +468,51 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
     }
 
     const oldPkgs = (existing.packagesSnapshot ?? {}) as Record<string, unknown>;
-    const newPkgs = (body.packages ?? oldPkgs) as Record<string, unknown>;
+    let newPkgs = (body.packages ?? oldPkgs) as Record<string, unknown>;
+
+    // Cross-sync: when insuredSnapshot is updated but packagesSnapshot is not
+    // explicitly provided, propagate changes to matching insured/contactinfo
+    // packages in packagesSnapshot so they stay in sync.
+    if (body.insured && !body.packages) {
+      const normKey = (k: string) => k.toLowerCase().replace(/_+/g, "");
+      const syncPkg = (pkgName: string, sourceEntries: [string, unknown][]) => {
+        if (!(pkgName in newPkgs)) return;
+        const pkgData = newPkgs[pkgName] as Record<string, unknown> | null;
+        if (!pkgData || typeof pkgData !== "object") return;
+        const isStruct = "values" in pkgData || "category" in pkgData;
+        const vals = isStruct
+          ? { ...((pkgData as { values?: Record<string, unknown> }).values ?? {}) }
+          : { ...pkgData };
+        const valsNorms = new Map<string, string>();
+        for (const k of Object.keys(vals)) valsNorms.set(normKey(k), k);
+        let changed = false;
+        for (const [sk, sv] of sourceEntries) {
+          const existing = valsNorms.get(normKey(sk));
+          if (existing) {
+            if (JSON.stringify(vals[existing]) !== JSON.stringify(sv)) {
+              vals[existing] = sv;
+              changed = true;
+            }
+          }
+        }
+        if (changed) {
+          newPkgs = { ...newPkgs };
+          newPkgs[pkgName] = isStruct ? { ...pkgData, values: vals } : vals;
+        }
+      };
+      const insuredEntries: [string, unknown][] = [];
+      const contactEntries: [string, unknown][] = [];
+      for (const [k, v] of Object.entries(body.insured)) {
+        const lower = k.toLowerCase();
+        if (lower.startsWith("contactinfo_") || lower.startsWith("contactinfo__")) {
+          contactEntries.push([k, v]);
+        } else if (lower.startsWith("insured_") || lower.startsWith("insured__")) {
+          insuredEntries.push([k, v]);
+        }
+      }
+      if (insuredEntries.length > 0) syncPkg("insured", insuredEntries);
+      if (contactEntries.length > 0) syncPkg("contactinfo", contactEntries);
+    }
 
     const changes: { key: string; from: unknown; to: unknown }[] = [];
     const flattenPkg = (pkgs: Record<string, unknown>): Record<string, unknown> => {

@@ -348,6 +348,9 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
       const snap = (detail.extraAttributes ?? {}) as Record<string, unknown>;
       const isInsuredPkg = editPkg === "insured" || editPkg === "contactinfo";
 
+      const pkgsSnap = (snap.packagesSnapshot ?? {}) as Record<string, unknown>;
+      const insuredAlsoInPkgs = isInsuredPkg && editPkg in pkgsSnap;
+
       if (isInsuredPkg) {
         const insured = { ...((snap.insuredSnapshot ?? {}) as Record<string, unknown>) };
         for (const [key, val] of Object.entries(editValues)) {
@@ -359,12 +362,47 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
           if (key in insured) { insured[key] = val; found = true; }
           if (!found) insured[`${editPkg}_${key}`] = val;
         }
-        const res = await fetch(`/api/policies/${detail.policyId}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ insured }),
-        });
-        if (!res.ok) throw new Error(await res.text());
+
+        if (insuredAlsoInPkgs) {
+          const pkgs = { ...pkgsSnap };
+          const existingPkg = (pkgs[editPkg] ?? {}) as Record<string, unknown>;
+          const isStructured = existingPkg && typeof existingPkg === "object" && ("values" in existingPkg || "category" in existingPkg);
+          const oldValues: Record<string, unknown> = isStructured
+            ? { ...((existingPkg as { values?: Record<string, unknown> }).values ?? {}) }
+            : { ...existingPkg };
+          const remapped: Record<string, unknown> = { ...oldValues };
+          for (const [key, val] of Object.entries(editValues)) {
+            const prefixed2 = `${editPkg}__${key}`;
+            const prefixed1 = `${editPkg}_${key}`;
+            if (key in remapped) {
+              remapped[key] = val;
+            } else if (prefixed2 in remapped) {
+              remapped[prefixed2] = val;
+            } else if (prefixed1 in remapped) {
+              remapped[prefixed1] = val;
+            } else {
+              remapped[key] = val;
+            }
+          }
+          if (isStructured) {
+            pkgs[editPkg] = { ...existingPkg, values: remapped };
+          } else {
+            pkgs[editPkg] = remapped;
+          }
+          const res = await fetch(`/api/policies/${detail.policyId}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ insured, packages: pkgs }),
+          });
+          if (!res.ok) throw new Error(await res.text());
+        } else {
+          const res = await fetch(`/api/policies/${detail.policyId}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ insured }),
+          });
+          if (!res.ok) throw new Error(await res.text());
+        }
       } else {
         const pkgs = { ...((snap.packagesSnapshot ?? {}) as Record<string, unknown>) };
         const existingPkg = (pkgs[editPkg] ?? {}) as Record<string, unknown>;

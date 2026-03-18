@@ -134,7 +134,7 @@ export function ShowWhenConfig({
                       value={rule.field ?? ""}
                       onChange={(e) => {
                         const next = [...value];
-                        next[rIdx] = { ...next[rIdx], field: e.target.value || undefined, fieldValues: e.target.value ? [] : undefined };
+                        next[rIdx] = { ...next[rIdx], field: e.target.value || undefined, fieldValues: e.target.value ? [] : undefined, childKey: undefined, childValues: undefined };
                         onChange(next);
                       }}
                     >
@@ -159,7 +159,7 @@ export function ShowWhenConfig({
                                   const updated = checked
                                     ? selectedFieldValues.filter((v) => v !== o.value)
                                     : [...selectedFieldValues, o.value];
-                                  next[rIdx] = { ...next[rIdx], fieldValues: updated };
+                                  next[rIdx] = { ...next[rIdx], fieldValues: updated, childKey: undefined, childValues: undefined };
                                   onChange(next);
                                 }}
                               />
@@ -169,6 +169,81 @@ export function ShowWhenConfig({
                         })}
                       </div>
                     ) : null}
+                    {(() => {
+                      if (fieldType !== "select" || selectedFieldValues.length === 0 || !selectedField?.meta?.options) return null;
+                      const childCandidates: { key: string; label: string; inputType: string; options?: { label?: string; value?: string }[]; booleanLabels?: { true?: string; false?: string } }[] = [];
+                      for (const optVal of selectedFieldValues) {
+                        const opt = selectedField.meta.options.find((o) => o.value === optVal);
+                        const kids = Array.isArray(opt?.children) ? opt.children : [];
+                        kids.forEach((child, idx) => {
+                          const cType = String((child as Record<string, unknown>)?.inputType ?? "string");
+                          if (cType !== "select" && cType !== "boolean") return;
+                          childCandidates.push({
+                            key: `opt_${optVal}__c${idx}`,
+                            label: String((child as Record<string, unknown>)?.label ?? `Child ${idx + 1}`),
+                            inputType: cType,
+                            options: (child as Record<string, unknown>)?.options as { label?: string; value?: string }[] | undefined,
+                            booleanLabels: (child as Record<string, unknown>)?.booleanLabels as { true?: string; false?: string } | undefined,
+                          });
+                        });
+                      }
+                      if (childCandidates.length === 0) return null;
+                      const selectedChild = rule.childKey ? childCandidates.find((c) => c.key === rule.childKey) : null;
+                      const childValueOpts: { label: string; value: string }[] = selectedChild
+                        ? selectedChild.inputType === "boolean"
+                          ? [
+                              { label: selectedChild.booleanLabels?.true ?? "Yes", value: "true" },
+                              { label: selectedChild.booleanLabels?.false ?? "No", value: "false" },
+                            ]
+                          : (selectedChild.options ?? []).map((o) => ({ label: o.label ?? o.value ?? "", value: o.value ?? "" }))
+                        : [];
+                      const selectedChildValues = rule.childValues ?? [];
+                      return (
+                        <div className="mt-1 space-y-1 rounded border border-dashed border-neutral-300 p-1.5 dark:border-neutral-700">
+                          <div className="flex items-center gap-2">
+                            <Label className={`w-20 shrink-0 ${labelSize}`}>Child Field</Label>
+                            <select
+                              className={selectCls}
+                              value={rule.childKey ?? ""}
+                              onChange={(e) => {
+                                const next = [...value];
+                                next[rIdx] = { ...next[rIdx], childKey: e.target.value || undefined, childValues: e.target.value ? [] : undefined };
+                                onChange(next);
+                              }}
+                            >
+                              <option value="">(no child condition)</option>
+                              {childCandidates.map((c) => (
+                                <option key={c.key} value={c.key}>{c.label} ({c.inputType})</option>
+                              ))}
+                            </select>
+                          </div>
+                          {rule.childKey && childValueOpts.length > 0 ? (
+                            <div className="flex flex-wrap gap-2 pl-22">
+                              {childValueOpts.map((o) => {
+                                const checked = selectedChildValues.includes(o.value);
+                                return (
+                                  <label key={o.value} className="inline-flex items-center gap-1 text-xs">
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => {
+                                        const next = [...value];
+                                        const updated = checked
+                                          ? selectedChildValues.filter((v) => v !== o.value)
+                                          : [...selectedChildValues, o.value];
+                                        next[rIdx] = { ...next[rIdx], childValues: updated };
+                                        onChange(next);
+                                      }}
+                                    />
+                                    {o.label}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               ) : null}

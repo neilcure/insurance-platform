@@ -2,14 +2,15 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { formOptions } from "@/db/schema/form_options";
 import { policies, cars } from "@/db/schema/insurance";
+import { policyPremiums } from "@/db/schema/premiums";
 import { users, clients, organisations } from "@/db/schema/core";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { readPdfTemplate } from "@/lib/storage-pdf-templates";
 import { PDF_TEMPLATE_GROUP_KEY } from "@/lib/types/pdf-template";
 import type { PdfTemplateMeta } from "@/lib/types/pdf-template";
 import { generateFilledPdf } from "@/lib/pdf/generate";
-import type { MergeContext } from "@/lib/pdf/resolve-data";
+import type { MergeContext, AccountingLineContext } from "@/lib/pdf/resolve-data";
 
 export const dynamic = "force-dynamic";
 
@@ -143,6 +144,73 @@ export async function POST(
     } catch { /* ignore */ }
   }
 
+  // Load accounting lines with associated entities
+  let accountingLines: AccountingLineContext[] = [];
+  try {
+    const premiumRows = await db.select().from(policyPremiums).where(eq(policyPremiums.policyId, policyId)).orderBy(policyPremiums.createdAt);
+
+    if (premiumRows.length > 0) {
+      const lineOrgIds = [...new Set(premiumRows.map((r) => r.organisationId).filter(Boolean))] as number[];
+      const lineCollabIds = [...new Set(premiumRows.map((r) => r.collaboratorId).filter(Boolean))] as number[];
+      const orgMap = new Map<number, Record<string, unknown>>();
+      const collabMap = new Map<number, Record<string, unknown>>();
+
+      if (lineOrgIds.length) {
+        const orgRows = await db.select().from(organisations).where(sql`"id" = ANY(${lineOrgIds})`);
+        for (const o of orgRows) orgMap.set(o.id, o as unknown as Record<string, unknown>);
+      }
+      if (lineCollabIds.length) {
+        const collabRows = await db
+          .select({ policyId: policies.id, carExtra: cars.extraAttributes })
+          .from(policies)
+          .leftJoin(cars, eq(cars.policyId, policies.id))
+          .where(sql`"policies"."id" = ANY(${lineCollabIds})`);
+        for (const c of collabRows) {
+          const pkgs = ((c.carExtra as Record<string, unknown>)?.packagesSnapshot ?? {}) as Record<string, unknown>;
+          let name = "";
+          for (const data of Object.values(pkgs)) {
+            if (!data || typeof data !== "object") continue;
+            const vals = ("values" in (data as Record<string, unknown>) ? (data as { values?: Record<string, unknown> }).values : data) as Record<string, unknown>;
+            if (!vals) continue;
+            for (const [k, v] of Object.entries(vals)) {
+              const n = k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
+              if (/companyname|organisationname|fullname|displayname|^name$/.test(n) && v) { name = String(v); break; }
+            }
+            if (name) break;
+          }
+          collabMap.set(c.policyId, { name: name || `Collaborator #${c.policyId}`, ...((c.carExtra as Record<string, unknown>) ?? {}) });
+        }
+      }
+
+      const centsToDisplay = (v: number | null | undefined) => (v != null ? v / 100 : null);
+
+      accountingLines = premiumRows.map((row) => {
+        const extra = (row.extraValues ?? {}) as Record<string, unknown>;
+        const vals: Record<string, unknown> = {
+          grossPremium: centsToDisplay(row.grossPremiumCents),
+          netPremium: centsToDisplay(row.netPremiumCents),
+          clientPremium: centsToDisplay(row.clientPremiumCents),
+          agentCommission: centsToDisplay(row.agentCommissionCents),
+          commissionRate: row.commissionRate !== null ? Number(row.commissionRate) : null,
+          currency: row.currency,
+          ...extra,
+        };
+        const client = Number(vals.clientPremium) || 0;
+        const net = Number(vals.netPremium) || 0;
+        const agent = Number(vals.agentCommission) || 0;
+        const margin = client === 0 && net === 0 && agent === 0 ? null : client - net - agent;
+        return {
+          lineKey: row.lineKey,
+          lineLabel: row.lineLabel ?? row.lineKey,
+          values: vals,
+          margin,
+          insurer: row.organisationId ? (orgMap.get(row.organisationId) ?? null) : null,
+          collaborator: row.collaboratorId ? (collabMap.get(row.collaboratorId) ?? null) : null,
+        };
+      });
+    }
+  } catch { /* premium table may not exist */ }
+
   const mergeCtx: MergeContext = {
     policyNumber: policy.policyNumber,
     createdAt: policy.createdAt,
@@ -153,6 +221,7 @@ export async function POST(
     agent: agentData,
     client: clientData,
     organisation: orgData,
+    accountingLines,
   };
 
   try {
