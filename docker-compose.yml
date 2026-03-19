@@ -6,18 +6,8 @@ services:
     restart: always
     ports:
       - "3000:3000"
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-      NEXTAUTH_URL: ${NEXTAUTH_URL}
-      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      BREVO_API_KEY: ${BREVO_API_KEY:-}
-      BREVO_SENDER: ${BREVO_SENDER:-}
-      BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-Insurance Platform}
-      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
-      APP_URL: ${APP_URL}
-      CRON_SECRET: ${CRON_SECRET:-}
+    env_file:
+      - .env
     volumes:
       - uploads:/app/.uploads
 
