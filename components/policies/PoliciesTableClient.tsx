@@ -384,23 +384,49 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
       });
   }, [availableFields, packageLabels, packageSortOrders, label]);
 
-  // Preset state
-  const [presets, setPresets] = React.useState<ColumnPreset[]>(() => {
-    if (typeof window === "undefined") return [];
-    try {
-      const stored = localStorage.getItem(PRESETS_KEY);
-      if (stored) return JSON.parse(stored) as ColumnPreset[];
-    } catch {}
-    return [];
-  });
+  // Preset state — synced to database
+  const presetScope = entityLabel ?? "default";
+  const [presets, setPresets] = React.useState<ColumnPreset[]>([]);
+  const [presetsLoaded, setPresetsLoaded] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/view-presets?scope=${encodeURIComponent(presetScope)}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => {
+        try {
+          const stored = localStorage.getItem(PRESETS_KEY);
+          if (stored) return JSON.parse(stored) as ColumnPreset[];
+        } catch {}
+        return [];
+      })
+      .then((data: ColumnPreset[]) => {
+        if (cancelled) return;
+        setPresets(Array.isArray(data) ? data : []);
+        setPresetsLoaded(true);
+      });
+    return () => { cancelled = true; };
+  }, [presetScope]);
 
   const savePresets = (next: ColumnPreset[]) => {
     setPresets(next);
     try { localStorage.setItem(PRESETS_KEY, JSON.stringify(next)); } catch {}
+    fetch(`/api/view-presets?scope=${encodeURIComponent(presetScope)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(next),
+    }).catch(() => {});
   };
 
   const defaultPreset = presets.find((p) => p.isDefault) ?? presets[0] ?? null;
-  const [activePresetId, setActivePresetId] = React.useState<string | null>(() => defaultPreset?.id ?? null);
+  const [activePresetId, setActivePresetId] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (presetsLoaded && activePresetId === null && defaultPreset) {
+      setActivePresetId(defaultPreset.id);
+    }
+  }, [presetsLoaded, defaultPreset?.id]);
+
   const activePreset = presets.find((p) => p.id === activePresetId) ?? defaultPreset;
   const activeColumns = activePreset?.columns ?? [];
 
