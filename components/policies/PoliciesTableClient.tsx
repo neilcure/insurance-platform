@@ -13,8 +13,17 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { DetailsButton } from "@/components/ui/details-button";
+import { cn } from "@/lib/utils";
 import { RowActionMenu } from "@/components/ui/row-action-menu";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { Settings2 } from "lucide-react";
 import { PolicySnapshotView } from "@/components/policies/PolicySnapshotView";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { RecordDetailsDrawer } from "@/components/ui/record-details-drawer";
@@ -106,6 +115,7 @@ type Row = {
   createdAt: string;
   isActive: boolean;
   displayName?: string;
+  carExtra?: Record<string, unknown> | null;
 };
 
 function extractNameFromExtra(extra: Record<string, unknown> | null | undefined): string {
@@ -185,29 +195,357 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
   const [hasDocs, setHasDocs] = React.useState(false);
   const [hasUploads, setHasUploads] = React.useState(false);
 
-  // Sorting
-  const hasNames = rows.some((r) => !!r.displayName);
-  const [sortKey, setSortKey] = React.useState<"createdAt" | "policyNumber" | "displayName">("policyNumber");
+  // ── Column presets system ──
+  const MAX_COLS = 4;
+  const MAX_PRESETS = 5;
+  const PRESETS_KEY = `policies-presets-${entityLabel ?? "default"}`;
+
+  type ColumnPreset = { id: string; name: string; columns: string[]; isDefault: boolean };
+  type FieldOption = { path: string; label: string };
+  type FieldGroup = { groupKey: string; groupLabel: string; fields: FieldOption[] };
+
+  const BUILTIN_FIELDS: FieldOption[] = [
+    { path: "_builtin.policyNumber", label: `${label} #` },
+    { path: "_builtin.displayName", label: "Name" },
+    { path: "_builtin.createdAt", label: "Created Date" },
+    { path: "_builtin.isActive", label: "Status" },
+  ];
+
+  const flattenExtra = React.useCallback((extra: Record<string, unknown> | null | undefined): Record<string, unknown> => {
+    if (!extra) return {};
+    const flat: Record<string, unknown> = {};
+    const insured = extra.insuredSnapshot as Record<string, unknown> | undefined;
+    const pkgs = extra.packagesSnapshot as Record<string, unknown> | undefined;
+    if (insured && typeof insured === "object") {
+      for (const [k, v] of Object.entries(insured)) {
+        if (v === null || v === undefined || (typeof v === "string" && !v.trim())) continue;
+        if (typeof v === "object" && !Array.isArray(v)) continue;
+        flat[`insured.${k}`] = v;
+      }
+    }
+    if (pkgs && typeof pkgs === "object") {
+      for (const [pkg, entry] of Object.entries(pkgs)) {
+        if (!entry || typeof entry !== "object") continue;
+        const vals = ("values" in (entry as Record<string, unknown>)
+          ? (entry as { values?: Record<string, unknown> }).values
+          : entry) as Record<string, unknown> | undefined;
+        if (!vals || typeof vals !== "object") continue;
+        for (const [k, v] of Object.entries(vals)) {
+          if (v === null || v === undefined || (typeof v === "string" && !v.trim())) continue;
+          if (typeof v === "object" && !Array.isArray(v)) continue;
+          flat[`pkg.${pkg}.${k}`] = v;
+        }
+      }
+    }
+    return flat;
+  }, []);
+
+  const humanizeKey = (raw: string): string => {
+    let stripped = raw.replace(/^[a-zA-Z0-9]+__/, "").replace(/^_+/, "");
+    stripped = stripped.replace(/__+/g, " ").replace(/_+/g, " ");
+    stripped = stripped.replace(/([a-z])([A-Z])/g, "$1 $2");
+    return stripped.replace(/\b\w/g, (c) => c.toUpperCase()).trim() || raw;
+  };
+
+  const pkgNames = React.useMemo(() => {
+    const names = new Set<string>();
+    names.add("insured");
+    for (const r of rows) {
+      const pkgs = (r.carExtra as Record<string, unknown> | undefined)?.packagesSnapshot as Record<string, unknown> | undefined;
+      if (pkgs) for (const k of Object.keys(pkgs)) names.add(k);
+    }
+    return Array.from(names);
+  }, [rows]);
+
+  const [fieldLabels, setFieldLabels] = React.useState<Record<string, string>>({});
+  const [fieldSortOrders, setFieldSortOrders] = React.useState<Record<string, number>>({});
+  const [packageLabels, setPackageLabels] = React.useState<Record<string, string>>({});
+  const [packageSortOrders, setPackageSortOrders] = React.useState<Record<string, number>>({});
+
+  React.useEffect(() => {
+    if (pkgNames.length === 0) return;
+    let cancelled = false;
+    const ts = Date.now();
+    Promise.all([
+      fetch(`/api/form-options?groupKey=packages&_t=${ts}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      ...pkgNames.map((pkg) =>
+        fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}&_t=${ts}`, { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : [])).catch(() => [])
+          .then((fRows: Array<{ value?: string; label?: string; sortOrder?: number }>) => ({ pkg, fRows }))
+      ),
+    ]).then(([pkgRows, ...fieldResults]) => {
+      if (cancelled) return;
+      const pLabels: Record<string, string> = { insured: "Insured" };
+      const pOrders: Record<string, number> = { insured: -1 };
+      if (Array.isArray(pkgRows)) {
+        for (const row of pkgRows as Array<{ value?: string; label?: string; sortOrder?: number }>) {
+          const key = String(row?.value ?? "").trim();
+          const lbl = String(row?.label ?? "").trim();
+          if (key && lbl) pLabels[key] = lbl;
+          if (key) {
+            const so = Number(row?.sortOrder);
+            pOrders[key] = Number.isFinite(so) ? so : 0;
+          }
+        }
+      }
+      setPackageLabels(pLabels);
+      setPackageSortOrders(pOrders);
+      const labels: Record<string, string> = {};
+      const orders: Record<string, number> = {};
+      for (const { pkg, fRows } of fieldResults as Array<{ pkg: string; fRows: Array<{ value?: string; label?: string; sortOrder?: number }> }>) {
+        if (!Array.isArray(fRows)) continue;
+        for (const row of fRows) {
+          const key = String(row?.value ?? "").trim();
+          const lbl = String(row?.label ?? "").trim();
+          if (!key || !lbl) continue;
+          const so = Number(row?.sortOrder);
+          const order = Number.isFinite(so) ? so : 0;
+          const prefixes = pkg === "insured" ? ["insured"] : [`pkg.${pkg}`];
+          for (const pfx of prefixes) {
+            labels[`${pfx}.${key}`] = lbl;
+            labels[`${pfx}.${pkg}__${key}`] = lbl;
+            labels[`${pfx}.${pkg}_${key}`] = lbl;
+            orders[`${pfx}.${key}`] = order;
+            orders[`${pfx}.${pkg}__${key}`] = order;
+            orders[`${pfx}.${pkg}_${key}`] = order;
+          }
+        }
+      }
+      setFieldLabels(labels);
+      setFieldSortOrders(orders);
+    });
+    return () => { cancelled = true; };
+  }, [pkgNames.join(",")]);
+
+  const getFieldLabel = React.useCallback((path: string): string => {
+    const builtin = BUILTIN_FIELDS.find((b) => b.path === path);
+    if (builtin) return builtin.label;
+    if (fieldLabels[path]) return fieldLabels[path];
+    const parts = path.split(".");
+    const raw = parts[parts.length - 1];
+    const stripped = raw.replace(/^[a-zA-Z0-9]+__/, "").replace(/^_+/, "");
+    const normalizedPath = parts.length === 3
+      ? `pkg.${parts[1]}.${stripped}` : parts.length === 2 ? `insured.${stripped}` : path;
+    if (fieldLabels[normalizedPath]) return fieldLabels[normalizedPath];
+    return humanizeKey(raw);
+  }, [fieldLabels, label]);
+
+  const getFieldSortOrder = React.useCallback((path: string): number => {
+    if (fieldSortOrders[path] !== undefined) return fieldSortOrders[path];
+    const parts = path.split(".");
+    const raw = parts[parts.length - 1];
+    const stripped = raw.replace(/^[a-zA-Z0-9]+__/, "").replace(/^_+/, "");
+    const normalizedPath = parts.length === 3
+      ? `pkg.${parts[1]}.${stripped}` : parts.length === 2 ? `insured.${stripped}` : path;
+    if (fieldSortOrders[normalizedPath] !== undefined) return fieldSortOrders[normalizedPath];
+    return 9999;
+  }, [fieldSortOrders]);
+
+  const availableFields = React.useMemo<FieldOption[]>(() => {
+    const pathSet = new Set<string>();
+    for (const r of rows) {
+      const flat = flattenExtra(r.carExtra);
+      for (const path of Object.keys(flat)) pathSet.add(path);
+    }
+    return Array.from(pathSet)
+      .map((path) => ({ path, label: getFieldLabel(path) }))
+      .sort((a, b) => {
+        const oa = getFieldSortOrder(a.path);
+        const ob = getFieldSortOrder(b.path);
+        if (oa !== ob) return oa - ob;
+        return a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
+      });
+  }, [rows, flattenExtra, getFieldLabel, getFieldSortOrder]);
+
+  const groupedFields = React.useMemo<FieldGroup[]>(() => {
+    const groups = new Map<string, FieldOption[]>();
+    groups.set("_builtin", [...BUILTIN_FIELDS]);
+    for (const f of availableFields) {
+      const parts = f.path.split(".");
+      const groupKey = parts[0] === "insured" ? "insured" : (parts[1] ?? "other");
+      if (!groups.has(groupKey)) groups.set(groupKey, []);
+      groups.get(groupKey)!.push(f);
+    }
+    const builtinLabel: Record<string, string> = { _builtin: "General" };
+    return Array.from(groups.entries())
+      .map(([groupKey, fields]) => ({
+        groupKey,
+        groupLabel: builtinLabel[groupKey] || packageLabels[groupKey] || humanizeKey(groupKey),
+        fields,
+      }))
+      .sort((a, b) => {
+        if (a.groupKey === "_builtin") return -1;
+        if (b.groupKey === "_builtin") return 1;
+        const oa = packageSortOrders[a.groupKey] ?? 9999;
+        const ob = packageSortOrders[b.groupKey] ?? 9999;
+        if (oa !== ob) return oa - ob;
+        return a.groupLabel.localeCompare(b.groupLabel, undefined, { sensitivity: "base" });
+      });
+  }, [availableFields, packageLabels, packageSortOrders, label]);
+
+  // Preset state
+  const [presets, setPresets] = React.useState<ColumnPreset[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem(PRESETS_KEY);
+      if (stored) return JSON.parse(stored) as ColumnPreset[];
+    } catch {}
+    return [];
+  });
+
+  const savePresets = (next: ColumnPreset[]) => {
+    setPresets(next);
+    try { localStorage.setItem(PRESETS_KEY, JSON.stringify(next)); } catch {}
+  };
+
+  const defaultPreset = presets.find((p) => p.isDefault) ?? presets[0] ?? null;
+  const [activePresetId, setActivePresetId] = React.useState<string | null>(() => defaultPreset?.id ?? null);
+  const activePreset = presets.find((p) => p.id === activePresetId) ?? defaultPreset;
+  const activeColumns = activePreset?.columns ?? [];
+
+  // Config dialog state
+  const [configOpen, setConfigOpen] = React.useState(false);
+  const [editingPreset, setEditingPreset] = React.useState<ColumnPreset | null>(null);
+  const [draftName, setDraftName] = React.useState("");
+  const [draftColumns, setDraftColumns] = React.useState<string[]>([]);
+
+  function openNewPreset() {
+    if (presets.length >= MAX_PRESETS) {
+      toast.error(`Maximum ${MAX_PRESETS} views allowed`);
+      return;
+    }
+    setEditingPreset(null);
+    setDraftName(`View ${presets.length + 1}`);
+    setDraftColumns([]);
+    setConfigOpen(true);
+  }
+
+  function openEditPreset(preset: ColumnPreset) {
+    setEditingPreset(preset);
+    setDraftName(preset.name);
+    setDraftColumns([...preset.columns]);
+    setConfigOpen(true);
+  }
+
+  function toggleDraftColumn(path: string) {
+    setDraftColumns((prev) => {
+      if (prev.includes(path)) return prev.filter((p) => p !== path);
+      if (prev.length >= MAX_COLS) return prev;
+      return [...prev, path];
+    });
+  }
+
+  function saveCurrentPreset() {
+    const name = draftName.trim() || "Untitled";
+    if (draftColumns.length === 0) {
+      toast.error("Select at least one column");
+      return;
+    }
+    if (editingPreset) {
+      const next = presets.map((p) =>
+        p.id === editingPreset.id ? { ...p, name, columns: draftColumns } : p,
+      );
+      savePresets(next);
+    } else {
+      const newPreset: ColumnPreset = {
+        id: `preset_${Date.now()}`,
+        name,
+        columns: draftColumns,
+        isDefault: presets.length === 0,
+      };
+      savePresets([...presets, newPreset]);
+      setActivePresetId(newPreset.id);
+    }
+    setConfigOpen(false);
+  }
+
+  function deletePreset(id: string) {
+    const next = presets.filter((p) => p.id !== id);
+    if (next.length > 0 && !next.some((p) => p.isDefault)) next[0].isDefault = true;
+    savePresets(next);
+    if (activePresetId === id) setActivePresetId(next[0]?.id ?? null);
+  }
+
+  function setDefault(id: string) {
+    savePresets(presets.map((p) => ({ ...p, isDefault: p.id === id })));
+  }
+
+  function getColumnValue(row: Row, path: string): React.ReactNode {
+    if (path === "_builtin.policyNumber") {
+      return (
+        <span className={`font-mono ${row.isActive !== false ? "text-green-600 dark:text-green-400" : "text-neutral-400 dark:text-neutral-500"}`}>
+          {row.policyNumber}
+        </span>
+      );
+    }
+    if (path === "_builtin.displayName") return row.displayName || <span className="text-neutral-400">—</span>;
+    if (path === "_builtin.createdAt") return formatDDMMYYYYHHMM(row.createdAt);
+    if (path === "_builtin.isActive") {
+      return (
+        <span className={cn(
+          "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+          row.isActive !== false
+            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+            : "bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400",
+        )}>
+          {row.isActive !== false ? "Active" : "Inactive"}
+        </span>
+      );
+    }
+    const flat = flattenExtra(row.carExtra);
+    const v = flat[path];
+    if (v === null || v === undefined) return <span className="text-neutral-400">—</span>;
+    if (Array.isArray(v)) return v.map(String).join(", ");
+    if (typeof v === "boolean") return v ? "Yes" : "No";
+    return String(v);
+  }
+
+  // Sorting — dynamic based on active view columns
+  const [sortKey, setSortKey] = React.useState<string>(activeColumns[0] ?? "_builtin.policyNumber");
   const [sortDir, setSortDir] = React.useState<"asc" | "desc">("desc");
+
+  React.useEffect(() => {
+    if (activeColumns.length > 0 && !activeColumns.includes(sortKey)) {
+      setSortKey(activeColumns[0]);
+    }
+  }, [activeColumns.join(",")]);
+
+  const sortOptions = React.useMemo(() => {
+    if (activeColumns.length === 0) {
+      return [{ value: "_builtin.policyNumber", label: `${label} #` }];
+    }
+    return activeColumns.map((path) => ({ value: path, label: getFieldLabel(path) }));
+  }, [activeColumns, getFieldLabel, label]);
+
+  function getSortValue(row: Row, path: string): string | number {
+    if (path === "_builtin.policyNumber") return row.policyNumber;
+    if (path === "_builtin.displayName") return row.displayName ?? "";
+    if (path === "_builtin.createdAt") return Date.parse(row.createdAt) || 0;
+    if (path === "_builtin.isActive") return row.isActive !== false ? 1 : 0;
+    const flat = flattenExtra(row.carExtra);
+    const v = flat[path];
+    if (v === null || v === undefined) return "";
+    if (typeof v === "number") return v;
+    if (typeof v === "boolean") return v ? 1 : 0;
+    return String(v);
+  }
 
   const sorted = React.useMemo(() => {
     const r = [...rows];
     r.sort((a, b) => {
-      if (sortKey === "createdAt") {
-        const ad = Date.parse(a.createdAt);
-        const bd = Date.parse(b.createdAt);
-        const cmp = (Number.isFinite(ad) ? ad : 0) - (Number.isFinite(bd) ? bd : 0);
-        return sortDir === "asc" ? cmp : -cmp;
+      const av = getSortValue(a, sortKey);
+      const bv = getSortValue(b, sortKey);
+      let cmp: number;
+      if (typeof av === "number" && typeof bv === "number") {
+        cmp = av - bv;
+      } else {
+        cmp = String(av).localeCompare(String(bv), undefined, { sensitivity: "base", numeric: true });
       }
-      if (sortKey === "displayName") {
-        const cmp = (a.displayName ?? "").localeCompare(b.displayName ?? "", undefined, { sensitivity: "base" });
-        return sortDir === "asc" ? cmp : -cmp;
-      }
-      const cmp = a.policyNumber.localeCompare(b.policyNumber, undefined, { sensitivity: "base" });
       return sortDir === "asc" ? cmp : -cmp;
     });
     return r;
-  }, [rows, sortKey, sortDir]);
+  }, [rows, sortKey, sortDir, flattenExtra]);
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -517,15 +855,50 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
           Search
         </Button>
         <div className="ml-auto flex items-center gap-2 text-sm">
+          {presets.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-9 gap-1.5">
+                  <span className="hidden sm:inline">{activePreset?.name ?? "Select View"}</span>
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuLabel>Saved Views</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {presets.map((p) => (
+                  <DropdownMenuCheckboxItem
+                    key={p.id}
+                    checked={activePresetId === p.id}
+                    onCheckedChange={() => setActivePresetId(p.id)}
+                    onSelect={(e) => e.preventDefault()}
+                  >
+                    <span className="flex-1">{p.name}</span>
+                    {p.isDefault && <span className="ml-1 text-[10px] text-neutral-400">default</span>}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          {activePreset && (
+            <Button variant="ghost" size="sm" className="h-9 gap-1" onClick={() => openEditPreset(activePreset)}>
+              <Settings2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Edit</span>
+            </Button>
+          )}
+          <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={openNewPreset}>
+            <Settings2 className="h-4 w-4" />
+            <span className="hidden sm:inline">{presets.length === 0 ? "Set Up Columns" : "New View"}</span>
+          </Button>
           <label className="text-neutral-500 dark:text-neutral-400">Sort</label>
           <select
             className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
             value={sortKey}
-            onChange={(e) => setSortKey(e.target.value as typeof sortKey)}
+            onChange={(e) => setSortKey(e.target.value)}
           >
-            <option value="policyNumber">{label} #</option>
-            <option value="createdAt">Date</option>
-            {hasNames && <option value="displayName">Name</option>}
+            {sortOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
           </select>
           <Button
             type="button"
@@ -539,24 +912,40 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
           </Button>
         </div>
       </div>
-      <div className="overflow-x-auto">
+      <div>
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>{label} #</TableHead>
-            {hasNames && <TableHead>Name</TableHead>}
-            <TableHead className="text-right">Actions</TableHead>
+            {activeColumns.length > 0 ? (
+              activeColumns.map((path) => (
+                <TableHead key={path} className="text-xs">{getFieldLabel(path)}</TableHead>
+              ))
+            ) : (
+              <TableHead>
+                <button
+                  type="button"
+                  onClick={openNewPreset}
+                  className="text-neutral-400 underline decoration-dashed underline-offset-4 hover:text-neutral-600 dark:hover:text-neutral-300"
+                >
+                  Set up columns...
+                </button>
+              </TableHead>
+            )}
+            <TableHead className="w-[140px] text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {filtered.map((r) => (
             <TableRow key={r.policyId}>
-              <TableCell className={`font-mono ${r.isActive !== false ? "text-green-600 dark:text-green-400" : "text-neutral-400 dark:text-neutral-500"}`}>
-                {r.policyNumber}
-              </TableCell>
-              {hasNames && (
-                <TableCell className="max-w-[200px] wrap-break-word">
-                  {r.displayName || <span className="text-neutral-400">—</span>}
+              {activeColumns.length > 0 ? (
+                activeColumns.map((path) => (
+                  <TableCell key={path} className="max-w-[200px] text-sm wrap-break-word">
+                    {getColumnValue(r, path)}
+                  </TableCell>
+                ))
+              ) : (
+                <TableCell className="font-mono text-neutral-400">
+                  {r.policyNumber}
                 </TableCell>
               )}
               <TableCell className="text-right">
@@ -725,6 +1114,161 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
               disabled={toggling}
             >
               {toggling ? "Saving..." : toggleConfirm?.currentlyActive ? "Disable" : "Enable"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Column preset configuration dialog */}
+      <Dialog open={configOpen} onOpenChange={setConfigOpen}>
+        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editingPreset ? "Edit View" : "Set Up Table Columns"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium">View Name</label>
+              <Input
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                placeholder="e.g. My Default View"
+              />
+            </div>
+
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <label className="text-sm font-medium">
+                  Columns <span className="font-normal text-neutral-400">({draftColumns.length}/{MAX_COLS})</span>
+                </label>
+                {draftColumns.length > 0 && (
+                  <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setDraftColumns([])}>
+                    Clear all
+                  </Button>
+                )}
+              </div>
+
+              {draftColumns.length > 0 && (
+                <div className="mb-3 space-y-1">
+                  {draftColumns.map((path, i) => (
+                    <div
+                      key={path}
+                      className="flex items-center gap-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-800"
+                    >
+                      <span className="w-4 text-center text-[10px] font-medium text-neutral-400">{i + 1}</span>
+                      <span className="flex-1">{getFieldLabel(path)}</span>
+                      <button
+                        type="button"
+                        disabled={i === 0}
+                        onClick={() => setDraftColumns((prev) => {
+                          const next = [...prev];
+                          [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                          return next;
+                        })}
+                        className="rounded p-0.5 text-neutral-400 hover:text-neutral-600 disabled:opacity-20 dark:hover:text-neutral-200"
+                        title="Move up"
+                      >
+                        <ChevronUp className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={i === draftColumns.length - 1}
+                        onClick={() => setDraftColumns((prev) => {
+                          const next = [...prev];
+                          [next[i], next[i + 1]] = [next[i + 1], next[i]];
+                          return next;
+                        })}
+                        className="rounded p-0.5 text-neutral-400 hover:text-neutral-600 disabled:opacity-20 dark:hover:text-neutral-200"
+                        title="Move down"
+                      >
+                        <ChevronDown className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDraftColumns((prev) => prev.filter((p) => p !== path))}
+                        className="rounded p-0.5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+                        title="Remove"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="max-h-80 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700">
+                {groupedFields.map((group) => (
+                  <div key={group.groupKey}>
+                    <div className="sticky top-0 border-b border-neutral-100 bg-neutral-50 px-3 py-1.5 text-xs font-semibold text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
+                      {group.groupLabel}
+                    </div>
+                    {group.fields.map((f) => {
+                      const checked = draftColumns.includes(f.path);
+                      const disabled = !checked && draftColumns.length >= MAX_COLS;
+                      return (
+                        <label
+                          key={f.path}
+                          className={cn(
+                            "flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800/50",
+                            disabled && "cursor-not-allowed opacity-40",
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={disabled}
+                            onChange={() => toggleDraftColumn(f.path)}
+                            className="h-3.5 w-3.5 rounded border-neutral-300 dark:border-neutral-600"
+                          />
+                          <span>{f.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {presets.length > 0 && !editingPreset && (
+              <div>
+                <label className="mb-1 block text-sm font-medium">Saved Views</label>
+                <div className="space-y-1">
+                  {presets.map((p) => (
+                    <div
+                      key={p.id}
+                      className="flex items-center justify-between rounded-md border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-700"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{p.name}</span>
+                        {p.isDefault && (
+                          <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                            Default
+                          </span>
+                        )}
+                        <span className="text-xs text-neutral-400">{p.columns.length} cols</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {!p.isDefault && (
+                          <Button variant="ghost" size="sm" className="h-6 text-[11px]" onClick={() => setDefault(p.id)}>
+                            Set Default
+                          </Button>
+                        )}
+                        <Button variant="ghost" size="sm" className="h-6 text-[11px]" onClick={() => { setConfigOpen(false); setTimeout(() => openEditPreset(p), 150); }}>
+                          Edit
+                        </Button>
+                        <Button variant="ghost" size="sm" className="h-6 text-[11px] text-red-500 hover:text-red-600" onClick={() => deletePreset(p.id)}>
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfigOpen(false)}>Cancel</Button>
+            <Button onClick={saveCurrentPreset} disabled={draftColumns.length === 0}>
+              {editingPreset ? "Update View" : "Save View"}
             </Button>
           </DialogFooter>
         </DialogContent>

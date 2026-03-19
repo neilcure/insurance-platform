@@ -10,7 +10,7 @@ type PolicyRowRaw = {
   isActive?: boolean;
   carExtra?: Record<string, unknown> | null;
 };
-type PolicyRow = { policyId: number; policyNumber: string; createdAt: string; isActive: boolean; displayName?: string };
+type PolicyRow = { policyId: number; policyNumber: string; createdAt: string; isActive: boolean; displayName?: string; carExtra?: Record<string, unknown> | null };
 
 type FlowOption = {
   id: number;
@@ -114,6 +114,7 @@ async function fetchPolicies(flowKey: string): Promise<PolicyRow[]> {
     createdAt: r.createdAt,
     isActive: r.isActive !== false,
     displayName: extractDisplayName(r.carExtra),
+    carExtra: r.carExtra ?? null,
   }));
 }
 

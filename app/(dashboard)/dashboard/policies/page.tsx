@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import PoliciesTableClient from "@/components/policies/PoliciesTableClient";
 import { serverFetch } from "@/lib/auth/server-fetch";
 
-type PolicyRow = { policyId: number; policyNumber: string; createdAt: string; isActive: boolean };
+type PolicyRow = { policyId: number; policyNumber: string; createdAt: string; isActive: boolean; carExtra?: Record<string, unknown> | null };
 
 async function fetchPolicies(): Promise<PolicyRow[]> {
   const res = await serverFetch("/api/policies");
@@ -14,7 +14,7 @@ async function fetchPolicies(): Promise<PolicyRow[]> {
     throw new Error("Failed to load policies");
   }
   const raw = (await res.json()) as PolicyRow[];
-  return raw.map((r) => ({ ...r, isActive: r.isActive !== false }));
+  return raw.map((r) => ({ ...r, isActive: r.isActive !== false, carExtra: r.carExtra ?? null }));
 }
 
 export default async function PoliciesPage() {
