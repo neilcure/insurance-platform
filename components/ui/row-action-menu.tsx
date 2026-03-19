@@ -39,7 +39,8 @@ export function RowActionMenu({ actions, label = "Actions" }: RowActionMenuProps
       <span
         onClick={() => !hasLoading && setOpen((prev) => !prev)}
         className={cn(
-          "text-sm font-medium text-neutral-500 dark:text-neutral-400 select-none cursor-pointer",
+          "inline-flex items-center rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-sm font-medium text-neutral-600 shadow-sm select-none cursor-pointer",
+          "dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200",
           hasLoading && "opacity-50 cursor-not-allowed",
         )}
       >
