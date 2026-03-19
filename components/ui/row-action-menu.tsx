@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { MoreHorizontal, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface RowAction {
@@ -21,44 +21,35 @@ interface RowActionMenuProps {
 export function RowActionMenu({ actions, label = "Actions" }: RowActionMenuProps) {
   const hasLoading = actions.some((a) => a.loading);
   const [open, setOpen] = React.useState(false);
-  const closeTimer = React.useRef<ReturnType<typeof setTimeout>>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
 
-  function handleEnter() {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    setOpen(true);
-  }
-
-  function handleLeave() {
-    closeTimer.current = setTimeout(() => setOpen(false), 150);
-  }
+  React.useEffect(() => {
+    if (!open) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [open]);
 
   return (
-    <div
-      className="relative inline-flex items-center"
-      onMouseEnter={handleEnter}
-      onMouseLeave={handleLeave}
-    >
-      {/* Trigger label */}
+    <div ref={containerRef} className="relative inline-flex items-center">
       <span
+        onClick={() => !hasLoading && setOpen((prev) => !prev)}
         className={cn(
-          "inline-flex items-center gap-2 rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-sm font-medium shadow-sm",
-          "dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200",
-          hasLoading && "opacity-50",
+          "text-sm font-medium text-neutral-500 dark:text-neutral-400 select-none cursor-pointer",
+          hasLoading && "opacity-50 cursor-not-allowed",
         )}
       >
-        {hasLoading ? (
-          <Loader2 className="h-4 w-4 animate-spin sm:hidden lg:inline" />
-        ) : (
-          <MoreHorizontal className="h-4 w-4 sm:hidden lg:inline" />
-        )}
-        <span className="hidden sm:inline">{label}</span>
+        {label}
       </span>
 
-      {/* Slide-out action pills (to the right) */}
       <div
         className={cn(
-          "flex items-center overflow-hidden transition-all duration-500 ease-in-out",
-          open ? "max-w-[500px] opacity-100 ml-1" : "max-w-0 opacity-0 ml-0",
+          "flex items-center overflow-hidden transition-all duration-700 ease-in-out",
+          open ? "max-w-[500px] opacity-100 ml-2" : "max-w-0 opacity-0 ml-0",
         )}
       >
         <div className="flex items-center gap-0 rounded-md border border-neutral-200 bg-neutral-100 p-0.5 dark:border-neutral-700 dark:bg-neutral-800">
@@ -66,7 +57,10 @@ export function RowActionMenu({ actions, label = "Actions" }: RowActionMenuProps
             <button
               key={i}
               type="button"
-              onClick={action.onClick}
+              onClick={() => {
+                action.onClick();
+                setOpen(false);
+              }}
               disabled={action.disabled || action.loading}
               className={cn(
                 "inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
