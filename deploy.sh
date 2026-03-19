@@ -1,59 +1,32 @@
 #!/bin/bash
 set -e
 
-echo "=== Insurance Platform - Hostinger VPS Deployment ==="
+cd "$(dirname "$0")"
 
-# Detect docker compose command
-if docker compose version > /dev/null 2>&1; then
-  DC="docker compose"
-elif docker-compose --version > /dev/null 2>&1; then
-  DC="docker-compose"
-else
-  echo "Docker Compose not found. Installing..."
-  apt-get update && apt-get install -y docker-compose-plugin
-  DC="docker compose"
-fi
+echo "=== Insurance Platform - Deploy ==="
 
-echo "Using: $DC"
-
-# Check if .env exists
 if [ ! -f .env ]; then
-  echo "ERROR: .env file not found. Copy .env.example to .env and fill in your values:"
-  echo "  cp .env.example .env"
-  echo "  nano .env"
+  echo "ERROR: .env file not found."
   exit 1
 fi
 
-# Load .env for validation
-source .env
+echo "1/4 - Pulling latest code..."
+git pull origin main
 
-if [ -z "$DATABASE_URL" ]; then
-  echo "ERROR: DATABASE_URL is not set in .env"
-  exit 1
-fi
+echo "2/4 - Stopping old container..."
+docker rm -f insurance-platform-app-1 2>/dev/null || true
 
-if [ -z "$NEXTAUTH_SECRET" ]; then
-  echo "ERROR: NEXTAUTH_SECRET is not set in .env"
-  exit 1
-fi
+echo "3/4 - Building and starting..."
+docker compose up -d --build
 
-echo "1/3 - Building Docker images..."
-$DC build
-
-echo "2/3 - Starting services..."
-$DC up -d
-
-echo "3/3 - Waiting for services to be ready..."
-sleep 10
+echo "4/4 - Checking logs..."
+sleep 5
+docker compose logs --tail 20 app
 
 echo ""
-echo "=== Deployment complete! ==="
-echo "App is running at: ${NEXTAUTH_URL:-http://localhost:3000}"
+echo "=== Deploy complete! ==="
 echo ""
-echo "Check logs with: $DC logs -f app"
-echo ""
-echo "Useful commands:"
-echo "  $DC logs -f app       # View app logs"
-echo "  $DC restart app       # Restart the app"
-echo "  $DC down              # Stop everything"
-echo "  $DC up -d --build     # Rebuild and restart"
+echo "Commands:"
+echo "  docker compose logs -f app    # Live logs"
+echo "  docker compose restart app    # Restart"
+echo "  docker compose down           # Stop"
