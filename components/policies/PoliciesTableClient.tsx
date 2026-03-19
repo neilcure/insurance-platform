@@ -4,7 +4,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
-import { Trash2, Ban, CheckCircle2 } from "lucide-react";
+import { Trash2, Ban, CheckCircle2, Info, Loader2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { DetailsButton } from "@/components/ui/details-button";
+import { RowActionMenu } from "@/components/ui/row-action-menu";
 import { PolicySnapshotView } from "@/components/policies/PolicySnapshotView";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { RecordDetailsDrawer } from "@/components/ui/record-details-drawer";
@@ -559,34 +560,31 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
                 </TableCell>
               )}
               <TableCell className="text-right">
-                <div className="flex justify-end gap-2">
-                  <DetailsButton
-                    onClick={() => openDetails(r.policyId)}
-                    loading={openingId === r.policyId}
-                  />
-                  <Button
-                    size="sm"
-                    variant={r.isActive === false ? "secondary" : "outline"}
-                    onClick={() => setToggleConfirm({ id: r.policyId, currentlyActive: r.isActive !== false })}
-                    className="inline-flex items-center gap-2"
-                  >
-                    {r.isActive === false ? (
-                      <>
-                        <CheckCircle2 className="h-4 w-4 sm:hidden lg:inline" />
-                        <span className="hidden sm:inline">Enable</span>
-                      </>
-                    ) : (
-                      <>
-                        <Ban className="h-4 w-4 sm:hidden lg:inline" />
-                        <span className="hidden sm:inline">Disable</span>
-                      </>
-                    )}
-                  </Button>
-                  <Button size="sm" variant="destructive" onClick={() => remove(r.policyId)} className="inline-flex items-center gap-2">
-                    <Trash2 className="h-4 w-4 sm:hidden lg:inline" />
-                    <span className="hidden sm:inline">Delete</span>
-                  </Button>
-                </div>
+                <RowActionMenu
+                  actions={[
+                    {
+                      label: openingId === r.policyId ? "Opening…" : "Details",
+                      icon: openingId === r.policyId
+                        ? <Loader2 className="h-4 w-4 animate-spin" />
+                        : <Info className="h-4 w-4" />,
+                      onClick: () => openDetails(r.policyId),
+                      loading: openingId === r.policyId,
+                    },
+                    {
+                      label: r.isActive === false ? "Enable" : "Disable",
+                      icon: r.isActive === false
+                        ? <CheckCircle2 className="h-4 w-4" />
+                        : <Ban className="h-4 w-4" />,
+                      onClick: () => setToggleConfirm({ id: r.policyId, currentlyActive: r.isActive !== false }),
+                    },
+                    {
+                      label: "Delete",
+                      icon: <Trash2 className="h-4 w-4" />,
+                      onClick: () => remove(r.policyId),
+                      variant: "destructive",
+                    },
+                  ]}
+                />
               </TableCell>
             </TableRow>
           ))}
