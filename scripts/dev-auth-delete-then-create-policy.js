@@ -40,13 +40,7 @@ function pickEnvValue(envText, key) {
 }
 
 function normalizeHost(databaseUrl) {
-  try {
-    const parsed = new URL(databaseUrl);
-    if (parsed.hostname.toLowerCase() === "host") parsed.hostname = "localhost";
-    return parsed.toString();
-  } catch {
-    return databaseUrl;
-  }
+  return databaseUrl;
 }
 
 function getEnv(key) {
@@ -162,7 +156,7 @@ async function main() {
   const password = "devtest123!";
 
   const baseUrl = getBaseUrl();
-  const sql = postgres(getDatabaseUrl(), { max: 1 });
+  const sql = postgres(getDatabaseUrl(), { max: 1, ssl: "require" });
   try {
     await ensureDevUser(sql, { email, password });
     const jar = await signInGetCookieJar({ baseUrl, email, password });

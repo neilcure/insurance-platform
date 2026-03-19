@@ -4,7 +4,7 @@ const path = require("path");
 async function runMigrations() {
   const postgres = require("postgres");
 
-  const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+  const sql = postgres(process.env.DATABASE_URL, { max: 1, ssl: "require" });
   const migrationsDir = path.join(__dirname, "db", "migrations");
 
   await sql`

@@ -53,13 +53,7 @@ function getDatabaseUrl() {
 }
 
 function normalizeHost(databaseUrl) {
-  try {
-    const parsed = new URL(databaseUrl);
-    if (parsed.hostname.toLowerCase() === "host") parsed.hostname = "localhost";
-    return parsed.toString();
-  } catch {
-    return databaseUrl;
-  }
+  return databaseUrl;
 }
 
 async function main() {
@@ -69,7 +63,7 @@ async function main() {
   }
 
   const databaseUrl = getDatabaseUrl();
-  const sql = postgres(databaseUrl, { max: 1 });
+  const sql = postgres(databaseUrl, { max: 1, ssl: "require" });
 
   try {
     const rows = await sql/* sql */ `

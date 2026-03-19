@@ -1,19 +1,12 @@
 import postgres from "postgres";
 
-let databaseUrl = process.env.DATABASE_URL;
+const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
   console.error("DATABASE_URL is not set");
   process.exit(1);
 }
-try {
-  const parsed = new URL(databaseUrl);
-  if (parsed.hostname.toLowerCase() === "host") {
-    parsed.hostname = "localhost";
-    databaseUrl = parsed.toString();
-  }
-} catch {}
 
-const sql = postgres(databaseUrl, { max: 1 });
+const sql = postgres(databaseUrl, { max: 1, ssl: "require" });
 
 const templates = [
   {

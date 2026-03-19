@@ -27,8 +27,8 @@ fi
 # Load .env for validation
 source .env
 
-if [ -z "$POSTGRES_PASSWORD" ]; then
-  echo "ERROR: POSTGRES_PASSWORD is not set in .env"
+if [ -z "$DATABASE_URL" ]; then
+  echo "ERROR: DATABASE_URL is not set in .env"
   exit 1
 fi
 
@@ -54,7 +54,6 @@ echo "Check logs with: $DC logs -f app"
 echo ""
 echo "Useful commands:"
 echo "  $DC logs -f app       # View app logs"
-echo "  $DC logs -f db        # View database logs"
 echo "  $DC restart app       # Restart the app"
 echo "  $DC down              # Stop everything"
 echo "  $DC up -d --build     # Rebuild and restart"
