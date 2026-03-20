@@ -36,7 +36,16 @@ export async function GET(
     return NextResponse.json({ error: "No PDF file" }, { status: 404 });
   }
 
-  const buffer = await readPdfTemplate(meta.filePath);
+  let buffer: Buffer;
+  try {
+    buffer = await readPdfTemplate(meta.filePath);
+  } catch (err) {
+    console.error("PDF preview read error:", err);
+    return NextResponse.json(
+      { error: "PDF file not found. Please re-upload the template." },
+      { status: 404 },
+    );
+  }
 
   return new NextResponse(buffer as unknown as BodyInit, {
     headers: {
