@@ -1,3 +1,20 @@
+export type PdfTemplateSection = {
+  id: string;
+  name: string;
+  color: string;
+};
+
+export const SECTION_COLORS = [
+  "#3b82f6",
+  "#10b981",
+  "#f59e0b",
+  "#ef4444",
+  "#8b5cf6",
+  "#ec4899",
+  "#06b6d4",
+  "#f97316",
+];
+
 export type PdfFieldMapping = {
   id: string;
   label: string;
@@ -9,6 +26,8 @@ export type PdfFieldMapping = {
   fontSize?: number;
   fontColor?: string;
   align?: "left" | "center" | "right";
+
+  sectionId?: string;
 
   source:
     | "policy"
@@ -42,6 +61,7 @@ export type PdfTemplateMeta = {
   filePath: string;
   pages: PdfPageInfo[];
   fields: PdfFieldMapping[];
+  sections?: PdfTemplateSection[];
   flows?: string[];
   description?: string;
 };
