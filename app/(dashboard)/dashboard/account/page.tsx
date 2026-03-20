@@ -3,6 +3,7 @@ import { db } from "@/db/client";
 import { memberships, organisations, users } from "@/db/schema/core";
 import { eq } from "drizzle-orm";
 import { AccountInfoWizard } from "@/components/account/AccountInfoWizard";
+import { ChangePasswordCard } from "@/components/account/ChangePasswordCard";
 import { ServerErrorToast } from "@/components/ui/ServerErrorToast";
 
 export default async function AccountPage() {
@@ -111,6 +112,10 @@ export default async function AccountPage() {
             : null,
         }}
       />
+
+      <div className="mx-auto max-w-3xl">
+        <ChangePasswordCard />
+      </div>
     </main>
   );
 }

@@ -37,6 +37,9 @@ yarn-error.log*
 .env.development
 !.env.example
 
+# one-off / debug scripts with potential secrets
+fix-neon.js
+
 # uploaded documents
 /.uploads/
 
