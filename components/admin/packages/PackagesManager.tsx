@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { getIcon } from "@/lib/icons";
 import { IconPicker } from "@/components/admin/generic/IconPicker";
+import { deepEqual, formSnapshot } from "@/lib/form-utils";
 
 type OptionRow = {
   id: number;
@@ -34,6 +35,7 @@ export default function PackagesManager() {
     meta: null,
   });
   const selectedIcon = (form.meta as Record<string, unknown> | null)?.icon as string | undefined;
+  const editSnapshot = React.useRef<Record<string, unknown> | null>(null);
 
   async function load() {
     setLoading(true);
@@ -57,17 +59,40 @@ export default function PackagesManager() {
     setEditing(null);
     setForm({ label: "", value: "", sortOrder: 0, isActive: true, meta: null });
     setOpen(true);
+    editSnapshot.current = null;
   }
   function startEdit(row: OptionRow) {
     setEditing(row);
     setForm({ ...row, meta: row.meta ?? null });
     setOpen(true);
+    editSnapshot.current = formSnapshot({
+      label: row.label,
+      value: row.value,
+      sortOrder: Number(row.sortOrder) || 0,
+      isActive: !!row.isActive,
+      meta: { ...(row.meta ?? {}), icon: (row.meta as any)?.icon || null },
+    });
   }
   async function save() {
     try {
       if (!form.label || !form.value) {
         toast.error("Label and value are required");
         return;
+      }
+      if (editing) {
+        const meta = { ...(form.meta as Record<string, unknown> ?? {}), icon: selectedIcon || null };
+        const current = formSnapshot({
+          label: form.label,
+          value: form.value,
+          sortOrder: Number(form.sortOrder) || 0,
+          isActive: !!form.isActive,
+          meta,
+        });
+        if (editSnapshot.current && deepEqual(current, editSnapshot.current)) {
+          toast.info("No changes to save");
+          setOpen(false);
+          return;
+        }
       }
       const meta = { ...(form.meta as Record<string, unknown> ?? {}), icon: selectedIcon || null };
       if (editing) {

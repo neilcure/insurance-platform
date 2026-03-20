@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { AddressTool, type AddressFieldMap } from "@/components/policies/address-tool";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   AccountWizardSchema,
   type AccountWizardInput,
@@ -110,6 +111,32 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
     area: "area",
   };
 
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const pendingAction = React.useRef<(() => Promise<void>) | null>(null);
+
+  const personalFields = ["personalName", "timezone"] as const;
+  const orgFields = ["organisationName", "contactName", "contactEmail", "contactPhone"] as const;
+  const addressFields = ["flatNumber", "floorNumber", "blockNumber", "blockName", "streetNumber", "streetName", "propertyName", "districtName", "area"] as const;
+
+  function hasStepChanges(fields: readonly string[]) {
+    const dirty = form.formState.dirtyFields;
+    return fields.some((f) => (dirty as Record<string, boolean>)[f]);
+  }
+
+  function getChangedLabels(fields: readonly string[], labels: Record<string, string>) {
+    const dirty = form.formState.dirtyFields;
+    return fields.filter((f) => (dirty as Record<string, boolean>)[f]).map((f) => labels[f] || f);
+  }
+
+  const fieldLabels: Record<string, string> = {
+    personalName: "Name", timezone: "Time zone",
+    organisationName: "Organisation Name", contactName: "Contact Name",
+    contactEmail: "Contact Email", contactPhone: "Contact Phone",
+    flatNumber: "Flat", floorNumber: "Floor", blockNumber: "Block No.",
+    blockName: "Block Name", streetNumber: "Street No.", streetName: "Street Name",
+    propertyName: "Property / Building", districtName: "District", area: "Area",
+  };
+
   function next() {
     setStep((s) => (s === "Personal" ? "Organisation" : s === "Organisation" ? "Address" : "Address"));
   }
@@ -162,7 +189,7 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
     }
   }
 
-  async function onSubmitAll(values: AccountWizardInput) {
+  async function doSaveAll(values: AccountWizardInput) {
     try {
       await savePersonal({ personalName: values.personalName });
       await saveOrganisation({
@@ -180,11 +207,22 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
         districtName: values.districtName,
         area: values.area,
       });
+      form.reset(values);
       toast.success("Account information updated");
-       router.push("/dashboard");
+      router.push("/dashboard");
     } catch (err: any) {
       toast.error(err?.message ?? "Failed to save");
     }
+  }
+
+  function onSubmitAll(values: AccountWizardInput) {
+    const allFields = [...personalFields, ...orgFields, ...addressFields] as const;
+    if (!hasStepChanges(allFields)) {
+      router.push("/dashboard");
+      return;
+    }
+    pendingAction.current = () => doSaveAll(values);
+    setConfirmOpen(true);
   }
 
   const currentStepIndex = steps.indexOf(step);
@@ -259,19 +297,22 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
                 <div className="flex gap-2">
                   <Button
                     type="button"
-                    variant="secondary"
-                    onClick={async () => {
-                      const values = form.getValues();
-                      try {
+                    onClick={() => {
+                      if (!hasStepChanges(personalFields)) {
+                        next();
+                        return;
+                      }
+                      pendingAction.current = async () => {
+                        const values = form.getValues();
                         await savePersonal({ personalName: values.personalName, timezone: (values as any).timezone });
+                        form.reset(form.getValues());
                         toast.success("Saved");
                         next();
-                      } catch (err: any) {
-                        toast.error(err?.message ?? "Failed to save");
-                      }
+                      };
+                      setConfirmOpen(true);
                     }}
                   >
-                    Save & Next
+                    Next
                   </Button>
                 </div>
               </div>
@@ -310,26 +351,30 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
                 <div className="flex gap-2">
                   <Button
                     type="button"
-                    onClick={async () => {
-                      const v = form.getValues();
-                      try {
+                    onClick={() => {
+                      if (!hasStepChanges(orgFields)) {
+                        next();
+                        return;
+                      }
+                      pendingAction.current = async () => {
+                        const v = form.getValues();
                         await saveOrganisation({
                           organisationName: v.organisationName,
                           contactName: v.contactName,
                           contactEmail: v.contactEmail,
                           contactPhone: v.contactPhone,
                         });
+                        form.reset(form.getValues());
                         try {
                           window.dispatchEvent(new CustomEvent("account:info-changed"));
                         } catch {}
                         toast.success("Saved");
                         next();
-                      } catch (err: any) {
-                        toast.error(err?.message ?? "Failed to save");
-                      }
+                      };
+                      setConfirmOpen(true);
                     }}
                   >
-                    Save & Next
+                    Next
                   </Button>
                 </div>
               </div>
@@ -395,13 +440,8 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
                 <div className="flex gap-2">
                   <Button
                     type="submit"
-                    onClick={() => {
-                      try {
-                        window.dispatchEvent(new CustomEvent("account:info-changed"));
-                      } catch {}
-                    }}
                   >
-                    Save All
+                    Completed
                   </Button>
                 </div>
               </div>
@@ -413,6 +453,38 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
           Step {currentStepIndex + 1} of {steps.length}
         </div>
       </form>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Confirm changes"
+        description="You have unsaved changes. Do you want to save them?"
+        confirmLabel="Save"
+        onConfirm={async () => {
+          if (pendingAction.current) {
+            try {
+              await pendingAction.current();
+            } catch (err: any) {
+              toast.error(err?.message ?? "Failed to save");
+            } finally {
+              pendingAction.current = null;
+            }
+          }
+        }}
+      >
+        <ul className="mt-2 space-y-1 text-sm text-neutral-700 dark:text-neutral-300">
+          {(() => {
+            const allFields = [...personalFields, ...orgFields, ...addressFields];
+            const changed = getChangedLabels(allFields, fieldLabels);
+            return changed.map((label) => (
+              <li key={label} className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                {label}
+              </li>
+            ));
+          })()}
+        </ul>
+      </ConfirmDialog>
     </div>
   );
 }

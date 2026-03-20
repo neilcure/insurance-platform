@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -13,6 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { GroupShowWhenConfig } from "@/components/admin/generic/GroupShowWhenConfig";
 import type { InputType } from "@/lib/types/form";
 import { InputTypeSelect } from "@/components/admin/generic/InputTypeSelect";
+import { deepEqual, formSnapshot } from "@/lib/form-utils";
 
 type BooleanBranchChild = {
   label?: string;
@@ -130,6 +130,9 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
   const [copySelectedKeys, setCopySelectedKeys] = React.useState<Set<string>>(new Set());
   const [loadingSourceFields, setLoadingSourceFields] = React.useState(false);
   const [copying, setCopying] = React.useState(false);
+
+  const editSnapshot = React.useRef<Record<string, unknown> | null>(null);
+  const snapshotCaptureKeyRef = React.useRef<string | null>(null);
 
   // Ensure consistent numeric behavior and stable ordering
   const toInt = React.useCallback((value: unknown, fallback = 0) => {
@@ -285,9 +288,84 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     void loadCats();
   }, [categoryGroupKey]);
 
+  function buildSavePayload(): Record<string, unknown> {
+    const normalizedMeta: FieldMeta = {
+      ...(form.meta ?? {}),
+      categories: applyToAll ? [] : (form.meta?.categories ?? []),
+    };
+    const targetGroup = getPrimaryGroup(normalizedMeta.group);
+    const prevGroup = getPrimaryGroup(((editing?.meta ?? {}) as FieldMeta)?.group);
+    const groupMembers = rows.filter(
+      (r) => getPrimaryGroup(((r.meta ?? {}) as FieldMeta).group) === targetGroup && (!editing || r.id !== editing.id),
+    );
+    const maxGroupSort = groupMembers.reduce((acc, r) => Math.max(acc, toInt(r.sortOrder, 0)), -1);
+    const nextSortOrder =
+      !editing || prevGroup !== targetGroup ? maxGroupSort + 1 : toInt(editing.sortOrder ?? 0, 0);
+    return {
+      label: form.label,
+      value: form.value,
+      sortOrder: nextSortOrder,
+      isActive: !!form.isActive,
+      valueType: form.valueType ?? "string",
+      meta: normalizedMeta,
+    };
+  }
+
+  React.useLayoutEffect(() => {
+    if (!open) {
+      snapshotCaptureKeyRef.current = null;
+      return;
+    }
+    if (!editing) {
+      editSnapshot.current = null;
+      snapshotCaptureKeyRef.current = null;
+      return;
+    }
+    const key = `edit:${editing.id}`;
+    if (snapshotCaptureKeyRef.current === key) return;
+    snapshotCaptureKeyRef.current = key;
+    editSnapshot.current = formSnapshot(buildSavePayload());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- baseline once per open+edit id; omit `form` to avoid resetting on each keystroke
+  }, [open, editing?.id, rows, applyToAll]);
+
   function startEdit(row: FieldRow) {
-    // Navigate to full-page editor
-    window.location.href = `/admin/policy-settings/${pkg}/fields/${row.id}`;
+    const mergedMeta = { inputType: "string", required: false, categories: [], ...(row.meta ?? {}) } as FieldMeta;
+    const grpArr = Array.isArray(mergedMeta.group)
+      ? mergedMeta.group
+      : typeof mergedMeta.group === "string" && mergedMeta.group.trim()
+        ? [mergedMeta.group.trim()]
+        : [];
+    if (grpArr.length > 0 && !mergedMeta.groupShowWhenMap) {
+      const inherited: Record<string, NonNullable<FieldMeta["groupShowWhenMap"]>[string]> = {};
+      for (const groupName of grpArr) {
+        const sibling = rows.find((r) => {
+          const rg = (r.meta as FieldMeta | null)?.group;
+          const rGroups = Array.isArray(rg) ? rg : typeof rg === "string" && rg.trim() ? [rg.trim()] : [];
+          return (
+            r.id !== row.id &&
+            rGroups.includes(groupName) &&
+            ((r.meta as FieldMeta)?.groupShowWhenMap?.[groupName] || (r.meta as FieldMeta)?.groupShowWhen)
+          );
+        });
+        if (sibling) {
+          const sm = sibling.meta as FieldMeta;
+          inherited[groupName] = sm.groupShowWhenMap?.[groupName] ?? sm.groupShowWhen ?? null;
+        }
+      }
+      if (Object.keys(inherited).length > 0) mergedMeta.groupShowWhenMap = inherited;
+    }
+    setForm({
+      label: row.label,
+      value: row.value,
+      valueType: row.valueType ?? "string",
+      sortOrder: row.sortOrder,
+      isActive: Boolean(row.isActive ?? true),
+      meta: mergedMeta,
+    });
+    const isAll = !Array.isArray(row.meta?.categories) || (row.meta?.categories ?? []).length === 0;
+    setApplyToAll(isAll);
+    setEditing(row);
+    setOpen(true);
   }
   async function save() {
     try {
@@ -295,28 +373,13 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
         toast.error("Label and value are required");
         return;
       }
-      const normalizedMeta: FieldMeta = {
-        ...(form.meta ?? {}),
-        categories: applyToAll ? [] : (form.meta?.categories ?? []),
-      };
-      // Determine next sort order: append to end if creating, or if group changed
-      const targetGroup = getPrimaryGroup(normalizedMeta.group);
-      const prevGroup = getPrimaryGroup(((editing?.meta ?? {}) as FieldMeta)?.group);
-      const groupMembers = rows.filter(
-        (r) => getPrimaryGroup(((r.meta ?? {}) as FieldMeta).group) === targetGroup && (!editing || r.id !== editing.id)
-      );
-      const maxGroupSort = groupMembers.reduce((acc, r) => Math.max(acc, toInt(r.sortOrder, 0)), -1);
-      const nextSortOrder =
-        !editing || prevGroup !== targetGroup ? maxGroupSort + 1 : toInt(editing.sortOrder ?? 0, 0);
-      const payload = {
-        label: form.label,
-        value: form.value,
-        sortOrder: nextSortOrder,
-        isActive: !!form.isActive,
-        valueType: form.valueType ?? "string",
-        meta: normalizedMeta,
-      };
+      const payload = buildSavePayload();
       if (editing) {
+        if (editSnapshot.current !== null && deepEqual(formSnapshot(payload), editSnapshot.current)) {
+          toast.info("No changes to save");
+          setOpen(false);
+          return;
+        }
         const res = await fetch(`/api/admin/form-options/${editing.id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
@@ -659,12 +722,27 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
           <Button size="sm" variant="outline" onClick={openCopyDialog}>
             <span className="hidden sm:inline">Copy from</span>
           </Button>
-          <Link href={`/admin/policy-settings/${pkg}/fields/new`}>
-            <Button size="sm" className="inline-flex items-center gap-2 self-start sm:self-auto">
-              <Plus className="h-4 w-4 sm:hidden lg:inline" />
-              <span className="hidden sm:inline">Add</span>
-            </Button>
-          </Link>
+          <Button
+            size="sm"
+            className="inline-flex items-center gap-2 self-start sm:self-auto"
+            onClick={() => {
+              editSnapshot.current = null;
+              setEditing(null);
+              setForm({
+                label: "",
+                value: "",
+                valueType: "string",
+                sortOrder: 0,
+                isActive: true,
+                meta: { inputType: "string", required: false, categories: [] },
+              });
+              setApplyToAll(true);
+              setOpen(true);
+            }}
+          >
+            <Plus className="h-4 w-4 sm:hidden lg:inline" />
+            <span className="hidden sm:inline">Add</span>
+          </Button>
         </div>
       </div>
       <div className="rounded-md border border-neutral-200 p-2 sm:p-3 text-xs dark:border-neutral-800 w-full overflow-x-auto">
@@ -959,7 +1037,17 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
         </TableBody>
       </Table>
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog
+        open={open}
+        onOpenChange={(v) => {
+          setOpen(v);
+          if (!v) {
+            setEditing(null);
+            editSnapshot.current = null;
+            snapshotCaptureKeyRef.current = null;
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editing ? "Edit Field" : "Add Field"}</DialogTitle>

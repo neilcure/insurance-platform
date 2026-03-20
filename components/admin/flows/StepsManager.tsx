@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { deepEqual, formSnapshot } from "@/lib/form-utils";
 import type { ShowWhenRule } from "@/lib/types/form";
 
 type StepRow = {
@@ -52,6 +53,7 @@ export default function StepsManager({ flow }: { flow: string }) {
     isActive: true,
     meta: { packages: [], packageCategories: {}, isFinal: false, wizardStep: 1, wizardStepLabel: "" },
   });
+  const editSnapshot = React.useRef<Record<string, unknown> | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -149,6 +151,7 @@ export default function StepsManager({ flow }: { flow: string }) {
     if (packages.length > 0) void loadAllCats();
   }, [packages]);
   function startCreate() {
+    editSnapshot.current = null;
     setEditing(null);
     setForm({
       label: "",
@@ -184,7 +187,67 @@ export default function StepsManager({ flow }: { flow: string }) {
       next.meta = { ...(next.meta ?? {}), packages: valid, packageCategories: prunedMap, packageShowWhen: prunedShowWhen };
     }
     setForm(next);
+    editSnapshot.current = formSnapshot(buildSavePayload(next) as Record<string, unknown>);
     setOpen(true);
+  }
+  function buildSavePayload(form: Partial<StepRow>) {
+    const embeddedFlow = String(form.meta?.embeddedFlow ?? "").trim();
+    const selectedPkgsRaw = Array.isArray(form.meta?.packages) ? (form.meta?.packages as string[]) : [];
+    const selectedPkgs = selectedPkgsRaw.filter((p) => packages.some((po) => po.value === p));
+    const pkgCatsRaw = (form.meta?.packageCategories ?? {}) as Record<string, string[]>;
+    const pkgCats = Object.fromEntries(Object.entries(pkgCatsRaw).filter(([k]) => selectedPkgs.includes(k)));
+    const pkgShowWhenRaw = (form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>;
+    const pkgShowWhen = Object.fromEntries(
+      Object.entries(pkgShowWhenRaw)
+        .filter(([k]) => selectedPkgs.includes(k))
+        .map(([k, rules]) => [k, rules.filter((r) => r.package && (Array.isArray(r.category) ? r.category.length > 0 : !!r.category))]),
+    );
+    const wizardStepNum = Number(form.meta?.wizardStep);
+    const wizardStep = Number.isFinite(wizardStepNum) && wizardStepNum > 0 ? wizardStepNum : undefined;
+    const rawLabel = form.meta?.wizardStepLabel;
+    const wizardStepLabel =
+      typeof rawLabel === "string" && rawLabel.trim().length > 0 ? rawLabel.trim() : undefined;
+    const csvRaw = (form.meta?.categoryStepVisibility ?? {}) as Record<string, string[]>;
+    const categoryStepVisibility = Object.fromEntries(
+      Object.entries(csvRaw).filter(([, steps]) => Array.isArray(steps) && steps.length > 0),
+    );
+    const pkgGrpLabelsRaw = (form.meta?.packageGroupLabelsHidden ?? {}) as Record<string, boolean>;
+    const packageGroupLabelsHidden = Object.fromEntries(
+      Object.entries(pkgGrpLabelsRaw).filter(([k, v]) => selectedPkgs.includes(k) && v),
+    );
+    const embeddedFlowLabel = typeof form.meta?.embeddedFlowLabel === "string" ? form.meta.embeddedFlowLabel.trim() : undefined;
+    const stepShowWhen = (Array.isArray(form.meta?.showWhen) ? form.meta!.showWhen : [])
+      .filter((r): r is { package: string; category?: string | string[] } => !!r.package);
+    const catShowWhenRaw = (form.meta?.categoryShowWhen ?? {}) as Record<string, { package: string; category: string | string[] }[]>;
+    const categoryShowWhen = Object.fromEntries(
+      Object.entries(catShowWhenRaw)
+        .filter(([k, rules]) => {
+          const [pkg] = k.split("__");
+          return selectedPkgs.includes(pkg!) && rules.length > 0 && rules.some((r) => !!r.package);
+        })
+        .map(([k, rules]) => [k, rules.filter((r) => !!r.package)]),
+    );
+    return {
+      label: form.label!,
+      value: form.value!,
+      sortOrder: Number(form.sortOrder) || 0,
+      isActive: !!form.isActive,
+      valueType: "string",
+      meta: {
+        ...(form.meta ?? {}),
+        packages: selectedPkgs,
+        packageCategories: pkgCats,
+        packageShowWhen: pkgShowWhen,
+        packageGroupLabelsHidden,
+        categoryStepVisibility,
+        categoryShowWhen: Object.keys(categoryShowWhen).length > 0 ? categoryShowWhen : undefined,
+        wizardStep,
+        wizardStepLabel,
+        embeddedFlow: embeddedFlow || undefined,
+        embeddedFlowLabel: embeddedFlowLabel || undefined,
+        showWhen: stepShowWhen.length > 0 ? stepShowWhen : undefined,
+      },
+    };
   }
   function toggleCategory(pkg: string, value: string) {
     const currentMap = (form.meta?.packageCategories ?? {}) as Record<string, string[]>;
@@ -207,61 +270,15 @@ export default function StepsManager({ flow }: { flow: string }) {
         toast.error("Please select at least one package, or use an embedded flow");
         return;
       }
-      const pkgCatsRaw = (form.meta?.packageCategories ?? {}) as Record<string, string[]>;
-      const pkgCats = Object.fromEntries(Object.entries(pkgCatsRaw).filter(([k]) => selectedPkgs.includes(k)));
-      const pkgShowWhenRaw = (form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>;
-      const pkgShowWhen = Object.fromEntries(
-        Object.entries(pkgShowWhenRaw)
-          .filter(([k]) => selectedPkgs.includes(k))
-          .map(([k, rules]) => [k, rules.filter((r) => r.package && (Array.isArray(r.category) ? r.category.length > 0 : !!r.category))]),
-      );
-      const wizardStepNum = Number(form.meta?.wizardStep);
-      const wizardStep = Number.isFinite(wizardStepNum) && wizardStepNum > 0 ? wizardStepNum : undefined;
-      const rawLabel = form.meta?.wizardStepLabel;
-      const wizardStepLabel =
-        typeof rawLabel === "string" && rawLabel.trim().length > 0 ? rawLabel.trim() : undefined;
-      const csvRaw = (form.meta?.categoryStepVisibility ?? {}) as Record<string, string[]>;
-      const categoryStepVisibility = Object.fromEntries(
-        Object.entries(csvRaw).filter(([, steps]) => Array.isArray(steps) && steps.length > 0),
-      );
-      const pkgGrpLabelsRaw = (form.meta?.packageGroupLabelsHidden ?? {}) as Record<string, boolean>;
-      const packageGroupLabelsHidden = Object.fromEntries(
-        Object.entries(pkgGrpLabelsRaw).filter(([k, v]) => selectedPkgs.includes(k) && v),
-      );
-      const embeddedFlowLabel = typeof form.meta?.embeddedFlowLabel === "string" ? form.meta.embeddedFlowLabel.trim() : undefined;
-      const stepShowWhen = (Array.isArray(form.meta?.showWhen) ? form.meta!.showWhen : [])
-        .filter((r): r is { package: string; category?: string | string[] } => !!r.package);
-      const catShowWhenRaw = (form.meta?.categoryShowWhen ?? {}) as Record<string, { package: string; category: string | string[] }[]>;
-      const categoryShowWhen = Object.fromEntries(
-        Object.entries(catShowWhenRaw)
-          .filter(([k, rules]) => {
-            const [pkg] = k.split("__");
-            return selectedPkgs.includes(pkg!) && rules.length > 0 && rules.some((r) => !!r.package);
-          })
-          .map(([k, rules]) => [k, rules.filter((r) => !!r.package)]),
-      );
-      const payload = {
-        label: form.label,
-        value: form.value,
-        sortOrder: Number(form.sortOrder) || 0,
-        isActive: !!form.isActive,
-        valueType: "string",
-        meta: {
-          ...(form.meta ?? {}),
-          packages: selectedPkgs,
-          packageCategories: pkgCats,
-          packageShowWhen: pkgShowWhen,
-          packageGroupLabelsHidden,
-          categoryStepVisibility,
-          categoryShowWhen: Object.keys(categoryShowWhen).length > 0 ? categoryShowWhen : undefined,
-          wizardStep,
-          wizardStepLabel,
-          embeddedFlow: embeddedFlow || undefined,
-          embeddedFlowLabel: embeddedFlowLabel || undefined,
-          showWhen: stepShowWhen.length > 0 ? stepShowWhen : undefined,
-        },
-      };
+      const payload = buildSavePayload(form);
       if (editing) {
+        if (
+          editSnapshot.current !== null &&
+          deepEqual(editSnapshot.current, formSnapshot(payload as Record<string, unknown>))
+        ) {
+          toast.info("No changes to save");
+          return;
+        }
         const res = await fetch(`/api/admin/form-options/${editing.id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },

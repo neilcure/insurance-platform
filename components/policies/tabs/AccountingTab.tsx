@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
+import { deepEqual, formSnapshot } from "@/lib/form-utils";
 import { Building2, Loader2, Pencil, Save, Users, X } from "lucide-react";
 
 type FieldDef = {
@@ -429,6 +430,11 @@ export function AccountingTab({
   const [loading, setLoading] = React.useState(true);
   const [editingKey, setEditingKey] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
+  const editingInitialSnapshotRef = React.useRef<{
+    values: Record<string, unknown>;
+    insurerId: number | null;
+    collaboratorId: number | null;
+  } | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -498,6 +504,24 @@ export function AccountingTab({
   }, [expectedTemplates, lines, fields, snapshotEntities]);
 
   async function handleSave(lineKey: string, lineLabel: string, values: Record<string, unknown>, insurerId: number | null, collabId: number | null) {
+    const snap = editingInitialSnapshotRef.current;
+    if (snap) {
+      const current = {
+        values: formSnapshot(values),
+        insurerId,
+        collaboratorId: collabId,
+      };
+      const initial = {
+        values: snap.values,
+        insurerId: snap.insurerId,
+        collaboratorId: snap.collaboratorId,
+      };
+      if (deepEqual(current, initial)) {
+        toast.info("No changes to save");
+        return;
+      }
+    }
+
     setSaving(true);
     try {
       const res = await fetch(`/api/policies/${policyId}/premiums`, {
@@ -510,6 +534,7 @@ export function AccountingTab({
         throw new Error(err.error || "Save failed");
       }
       toast.success("Saved");
+      editingInitialSnapshotRef.current = null;
       setEditingKey(null);
       await load();
       onUpdate?.();
@@ -541,7 +566,11 @@ export function AccountingTab({
 
   if (editingKey !== null) {
     const line = displayLines.find((l) => l.lineKey === editingKey);
-    if (!line) { setEditingKey(null); return null; }
+    if (!line) {
+      editingInitialSnapshotRef.current = null;
+      setEditingKey(null);
+      return null;
+    }
     return (
       <LineEditor
         fields={fields}
@@ -553,7 +582,10 @@ export function AccountingTab({
         availableInsurers={availableInsurers}
         availableCollabs={availableCollabs}
         onSave={handleSave}
-        onCancel={() => setEditingKey(null)}
+        onCancel={() => {
+          editingInitialSnapshotRef.current = null;
+          setEditingKey(null);
+        }}
         saving={saving}
       />
     );
@@ -569,7 +601,14 @@ export function AccountingTab({
           line={line}
           fields={fields}
           canEdit={canEdit}
-          onEdit={() => setEditingKey(line.lineKey)}
+          onEdit={() => {
+            editingInitialSnapshotRef.current = {
+              values: formSnapshot(line.values),
+              insurerId: line.insurerId,
+              collaboratorId: line.collaboratorId,
+            };
+            setEditingKey(line.lineKey);
+          }}
         />
       ))}
 

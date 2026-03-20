@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import Link from "next/link";
 import { IconPicker } from "@/components/admin/generic/IconPicker";
+import { deepEqual, formSnapshot } from "@/lib/form-utils";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 type FlowMeta = {
   showInDashboard?: boolean;
@@ -40,6 +42,9 @@ export default function FlowsManager() {
     isActive: true,
     meta: null,
   });
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const editSnapshot = React.useRef<Record<string, unknown> | null>(null);
+  const pendingDeleteRef = React.useRef<OptionRow | null>(null);
 
   async function load() {
     setLoading(true);
@@ -72,6 +77,7 @@ export default function FlowsManager() {
 
   function startCreate() {
     setEditing(null);
+    editSnapshot.current = null;
     setForm({ label: "", value: "", sortOrder: 0, isActive: true, meta: null });
     setOpen(true);
   }
@@ -79,12 +85,42 @@ export default function FlowsManager() {
     setEditing(row);
     setForm({ ...row, meta: row.meta ?? null });
     setOpen(true);
+    editSnapshot.current = formSnapshot({
+      label: row.label,
+      value: row.value,
+      sortOrder: Number(row.sortOrder) || 0,
+      isActive: !!row.isActive,
+      meta: {
+        showInDashboard: !!row.meta?.showInDashboard,
+        icon: row.meta?.icon || undefined,
+        dashboardLabel: row.meta?.dashboardLabel || undefined,
+      },
+    });
   }
   async function save() {
     try {
       if (!form.label || !form.value) {
         toast.error("Label and value are required");
         return;
+      }
+      if (editing) {
+        const meta = {
+          showInDashboard: !!form.meta?.showInDashboard,
+          icon: form.meta?.icon || undefined,
+          dashboardLabel: form.meta?.dashboardLabel || undefined,
+        };
+        const current = formSnapshot({
+          label: form.label,
+          value: form.value,
+          sortOrder: Number(form.sortOrder) || 0,
+          isActive: !!form.isActive,
+          meta,
+        });
+        if (editSnapshot.current && deepEqual(current, editSnapshot.current)) {
+          toast.info("No changes to save");
+          setOpen(false);
+          return;
+        }
       }
       const meta: FlowMeta = {
         showInDashboard: !!form.meta?.showInDashboard,
@@ -143,10 +179,14 @@ export default function FlowsManager() {
       toast.error("Update failed");
     }
   }
-  async function remove(row: OptionRow) {
+  function requestRemove(row: OptionRow) {
+    pendingDeleteRef.current = row;
+    setConfirmOpen(true);
+  }
+  async function confirmRemove() {
+    const row = pendingDeleteRef.current;
+    if (!row) return;
     try {
-      const proceed = window.confirm(`Delete flow "${row.label}"? This cannot be undone.`);
-      if (!proceed) return;
       const res = await fetch(`/api/admin/form-options/${row.id}`, { method: "DELETE" });
       if (!res.ok) {
         const text = await res.text();
@@ -209,7 +249,7 @@ export default function FlowsManager() {
                   <Button size="sm" variant={r.isActive ? "outline" : "default"} onClick={() => toggleActive(r)}>
                     {r.isActive ? "Disable" : "Enable"}
                   </Button>
-                  <Button size="sm" variant="destructive" onClick={() => remove(r)}>
+                  <Button size="sm" variant="destructive" onClick={() => requestRemove(r)}>
                     Delete
                   </Button>
                 </div>
@@ -224,7 +264,7 @@ export default function FlowsManager() {
                   <Button size="sm" variant={r.isActive ? "outline" : "default"} onClick={() => toggleActive(r)}>
                     {r.isActive ? "Disable" : "Enable"}
                   </Button>
-                  <Button size="sm" variant="destructive" onClick={() => remove(r)}>
+                  <Button size="sm" variant="destructive" onClick={() => requestRemove(r)}>
                     Delete
                   </Button>
                 </div>
@@ -328,6 +368,24 @@ export default function FlowsManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(next) => {
+          setConfirmOpen(next);
+          if (!next) pendingDeleteRef.current = null;
+        }}
+        title={
+          pendingDeleteRef.current
+            ? `Delete flow "${pendingDeleteRef.current.label}"?`
+            : "Delete flow?"
+        }
+        description="This cannot be undone."
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        destructive
+        onConfirm={() => void confirmRemove()}
+      />
     </div>
   );
 }

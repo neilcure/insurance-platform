@@ -16,6 +16,7 @@ import { GroupAssignmentSection } from "@/components/admin/generic/GroupAssignme
 import { AutoFillConfigEditor, type AutoFillConfig } from "@/components/admin/generic/AutoFillConfig";
 import { EntityPickerConfigEditor, type EntityPickerConfig } from "@/components/admin/generic/EntityPickerConfig";
 import { InputTypeSelect, type InputType } from "@/components/admin/generic/InputTypeSelect";
+import { deepEqual, formSnapshot } from "@/lib/form-utils";
 
 export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: number }) {
   const [categoryOptions, setCategoryOptions] = React.useState<{ label: string; value: string }[]>([]);
@@ -66,6 +67,32 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
   });
   const [applyToAll, setApplyToAll] = React.useState(true);
   const [customGroupMode, setCustomGroupMode] = React.useState(false);
+  const editSnapshot = React.useRef<Record<string, unknown> | null>(null);
+
+  function buildPatchPayload(
+    f: {
+      label: string;
+      value: string;
+      valueType: string;
+      sortOrder: number;
+      isActive: boolean;
+      meta: (typeof form)["meta"];
+    },
+    applyAll: boolean,
+  ): Record<string, unknown> {
+    const normalizedMeta = {
+      ...(f.meta ?? {}),
+      categories: applyAll ? [] : ((f.meta?.categories ?? []) as string[]),
+    };
+    return {
+      label: f.label,
+      value: f.value,
+      sortOrder: Number(f.sortOrder) || 0,
+      isActive: !!f.isActive,
+      valueType: f.valueType ?? "string",
+      meta: normalizedMeta,
+    };
+  }
 
   React.useEffect(() => {
     async function loadCats() {
@@ -149,6 +176,19 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
           });
           const isAll = !Array.isArray((current.meta as any)?.categories) || ((current.meta as any)?.categories ?? []).length === 0;
           setApplyToAll(isAll);
+          editSnapshot.current = formSnapshot(
+            buildPatchPayload(
+              {
+                label: current.label,
+                value: current.value,
+                valueType: current.valueType,
+                sortOrder: current.sortOrder,
+                isActive: Boolean((current as any).isActive ?? true),
+                meta: mergedMeta,
+              },
+              isAll,
+            ),
+          );
           const existingShowWhen = Array.isArray(mergedMeta.showWhen) ? mergedMeta.showWhen : [];
           for (const rule of existingShowWhen) {
             if (rule?.package) {
@@ -211,18 +251,14 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
         toast.error("Label and value are required");
         return;
       }
-      const normalizedMeta = {
-        ...(form.meta ?? {}),
-        categories: applyToAll ? [] : ((form.meta?.categories ?? []) as string[]),
-      };
-      const payload = {
-        label: form.label,
-        value: form.value,
-        sortOrder: Number(form.sortOrder) || 0,
-        isActive: !!form.isActive,
-        valueType: form.valueType ?? "string",
-        meta: normalizedMeta,
-      };
+      const payload = buildPatchPayload(form, applyToAll);
+      if (
+        editSnapshot.current !== null &&
+        deepEqual(formSnapshot(payload), editSnapshot.current)
+      ) {
+        toast.info("No changes to save");
+        return;
+      }
       const res = await fetch(`/api/admin/form-options/${id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },

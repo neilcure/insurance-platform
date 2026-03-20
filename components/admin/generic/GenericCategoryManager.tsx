@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Plus, Trash2 } from "lucide-react";
+import { deepEqual, formSnapshot } from "@/lib/form-utils";
 
 type AccountingLine = { key: string; label: string };
 
@@ -41,6 +42,7 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
     meta: { labelCase: "original" },
   });
   const [acctLines, setAcctLines] = React.useState<AccountingLine[]>([]);
+  const editSnapshot = React.useRef<Record<string, unknown> | null>(null);
 
   const showAccountingLines = groupKey === "policy_category";
 
@@ -67,12 +69,26 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
     setForm({ label: "", value: "", sortOrder: 0, isActive: true, meta: { labelCase: "original" } });
     setAcctLines([]);
     setOpen(true);
+    editSnapshot.current = null;
   }
   function startEdit(row: OptionRow) {
     setEditing(row);
     setForm({ ...row, meta: row.meta ?? { labelCase: "original" } });
     setAcctLines(row.meta?.accountingLines ?? []);
     setOpen(true);
+    const metaForSnap: MetaType = { ...(row.meta ?? {}), labelCase: row.meta?.labelCase ?? "original" };
+    if (showAccountingLines) {
+      const lines = row.meta?.accountingLines ?? [];
+      const validLines = lines.filter((l) => l.key.trim() && l.label.trim());
+      metaForSnap.accountingLines = validLines.length > 0 ? validLines : undefined;
+    }
+    editSnapshot.current = formSnapshot({
+      label: row.label,
+      value: row.value,
+      sortOrder: Number(row.sortOrder) || 0,
+      isActive: !!row.isActive,
+      meta: metaForSnap,
+    });
   }
 
   function buildMeta(): MetaType {
@@ -91,6 +107,20 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
         return;
       }
       const meta = buildMeta();
+      if (editing) {
+        const current = formSnapshot({
+          label: form.label,
+          value: form.value,
+          sortOrder: Number(form.sortOrder) || 0,
+          isActive: !!form.isActive,
+          meta,
+        });
+        if (editSnapshot.current && deepEqual(current, editSnapshot.current)) {
+          toast.info("No changes to save");
+          setOpen(false);
+          return;
+        }
+      }
       if (editing) {
         const res = await fetch(`/api/admin/form-options/${editing.id}`, {
           method: "PATCH",

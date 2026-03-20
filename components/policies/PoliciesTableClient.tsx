@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { deepEqual, formSnapshot } from "@/lib/form-utils";
 import { RowActionMenu } from "@/components/ui/row-action-menu";
 import {
   DropdownMenu,
@@ -40,7 +41,8 @@ import type { DocumentTemplateRow } from "@/lib/types/document-template";
 import type { UploadDocumentTypeRow } from "@/lib/types/upload-document";
 import { formatDDMMYYYYHHMM } from "@/lib/format/date";
 import { useSession } from "next-auth/react";
-import { StickyNote, ChevronDown, ChevronUp, X } from "lucide-react";
+import { StickyNote, ChevronDown, ChevronUp, X, ArrowUpDown } from "lucide-react";
+import { CompactSelect } from "@/components/ui/compact-select";
 
 type NoteEntry = { text: string; at: string; by?: { id?: number; email?: string } };
 
@@ -188,6 +190,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
   const [editValues, setEditValues] = React.useState<Record<string, unknown>>({});
   const [editLoading, setEditLoading] = React.useState(false);
   const [editSaving, setEditSaving] = React.useState(false);
+  const editInitialSnapshotRef = React.useRef<Record<string, unknown>>({});
   // Toggle active confirm dialog
   const [toggleConfirm, setToggleConfirm] = React.useState<{ id: number; currentlyActive: boolean } | null>(null);
   const [toggling, setToggling] = React.useState(false);
@@ -689,6 +692,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
   }, [detail, detailFlowKey]);
 
   async function openEditDialog(pkgName: string, pkgLabel: string, currentValues: Record<string, unknown>) {
+    editInitialSnapshotRef.current = {};
     setEditPkg(pkgName);
     setEditPkgLabel(pkgLabel);
     setEditValues({ ...currentValues });
@@ -699,6 +703,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
       const { fields, values } = await loadEditFields(pkgName, currentValues);
       setEditFields(fields);
       setEditValues(values);
+      editInitialSnapshotRef.current = formSnapshot(values);
     } catch {
       toast.error("Failed to load field definitions");
     } finally {
@@ -708,6 +713,10 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
 
   async function saveEdit() {
     if (!detail || !editPkg) return;
+    if (deepEqual(formSnapshot(editValues), editInitialSnapshotRef.current)) {
+      toast.info("No changes to save");
+      return;
+    }
     setEditSaving(true);
     try {
       const snap = (detail.extraAttributes ?? {}) as Record<string, unknown>;
@@ -884,9 +893,9 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
           {presets.length > 0 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-9 gap-1.5">
-                  <span className="hidden sm:inline">{activePreset?.name ?? "Select View"}</span>
-                  <ChevronDown className="h-3.5 w-3.5" />
+                <Button variant="outline" size="sm" className="h-auto max-w-20 flex-col gap-0 py-1 sm:h-9 sm:max-w-none sm:flex-row sm:gap-1.5 sm:py-0">
+                  <span className="truncate text-[9px] leading-tight sm:text-xs">{activePreset?.name ?? "View"}</span>
+                  <ChevronDown className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
@@ -907,34 +916,36 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
             </DropdownMenu>
           )}
           {activePreset && (
-            <Button variant="ghost" size="sm" className="h-9 gap-1" onClick={() => openEditPreset(activePreset)}>
-              <Settings2 className="h-3.5 w-3.5" />
+            <Button variant="outline" size="sm" className="h-auto flex-col gap-0 py-1 sm:h-9 sm:flex-row sm:gap-1 sm:py-0" onClick={() => openEditPreset(activePreset)}>
+              <span className="text-[9px] leading-tight sm:hidden">Edit</span>
+              <Settings2 className="h-4 w-4" />
               <span className="hidden sm:inline">Edit</span>
             </Button>
           )}
-          <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={openNewPreset}>
+          <Button variant="outline" size="sm" className="h-auto flex-col gap-0 py-1 sm:h-9 sm:flex-row sm:gap-1.5 sm:py-0" onClick={openNewPreset}>
+            <span className="text-[9px] leading-tight sm:hidden">{presets.length === 0 ? "Set Up" : "New"}</span>
             <Settings2 className="h-4 w-4" />
             <span className="hidden sm:inline">{presets.length === 0 ? "Set Up Columns" : "New View"}</span>
           </Button>
-          <label className="text-neutral-500 dark:text-neutral-400">Sort</label>
-          <select
-            className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          <label className="hidden sm:inline text-neutral-500 dark:text-neutral-400">Sort</label>
+          <CompactSelect
+            options={sortOptions}
             value={sortKey}
-            onChange={(e) => setSortKey(e.target.value)}
-          >
-            {sortOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
+            onChange={setSortKey}
+            icon={<ArrowUpDown />}
+            iconLabel="Sort"
+          />
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
-            className="h-9"
+            className="h-auto flex-col gap-0 py-1 sm:h-9 sm:flex-row sm:py-0"
             title={sortDir === "asc" ? "Ascending" : "Descending"}
           >
-            {sortDir === "asc" ? "Asc" : "Desc"}
+            <span className="text-[9px] leading-tight sm:hidden">{sortDir === "asc" ? "Asc" : "Desc"}</span>
+            {sortDir === "asc" ? <ChevronUp className="h-4 w-4 sm:hidden" /> : <ChevronDown className="h-4 w-4 sm:hidden" />}
+            <span className="hidden sm:inline">{sortDir === "asc" ? "Asc" : "Desc"}</span>
           </Button>
         </div>
       </div>
