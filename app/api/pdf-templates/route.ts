@@ -33,6 +33,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  const contentType = request.headers.get("content-type") ?? "";
+  const isJson = contentType.includes("application/json");
+
+  if (isJson) {
+    return handleCreateBlank(request);
+  }
+
   const formData = await request.formData();
   const file = formData.get("file") as File | null;
   const label = String(formData.get("label") ?? "").trim();
@@ -90,6 +97,63 @@ export async function POST(request: Request) {
     pages,
     fields: [],
     flows,
+    description: description || undefined,
+  };
+
+  const [row] = await db
+    .insert(formOptions)
+    .values({
+      groupKey: PDF_TEMPLATE_GROUP_KEY,
+      label,
+      value: finalValue,
+      valueType: "json",
+      sortOrder: 0,
+      isActive: true,
+      meta: meta as unknown as Record<string, unknown>,
+    })
+    .returning();
+
+  return NextResponse.json(row, { status: 201 });
+}
+
+async function handleCreateBlank(request: Request) {
+  const body = await request.json();
+  const label = String(body.label ?? "").trim();
+  const description = String(body.description ?? "").trim();
+
+  if (!label) {
+    return NextResponse.json({ error: "Label is required" }, { status: 400 });
+  }
+
+  const blankPdf = await PDFDocument.create();
+  blankPdf.addPage([595, 842]);
+  const pdfBytes = await blankPdf.save();
+  const buffer = Buffer.from(pdfBytes);
+  const storedName = await savePdfTemplate("blank.pdf", buffer);
+
+  const value = label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 120);
+
+  const existing = await db
+    .select({ id: formOptions.id })
+    .from(formOptions)
+    .where(and(eq(formOptions.groupKey, PDF_TEMPLATE_GROUP_KEY), eq(formOptions.value, value)))
+    .limit(1);
+
+  const finalValue = existing.length > 0 ? `${value}_${Date.now()}` : value;
+
+  await db
+    .insert(formOptionGroups)
+    .values({ key: PDF_TEMPLATE_GROUP_KEY, label: "PDF Mail Merge Templates" })
+    .onConflictDoNothing();
+
+  const meta: PdfTemplateMeta = {
+    filePath: storedName,
+    pages: [{ width: 595, height: 842, type: "blank" }],
+    fields: [],
     description: description || undefined,
   };
 

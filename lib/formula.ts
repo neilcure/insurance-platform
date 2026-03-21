@@ -37,6 +37,19 @@ export function evaluateFormula(
 ): string {
   if (!formula) return "";
   try {
+    const trimmed = formula.trim();
+
+    // TODAY / TODAY +/- N  →  snapshot-safe: evaluates once at creation time
+    const todayMatch = /^TODAY(?:\s*([+-])\s*(\d+)\s*(d|days?)?)?$/i.exec(trimmed);
+    if (todayMatch) {
+      const now = new Date();
+      if (todayMatch[1]) {
+        const offset = Number(todayMatch[2]) * (todayMatch[1] === "-" ? -1 : 1);
+        now.setDate(now.getDate() + offset);
+      }
+      return fmtDateDDMMYYYY(now);
+    }
+
     const refs: Record<string, string> = {};
     formula.replace(/\{([^}]+)\}/g, (_, key: string) => {
       refs[key.trim()] = resolveFieldValue(key.trim(), formValues, pkg);

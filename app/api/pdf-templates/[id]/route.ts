@@ -86,6 +86,15 @@ export async function PATCH(
   if (Array.isArray(body.sections)) {
     newMeta.sections = body.sections;
   }
+  if (Array.isArray(body.images)) {
+    newMeta.images = body.images;
+  }
+  if (Array.isArray(body.drawings)) {
+    newMeta.drawings = body.drawings;
+  }
+  if (Array.isArray(body.pages)) {
+    newMeta.pages = body.pages;
+  }
   if (Array.isArray(body.flows)) {
     newMeta.flows = body.flows;
   }

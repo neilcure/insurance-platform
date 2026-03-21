@@ -11,7 +11,7 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Plus, Trash2, Pencil, FileText, UploadCloud } from "lucide-react";
+import { Plus, Trash2, Pencil, FileText, UploadCloud, FilePlus2 } from "lucide-react";
 import type { PdfTemplateRow } from "@/lib/types/pdf-template";
 import dynamic from "next/dynamic";
 
@@ -30,6 +30,10 @@ export default function PdfTemplateManager() {
   const [uploadDesc, setUploadDesc] = React.useState("");
   const [uploadFile, setUploadFile] = React.useState<File | null>(null);
   const [uploading, setUploading] = React.useState(false);
+  const [showCreate, setShowCreate] = React.useState(false);
+  const [createLabel, setCreateLabel] = React.useState("");
+  const [createDesc, setCreateDesc] = React.useState("");
+  const [creating, setCreating] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -78,6 +82,32 @@ export default function PdfTemplateManager() {
     }
   }
 
+  async function handleCreateBlank() {
+    if (!createLabel.trim()) return;
+    setCreating(true);
+    try {
+      const res = await fetch("/api/pdf-templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: createLabel.trim(), description: createDesc.trim(), blank: true }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Create failed");
+      }
+      const row = await res.json();
+      toast.success("Template created");
+      setShowCreate(false);
+      setCreateLabel("");
+      setCreateDesc("");
+      await load();
+      setEditingId(row.id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Create failed");
+    }
+    setCreating(false);
+  }
+
   if (editingId !== null) {
     const tpl = templates.find((t) => t.id === editingId);
     if (!tpl) {
@@ -98,17 +128,23 @@ export default function PdfTemplateManager() {
         <div className="text-sm text-neutral-600 dark:text-neutral-400">
           {loading ? "Loading..." : `${templates.length} template${templates.length !== 1 ? "s" : ""}`}
         </div>
-        <Button size="sm" onClick={() => setShowUpload(true)} className="gap-1.5">
-          <Plus className="h-4 w-4" />
-          <span className="hidden sm:inline">Upload Template</span>
-        </Button>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => setShowCreate(true)} className="gap-1.5">
+            <FilePlus2 className="h-4 w-4" />
+            <span className="hidden sm:inline">Create Blank</span>
+          </Button>
+          <Button size="sm" onClick={() => setShowUpload(true)} className="gap-1.5">
+            <UploadCloud className="h-4 w-4" />
+            <span className="hidden sm:inline">Upload PDF</span>
+          </Button>
+        </div>
       </div>
 
       {!loading && templates.length === 0 && (
         <div className="rounded-md border border-dashed border-neutral-300 p-8 text-center dark:border-neutral-700">
           <FileText className="mx-auto mb-2 h-8 w-8 text-neutral-400 dark:text-neutral-500" />
           <p className="text-sm text-neutral-600 dark:text-neutral-400">
-            No PDF templates yet. Upload a PDF to get started.
+            No PDF templates yet. Upload a PDF or create a blank template to get started.
           </p>
         </div>
       )}
@@ -160,6 +196,9 @@ export default function PdfTemplateManager() {
             <DialogTitle>Upload PDF Template</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">
+              Upload an existing PDF to use as the base. You can then place data fields on top of it.
+            </p>
             <div>
               <Label htmlFor="tpl-label">Template Name</Label>
               <Input
@@ -210,6 +249,43 @@ export default function PdfTemplateManager() {
             <Button variant="outline" onClick={() => setShowUpload(false)}>Cancel</Button>
             <Button onClick={handleUpload} disabled={uploading || !uploadFile || !uploadLabel.trim()}>
               {uploading ? "Uploading..." : "Upload"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create Blank Template</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">
+              Start with blank pages. Add text, images, and snapshot data fields to build a document from scratch.
+            </p>
+            <div>
+              <Label htmlFor="create-label">Template Name</Label>
+              <Input
+                id="create-label"
+                value={createLabel}
+                onChange={(e) => setCreateLabel(e.target.value)}
+                placeholder="e.g. Cover Letter, Policy Schedule"
+              />
+            </div>
+            <div>
+              <Label htmlFor="create-desc">Description (optional)</Label>
+              <Input
+                id="create-desc"
+                value={createDesc}
+                onChange={(e) => setCreateDesc(e.target.value)}
+                placeholder="Brief description"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCreate(false)}>Cancel</Button>
+            <Button onClick={handleCreateBlank} disabled={creating || !createLabel.trim()}>
+              {creating ? "Creating..." : "Create Template"}
             </Button>
           </DialogFooter>
         </DialogContent>

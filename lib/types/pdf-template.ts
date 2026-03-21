@@ -26,6 +26,9 @@ export type PdfFieldMapping = {
   fontSize?: number;
   fontColor?: string;
   align?: "left" | "center" | "right";
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
 
   sectionId?: string;
 
@@ -55,6 +58,33 @@ export type PdfFieldMapping = {
 export type PdfPageInfo = {
   width: number;
   height: number;
+  /** "pdf" (default) = page from uploaded PDF, "blank" = added blank page */
+  type?: "pdf" | "blank";
+};
+
+export type PdfImageMapping = {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Stored file name in pdf_template_files */
+  storedName: string;
+  label?: string;
+  sectionId?: string;
+};
+
+export type PdfDrawing = {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  strokeColor?: string;
+  strokeWidth?: number;
+  sectionId?: string;
 };
 
 export type PdfTemplateMeta = {
@@ -62,6 +92,8 @@ export type PdfTemplateMeta = {
   pages: PdfPageInfo[];
   fields: PdfFieldMapping[];
   sections?: PdfTemplateSection[];
+  images?: PdfImageMapping[];
+  drawings?: PdfDrawing[];
   flows?: string[];
   description?: string;
 };

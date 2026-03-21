@@ -283,7 +283,7 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
                   onChange={(e) => updateMeta("formula" as any, e.target.value as any)}
                 />
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                  Reference other fields using {"{field_key}"} syntax. Supports numeric math (+, -, *, /) and date arithmetic (e.g. {"{start_date}"} + 364 to add days).
+                  Reference other fields using {"{field_key}"} syntax. Supports numeric math (+, -, *, /), date arithmetic (e.g. {"{start_date}"} + 364), and <strong>TODAY</strong> for the current date (e.g. TODAY, TODAY + 30).
                 </p>
               </div>
             </div>
