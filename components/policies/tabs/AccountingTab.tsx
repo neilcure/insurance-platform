@@ -614,19 +614,55 @@ export function AccountingTab({
 
       {displayLines.length > 1 && (() => {
         const currency = (typeof displayLines[0]?.values?.currency === "string" && displayLines[0].values.currency) || "HKD";
+
+        const currencyFields = fields.filter((f) => f.inputType === "currency");
+        const percentFields = fields.filter((f) => f.inputType === "percent");
+        const sumField = (key: string) => {
+          let total = 0;
+          let found = false;
+          for (const l of displayLines) {
+            const v = Number(l.values[key]);
+            if (Number.isFinite(v)) { total += v; found = true; }
+          }
+          return found ? total : null;
+        };
+
+        const totals = currencyFields.map((f) => ({
+          key: f.key,
+          label: f.label,
+          total: sumField(f.key),
+        })).filter((t) => t.total !== null);
+
         let totalMargin = 0;
         let hasMargin = false;
         for (const l of displayLines) {
           if (l.margin !== null) { totalMargin += l.margin; hasMargin = true; }
         }
-        if (!hasMargin) return null;
+
+        if (totals.length === 0 && !hasMargin) return null;
         return (
-          <div className="rounded-md border border-neutral-300 bg-neutral-50 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900">
-            <SummaryRow
-              label="Total Margin"
-              value={fmtCurrency(totalMargin, currency)}
-              className={totalMargin >= 0 ? "text-green-600 dark:text-green-400 font-bold" : "text-red-600 dark:text-red-400 font-bold"}
-            />
+          <div className="rounded-md border border-neutral-700 bg-neutral-900 dark:border-neutral-300 dark:bg-neutral-50">
+            <div className="border-b border-neutral-600 px-3 py-2 dark:border-neutral-200">
+              <span className="text-xs font-semibold text-neutral-100 dark:text-neutral-800">Total Premium</span>
+            </div>
+            <div className="px-3 py-1 [&>div>span:first-child]:text-neutral-400! dark:[&>div>span:first-child]:text-neutral-500!">
+              {totals.map((t, idx) => (
+                <React.Fragment key={t.key}>
+                  {idx > 0 && <Separator className="my-0.5 bg-neutral-700 dark:bg-neutral-300" />}
+                  <SummaryRow label={t.label} value={fmtCurrency(t.total, currency)} className="text-white! dark:text-black! font-semibold" />
+                </React.Fragment>
+              ))}
+              {hasMargin && (
+                <>
+                  {totals.length > 0 && <Separator className="my-0.5 bg-neutral-700 dark:bg-neutral-300" />}
+                  <SummaryRow
+                    label="Total Margin"
+                    value={fmtCurrency(totalMargin, currency)}
+                    className={totalMargin >= 0 ? "text-green-400! dark:text-green-600! font-bold" : "text-red-400! dark:text-red-600! font-bold"}
+                  />
+                </>
+              )}
+            </div>
           </div>
         );
       })()}

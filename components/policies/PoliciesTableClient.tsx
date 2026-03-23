@@ -41,7 +41,7 @@ import type { DocumentTemplateRow } from "@/lib/types/document-template";
 import type { UploadDocumentTypeRow } from "@/lib/types/upload-document";
 import { formatDDMMYYYYHHMM } from "@/lib/format/date";
 import { useSession } from "next-auth/react";
-import { StickyNote, ChevronDown, ChevronUp, X, ArrowUpDown } from "lucide-react";
+import { StickyNote, ChevronDown, ChevronUp, Eye, X, ArrowUpDown } from "lucide-react";
 import { CompactSelect } from "@/components/ui/compact-select";
 
 type NoteEntry = { text: string; at: string; by?: { id?: number; email?: string } };
@@ -973,7 +973,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
         </TableHeader>
         <TableBody>
           {filtered.map((r) => (
-            <TableRow key={r.policyId}>
+            <TableRow key={r.policyId} className={`cursor-pointer group border-l-2 border-l-transparent transition-colors ${r.isActive === false ? "hover:bg-red-50/60 dark:hover:bg-red-950/30 hover:border-l-red-500" : "hover:bg-green-50/60 dark:hover:bg-green-950/30 hover:border-l-green-500"}`} onClick={() => openDetails(r.policyId)}>
               {activeColumns.length > 0 ? (
                 activeColumns.map((path) => (
                   <TableCell key={path} className="max-w-[200px] text-sm wrap-break-word">
@@ -985,17 +985,11 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
                   {r.policyNumber}
                 </TableCell>
               )}
-              <TableCell className="text-right">
+              <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-end gap-2.5">
+                <Eye className={`h-4 w-4 opacity-0 group-hover:opacity-80 transition-opacity shrink-0 cursor-pointer ${r.isActive === false ? "text-red-500" : "text-green-500"}`} onClick={() => openDetails(r.policyId)} />
                 <RowActionMenu
                   actions={[
-                    {
-                      label: openingId === r.policyId ? "Opening…" : "Details",
-                      icon: openingId === r.policyId
-                        ? <Loader2 className="h-4 w-4 animate-spin" />
-                        : <Info className="h-4 w-4" />,
-                      onClick: () => openDetails(r.policyId),
-                      loading: openingId === r.policyId,
-                    },
                     {
                       label: r.isActive === false ? "Enable" : "Disable",
                       icon: r.isActive === false
@@ -1011,6 +1005,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
                     },
                   ]}
                 />
+                </div>
               </TableCell>
             </TableRow>
           ))}

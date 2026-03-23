@@ -39,6 +39,7 @@ const SECTION_TEMPLATES: {
   source: PdfFieldMapping["source"];
   color: string;
   fields: SectionField[];
+  lineKey?: string;
 }[] = [
   {
     name: "Insured",
@@ -109,6 +110,19 @@ const SECTION_TEMPLATES: {
       { label: "Insurer Contact Phone", fieldKey: "insurerContactPhone" },
       { label: "Insurer Address", fieldKey: "insurerAddress" },
       { label: "Collaborator Name", fieldKey: "collaboratorName" },
+    ],
+  },
+  {
+    name: "Total Premium",
+    source: "accounting",
+    color: "#dc2626",
+    lineKey: "total",
+    fields: [
+      { label: "Total Gross Premium", fieldKey: "grossPremium", format: "currency", defaultOn: true },
+      { label: "Total Net Premium", fieldKey: "netPremium", format: "currency", defaultOn: true },
+      { label: "Total Client Premium", fieldKey: "clientPremium", format: "currency", defaultOn: true },
+      { label: "Total Agent Commission", fieldKey: "agentCommission", format: "currency", defaultOn: true },
+      { label: "Total Margin", fieldKey: "margin", format: "currency", defaultOn: true },
     ],
   },
   {
@@ -496,6 +510,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           fontColor: sectionDataColor !== "#000000" ? sectionDataColor : undefined,
           source: tpl.source,
           fieldKey: f.fieldKey,
+          lineKey: tpl.lineKey,
           sectionId,
           format: f.format ?? "text",
         });
@@ -510,6 +525,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           fontColor: sectionDataColor !== "#000000" ? sectionDataColor : undefined,
           source: tpl.source,
           fieldKey: f.fieldKey,
+          lineKey: tpl.lineKey,
           sectionId,
           format: f.format ?? "text",
         });

@@ -224,12 +224,43 @@ function buildAddress(org: Record<string, unknown>): string {
   return parts.join(", ");
 }
 
+function resolveAccountingTotal(
+  lines: AccountingLineContext[],
+  fieldKey: string,
+): unknown {
+  const sumKeys = ["grossPremium", "netPremium", "clientPremium", "agentCommission"];
+  if (sumKeys.includes(fieldKey)) {
+    let total = 0;
+    let found = false;
+    for (const l of lines) {
+      const v = Number(l.values[fieldKey]);
+      if (Number.isFinite(v)) { total += v; found = true; }
+    }
+    return found ? total : "";
+  }
+  if (fieldKey === "margin") {
+    let total = 0;
+    let found = false;
+    for (const l of lines) {
+      if (l.margin !== null) { total += l.margin; found = true; }
+    }
+    return found ? total : "";
+  }
+  if (fieldKey === "lineLabel") return "Total";
+  if (fieldKey === "currency") return lines[0]?.values?.currency ?? "";
+  return "";
+}
+
 function resolveAccounting(
   lines: AccountingLineContext[] | undefined,
   lineKey: string | undefined,
   fieldKey: string,
 ): unknown {
   if (!lines?.length) return "";
+
+  if (lineKey === "total" || lineKey === "Total") {
+    return resolveAccountingTotal(lines, fieldKey);
+  }
 
   // Find the matching line; default to the first line if no lineKey specified
   const line = lineKey
