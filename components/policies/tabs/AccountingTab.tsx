@@ -7,7 +7,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
-import { Building2, Loader2, Pencil, Save, Users, X } from "lucide-react";
+import { Building2, Calculator, ExternalLink, Loader2, Pencil, Save, Users, X } from "lucide-react";
+import Link from "next/link";
 
 type FieldDef = {
   key: string;
@@ -408,6 +409,7 @@ function LineView({ line, fields, canEdit, onEdit }: { line: LineData; fields: F
   );
 }
 
+
 // --- Main AccountingTab ---
 export function AccountingTab({
   policyId,
@@ -593,7 +595,16 @@ export function AccountingTab({
 
   return (
     <div className="space-y-3">
-      <div className="text-sm font-medium">Accounting</div>
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium">Accounting</div>
+        <Button size="sm" variant="outline" asChild>
+          <Link href="/dashboard/accounting" target="_blank">
+            <Calculator className="h-3.5 w-3.5 sm:hidden lg:inline" />
+            <span className="hidden sm:inline">Manage Payments</span>
+            <ExternalLink className="ml-1 h-3 w-3" />
+          </Link>
+        </Button>
+      </div>
 
       {displayLines.map((line) => (
         <LineView

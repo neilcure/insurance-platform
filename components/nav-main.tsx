@@ -45,6 +45,8 @@ function CollapsedGroupHeader({
   );
 }
 
+export type NavSubItem = { title: string; url: string; icon?: LucideIcon; badge?: number | null };
+
 export function NavMain({
   items,
 }: {
@@ -53,7 +55,7 @@ export function NavMain({
     url: string;
     icon?: LucideIcon;
     isActive?: boolean;
-    items?: { title: string; url: string; icon?: LucideIcon }[];
+    items?: NavSubItem[];
   }[];
 }) {
   const { collapsed, isMobile } = useSidebar();
@@ -81,11 +83,18 @@ export function NavMain({
               />
               {collapsedOpen[item.title] && (item.items ?? []).map((subItem) => (
                 <SidebarMenuItem key={subItem.title}>
-                  <SidebarMenuButton tooltip={subItem.title} asChild>
-                    <Link href={subItem.url}>
-                      {subItem.icon ? <subItem.icon className="h-3.5 w-3.5 shrink-0" /> : null}
-                    </Link>
-                  </SidebarMenuButton>
+                  <div className="relative">
+                    <SidebarMenuButton tooltip={subItem.title} asChild>
+                      <Link href={subItem.url}>
+                        {subItem.icon ? <subItem.icon className="h-3.5 w-3.5 shrink-0" /> : null}
+                      </Link>
+                    </SidebarMenuButton>
+                    {(subItem.badge ?? 0) > 0 && (
+                      <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white">
+                        {subItem.badge}
+                      </span>
+                    )}
+                  </div>
                 </SidebarMenuItem>
               ))}
             </React.Fragment>
@@ -115,9 +124,14 @@ export function NavMain({
                     {item.items?.map((subItem) => (
                       <li key={subItem.title}>
                         <SidebarMenuButton tooltip={subItem.title} asChild>
-                          <Link href={subItem.url}>
+                          <Link href={subItem.url} className="flex items-center gap-2">
                             {subItem.icon ? <subItem.icon className="h-4 w-4 shrink-0" /> : null}
-                            <span>{subItem.title}</span>
+                            <span className="flex-1">{subItem.title}</span>
+                            {(subItem.badge ?? 0) > 0 && (
+                              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white">
+                                {subItem.badge}
+                              </span>
+                            )}
                           </Link>
                         </SidebarMenuButton>
                       </li>

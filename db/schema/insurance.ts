@@ -5,12 +5,11 @@ export const policies = pgTable("policies", {
   id: serial("id").primaryKey(),
   policyNumber: text("policy_number").notNull().unique(),
   organisationId: integer("organisation_id").notNull().references(() => organisations.id, { onDelete: "cascade" }),
-  // Optional linkage to clients; code falls back to JSON snapshot when column is absent in DB
   clientId: integer("client_id").references(() => clients.id, { onDelete: "set null" }),
-  // Agent responsible at creation time; used for visibility rules
   agentId: integer("agent_id").references(() => users.id, { onDelete: "set null" }),
   createdBy: integer("created_by"),
   isActive: boolean("is_active").notNull().default(true),
+  documentTracking: jsonb("document_tracking"),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
 });
 

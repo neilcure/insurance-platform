@@ -15,6 +15,24 @@ export type AccountingLineContext = {
   collaborator?: Record<string, unknown> | null;
 };
 
+export type InvoiceContext = {
+  invoiceNumber: string;
+  invoiceDate: string | null;
+  dueDate: string | null;
+  totalAmountCents: number;
+  paidAmountCents: number;
+  currency: string;
+  status: string;
+  entityName: string | null;
+  entityType: string;
+  premiumType: string;
+  direction: string;
+  invoiceType: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  notes: string | null;
+};
+
 export type MergeContext = {
   policyNumber: string;
   createdAt: string;
@@ -23,6 +41,7 @@ export type MergeContext = {
   client?: Record<string, unknown> | null;
   organisation?: Record<string, unknown> | null;
   accountingLines?: AccountingLineContext[];
+  invoiceData?: InvoiceContext | null;
 };
 
 function fuzzyGet(obj: Record<string, unknown>, key: string): unknown {
@@ -295,6 +314,32 @@ function resolveAccounting(
   return "";
 }
 
+function resolveInvoice(
+  inv: InvoiceContext | null | undefined,
+  fieldKey: string,
+): unknown {
+  if (!inv) return "";
+  switch (fieldKey) {
+    case "invoiceNumber": return inv.invoiceNumber;
+    case "invoiceDate": return inv.invoiceDate ?? "";
+    case "dueDate": return inv.dueDate ?? "";
+    case "totalAmount": return inv.totalAmountCents / 100;
+    case "paidAmount": return inv.paidAmountCents / 100;
+    case "remainingAmount": return (inv.totalAmountCents - inv.paidAmountCents) / 100;
+    case "status": return inv.status;
+    case "entityName": return inv.entityName ?? "";
+    case "entityType": return inv.entityType;
+    case "premiumType": return inv.premiumType;
+    case "direction": return inv.direction;
+    case "currency": return inv.currency;
+    case "invoiceType": return inv.invoiceType;
+    case "periodStart": return inv.periodStart ?? "";
+    case "periodEnd": return inv.periodEnd ?? "";
+    case "notes": return inv.notes ?? "";
+    default: return "";
+  }
+}
+
 export function resolveFieldValue(
   field: PdfFieldMapping,
   ctx: MergeContext,
@@ -340,6 +385,9 @@ export function resolveFieldValue(
       break;
     case "accounting":
       raw = resolveAccounting(ctx.accountingLines, field.lineKey, field.fieldKey);
+      break;
+    case "invoice":
+      raw = resolveInvoice(ctx.invoiceData, field.fieldKey);
       break;
     case "static":
       raw = field.staticValue ?? "";

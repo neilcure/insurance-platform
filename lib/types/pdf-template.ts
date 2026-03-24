@@ -41,6 +41,7 @@ export type PdfFieldMapping = {
     | "client"
     | "organisation"
     | "accounting"
+    | "invoice"
     | "static";
   packageName?: string;
   /** For accounting source: which premium line to pull from (e.g. "tpo", "main") */
@@ -120,6 +121,7 @@ export const DATA_SOURCE_OPTIONS: {
   { value: "contactinfo", label: "Contact Info (Snapshot)", description: "Phone, address, etc. from policy snapshot" },
   { value: "package", label: "Package (Snapshot)", description: "Any package field from policy snapshot" },
   { value: "accounting", label: "Accounting (Premiums)", description: "Premium amounts, insurer/collaborator per line" },
+  { value: "invoice", label: "Invoice", description: "Invoice number, dates, amounts, status, entity" },
   { value: "agent", label: "Agent", description: "Agent name, email, user number" },
   { value: "client", label: "Client", description: "Client number, display name, primary ID, etc." },
   { value: "organisation", label: "Organisation / Insurer", description: "Company name, contact, address (policy-level)" },
@@ -154,6 +156,11 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
     "name", "contactName", "contactEmail", "contactPhone",
     "flatNumber", "floorNumber", "blockNumber", "blockName",
     "streetNumber", "streetName", "propertyName", "districtName", "area",
+  ],
+  invoice: [
+    "invoiceNumber", "invoiceDate", "dueDate", "totalAmount", "paidAmount",
+    "remainingAmount", "status", "entityName", "entityType", "premiumType",
+    "direction", "currency", "invoiceType", "periodStart", "periodEnd", "notes",
   ],
   static: [],
 };

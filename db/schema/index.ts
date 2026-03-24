@@ -5,5 +5,6 @@ export * from "./documents";
 export * from "./reminders";
 export * from "./premiums";
 export * from "./pdf_template_files";
+export * from "./accounting";
 
 

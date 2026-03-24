@@ -7,7 +7,12 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { FileText, Printer, ChevronLeft, Stamp, Download, Loader2, Mail, MessageCircle } from "lucide-react";
+import {
+  FileText, Printer, ChevronLeft, Stamp, Download, Loader2,
+  Mail, MessageCircle, CheckCircle2, Send, XCircle, X,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import type { DocumentStatusMap, DocumentStatusEntry } from "@/lib/types/accounting";
 import type { PdfTemplateRow, PdfTemplateMeta } from "@/lib/types/pdf-template";
 import type {
   DocumentTemplateMeta,
@@ -21,6 +26,10 @@ type SnapshotData = {
   packagesSnapshot?: Record<string, unknown> | null;
   [key: string]: unknown;
 };
+
+function toTrackingKey(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
 
 function resolveFieldValue(
   snapshot: SnapshotData,
@@ -284,19 +293,53 @@ function DocumentPreview({
   );
 }
 
+// --- Status badge for document tracking ---
+
+const STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> = {
+  sent:      { bg: "bg-orange-100 dark:bg-orange-900/50", text: "text-orange-700 dark:text-orange-300", label: "Sent" },
+  confirmed: { bg: "bg-green-100 dark:bg-green-900/50",  text: "text-green-700 dark:text-green-300",   label: "Confirmed" },
+  rejected:  { bg: "bg-red-100 dark:bg-red-900/50",      text: "text-red-700 dark:text-red-300",       label: "Rejected" },
+  generated: { bg: "bg-blue-100 dark:bg-blue-900/50",    text: "text-blue-700 dark:text-blue-300",     label: "Generated" },
+};
+
+// --- PDF template row with embedded tracking + action slide-out ---
+
 function PdfMergeButton({
   tpl,
   policyId,
+  trackingKey,
+  entry,
+  updating,
   onEmailClick,
   onWhatsAppClick,
+  onTrackingAction,
 }: {
   tpl: PdfTemplateRow;
   policyId: number;
+  trackingKey: string;
+  entry?: DocumentStatusEntry;
+  updating: boolean;
   onEmailClick: (tpl: PdfTemplateRow) => void;
   onWhatsAppClick: (tpl: PdfTemplateRow) => void;
+  onTrackingAction: (key: string, action: "send" | "confirm" | "reject" | "reset", sentTo?: string) => void;
 }) {
   const [generating, setGenerating] = React.useState(false);
+  const [actionsOpen, setActionsOpen] = React.useState(false);
+  const containerRef = React.useRef<HTMLDivElement>(null);
   const meta = tpl.meta as unknown as PdfTemplateMeta | null;
+  const status = entry?.status;
+  const badge = status ? STATUS_BADGE[status] : null;
+
+  React.useEffect(() => {
+    if (!actionsOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setActionsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [actionsOpen]);
 
   async function handleGenerate() {
     setGenerating(true);
@@ -320,49 +363,179 @@ function PdfMergeButton({
     setGenerating(false);
   }
 
+  const isDone = status === "confirmed";
+
+  const actions: Array<{
+    label: string;
+    icon: React.ReactNode;
+    onClick: () => void;
+    variant?: "default" | "destructive";
+    show: boolean;
+  }> = [
+    {
+      label: "Mark Sent",
+      icon: <Send className="h-3.5 w-3.5" />,
+      onClick: () => {
+        const sentTo = prompt("Sent to (email, optional):");
+        onTrackingAction(trackingKey, "send", sentTo || undefined);
+        setActionsOpen(false);
+      },
+      show: !status || status === "rejected",
+    },
+    {
+      label: "Confirmed",
+      icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+      onClick: () => { onTrackingAction(trackingKey, "confirm"); setActionsOpen(false); },
+      show: !status || status === "sent",
+    },
+    {
+      label: "Reject",
+      icon: <XCircle className="h-3.5 w-3.5" />,
+      onClick: () => {
+        const note = prompt("Rejection reason (optional):");
+        onTrackingAction(trackingKey, "reject", note || undefined);
+        setActionsOpen(false);
+      },
+      variant: "destructive" as const,
+      show: status === "sent",
+    },
+    {
+      label: "Reset",
+      icon: <X className="h-3.5 w-3.5" />,
+      onClick: () => { onTrackingAction(trackingKey, "reset"); setActionsOpen(false); },
+      variant: "destructive" as const,
+      show: isDone || status === "rejected",
+    },
+  ];
+
+  const visibleActions = actions.filter((a) => a.show);
+
   return (
-    <div className="flex w-full items-center gap-2 rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-      <button
-        type="button"
-        onClick={handleGenerate}
-        disabled={generating || !meta?.fields?.length}
-        className="flex min-w-0 flex-1 items-center gap-3 text-left transition-colors hover:opacity-80 disabled:opacity-50"
-      >
-        <Stamp className="h-5 w-5 shrink-0 text-emerald-500 dark:text-emerald-400" />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium">{tpl.label}</div>
-          <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-            PDF Mail Merge
-            {meta?.fields ? ` \u00b7 ${meta.fields.length} field${meta.fields.length !== 1 ? "s" : ""}` : ""}
-            {meta?.description ? ` \u00b7 ${meta.description}` : ""}
+    <div
+      ref={containerRef}
+      className={cn(
+        "rounded-md border p-3 transition-colors",
+        isDone
+          ? "border-green-200 bg-green-50/50 dark:border-green-900 dark:bg-green-950/20"
+          : status === "rejected"
+            ? "border-red-200 bg-red-50/30 dark:border-red-900 dark:bg-red-950/20"
+            : "border-neutral-200 dark:border-neutral-800",
+      )}
+    >
+      {/* Row 1: template info + send icons + download */}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={generating || !meta?.fields?.length}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left transition-colors hover:opacity-80 disabled:opacity-50"
+        >
+          <Stamp className="h-5 w-5 shrink-0 text-emerald-500 dark:text-emerald-400" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-medium">{tpl.label}</span>
+              {badge && (
+                <span className={cn("inline-flex items-center gap-1 rounded-full px-1.5 py-0 text-[9px] font-medium", badge.bg, badge.text)}>
+                  {status === "confirmed" && <CheckCircle2 className="h-2.5 w-2.5" />}
+                  {status === "sent" && <Send className="h-2.5 w-2.5" />}
+                  {status === "rejected" && <XCircle className="h-2.5 w-2.5" />}
+                  {badge.label}
+                </span>
+              )}
+            </div>
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+              PDF Mail Merge
+              {meta?.fields ? ` \u00b7 ${meta.fields.length} field${meta.fields.length !== 1 ? "s" : ""}` : ""}
+              {meta?.description ? ` \u00b7 ${meta.description}` : ""}
+            </div>
+          </div>
+          <div className="shrink-0">
+            {generating ? (
+              <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
+            ) : (
+              <Download className="h-4 w-4 text-neutral-400" />
+            )}
+          </div>
+        </button>
+        <div className="flex shrink-0 items-center gap-1 border-l border-neutral-200 pl-2 dark:border-neutral-700">
+          <button
+            type="button"
+            title="Send via Email"
+            onClick={() => onEmailClick(tpl)}
+            className="rounded p-1.5 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+          >
+            <Mail className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            title="Send via WhatsApp"
+            onClick={() => onWhatsAppClick(tpl)}
+            className="rounded p-1.5 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-green-600 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-green-400"
+          >
+            <MessageCircle className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Row 2: Status button right-aligned, slide-out opens right-to-left */}
+      <div className="mt-2 flex items-center justify-end gap-1">
+        <div
+          className={cn(
+            "flex items-center overflow-hidden transition-all duration-500 ease-in-out",
+            actionsOpen ? "max-w-[400px] opacity-100 mr-1" : "max-w-0 opacity-0 mr-0",
+          )}
+        >
+          <div className="flex items-center gap-0 rounded-md border border-neutral-200 bg-neutral-100 p-0.5 dark:border-neutral-700 dark:bg-neutral-800">
+            {visibleActions.map((action, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={action.onClick}
+                disabled={updating}
+                className={cn(
+                  "inline-flex items-center gap-1 whitespace-nowrap rounded-sm px-2 py-1 text-[11px] font-medium transition-colors",
+                  "focus:outline-none disabled:pointer-events-none disabled:opacity-50",
+                  action.variant === "destructive"
+                    ? "text-red-600 hover:bg-red-100 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-900/50 dark:hover:text-red-300"
+                    : "text-neutral-600 hover:bg-white hover:text-neutral-900 hover:shadow-sm dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-neutral-100",
+                )}
+              >
+                <span className="[&_svg]:h-3 [&_svg]:w-3">{action.icon}</span>
+                <span>{action.label}</span>
+              </button>
+            ))}
           </div>
         </div>
-        <div className="shrink-0">
-          {generating ? (
-            <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
-          ) : (
-            <Download className="h-4 w-4 text-neutral-400" />
+
+        <span
+          onClick={() => !updating && setActionsOpen((v) => !v)}
+          className={cn(
+            "inline-flex items-center rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs font-medium text-neutral-600 shadow-sm select-none cursor-pointer",
+            "dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200",
+            updating && "opacity-50 cursor-not-allowed",
           )}
-        </div>
-      </button>
-      <div className="flex shrink-0 items-center gap-1 border-l border-neutral-200 pl-2 dark:border-neutral-700">
-        <button
-          type="button"
-          title="Send via Email"
-          onClick={() => onEmailClick(tpl)}
-          className="rounded p-1.5 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
         >
-          <Mail className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          title="Send via WhatsApp"
-          onClick={() => onWhatsAppClick(tpl)}
-          className="rounded p-1.5 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-green-600 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-green-400"
-        >
-          <MessageCircle className="h-4 w-4" />
-        </button>
+          Status
+        </span>
       </div>
+
+      {/* Tracking detail */}
+      {entry?.sentTo && (
+        <div className="mt-1 pl-8 text-[10px] text-neutral-400">
+          Sent to: {entry.sentTo}
+          {entry.sentAt && ` \u00b7 ${new Date(entry.sentAt).toLocaleDateString()}`}
+        </div>
+      )}
+      {entry?.confirmedAt && (
+        <div className="mt-0.5 pl-8 text-[10px] text-green-600 dark:text-green-400">
+          Confirmed: {new Date(entry.confirmedAt).toLocaleDateString()}
+        </div>
+      )}
+      {status === "rejected" && entry?.rejectionNote && (
+        <div className="mt-0.5 pl-8 text-[10px] text-red-500">
+          Rejected: {entry.rejectionNote}
+        </div>
+      )}
     </div>
   );
 }
@@ -374,6 +547,7 @@ function SendEmailDialog({
   policyNumber,
   pdfTemplates,
   preSelectedId,
+  onSent,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -381,6 +555,7 @@ function SendEmailDialog({
   policyNumber: string;
   pdfTemplates: PdfTemplateRow[];
   preSelectedId?: number;
+  onSent?: (sentTemplateLabels: string[], email: string) => void;
 }) {
   const [email, setEmail] = React.useState("");
   const [subject, setSubject] = React.useState("");
@@ -436,6 +611,8 @@ function SendEmailDialog({
       }
       const data = await res.json();
       toast.success(`Email sent with ${data.sent} document${data.sent !== 1 ? "s" : ""} to ${email}`);
+      const sentLabels = pdfTemplates.filter((t) => selectedIds.has(t.id)).map((t) => t.label);
+      onSent?.(sentLabels, email.trim());
       onOpenChange(false);
       setEmail("");
       setMessage("");
@@ -533,13 +710,54 @@ export function DocumentsTab({
   const [templates, setTemplates] = React.useState<DocumentTemplateRow[]>([]);
   const [pdfTemplates, setPdfTemplates] = React.useState<PdfTemplateRow[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [selected, setSelected] = React.useState<DocumentTemplateRow | null>(
-    null,
-  );
+  const [selected, setSelected] = React.useState<DocumentTemplateRow | null>(null);
   const [emailDialogOpen, setEmailDialogOpen] = React.useState(false);
   const [emailPreSelectedId, setEmailPreSelectedId] = React.useState<number | undefined>();
 
+  // Document tracking state (shared across all template rows)
+  const [tracking, setTracking] = React.useState<DocumentStatusMap>({});
+  const [trackingUpdating, setTrackingUpdating] = React.useState(false);
+
   const snapshot = (detail.extraAttributes ?? {}) as SnapshotData;
+
+  // Load tracking data
+  React.useEffect(() => {
+    fetch(`/api/policies/${detail.policyId}/document-tracking`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((data: DocumentStatusMap) => setTracking(data))
+      .catch(() => {});
+  }, [detail.policyId]);
+
+  const handleTrackingAction = React.useCallback(async (
+    docType: string,
+    action: "send" | "confirm" | "reject" | "reset",
+    extra?: string,
+  ) => {
+    setTrackingUpdating(true);
+    try {
+      const body: Record<string, string> = { docType, action };
+      if (action === "send" && extra) body.sentTo = extra;
+      if (action === "reject" && extra) body.rejectionNote = extra;
+
+      const res = await fetch(`/api/policies/${detail.policyId}/document-tracking`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error);
+      }
+      const data = await res.json();
+      setTracking(data.documentTracking ?? {});
+      const labels: Record<string, string> = { send: "marked as sent", confirm: "confirmed", reject: "rejected", reset: "reset" };
+      toast.success(`${docType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())} ${labels[action]}`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update");
+    } finally {
+      setTrackingUpdating(false);
+    }
+  }, [detail.policyId]);
 
   function handleEmailClick(tpl: PdfTemplateRow) {
     setEmailPreSelectedId(tpl.id);
@@ -678,15 +896,22 @@ export function DocumentsTab({
       {pdfTemplates.length > 0 && (
         <>
           {templates.length > 0 && <div className="border-t border-neutral-200 dark:border-neutral-800 mt-3 pt-3" />}
-          {pdfTemplates.map((tpl) => (
-            <PdfMergeButton
-              key={tpl.id}
-              tpl={tpl}
-              policyId={detail.policyId}
-              onEmailClick={handleEmailClick}
-              onWhatsAppClick={handleWhatsAppClick}
-            />
-          ))}
+          {pdfTemplates.map((tpl) => {
+            const key = toTrackingKey(tpl.label);
+            return (
+              <PdfMergeButton
+                key={tpl.id}
+                tpl={tpl}
+                policyId={detail.policyId}
+                trackingKey={key}
+                entry={tracking[key]}
+                updating={trackingUpdating}
+                onEmailClick={handleEmailClick}
+                onWhatsAppClick={handleWhatsAppClick}
+                onTrackingAction={handleTrackingAction}
+              />
+            );
+          })}
           {pdfTemplates.length > 1 && (
             <Button
               variant="outline"
@@ -708,6 +933,14 @@ export function DocumentsTab({
         policyNumber={detail.policyNumber}
         pdfTemplates={pdfTemplates}
         preSelectedId={emailPreSelectedId}
+        onSent={(labels, sentEmail) => {
+          for (const label of labels) {
+            const key = toTrackingKey(label);
+            if (!tracking[key] || tracking[key]?.status !== "confirmed") {
+              handleTrackingAction(key, "send", sentEmail);
+            }
+          }
+        }}
       />
     </div>
   );
