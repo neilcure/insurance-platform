@@ -61,6 +61,11 @@ export type DocumentStatusEntry = {
   sentAt?: string;
   sentTo?: string;
   confirmedAt?: string;
+  confirmedBy?: string;
+  confirmMethod?: "admin" | "upload";
+  confirmNote?: string;
+  confirmProofPath?: string;
+  confirmProofName?: string;
   rejectedAt?: string;
   rejectionNote?: string;
 };
@@ -101,6 +106,8 @@ export type AccountingInvoiceRow = {
   createdBy: number | null;
   createdAt: string;
   updatedAt: string;
+  totalGainCents?: number;
+  totalNetPremiumCents?: number;
 };
 
 export type AccountingInvoiceItemRow = {
@@ -110,6 +117,8 @@ export type AccountingInvoiceItemRow = {
   policyPremiumId: number | null;
   lineKey: string | null;
   amountCents: number;
+  gainCents: number | null;
+  netPremiumCents?: number;
   description: string | null;
   createdAt: string;
   policyNumber?: string;
@@ -165,10 +174,24 @@ export type PaymentScheduleRow = {
   updatedAt: string;
 };
 
+export type LineEntityInfo = {
+  collaboratorName: string | null;
+  insurerName: string | null;
+};
+
+export type InvoiceEntityNames = {
+  clientName: string | null;
+  agentName: string | null;
+  collaboratorNames: string[];
+  insurerNames: string[];
+  perLine: Record<string, LineEntityInfo>;
+};
+
 export type InvoiceWithItems = AccountingInvoiceRow & {
   items: AccountingInvoiceItemRow[];
   payments: AccountingPaymentRow[];
   documents: AccountingDocumentRow[];
   childInvoices?: AccountingInvoiceRow[];
   documentStatus: DocumentStatusMap | null;
+  entityNames?: InvoiceEntityNames;
 };

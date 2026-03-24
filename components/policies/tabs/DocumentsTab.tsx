@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import {
   FileText, Printer, ChevronLeft, Stamp, Download, Loader2,
-  Mail, MessageCircle, CheckCircle2, Send, XCircle, X,
+  Mail, MessageCircle, CheckCircle2, Send, XCircle, X, Paperclip, Upload, ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DocumentStatusMap, DocumentStatusEntry } from "@/lib/types/accounting";
@@ -313,6 +313,7 @@ function PdfMergeButton({
   onEmailClick,
   onWhatsAppClick,
   onTrackingAction,
+  onConfirmWithProof,
 }: {
   tpl: PdfTemplateRow;
   policyId: number;
@@ -321,10 +322,16 @@ function PdfMergeButton({
   updating: boolean;
   onEmailClick: (tpl: PdfTemplateRow) => void;
   onWhatsAppClick: (tpl: PdfTemplateRow) => void;
-  onTrackingAction: (key: string, action: "send" | "confirm" | "reject" | "reset", sentTo?: string) => void;
+  onTrackingAction: (key: string, action: "send" | "confirm" | "reject" | "reset", extra?: string) => void;
+  onConfirmWithProof: (key: string, method: "admin" | "upload", note?: string, file?: File) => Promise<void>;
 }) {
   const [generating, setGenerating] = React.useState(false);
   const [actionsOpen, setActionsOpen] = React.useState(false);
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const [confirmMethod, setConfirmMethod] = React.useState<"admin" | "upload">("admin");
+  const [confirmNote, setConfirmNote] = React.useState("");
+  const [confirmFile, setConfirmFile] = React.useState<File | null>(null);
+  const [confirmSubmitting, setConfirmSubmitting] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const meta = tpl.meta as unknown as PdfTemplateMeta | null;
   const status = entry?.status;
@@ -383,9 +390,9 @@ function PdfMergeButton({
       show: !status || status === "rejected",
     },
     {
-      label: "Confirmed",
+      label: "Confirm",
       icon: <CheckCircle2 className="h-3.5 w-3.5" />,
-      onClick: () => { onTrackingAction(trackingKey, "confirm"); setActionsOpen(false); },
+      onClick: () => { setConfirmOpen(true); setActionsOpen(false); },
       show: !status || status === "sent",
     },
     {
@@ -529,13 +536,132 @@ function PdfMergeButton({
       {entry?.confirmedAt && (
         <div className="mt-0.5 pl-8 text-[10px] text-green-600 dark:text-green-400">
           Confirmed: {new Date(entry.confirmedAt).toLocaleDateString()}
+          {entry.confirmedBy && ` by ${entry.confirmedBy}`}
+          {entry.confirmMethod === "admin" && " (Admin)"}
+          {entry.confirmMethod === "upload" && " (Proof uploaded)"}
         </div>
+      )}
+      {entry?.confirmNote && (
+        <div className="mt-0.5 pl-8 text-[10px] text-neutral-500 dark:text-neutral-400 italic">
+          Note: {entry.confirmNote}
+        </div>
+      )}
+      {entry?.confirmProofName && (
+        <a
+          href={`/api/policies/${policyId}/document-tracking/proof?docType=${encodeURIComponent(trackingKey)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-0.5 pl-8 flex items-center gap-1 text-[10px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+        >
+          <Paperclip className="h-2.5 w-2.5" />
+          {entry.confirmProofName}
+        </a>
       )}
       {status === "rejected" && entry?.rejectionNote && (
         <div className="mt-0.5 pl-8 text-[10px] text-red-500">
           Rejected: {entry.rejectionNote}
         </div>
       )}
+
+      {/* Confirm Document Dialog */}
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Confirm Document</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-neutral-600 dark:text-neutral-400">
+              How would you like to confirm this document?
+            </p>
+
+            {/* Method selection */}
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant={confirmMethod === "admin" ? "default" : "outline"}
+                onClick={() => setConfirmMethod("admin")}
+                className="flex-1"
+              >
+                <ShieldCheck className="mr-1 h-4 w-4" />
+                Admin Confirm
+              </Button>
+              <Button
+                size="sm"
+                variant={confirmMethod === "upload" ? "default" : "outline"}
+                onClick={() => setConfirmMethod("upload")}
+                className="flex-1"
+              >
+                <Upload className="mr-1 h-4 w-4" />
+                Upload Proof
+              </Button>
+            </div>
+
+            {confirmMethod === "admin" && (
+              <div>
+                <Label>Admin Note <span className="text-red-500">*</span></Label>
+                <textarea
+                  value={confirmNote}
+                  onChange={(e) => setConfirmNote(e.target.value)}
+                  rows={3}
+                  placeholder="e.g. Client confirmed via phone call on 23/03/2026, spoke with Mr. Chan..."
+                  className="mt-1 w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                />
+              </div>
+            )}
+
+            {confirmMethod === "upload" && (
+              <div>
+                <Label>Upload signed/acknowledged document <span className="text-red-500">*</span></Label>
+                <Input
+                  type="file"
+                  onChange={(e) => setConfirmFile(e.target.files?.[0] || null)}
+                  className="mt-1"
+                  accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx"
+                />
+                <div className="mt-1">
+                  <Label>Note (optional)</Label>
+                  <Input
+                    value={confirmNote}
+                    onChange={(e) => setConfirmNote(e.target.value)}
+                    placeholder="Optional note about this proof..."
+                    className="mt-1"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button
+              disabled={
+                confirmSubmitting ||
+                (confirmMethod === "admin" && !confirmNote.trim()) ||
+                (confirmMethod === "upload" && !confirmFile)
+              }
+              onClick={async () => {
+                setConfirmSubmitting(true);
+                try {
+                  await onConfirmWithProof(
+                    trackingKey,
+                    confirmMethod,
+                    confirmNote.trim() || undefined,
+                    confirmFile || undefined,
+                  );
+                  setConfirmOpen(false);
+                  setConfirmNote("");
+                  setConfirmFile(null);
+                } finally {
+                  setConfirmSubmitting(false);
+                }
+              }}
+            >
+              {confirmSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              <CheckCircle2 className="mr-1 h-4 w-4" />
+              Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -759,6 +885,52 @@ export function DocumentsTab({
     }
   }, [detail.policyId]);
 
+  const handleConfirmWithProof = React.useCallback(async (
+    docType: string,
+    method: "admin" | "upload",
+    note?: string,
+    file?: File,
+  ) => {
+    setTrackingUpdating(true);
+    try {
+      let res: Response;
+      if (method === "upload" && file) {
+        const formData = new FormData();
+        formData.append("docType", docType);
+        formData.append("action", "confirm");
+        formData.append("confirmMethod", "upload");
+        if (note) formData.append("confirmNote", note);
+        formData.append("proofFile", file);
+        res = await fetch(`/api/policies/${detail.policyId}/document-tracking`, {
+          method: "POST",
+          body: formData,
+        });
+      } else {
+        res = await fetch(`/api/policies/${detail.policyId}/document-tracking`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            docType,
+            action: "confirm",
+            confirmMethod: "admin",
+            confirmNote: note,
+          }),
+        });
+      }
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error);
+      }
+      const data = await res.json();
+      setTracking(data.documentTracking ?? {});
+      toast.success(`${docType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())} confirmed`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to confirm");
+    } finally {
+      setTrackingUpdating(false);
+    }
+  }, [detail.policyId]);
+
   function handleEmailClick(tpl: PdfTemplateRow) {
     setEmailPreSelectedId(tpl.id);
     setEmailDialogOpen(true);
@@ -909,6 +1081,7 @@ export function DocumentsTab({
                 onEmailClick={handleEmailClick}
                 onWhatsAppClick={handleWhatsAppClick}
                 onTrackingAction={handleTrackingAction}
+                onConfirmWithProof={handleConfirmWithProof}
               />
             );
           })}

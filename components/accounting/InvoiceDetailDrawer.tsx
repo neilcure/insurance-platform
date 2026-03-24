@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { SlideDrawer } from "@/components/ui/slide-drawer";
 import {
   Dialog,
   DialogContent,
@@ -22,13 +21,16 @@ import {
   XCircle,
   FileText,
   DollarSign,
-  Download,
   Printer,
   Send,
   ThumbsUp,
   ThumbsDown,
   FileCheck,
   Clock,
+  TrendingUp,
+  Building2,
+  User,
+  Users,
 } from "lucide-react";
 import type {
   InvoiceWithItems,
@@ -46,13 +48,6 @@ import {
   PREMIUM_TYPE_LABELS,
   DOC_LIFECYCLE_LABELS,
 } from "@/lib/types/accounting";
-
-type Props = {
-  invoiceId: number;
-  open: boolean;
-  onClose: () => void;
-  onUpdated: () => void;
-};
 
 type PdfTemplate = {
   id: number;
@@ -96,9 +91,19 @@ function StatusBadge({ status, labels }: { status: string; labels: Record<string
   );
 }
 
-export function InvoiceDetailDrawer({ invoiceId, open, onClose, onUpdated }: Props) {
-  const [invoice, setInvoice] = React.useState<InvoiceWithItems | null>(null);
-  const [loading, setLoading] = React.useState(true);
+// ---------------------------------------------------------------------------
+// Exported component used by AccountingPageClient
+// Renders different "sections" of the invoice detail.
+// ---------------------------------------------------------------------------
+export function InvoiceOverviewTab({
+  invoice,
+  section,
+  onUpdated,
+}: {
+  invoice: InvoiceWithItems;
+  section: "overview" | "payments" | "documents" | "lifecycle";
+  onUpdated: () => void;
+}) {
   const [showPaymentDialog, setShowPaymentDialog] = React.useState(false);
   const [showUploadDialog, setShowUploadDialog] = React.useState(false);
   const [showGeneratePdf, setShowGeneratePdf] = React.useState(false);
@@ -106,40 +111,15 @@ export function InvoiceDetailDrawer({ invoiceId, open, onClose, onUpdated }: Pro
   const [showSendDialog, setShowSendDialog] = React.useState<string | null>(null);
   const [generatingPdf, setGeneratingPdf] = React.useState(false);
 
-  const loadInvoice = React.useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/accounting/invoices/${invoiceId}`, { cache: "no-store" });
-      if (!res.ok) throw new Error();
-      setInvoice(await res.json());
-    } catch {
-      toast.error("Failed to load invoice details");
-    } finally {
-      setLoading(false);
-    }
-  }, [invoiceId]);
-
-  React.useEffect(() => {
-    if (open) void loadInvoice();
-  }, [open, loadInvoice]);
-
-  const loadTemplates = React.useCallback(async () => {
-    try {
-      const res = await fetch("/api/form-options?groupKey=pdf_merge_templates", { cache: "no-store" });
-      if (res.ok) setTemplates(await res.json());
-    } catch {}
-  }, []);
-
   const handleStatusChange = async (newStatus: string) => {
     try {
-      const res = await fetch(`/api/accounting/invoices/${invoiceId}`, {
+      const res = await fetch(`/api/accounting/invoices/${invoice.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
       });
       if (!res.ok) throw new Error();
       toast.success(`Status updated to ${INVOICE_STATUS_LABELS[newStatus as InvoiceStatus] || newStatus}`);
-      void loadInvoice();
       onUpdated();
     } catch {
       toast.error("Failed to update status");
@@ -148,7 +128,7 @@ export function InvoiceDetailDrawer({ invoiceId, open, onClose, onUpdated }: Pro
 
   const handleVerifyPayment = async (paymentId: number, action: "verify" | "reject", rejectionNote?: string) => {
     try {
-      const res = await fetch(`/api/accounting/invoices/${invoiceId}/verify`, {
+      const res = await fetch(`/api/accounting/invoices/${invoice.id}/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paymentId, action, rejectionNote }),
@@ -158,32 +138,36 @@ export function InvoiceDetailDrawer({ invoiceId, open, onClose, onUpdated }: Pro
         throw new Error(err.error);
       }
       toast.success(action === "verify" ? "Payment verified" : "Payment rejected");
-      void loadInvoice();
       onUpdated();
     } catch (err: any) {
       toast.error(err.message || "Failed to verify payment");
     }
   };
 
+  const loadTemplates = React.useCallback(async () => {
+    try {
+      const res = await fetch("/api/form-options?groupKey=pdf_merge_templates", { cache: "no-store" });
+      if (res.ok) setTemplates(await res.json());
+    } catch {}
+  }, []);
+
   const handleGeneratePdf = async (templateId: number) => {
     setGeneratingPdf(true);
     try {
-      const res = await fetch(`/api/accounting/invoices/${invoiceId}/generate-pdf`, {
+      const res = await fetch(`/api/accounting/invoices/${invoice.id}/generate-pdf`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ templateId }),
       });
-
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error);
       }
-
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank");
       setShowGeneratePdf(false);
-      void loadInvoice();
+      onUpdated();
     } catch (err: any) {
       toast.error(err.message || "Failed to generate PDF");
     } finally {
@@ -193,7 +177,7 @@ export function InvoiceDetailDrawer({ invoiceId, open, onClose, onUpdated }: Pro
 
   const handleDocStatusAction = async (docType: string, action: "send" | "confirm" | "reject", sentTo?: string, rejectionNote?: string) => {
     try {
-      const res = await fetch(`/api/accounting/invoices/${invoiceId}/document-status`, {
+      const res = await fetch(`/api/accounting/invoices/${invoice.id}/document-status`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ docType, action, sentTo, rejectionNote }),
@@ -204,299 +188,312 @@ export function InvoiceDetailDrawer({ invoiceId, open, onClose, onUpdated }: Pro
       }
       const actionLabels = { send: "Sent", confirm: "Confirmed", reject: "Rejected" };
       toast.success(`${docType.charAt(0).toUpperCase() + docType.slice(1)} ${actionLabels[action]}`);
-      void loadInvoice();
       onUpdated();
     } catch (err: any) {
       toast.error(err.message || `Failed to ${action} document`);
     }
   };
 
-  const remainingCents = invoice ? invoice.totalAmountCents - invoice.paidAmountCents : 0;
+  const remainingCents = invoice.totalAmountCents - invoice.paidAmountCents;
 
-  return (
-    <SlideDrawer
-      open={open}
-      onClose={onClose}
-      title={invoice ? `Invoice ${invoice.invoiceNumber}` : "Invoice Details"}
-      side="right"
-      widthClass="w-[340px] sm:w-[440px] md:w-[520px]"
-    >
-      <div className="overflow-y-auto p-4">
-        {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-5 w-5 animate-spin text-neutral-500" />
+  // ---- OVERVIEW section ----
+  if (section === "overview") {
+    return (
+      <div className="space-y-5">
+        {/* Header */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold">{invoice.invoiceNumber}</h3>
+            <StatusBadge status={invoice.status} labels={INVOICE_STATUS_LABELS} />
           </div>
-        ) : !invoice ? (
-          <div className="py-12 text-center text-sm text-neutral-500">Invoice not found</div>
-        ) : (
-          <div className="space-y-5">
-            {/* Header */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold">{invoice.invoiceNumber}</h3>
-                <StatusBadge status={invoice.status} labels={INVOICE_STATUS_LABELS} />
-              </div>
 
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div>
-                  <span className="text-neutral-500 dark:text-neutral-400">Direction</span>
-                  <p className={invoice.direction === "payable" ? "font-medium text-red-600 dark:text-red-400" : "font-medium text-green-600 dark:text-green-400"}>
-                    {invoice.direction === "payable" ? "Payable" : "Receivable"}
-                  </p>
-                </div>
-                <div>
-                  <span className="text-neutral-500 dark:text-neutral-400">Premium Type</span>
-                  <p className="font-medium">{PREMIUM_TYPE_LABELS[invoice.premiumType as keyof typeof PREMIUM_TYPE_LABELS] || invoice.premiumType}</p>
-                </div>
-                <div>
-                  <span className="text-neutral-500 dark:text-neutral-400">Entity</span>
-                  <p className="font-medium">{invoice.entityName || invoice.entityType}</p>
-                </div>
-                <div>
-                  <span className="text-neutral-500 dark:text-neutral-400">Invoice Date</span>
-                  <p className="font-medium">{fmtDate(invoice.invoiceDate)}</p>
-                </div>
-                {invoice.dueDate && (
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div>
+              <span className="text-neutral-500 dark:text-neutral-400">Direction</span>
+              <p className={invoice.direction === "payable" ? "font-medium text-red-600 dark:text-red-400" : "font-medium text-green-600 dark:text-green-400"}>
+                {invoice.direction === "payable" ? "Payable" : "Receivable"}
+              </p>
+            </div>
+            <div>
+              <span className="text-neutral-500 dark:text-neutral-400">Premium Type</span>
+              <p className="font-medium">{PREMIUM_TYPE_LABELS[invoice.premiumType as keyof typeof PREMIUM_TYPE_LABELS] || invoice.premiumType}</p>
+            </div>
+            <div>
+              <span className="text-neutral-500 dark:text-neutral-400">Entity</span>
+              <p className="font-medium">{invoice.entityName || invoice.entityType}</p>
+            </div>
+            <div>
+              <span className="text-neutral-500 dark:text-neutral-400">Invoice Date</span>
+              <p className="font-medium">{fmtDate(invoice.invoiceDate)}</p>
+            </div>
+            {invoice.dueDate && (
+              <div>
+                <span className="text-neutral-500 dark:text-neutral-400">Due Date</span>
+                <p className="font-medium">{fmtDate(invoice.dueDate)}</p>
+              </div>
+            )}
+          </div>
+
+        </div>
+
+        {/* Line items */}
+        <div>
+          <h4 className="mb-2 text-sm font-semibold">Policy Items ({invoice.items.length})</h4>
+          {invoice.items.length === 0 ? (
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">No items</p>
+          ) : (
+            <div className="space-y-1">
+              {invoice.items.map((item) => (
+                <div key={item.id} className="flex items-center justify-between rounded-md border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-800">
                   <div>
-                    <span className="text-neutral-500 dark:text-neutral-400">Due Date</span>
-                    <p className="font-medium">{fmtDate(invoice.dueDate)}</p>
+                    <span className="font-medium">{item.policyNumber || `Policy #${item.policyId}`}</span>
+                    {item.description && (
+                      <span className="ml-2 text-neutral-500 dark:text-neutral-400">{item.description}</span>
+                    )}
+                  </div>
+                  <span className="tabular-nums font-medium">{fmtCurrency(item.amountCents, invoice.currency)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Amount summary */}
+        <div className="rounded-md bg-neutral-50 p-3 dark:bg-neutral-900">
+          <div className="flex justify-between text-sm">
+            <span className="text-neutral-600 dark:text-neutral-400">Total</span>
+            <span className="font-semibold">{fmtCurrency(invoice.totalAmountCents, invoice.currency)}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-neutral-600 dark:text-neutral-400">Paid</span>
+            <span className="font-medium text-green-600 dark:text-green-400">{fmtCurrency(invoice.paidAmountCents, invoice.currency)}</span>
+          </div>
+          <Separator className="my-1" />
+          <div className="flex justify-between text-sm font-semibold">
+            <span>Remaining</span>
+            <span className={remainingCents > 0 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}>
+              {fmtCurrency(remainingCents, invoice.currency)}
+            </span>
+          </div>
+        </div>
+
+        {/* Gain Summary (internal) */}
+        <GainSummarySection invoice={invoice} />
+
+        {/* Action buttons */}
+        <div className="flex flex-wrap gap-2">
+          {invoice.status === "draft" && (
+            <Button size="sm" onClick={() => handleStatusChange("pending")}>
+              Mark as Pending
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              void loadTemplates();
+              setShowGeneratePdf(true);
+            }}
+          >
+            <Printer className="mr-1 h-4 w-4" />
+            Generate PDF
+          </Button>
+        </div>
+
+        {invoice.notes && (
+          <>
+            <Separator />
+            <div>
+              <h4 className="mb-1 text-sm font-semibold">Notes</h4>
+              <p className="text-sm text-neutral-600 dark:text-neutral-400">{invoice.notes}</p>
+            </div>
+          </>
+        )}
+
+        {/* Generate PDF Dialog */}
+        <Dialog open={showGeneratePdf} onOpenChange={setShowGeneratePdf}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Generate PDF Document</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2">
+              <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                Select a PDF template to generate a document for this invoice.
+              </p>
+              {templates.length === 0 ? (
+                <p className="py-4 text-center text-sm text-neutral-500">
+                  No PDF templates found. Create templates in Admin &rarr; Policy Settings &rarr; PDF Mail Merge.
+                </p>
+              ) : (
+                <div className="max-h-[300px] space-y-1 overflow-y-auto">
+                  {templates.map((tpl) => (
+                    <button
+                      key={tpl.id}
+                      type="button"
+                      disabled={generatingPdf}
+                      onClick={() => handleGeneratePdf(tpl.id)}
+                      className="flex w-full items-center gap-2 rounded-md border border-neutral-200 p-3 text-left text-sm transition-colors hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-800 dark:hover:bg-neutral-900"
+                    >
+                      {generatingPdf ? (
+                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-neutral-500" />
+                      ) : (
+                        <Printer className="h-4 w-4 shrink-0 text-neutral-500" />
+                      )}
+                      <span className="font-medium">{tpl.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+    );
+  }
+
+  // ---- PAYMENTS section ----
+  if (section === "payments") {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-semibold">Payments ({invoice.payments.length})</h4>
+          <Button size="sm" variant="outline" onClick={() => setShowPaymentDialog(true)}>
+            <DollarSign className="mr-1 h-3.5 w-3.5" />
+            Record Payment
+          </Button>
+        </div>
+
+        {/* Amount overview */}
+        <div className="rounded-md bg-neutral-50 p-3 dark:bg-neutral-900">
+          <div className="flex justify-between text-sm">
+            <span className="text-neutral-600 dark:text-neutral-400">Total</span>
+            <span className="font-semibold">{fmtCurrency(invoice.totalAmountCents, invoice.currency)}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-neutral-600 dark:text-neutral-400">Paid</span>
+            <span className="font-medium text-green-600 dark:text-green-400">{fmtCurrency(invoice.paidAmountCents, invoice.currency)}</span>
+          </div>
+          <Separator className="my-1" />
+          <div className="flex justify-between text-sm font-semibold">
+            <span>Remaining</span>
+            <span className={remainingCents > 0 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}>
+              {fmtCurrency(remainingCents, invoice.currency)}
+            </span>
+          </div>
+        </div>
+
+        {invoice.payments.length === 0 ? (
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">No payments recorded</p>
+        ) : (
+          <div className="space-y-2">
+            {invoice.payments.map((pmt) => (
+              <div key={pmt.id} className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium tabular-nums">{fmtCurrency(pmt.amountCents, pmt.currency)}</span>
+                  <StatusBadge status={pmt.status} labels={PAYMENT_STATUS_LABELS} />
+                </div>
+                <div className="mt-1 grid grid-cols-2 gap-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  <span>Method: {pmt.paymentMethod || "—"}</span>
+                  <span>Date: {fmtDate(pmt.paymentDate)}</span>
+                  {pmt.referenceNumber && <span className="col-span-2">Ref: {pmt.referenceNumber}</span>}
+                  {pmt.notes && <span className="col-span-2">Notes: {pmt.notes}</span>}
+                </div>
+                {pmt.status === "rejected" && pmt.rejectionNote && (
+                  <div className="mt-1 rounded bg-red-50 px-2 py-1 text-xs text-red-700 dark:bg-red-950 dark:text-red-400">
+                    Rejected: {pmt.rejectionNote}
+                  </div>
+                )}
+                {pmt.status === "submitted" && (
+                  <div className="mt-2 flex gap-2">
+                    <Button size="sm" variant="default" onClick={() => handleVerifyPayment(pmt.id, "verify")}>
+                      <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                      Verify
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        const note = prompt("Rejection reason (optional):");
+                        handleVerifyPayment(pmt.id, "reject", note || undefined);
+                      }}
+                    >
+                      <XCircle className="mr-1 h-3.5 w-3.5" />
+                      Reject
+                    </Button>
                   </div>
                 )}
               </div>
-
-              {/* Amount summary */}
-              <div className="rounded-md bg-neutral-50 p-3 dark:bg-neutral-900">
-                <div className="flex justify-between text-sm">
-                  <span className="text-neutral-600 dark:text-neutral-400">Total</span>
-                  <span className="font-semibold">{fmtCurrency(invoice.totalAmountCents, invoice.currency)}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-neutral-600 dark:text-neutral-400">Paid</span>
-                  <span className="font-medium text-green-600 dark:text-green-400">{fmtCurrency(invoice.paidAmountCents, invoice.currency)}</span>
-                </div>
-                <Separator className="my-1" />
-                <div className="flex justify-between text-sm font-semibold">
-                  <span>Remaining</span>
-                  <span className={remainingCents > 0 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}>
-                    {fmtCurrency(remainingCents, invoice.currency)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Action buttons */}
-            <div className="flex flex-wrap gap-2">
-              {invoice.status === "draft" && (
-                <Button size="sm" onClick={() => handleStatusChange("pending")}>
-                  Mark as Pending
-                </Button>
-              )}
-              <Button size="sm" variant="outline" onClick={() => setShowPaymentDialog(true)}>
-                <DollarSign className="mr-1 h-4 w-4" />
-                Record Payment
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setShowUploadDialog(true)}>
-                <Upload className="mr-1 h-4 w-4" />
-                Upload Document
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  void loadTemplates();
-                  setShowGeneratePdf(true);
-                }}
-              >
-                <Printer className="mr-1 h-4 w-4" />
-                Generate PDF
-              </Button>
-            </div>
-
-            <Separator />
-
-            {/* Document Lifecycle */}
-            <DocumentLifecycleSection
-              invoice={invoice}
-              onSend={(docType) => setShowSendDialog(docType)}
-              onConfirm={(docType) => handleDocStatusAction(docType, "confirm")}
-              onReject={(docType) => {
-                const note = prompt("Rejection reason (optional):");
-                handleDocStatusAction(docType, "reject", undefined, note || undefined);
-              }}
-            />
-
-            <Separator />
-
-            {/* Line items */}
-            <div>
-              <h4 className="mb-2 text-sm font-semibold">Policy Items ({invoice.items.length})</h4>
-              {invoice.items.length === 0 ? (
-                <p className="text-sm text-neutral-500 dark:text-neutral-400">No items</p>
-              ) : (
-                <div className="space-y-1">
-                  {invoice.items.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between rounded-md border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-800">
-                      <div>
-                        <span className="font-medium">{item.policyNumber || `Policy #${item.policyId}`}</span>
-                        {item.description && (
-                          <span className="ml-2 text-neutral-500 dark:text-neutral-400">{item.description}</span>
-                        )}
-                      </div>
-                      <span className="tabular-nums font-medium">{fmtCurrency(item.amountCents, invoice.currency)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <Separator />
-
-            {/* Payments */}
-            <div>
-              <h4 className="mb-2 text-sm font-semibold">Payments ({invoice.payments.length})</h4>
-              {invoice.payments.length === 0 ? (
-                <p className="text-sm text-neutral-500 dark:text-neutral-400">No payments recorded</p>
-              ) : (
-                <div className="space-y-2">
-                  {invoice.payments.map((pmt) => (
-                    <div key={pmt.id} className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium tabular-nums">{fmtCurrency(pmt.amountCents, pmt.currency)}</span>
-                        <StatusBadge status={pmt.status} labels={PAYMENT_STATUS_LABELS} />
-                      </div>
-                      <div className="mt-1 grid grid-cols-2 gap-1 text-xs text-neutral-500 dark:text-neutral-400">
-                        <span>Method: {pmt.paymentMethod || "—"}</span>
-                        <span>Date: {fmtDate(pmt.paymentDate)}</span>
-                        {pmt.referenceNumber && <span className="col-span-2">Ref: {pmt.referenceNumber}</span>}
-                        {pmt.notes && <span className="col-span-2">Notes: {pmt.notes}</span>}
-                      </div>
-                      {pmt.status === "rejected" && pmt.rejectionNote && (
-                        <div className="mt-1 rounded bg-red-50 px-2 py-1 text-xs text-red-700 dark:bg-red-950 dark:text-red-400">
-                          Rejected: {pmt.rejectionNote}
-                        </div>
-                      )}
-                      {pmt.status === "submitted" && (
-                        <div className="mt-2 flex gap-2">
-                          <Button size="sm" variant="default" onClick={() => handleVerifyPayment(pmt.id, "verify")}>
-                            <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
-                            Verify
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              const note = prompt("Rejection reason (optional):");
-                              handleVerifyPayment(pmt.id, "reject", note || undefined);
-                            }}
-                          >
-                            <XCircle className="mr-1 h-3.5 w-3.5" />
-                            Reject
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <Separator />
-
-            {/* Documents */}
-            <div>
-              <h4 className="mb-2 text-sm font-semibold">Documents ({invoice.documents.length})</h4>
-              {invoice.documents.length === 0 ? (
-                <p className="text-sm text-neutral-500 dark:text-neutral-400">No documents uploaded</p>
-              ) : (
-                <div className="space-y-1">
-                  {invoice.documents.map((doc) => (
-                    <div key={doc.id} className="flex items-center gap-2 rounded-md border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-800">
-                      <FileText className="h-4 w-4 shrink-0 text-neutral-500" />
-                      <span className="flex-1 truncate">{doc.fileName}</span>
-                      <Badge variant="outline" className="text-[10px]">{doc.docType}</Badge>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {invoice.notes && (
-              <>
-                <Separator />
-                <div>
-                  <h4 className="mb-1 text-sm font-semibold">Notes</h4>
-                  <p className="text-sm text-neutral-600 dark:text-neutral-400">{invoice.notes}</p>
-                </div>
-              </>
-            )}
+            ))}
           </div>
         )}
+
+        <RecordPaymentDialog
+          open={showPaymentDialog}
+          onClose={() => setShowPaymentDialog(false)}
+          invoiceId={invoice.id}
+          currency={invoice.currency}
+          remainingCents={remainingCents}
+          onRecorded={() => {
+            setShowPaymentDialog(false);
+            onUpdated();
+          }}
+        />
       </div>
+    );
+  }
 
-      {/* Record Payment Dialog */}
-      <RecordPaymentDialog
-        open={showPaymentDialog}
-        onClose={() => setShowPaymentDialog(false)}
-        invoiceId={invoiceId}
-        currency={invoice?.currency || "HKD"}
-        remainingCents={remainingCents}
-        onRecorded={() => {
-          setShowPaymentDialog(false);
-          void loadInvoice();
-          onUpdated();
-        }}
-      />
+  // ---- DOCUMENTS section ----
+  if (section === "documents") {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-semibold">Documents ({invoice.documents.length})</h4>
+          <Button size="sm" variant="outline" onClick={() => setShowUploadDialog(true)}>
+            <Upload className="mr-1 h-3.5 w-3.5" />
+            Upload
+          </Button>
+        </div>
 
-      {/* Upload Document Dialog */}
-      <UploadDocumentDialog
-        open={showUploadDialog}
-        onClose={() => setShowUploadDialog(false)}
-        invoiceId={invoiceId}
-        onUploaded={() => {
-          setShowUploadDialog(false);
-          void loadInvoice();
-        }}
-      />
-
-      {/* Generate PDF Dialog */}
-      <Dialog open={showGeneratePdf} onOpenChange={setShowGeneratePdf}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Generate PDF Document</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2">
-            <p className="text-sm text-neutral-600 dark:text-neutral-400">
-              Select a PDF template to generate a document for this invoice.
-            </p>
-            {templates.length === 0 ? (
-              <p className="py-4 text-center text-sm text-neutral-500">
-                No PDF templates found. Create templates in Admin → Policy Settings → PDF Mail Merge.
-              </p>
-            ) : (
-              <div className="max-h-[300px] space-y-1 overflow-y-auto">
-                {templates.map((tpl) => (
-                  <button
-                    key={tpl.id}
-                    type="button"
-                    disabled={generatingPdf}
-                    onClick={() => handleGeneratePdf(tpl.id)}
-                    className="flex w-full items-center gap-2 rounded-md border border-neutral-200 p-3 text-left text-sm transition-colors hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-800 dark:hover:bg-neutral-900"
-                  >
-                    {generatingPdf ? (
-                      <Loader2 className="h-4 w-4 shrink-0 animate-spin text-neutral-500" />
-                    ) : (
-                      <Printer className="h-4 w-4 shrink-0 text-neutral-500" />
-                    )}
-                    <span className="font-medium">{tpl.label}</span>
-                  </button>
-                ))}
+        {invoice.documents.length === 0 ? (
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">No documents uploaded</p>
+        ) : (
+          <div className="space-y-1">
+            {invoice.documents.map((doc) => (
+              <div key={doc.id} className="flex items-center gap-2 rounded-md border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-800">
+                <FileText className="h-4 w-4 shrink-0 text-neutral-500" />
+                <span className="flex-1 truncate">{doc.fileName}</span>
+                <Badge variant="outline" className="text-[10px]">{doc.docType}</Badge>
               </div>
-            )}
+            ))}
           </div>
-        </DialogContent>
-      </Dialog>
+        )}
 
-      {/* Send Document Dialog */}
+        <UploadDocumentDialog
+          open={showUploadDialog}
+          onClose={() => setShowUploadDialog(false)}
+          invoiceId={invoice.id}
+          onUploaded={() => {
+            setShowUploadDialog(false);
+            onUpdated();
+          }}
+        />
+      </div>
+    );
+  }
+
+  // ---- LIFECYCLE section ----
+  return (
+    <div className="space-y-4">
+      <DocumentLifecycleSection
+        invoice={invoice}
+        onSend={(docType) => setShowSendDialog(docType)}
+        onConfirm={(docType) => handleDocStatusAction(docType, "confirm")}
+        onReject={(docType) => {
+          const note = prompt("Rejection reason (optional):");
+          handleDocStatusAction(docType, "reject", undefined, note || undefined);
+        }}
+      />
+
       <SendDocumentDialog
         open={!!showSendDialog}
         docType={showSendDialog || ""}
@@ -508,9 +505,146 @@ export function InvoiceDetailDrawer({ invoiceId, open, onClose, onUpdated }: Pro
           setShowSendDialog(null);
         }}
       />
-    </SlideDrawer>
+    </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Gain Summary (internal / admin only)
+// ---------------------------------------------------------------------------
+
+function GainSummarySection({ invoice }: { invoice: InvoiceWithItems }) {
+  const hasGain = invoice.items.some((it) => (it.gainCents ?? 0) !== 0 || (it.netPremiumCents ?? 0) !== 0);
+  if (!hasGain) return null;
+
+  const totalGain = invoice.items.reduce((s, it) => s + (it.gainCents ?? 0), 0);
+  const totalNet = invoice.items.reduce((s, it) => s + (it.netPremiumCents ?? 0), 0);
+  const totalIncome = totalNet + totalGain;
+  const hasAgent = !!invoice.entityNames?.agentName;
+  const incomeLabel = hasAgent ? "Agent Premium" : "Client Premium";
+  const en = invoice.entityNames;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <TrendingUp className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+        <h4 className="text-sm font-semibold">Gain Summary</h4>
+        <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-[9px] font-medium uppercase text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+          Internal
+        </span>
+      </div>
+
+      {/* Entity names */}
+      {en && (en.agentName || en.clientName) && (
+        <div className="space-y-0.5 border-b border-neutral-100 px-3 py-1.5 dark:border-neutral-800">
+          {en.agentName && (
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <Users className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+              <span className="text-neutral-500 dark:text-neutral-400">Agent:</span>
+              <span className="font-medium text-neutral-700 dark:text-neutral-300">{en.agentName}</span>
+            </div>
+          )}
+          {en.clientName && (
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <User className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+              <span className="text-neutral-500 dark:text-neutral-400">Client:</span>
+              <span className="font-medium text-neutral-700 dark:text-neutral-300">{en.clientName}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Per-line cards (same layout as Accounting tab) */}
+      {invoice.items.map((item) => {
+        const gain = item.gainCents ?? 0;
+        const net = item.netPremiumCents ?? 0;
+        const income = net + gain;
+        const lineKey = item.lineKey ?? item.id.toString();
+        const lineEntity = en?.perLine?.[lineKey];
+
+        return (
+          <div key={item.id} className="rounded-md border border-neutral-200 dark:border-neutral-800">
+            {/* Line header */}
+            <div className="border-b border-neutral-100 px-3 py-2 dark:border-neutral-800">
+              <span className="text-sm font-semibold">{item.description || item.lineKey || "—"}</span>
+            </div>
+
+            {/* Collaborator & Insurer */}
+            {(lineEntity?.collaboratorName || lineEntity?.insurerName) && (
+              <div className="space-y-0.5 border-b border-neutral-100 px-3 py-1.5 dark:border-neutral-800">
+                {lineEntity.collaboratorName && (
+                  <div className="flex items-center gap-1.5 text-[11px]">
+                    <Users className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+                    <span className="text-neutral-500 dark:text-neutral-400">Collaborator:</span>
+                    <span className="font-medium text-neutral-700 dark:text-neutral-300">{lineEntity.collaboratorName}</span>
+                  </div>
+                )}
+                {lineEntity.insurerName && (
+                  <div className="flex items-center gap-1.5 text-[11px]">
+                    <Building2 className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+                    <span className="text-neutral-500 dark:text-neutral-400">Insurer:</span>
+                    <span className="font-medium text-neutral-700 dark:text-neutral-300">{lineEntity.insurerName}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Premium rows */}
+            <div className="px-3 py-1">
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-xs text-neutral-600 dark:text-neutral-400">Net Premium</span>
+                <span className="text-xs font-medium tabular-nums">{fmtCurrency(net, invoice.currency)}</span>
+              </div>
+              <Separator className="my-0.5" />
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-xs text-neutral-600 dark:text-neutral-400">{incomeLabel}</span>
+                <span className="text-xs font-medium tabular-nums">{fmtCurrency(income, invoice.currency)}</span>
+              </div>
+              <Separator className="my-0.5" />
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">Gain</span>
+                <span className={`text-xs font-semibold tabular-nums ${gain > 0 ? "text-emerald-600 dark:text-emerald-400" : gain < 0 ? "text-red-600 dark:text-red-400" : ""}`}>
+                  {gain > 0 ? "+" : ""}{fmtCurrency(gain, invoice.currency)}
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Total summary */}
+      {invoice.items.length > 1 && (
+        <div className="rounded-md border border-neutral-300 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900">
+          <div className="border-b border-neutral-200 px-3 py-2 dark:border-neutral-700">
+            <span className="text-sm font-semibold">Total</span>
+          </div>
+          <div className="px-3 py-1">
+            <div className="flex items-center justify-between py-1.5">
+              <span className="text-xs text-neutral-600 dark:text-neutral-400">Net Premium</span>
+              <span className="text-xs font-medium tabular-nums">{fmtCurrency(totalNet, invoice.currency)}</span>
+            </div>
+            <Separator className="my-0.5" />
+            <div className="flex items-center justify-between py-1.5">
+              <span className="text-xs text-neutral-600 dark:text-neutral-400">{incomeLabel}</span>
+              <span className="text-xs font-medium tabular-nums">{fmtCurrency(totalIncome, invoice.currency)}</span>
+            </div>
+            <Separator className="my-0.5" />
+            <div className="flex items-center justify-between py-1.5">
+              <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">Gain</span>
+              <span className={`text-xs font-semibold tabular-nums ${totalGain > 0 ? "text-emerald-600 dark:text-emerald-400" : totalGain < 0 ? "text-red-600 dark:text-red-400" : ""}`}>
+                {totalGain > 0 ? "+" : ""}{fmtCurrency(totalGain, invoice.currency)}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Document Lifecycle
+// ---------------------------------------------------------------------------
 
 const DOC_STATUS_COLORS: Record<string, string> = {
   generated: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
@@ -691,7 +825,7 @@ function DocumentLifecycleSection({
                   <>
                     <Button size="sm" variant="default" className="h-6 text-[11px]" onClick={() => onConfirm(key)}>
                       <ThumbsUp className="mr-1 h-3 w-3" />
-                      {isReceivable ? "Client Confirmed" : "Mark Received"}
+                      {invoice.direction === "receivable" ? "Client Confirmed" : "Mark Received"}
                     </Button>
                     <Button size="sm" variant="outline" className="h-6 text-[11px]" onClick={() => onReject(key)}>
                       <ThumbsDown className="mr-1 h-3 w-3" />
@@ -707,6 +841,10 @@ function DocumentLifecycleSection({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Dialogs (shared between sections)
+// ---------------------------------------------------------------------------
 
 function SendDocumentDialog({
   open,

@@ -184,6 +184,14 @@ export async function buildMergeContext(policyId: number): Promise<{
     }
   } catch { /* premium table may not exist */ }
 
+  const isTpoWithOd =
+    accountingLines.length >= 2 &&
+    accountingLines.some((l) => l.lineKey.toLowerCase() === "tpo") &&
+    accountingLines.some((l) => {
+      const k = l.lineKey.toLowerCase();
+      return k.includes("own_vehicle") || k.includes("owndamage");
+    });
+
   const ctx: MergeContext = {
     policyNumber: policy.policyNumber,
     createdAt: policy.createdAt,
@@ -195,6 +203,7 @@ export async function buildMergeContext(policyId: number): Promise<{
     client: clientData,
     organisation: orgData,
     accountingLines,
+    isTpoWithOd,
   };
 
   return { ctx, policyNumber: policy.policyNumber };

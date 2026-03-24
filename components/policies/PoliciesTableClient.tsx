@@ -1087,6 +1087,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
             content: (
               <AccountingTab
                 policyId={detail.policyId}
+                policyNumber={detail.policyNumber}
                 canEdit={isAdmin || sessionUserType === "accounting"}
                 policyExtra={detail.extraAttributes as Record<string, unknown> | null | undefined}
                 onUpdate={refreshCurrent}

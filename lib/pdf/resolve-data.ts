@@ -42,6 +42,7 @@ export type MergeContext = {
   organisation?: Record<string, unknown> | null;
   accountingLines?: AccountingLineContext[];
   invoiceData?: InvoiceContext | null;
+  isTpoWithOd?: boolean;
 };
 
 function fuzzyGet(obj: Record<string, unknown>, key: string): unknown {
@@ -270,10 +271,23 @@ function resolveAccountingTotal(
   return "";
 }
 
+function suffixedPolicyNumber(
+  policyNumber: string,
+  lineIndex: number,
+  totalLines: number,
+  isTpoWithOd: boolean,
+): string {
+  if (!isTpoWithOd || totalLines < 2) return policyNumber;
+  const suffix = String.fromCharCode(97 + lineIndex); // a, b, c …
+  return `${policyNumber}(${suffix})`;
+}
+
 function resolveAccounting(
   lines: AccountingLineContext[] | undefined,
   lineKey: string | undefined,
   fieldKey: string,
+  policyNumber?: string,
+  isTpoWithOd?: boolean,
 ): unknown {
   if (!lines?.length) return "";
 
@@ -285,6 +299,11 @@ function resolveAccounting(
   const line = lineKey
     ? lines.find((l) => l.lineKey === lineKey) ?? lines[0]
     : lines[0];
+
+  if (fieldKey === "policyNumber" && policyNumber) {
+    const idx = lines.indexOf(line);
+    return suffixedPolicyNumber(policyNumber, idx >= 0 ? idx : 0, lines.length, !!isTpoWithOd);
+  }
 
   // Financial values (stored as display amounts, not cents)
   if (fieldKey in (line.values ?? {})) return line.values[fieldKey] ?? "";
@@ -384,7 +403,7 @@ export function resolveFieldValue(
       }
       break;
     case "accounting":
-      raw = resolveAccounting(ctx.accountingLines, field.lineKey, field.fieldKey);
+      raw = resolveAccounting(ctx.accountingLines, field.lineKey, field.fieldKey, ctx.policyNumber, ctx.isTpoWithOd);
       break;
     case "invoice":
       raw = resolveInvoice(ctx.invoiceData, field.fieldKey);

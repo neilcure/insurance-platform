@@ -46,7 +46,50 @@ export async function GET(request: Request) {
       .limit(qLimit)
       .offset(qOffset);
 
-    const rows = await query;
+    const rawRows = await query;
+
+    // Enrich rows with totalGainCents and totalNetPremiumCents from invoice items + policy premiums
+    let rows = rawRows;
+    if (rawRows.length > 0) {
+      const ids = rawRows.map((r: any) => r.id as number);
+      const gainRows = await db
+        .select({
+          invoiceId: accountingInvoiceItems.invoiceId,
+          totalGain: sql<number>`coalesce(sum(${accountingInvoiceItems.gainCents}), 0)::int`,
+        })
+        .from(accountingInvoiceItems)
+        .where(inArray(accountingInvoiceItems.invoiceId, ids))
+        .groupBy(accountingInvoiceItems.invoiceId);
+
+      // Compute total net premium per invoice from linked policy_premiums
+      const netRows = await db
+        .select({
+          invoiceId: accountingInvoiceItems.invoiceId,
+          totalNet: sql<number>`coalesce(sum(
+            CASE
+              WHEN ${policyPremiums.netPremiumCents} > 0 THEN ${policyPremiums.netPremiumCents}
+              ELSE coalesce(
+                (${policyPremiums.extraValues}->>'npremium')::numeric * 100,
+                (${policyPremiums.extraValues}->>'netPremium')::numeric * 100,
+                (${policyPremiums.extraValues}->>'net_premium')::numeric * 100,
+                0
+              )::int
+            END
+          ), 0)::int`,
+        })
+        .from(accountingInvoiceItems)
+        .leftJoin(policyPremiums, eq(policyPremiums.id, accountingInvoiceItems.policyPremiumId))
+        .where(inArray(accountingInvoiceItems.invoiceId, ids))
+        .groupBy(accountingInvoiceItems.invoiceId);
+
+      const gainMap = new Map(gainRows.map((g) => [g.invoiceId, g.totalGain]));
+      const netMap = new Map(netRows.map((n) => [n.invoiceId, n.totalNet]));
+      rows = rawRows.map((r: any) => ({
+        ...r,
+        totalGainCents: gainMap.get(r.id) ?? 0,
+        totalNetPremiumCents: netMap.get(r.id) ?? 0,
+      }));
+    }
 
     if (flowFilter && rows.length > 0) {
       const invoiceIds = rows.map((r: any) => r.id);

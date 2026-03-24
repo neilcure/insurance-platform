@@ -43,14 +43,36 @@ export async function POST(
     const user = await requireUser();
     const { id } = await ctx.params;
     const policyId = Number(id);
-    const body = await request.json();
 
-    const { docType, action, sentTo, rejectionNote } = body as {
-      docType: string;
-      action: "send" | "confirm" | "reject" | "reset";
-      sentTo?: string;
-      rejectionNote?: string;
-    };
+    // Parse body — supports JSON or multipart (for file upload proof)
+    let docType: string;
+    let action: string;
+    let sentTo: string | undefined;
+    let rejectionNote: string | undefined;
+    let confirmMethod: "admin" | "upload" | undefined;
+    let confirmNote: string | undefined;
+    let proofFile: File | null = null;
+
+    const contentType = request.headers.get("content-type") ?? "";
+    if (contentType.includes("multipart/form-data")) {
+      const formData = await request.formData();
+      docType = formData.get("docType") as string;
+      action = formData.get("action") as string;
+      sentTo = (formData.get("sentTo") as string) || undefined;
+      rejectionNote = (formData.get("rejectionNote") as string) || undefined;
+      confirmMethod = (formData.get("confirmMethod") as "admin" | "upload") || undefined;
+      confirmNote = (formData.get("confirmNote") as string) || undefined;
+      const file = formData.get("proofFile");
+      if (file instanceof File && file.size > 0) proofFile = file;
+    } else {
+      const body = await request.json();
+      docType = body.docType;
+      action = body.action;
+      sentTo = body.sentTo;
+      rejectionNote = body.rejectionNote;
+      confirmMethod = body.confirmMethod;
+      confirmNote = body.confirmNote;
+    }
 
     if (!docType || typeof docType !== "string") {
       return NextResponse.json({ error: "Invalid document type" }, { status: 400 });
@@ -69,6 +91,7 @@ export async function POST(
     const existing: DocumentStatusMap = (policy.documentTracking as DocumentStatusMap | null) ?? {};
     const entry: DocumentStatusEntry = existing[docType] ?? ({} as DocumentStatusEntry);
     const now = new Date().toISOString();
+    const userName = (user as unknown as { name?: string; email?: string }).name || (user as unknown as { email?: string }).email || `User #${user.id}`;
 
     let newStatus: DocLifecycleStatus;
 
@@ -76,9 +99,20 @@ export async function POST(
       case "send":
         newStatus = "sent";
         break;
-      case "confirm":
+      case "confirm": {
+        // Require either admin confirm with note OR upload proof
+        if (!confirmMethod) {
+          return NextResponse.json({ error: "Confirm method required (admin or upload)" }, { status: 400 });
+        }
+        if (confirmMethod === "upload" && !proofFile) {
+          return NextResponse.json({ error: "Proof file required for upload confirmation" }, { status: 400 });
+        }
+        if (confirmMethod === "admin" && !confirmNote?.trim()) {
+          return NextResponse.json({ error: "Admin note required for admin confirmation" }, { status: 400 });
+        }
         newStatus = "confirmed";
         break;
+      }
       case "reject":
         newStatus = "rejected";
         break;
@@ -92,11 +126,33 @@ export async function POST(
         return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
 
+    // Handle proof file upload
+    let proofPath: string | undefined;
+    let proofName: string | undefined;
+    if (action === "confirm" && confirmMethod === "upload" && proofFile) {
+      const { validateFile, saveFile } = await import("@/lib/storage");
+      const validation = validateFile(proofFile.name, proofFile.type, proofFile.size);
+      if (!validation.valid) {
+        return NextResponse.json({ error: validation.error }, { status: 400 });
+      }
+      const buffer = Buffer.from(await proofFile.arrayBuffer());
+      const saved = await saveFile(policyId, proofFile.name, buffer);
+      proofPath = saved.storedPath;
+      proofName = proofFile.name;
+    }
+
     const updatedEntry: DocumentStatusEntry = {
       ...entry,
       status: newStatus,
       ...(action === "send" && { sentAt: now, sentTo: sentTo || entry.sentTo }),
-      ...(action === "confirm" && { confirmedAt: now }),
+      ...(action === "confirm" && {
+        confirmedAt: now,
+        confirmedBy: userName,
+        confirmMethod,
+        confirmNote: confirmNote || undefined,
+        confirmProofPath: proofPath || undefined,
+        confirmProofName: proofName || undefined,
+      }),
       ...(action === "reject" && { rejectedAt: now, rejectionNote: rejectionNote || undefined }),
     };
 
@@ -179,76 +235,166 @@ async function autoCreateAccountingInvoice(policyId: number, docType: string, us
   const premiumType = "client_premium";
   const entityType = "client";
 
-  const prefix = "AR";
-  const year = new Date().getFullYear();
-  const countResult = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(accountingInvoices)
-    .where(
-      and(
-        eq(accountingInvoices.organisationId, organisationId),
-        sql`extract(year from ${accountingInvoices.createdAt}) = ${year}`,
-      ),
-    );
-  const count = (countResult[0]?.count ?? 0) + 1;
-  const invoiceNumber = `${prefix}-${year}-${String(count).padStart(4, "0")}`;
-
-  let totalAmountCents = 0;
-  const items: Array<{ policyId: number; policyPremiumId: number; lineKey: string; amountCents: number; description: string }> = [];
-
-  for (const p of premiums) {
+  function resolvePremiumAmount(p: typeof premiums[number]): number {
     const extra = (p.extraValues ?? {}) as Record<string, unknown>;
     let amt = p.clientPremiumCents ?? p.grossPremiumCents ?? 0;
     if (amt === 0) {
-      // extra_values may use custom keys — try common patterns (values in whole dollars)
       const clientVal = Number(extra.clientPremium ?? extra.cpremium ?? extra.client_premium ?? 0);
       const grossVal = Number(extra.grossPremium ?? extra.gpremium ?? extra.gross_premium ?? 0);
       const displayVal = clientVal || grossVal;
       if (displayVal) amt = Math.round(displayVal * 100);
     }
-    totalAmountCents += amt;
-    items.push({
-      policyId,
-      policyPremiumId: p.id,
-      lineKey: p.lineKey,
-      amountCents: amt,
-      description: p.lineLabel || p.lineKey,
-    });
+    return amt;
   }
 
-  await db.transaction(async (tx) => {
-    const [invoice] = await tx
-      .insert(accountingInvoices)
-      .values({
-        organisationId,
-        invoiceNumber,
-        invoiceType: "individual",
-        direction,
-        premiumType,
-        entityPolicyId: policyId,
-        entityType,
-        entityName: null,
-        totalAmountCents,
-        paidAmountCents: 0,
-        currency: premiums[0]?.currency ?? "HKD",
-        invoiceDate: new Date().toISOString().split("T")[0],
-        status: isReceipt ? "paid" : "pending",
-        notes: `Auto-created from document tracking (${docType} confirmed)`,
-        createdBy: userId,
-      })
-      .returning();
-
-    if (items.length > 0) {
-      await tx.insert(accountingInvoiceItems).values(
-        items.map((item) => ({
-          invoiceId: invoice.id,
-          policyId: item.policyId,
-          policyPremiumId: item.policyPremiumId,
-          lineKey: item.lineKey,
-          amountCents: item.amountCents,
-          description: item.description,
-        })),
-      );
+  function resolveNetPremium(p: typeof premiums[number]): number {
+    const extra = (p.extraValues ?? {}) as Record<string, unknown>;
+    let amt = p.netPremiumCents ?? 0;
+    if (amt === 0) {
+      const netVal = Number(extra.netPremium ?? extra.npremium ?? extra.net_premium ?? 0);
+      if (netVal) amt = Math.round(netVal * 100);
     }
-  });
+    return amt;
+  }
+
+  const hasAgent = !!policy.agentId;
+
+  function resolveAgentPremium(p: typeof premiums[number]): number {
+    const extra = (p.extraValues ?? {}) as Record<string, unknown>;
+    const agentVal = Number(extra.agentPremium ?? extra.apremium ?? extra.agent_premium ?? 0);
+    return agentVal ? Math.round(agentVal * 100) : 0;
+  }
+
+  function computeGain(p: typeof premiums[number]): number {
+    const net = resolveNetPremium(p);
+    if (hasAgent) return resolveAgentPremium(p) - net;
+    return resolvePremiumAmount(p) - net;
+  }
+
+  const isTpoWithOd =
+    premiums.length >= 2 &&
+    premiums.some((p) => p.lineKey.toLowerCase() === "tpo") &&
+    premiums.some((p) => {
+      const k = p.lineKey.toLowerCase();
+      return k.includes("own_vehicle") || k.includes("owndamage");
+    });
+
+  const prefix = "AR";
+  const year = new Date().getFullYear();
+
+  async function nextInvoiceNumber(): Promise<string> {
+    const countResult = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(accountingInvoices)
+      .where(
+        and(
+          eq(accountingInvoices.organisationId, organisationId!),
+          sql`extract(year from ${accountingInvoices.createdAt}) = ${year}`,
+        ),
+      );
+    const count = (countResult[0]?.count ?? 0) + 1;
+    return `${prefix}-${year}-${String(count).padStart(4, "0")}`;
+  }
+
+  if (isTpoWithOd) {
+    // TPO + Own Vehicle Damage: create one invoice per line with suffixed policy number
+    const pricedPremiums = premiums.filter((p) => resolvePremiumAmount(p) > 0);
+    for (let i = 0; i < pricedPremiums.length; i++) {
+      const p = pricedPremiums[i];
+      const suffix = String.fromCharCode(97 + i); // a, b, c …
+      const suffixedPolicyNo = `${policy.policyNumber}(${suffix})`;
+      const amt = resolvePremiumAmount(p);
+      const invoiceNumber = await nextInvoiceNumber();
+
+      await db.transaction(async (tx) => {
+        const [invoice] = await tx
+          .insert(accountingInvoices)
+          .values({
+            organisationId,
+            invoiceNumber,
+            invoiceType: "individual",
+            direction,
+            premiumType,
+            entityPolicyId: policyId,
+            entityType,
+            entityName: null,
+            totalAmountCents: amt,
+            paidAmountCents: 0,
+            currency: p.currency ?? "HKD",
+            invoiceDate: new Date().toISOString().split("T")[0],
+            status: isReceipt ? "paid" : "pending",
+            notes: `Policy ${suffixedPolicyNo} – ${p.lineLabel || p.lineKey}`,
+            createdBy: userId,
+          })
+          .returning();
+
+        await tx.insert(accountingInvoiceItems).values({
+          invoiceId: invoice.id,
+          policyId,
+          policyPremiumId: p.id,
+          lineKey: p.lineKey,
+          amountCents: amt,
+          gainCents: computeGain(p),
+          description: `${p.lineLabel || p.lineKey} [${suffixedPolicyNo}]`,
+        });
+      });
+    }
+  } else {
+    // Single invoice covering all premium lines
+    let totalAmountCents = 0;
+    const items: Array<{ policyId: number; policyPremiumId: number; lineKey: string; amountCents: number; gainCents: number; description: string }> = [];
+
+    for (const p of premiums) {
+      const amt = resolvePremiumAmount(p);
+      if (amt <= 0) continue;
+      totalAmountCents += amt;
+      items.push({
+        policyId,
+        policyPremiumId: p.id,
+        lineKey: p.lineKey,
+        amountCents: amt,
+        gainCents: computeGain(p),
+        description: p.lineLabel || p.lineKey,
+      });
+    }
+
+    const invoiceNumber = await nextInvoiceNumber();
+
+    await db.transaction(async (tx) => {
+      const [invoice] = await tx
+        .insert(accountingInvoices)
+        .values({
+          organisationId,
+          invoiceNumber,
+          invoiceType: "individual",
+          direction,
+          premiumType,
+          entityPolicyId: policyId,
+          entityType,
+          entityName: null,
+          totalAmountCents,
+          paidAmountCents: 0,
+          currency: premiums[0]?.currency ?? "HKD",
+          invoiceDate: new Date().toISOString().split("T")[0],
+          status: isReceipt ? "paid" : "pending",
+          notes: `Auto-created from document tracking (${docType} confirmed)`,
+          createdBy: userId,
+        })
+        .returning();
+
+      if (items.length > 0) {
+        await tx.insert(accountingInvoiceItems).values(
+          items.map((item) => ({
+            invoiceId: invoice.id,
+            policyId: item.policyId,
+            policyPremiumId: item.policyPremiumId,
+            lineKey: item.lineKey,
+            amountCents: item.amountCents,
+            gainCents: item.gainCents,
+            description: item.description,
+          })),
+        );
+      }
+    });
+  }
 }

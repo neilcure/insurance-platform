@@ -136,6 +136,22 @@ function resolveTemplates(
   return fallback;
 }
 
+/**
+ * Returns "(a)", "(b)", etc. for TPO+OD multi-line policies so each line
+ * gets a distinct policy-number suffix (HK motor-insurance convention).
+ */
+function policyNumberForLine(
+  policyNumber: string,
+  lineKey: string,
+  lineIndex: number,
+  totalLines: number,
+  isTpoWithOd: boolean,
+): string {
+  if (!isTpoWithOd || totalLines < 2) return policyNumber;
+  const suffix = String.fromCharCode(97 + lineIndex); // a, b, c …
+  return `${policyNumber}(${suffix})`;
+}
+
 // --- Entity badge (read-only) ---
 function EntityBadge({ icon: Icon, label, name }: { icon: React.ElementType; label: string; name: string | null }) {
   if (!name) return null;
@@ -346,14 +362,21 @@ function LineEditor({
 }
 
 // --- Read-only view of one line ---
-function LineView({ line, fields, canEdit, onEdit }: { line: LineData; fields: FieldDef[]; canEdit: boolean; onEdit: () => void }) {
+function LineView({ line, fields, canEdit, onEdit, displayPolicyNumber }: { line: LineData; fields: FieldDef[]; canEdit: boolean; onEdit: () => void; displayPolicyNumber?: string }) {
   const currency = (typeof line.values.currency === "string" && line.values.currency) || "HKD";
   const hasData = Object.values(line.values).some((v) => v !== null && v !== undefined && v !== "");
 
   return (
     <div className="rounded-md border border-neutral-200 dark:border-neutral-800">
       <div className="flex items-center justify-between border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
-        <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">{line.lineLabel}</span>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">{line.lineLabel}</span>
+          {displayPolicyNumber && (
+            <span className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400">
+              Policy No: {displayPolicyNumber}
+            </span>
+          )}
+        </div>
         {canEdit && (
           <Button size="sm" variant="ghost" className="h-6 text-[11px]" onClick={onEdit}>
             <Pencil className="mr-1 h-3 w-3" /> Edit
@@ -413,11 +436,13 @@ function LineView({ line, fields, canEdit, onEdit }: { line: LineData; fields: F
 // --- Main AccountingTab ---
 export function AccountingTab({
   policyId,
+  policyNumber,
   canEdit,
   policyExtra,
   onUpdate,
 }: {
   policyId: number;
+  policyNumber?: string;
   canEdit: boolean;
   policyExtra?: Record<string, unknown> | null;
   onUpdate?: () => void;
@@ -464,6 +489,12 @@ export function AccountingTab({
     () => resolveTemplates(coverTypeOptions, policyExtra),
     [coverTypeOptions, policyExtra],
   );
+
+  const isTpoWithOd = React.useMemo(() => {
+    if (expectedTemplates.length < 2) return false;
+    const keys = expectedTemplates.map((t) => t.key.toLowerCase());
+    return keys.includes("tpo") && keys.some((k) => k.includes("own_vehicle") || k.includes("owndamage"));
+  }, [expectedTemplates]);
 
   const displayLines = React.useMemo(() => {
     const result: LineData[] = [];
@@ -606,12 +637,17 @@ export function AccountingTab({
         </Button>
       </div>
 
-      {displayLines.map((line) => (
+      {displayLines.map((line, idx) => (
         <LineView
           key={line.lineKey}
           line={line}
           fields={fields}
           canEdit={canEdit}
+          displayPolicyNumber={
+            policyNumber && isTpoWithOd
+              ? policyNumberForLine(policyNumber, line.lineKey, idx, displayLines.length, isTpoWithOd)
+              : undefined
+          }
           onEdit={() => {
             editingInitialSnapshotRef.current = {
               values: formSnapshot(line.values),

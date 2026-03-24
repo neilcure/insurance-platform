@@ -59,6 +59,7 @@ export const accountingInvoiceItems = pgTable("accounting_invoice_items", {
   policyPremiumId: integer("policy_premium_id"),
   lineKey: varchar("line_key", { length: 64 }),
   amountCents: integer("amount_cents").notNull(),
+  gainCents: integer("gain_cents").default(0),
   description: text("description"),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
 }, (t) => ({
