@@ -4,36 +4,18 @@ import { policyPremiums } from "@/db/schema/premiums";
 import { policies, cars } from "@/db/schema/insurance";
 import { memberships, organisations } from "@/db/schema/core";
 import { formOptions } from "@/db/schema/form_options";
-import { and, eq } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { appendPolicyAudit } from "@/lib/audit";
 import { sql } from "drizzle-orm";
+import { loadAccountingFields, buildFieldColumnMap, getColumnType, type AccountingFieldDef } from "@/lib/accounting-fields";
 
 export const dynamic = "force-dynamic";
 
-const ACCOUNTING_PKG = "accounting";
-
-const CENTS_FIELD_MAP: Record<string, string> = {
-  grossPremium: "grossPremiumCents",
-  netPremium: "netPremiumCents",
-  clientPremium: "clientPremiumCents",
-  agentCommission: "agentCommissionCents",
-};
-const RATE_KEY = "commissionRate";
-const CURRENCY_KEY = "currency";
-
 type Ctx = { params: Promise<{ id: string }> };
 
-type FieldDef = {
-  key: string;
-  label: string;
-  inputType: string;
-  sortOrder: number;
-  groupOrder?: number;
-  groupName?: string;
-  options?: Array<{ value: string; label: string }>;
-};
+type FieldDef = AccountingFieldDef;
 
 type LineTemplate = { key: string; label: string };
 
@@ -55,35 +37,7 @@ type LineData = {
   collaboratorName: string | null;
 };
 
-async function loadAccountingFields(): Promise<FieldDef[]> {
-  const groupKey = `${ACCOUNTING_PKG}_fields`;
-  const rows = await db
-    .select()
-    .from(formOptions)
-    .where(and(eq(formOptions.groupKey, groupKey), eq(formOptions.isActive, true)))
-    .orderBy(formOptions.sortOrder);
-
-  return rows
-    .map((r) => {
-      const m = (r.meta ?? {}) as Record<string, unknown>;
-      const opts = Array.isArray(m?.options)
-        ? (m.options as Array<{ value?: unknown; label?: unknown }>).map((o) => ({
-            value: String(o?.value ?? o?.label ?? ""),
-            label: String(o?.label ?? o?.value ?? ""),
-          }))
-        : [];
-      return {
-        key: String(r.value ?? ""),
-        label: String(r.label ?? r.value ?? ""),
-        inputType: String(m?.inputType ?? "text"),
-        sortOrder: Number(r.sortOrder ?? 0),
-        groupOrder: Number(m?.groupOrder ?? 0),
-        groupName: typeof m?.group === "string" ? m.group : "",
-        options: opts.length > 0 ? opts : undefined,
-      };
-    })
-    .filter((f) => f.key);
-}
+// loadAccountingFields is imported from @/lib/accounting-fields
 
 async function loadCoverTypeOptions(): Promise<CoverTypeOption[]> {
   try {
@@ -151,24 +105,37 @@ function rowToLineData(
   row: typeof policyPremiums.$inferSelect,
   fields: FieldDef[],
   entityLookup?: { insurers: Map<number, string>; collabs: Map<number, string> },
+  fieldColumnMap?: Record<string, string>,
 ): LineData {
   const extra = (row.extraValues ?? {}) as Record<string, unknown>;
+  const colMap = fieldColumnMap ?? buildFieldColumnMap(fields);
   const vals: Record<string, unknown> = {};
   for (const f of fields) {
-    if (f.key in CENTS_FIELD_MAP) {
-      const col = CENTS_FIELD_MAP[f.key] as keyof typeof row;
-      vals[f.key] = centsToDisplay(row[col] as number | null);
-    } else if (f.key === RATE_KEY) {
-      vals[f.key] = row.commissionRate !== null ? Number(row.commissionRate) : null;
-    } else if (f.key === CURRENCY_KEY) {
-      vals[f.key] = row.currency;
+    const mappedCol = colMap[f.key];
+    if (mappedCol) {
+      const colType = getColumnType(mappedCol);
+      const rawVal = (row as Record<string, unknown>)[mappedCol];
+      if (colType === "cents") {
+        vals[f.key] = centsToDisplay(rawVal as number | null);
+      } else if (colType === "rate") {
+        vals[f.key] = rawVal !== null && rawVal !== undefined ? Number(rawVal) : null;
+      } else {
+        vals[f.key] = rawVal ?? null;
+      }
     } else {
       vals[f.key] = extra[f.key] ?? null;
     }
   }
-  const client = Number(vals.clientPremium) || 0;
-  const net = Number(vals.netPremium) || 0;
-  const agent = Number(vals.agentCommission) || 0;
+  let client = 0, net = 0, agent = 0;
+  for (const f of fields) {
+    if (!f.premiumColumn) continue;
+    const lbl = f.label.toLowerCase();
+    const rawVal = (row as Record<string, unknown>)[f.premiumColumn] as number | null;
+    const val = centsToDisplay(rawVal) ?? 0;
+    if (lbl.includes("client")) client = val;
+    else if (lbl.includes("net")) net = val;
+    else if (lbl.includes("agent")) agent = val;
+  }
   const margin = client === 0 && net === 0 && agent === 0 ? null : client - net - agent;
   const insurerId = (row as Record<string, unknown>).insurerPolicyId as number | null ?? row.organisationId ?? null;
   return {
@@ -352,7 +319,8 @@ export async function GET(_: Request, ctx: Ctx) {
     }
 
     const entityLookup = { insurers, collabs };
-    const lines: LineData[] = rows.map((r) => rowToLineData(r, fields, entityLookup));
+    const fieldColumnMap = buildFieldColumnMap(fields);
+    const lines: LineData[] = rows.map((r) => rowToLineData(r, fields, entityLookup, fieldColumnMap));
 
     // Infer insurer/collab from policy snapshot using field-key semantics
     type EntityHint = { insurerId: number | null; insurerName: string | null; collabId: number | null; collabName: string | null };
@@ -460,6 +428,112 @@ export async function GET(_: Request, ctx: Ctx) {
       }
     } catch { /* non-fatal */ }
 
+    // Find accounting flow records that reference this policy
+    type AccountingRecord = {
+      recordId: number;
+      recordNumber: string;
+      flowKey: string;
+      fields: { key: string; label: string; value: unknown }[];
+      createdAt: string;
+    };
+    let accountingRecords: AccountingRecord[] = [];
+    try {
+      const [policyInfo] = await db
+        .select({ policyNumber: policies.policyNumber })
+        .from(policies)
+        .where(eq(policies.id, policyId))
+        .limit(1);
+
+      if (policyInfo?.policyNumber) {
+        const pn = policyInfo.policyNumber;
+        const linkedRows = await db
+          .select({
+            pId: policies.id,
+            pNum: policies.policyNumber,
+            pCreated: policies.createdAt,
+            cExtra: cars.extraAttributes,
+          })
+          .from(policies)
+          .leftJoin(cars, eq(cars.policyId, policies.id))
+          .where(
+            and(
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') IS NOT NULL`,
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != ''`,
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'policyset'`,
+              sql`(${cars.extraAttributes})::text LIKE ${'%' + pn + '%'}`,
+            ),
+          )
+          .orderBy(desc(policies.createdAt))
+          .limit(50);
+
+        const stripPrefix = (k: string) => {
+          const idx = k.indexOf("__");
+          return idx >= 0 ? k.slice(idx + 2) : k;
+        };
+
+        for (const lr of linkedRows) {
+          const extra = (lr.cExtra ?? {}) as Record<string, unknown>;
+          const fk = String(extra.flowKey ?? "");
+          const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
+          const recFields: { key: string; label: string; value: unknown }[] = [];
+
+          // Build a normalized lookup: stripped key → value
+          const allVals = new Map<string, unknown>();
+          for (const [, pkgData] of Object.entries(pkgs)) {
+            if (!pkgData || typeof pkgData !== "object") continue;
+            const vals = ("values" in (pkgData as Record<string, unknown>)
+              ? (pkgData as { values?: Record<string, unknown> }).values
+              : pkgData) as Record<string, unknown> | undefined;
+            if (!vals) continue;
+            for (const [k, v] of Object.entries(vals)) {
+              if (v === undefined || v === null || v === "") continue;
+              allVals.set(k, v);
+              allVals.set(stripPrefix(k), v);
+            }
+          }
+
+          for (const f of fields) {
+            if (recFields.some((rf) => rf.key === f.key)) continue;
+            const v = allVals.get(f.key) ?? allVals.get(`accounting__${f.key}`);
+            if (v !== undefined && v !== null && v !== "") {
+              recFields.push({ key: f.key, label: f.label, value: v });
+            }
+          }
+
+          if (recFields.length > 0) {
+            accountingRecords.push({
+              recordId: lr.pId,
+              recordNumber: lr.pNum,
+              flowKey: fk,
+              fields: recFields,
+              createdAt: lr.pCreated,
+            });
+          }
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    // Resolve agent for this policy
+    let agentName: string | null = null;
+    const polCols2 = await getPolicyColumns();
+    if (polCols2.hasAgentId) {
+      try {
+        const agentRes = await db.execute(sql`
+          select u.name, u.user_number as "userNumber"
+          from "policies" p
+          left join "users" u on u.id = p.agent_id
+          where p.id = ${policyId}
+          limit 1
+        `);
+        const ar = Array.isArray(agentRes) ? agentRes : (agentRes as any)?.rows ?? [];
+        if (ar.length > 0) {
+          const r = ar[0] as { name?: string; userNumber?: string };
+          const parts = [r.userNumber, r.name].filter(Boolean);
+          agentName = parts.length > 0 ? parts.join(" — ") : null;
+        }
+      } catch { /* ignore */ }
+    }
+
     return NextResponse.json({
       policyId,
       fields,
@@ -468,6 +542,8 @@ export async function GET(_: Request, ctx: Ctx) {
       availableInsurers,
       availableCollabs,
       snapshotEntities,
+      accountingRecords,
+      agentName,
     });
   } catch (err) {
     console.error(err);
@@ -492,21 +568,24 @@ export async function PUT(request: Request, ctx: Ctx) {
     const lineLabel = typeof body.lineLabel === "string" && body.lineLabel.trim() ? body.lineLabel.trim() : null;
     const incomingValues = (body.values ?? {}) as Record<string, unknown>;
     const fields = await loadAccountingFields();
+    const fieldColumnMap = buildFieldColumnMap(fields);
 
-    let currencyVal = "HKD";
-    let rateVal: string | null = null;
-    const structuredCents: Record<string, number | null> = {};
+    const structuredColumns: Record<string, unknown> = {};
     const extraValues: Record<string, unknown> = {};
 
     for (const f of fields) {
       const val = incomingValues[f.key];
-      if (f.key in CENTS_FIELD_MAP) {
-        structuredCents[CENTS_FIELD_MAP[f.key]] = displayToCents(val);
-      } else if (f.key === RATE_KEY) {
-        const n = Number(val);
-        rateVal = Number.isFinite(n) ? n.toFixed(2) : null;
-      } else if (f.key === CURRENCY_KEY) {
-        currencyVal = typeof val === "string" && val.trim() ? val.trim().toUpperCase() : "HKD";
+      const mappedCol = fieldColumnMap[f.key];
+      if (mappedCol) {
+        const colType = getColumnType(mappedCol);
+        if (colType === "cents") {
+          structuredColumns[mappedCol] = displayToCents(val);
+        } else if (colType === "rate") {
+          const n = Number(val);
+          structuredColumns[mappedCol] = Number.isFinite(n) ? n.toFixed(2) : null;
+        } else {
+          structuredColumns[mappedCol] = typeof val === "string" && val.trim() ? val.trim() : null;
+        }
       } else {
         extraValues[f.key] = val === "" ? null : (val ?? null);
       }
@@ -515,16 +594,16 @@ export async function PUT(request: Request, ctx: Ctx) {
     const insurerId = Number(body.insurerId);
     const collabId = Number(body.collaboratorId);
 
-    const dbPayload = {
+    const dbPayload: Record<string, unknown> = {
       lineLabel,
-      currency: currencyVal,
+      currency: (structuredColumns.currency as string) ?? "HKD",
       insurerPolicyId: Number.isFinite(insurerId) && insurerId > 0 ? insurerId : null,
       collaboratorId: Number.isFinite(collabId) && collabId > 0 ? collabId : null,
-      grossPremiumCents: structuredCents.grossPremiumCents ?? null,
-      netPremiumCents: structuredCents.netPremiumCents ?? null,
-      clientPremiumCents: structuredCents.clientPremiumCents ?? null,
-      agentCommissionCents: structuredCents.agentCommissionCents ?? null,
-      commissionRate: rateVal,
+      grossPremiumCents: structuredColumns.grossPremiumCents ?? null,
+      netPremiumCents: structuredColumns.netPremiumCents ?? null,
+      clientPremiumCents: structuredColumns.clientPremiumCents ?? null,
+      agentCommissionCents: structuredColumns.agentCommissionCents ?? null,
+      commissionRate: structuredColumns.commissionRate ?? null,
       extraValues: Object.keys(extraValues).length > 0 ? extraValues : null,
       updatedBy: Number(user.id),
       updatedAt: new Date().toISOString(),
@@ -563,7 +642,7 @@ export async function PUT(request: Request, ctx: Ctx) {
       } catch { /* non-fatal */ }
     }
 
-    return NextResponse.json({ policyId, line: rowToLineData(row, fields) });
+    return NextResponse.json({ policyId, line: rowToLineData(row, fields, undefined, fieldColumnMap) });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

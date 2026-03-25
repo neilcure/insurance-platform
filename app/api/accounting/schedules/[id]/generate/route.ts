@@ -10,6 +10,7 @@ import { policyPremiums } from "@/db/schema/premiums";
 import { memberships, organisations } from "@/db/schema/core";
 import { eq, and, sql, inArray, desc, notInArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
+import { loadAccountingFields } from "@/lib/accounting-fields";
 
 export const dynamic = "force-dynamic";
 
@@ -90,13 +91,24 @@ export async function POST(
       baseConditions.push(notInArray(policyPremiums.id, excludeIds));
     }
 
-    const columnMap: Record<string, any> = {
-      net_premium_cents: policyPremiums.netPremiumCents,
-      agent_commission_cents: policyPremiums.agentCommissionCents,
-      client_premium_cents: policyPremiums.clientPremiumCents,
+    const accountingFields = await loadAccountingFields();
+    const roleToColumn: Record<string, string> = {};
+    for (const f of accountingFields) {
+      if (!f.premiumColumn) continue;
+      const lbl = f.label.toLowerCase();
+      if (lbl.includes("net") && !roleToColumn.net) roleToColumn.net = f.premiumColumn;
+      else if (lbl.includes("agent") && !roleToColumn.agent) roleToColumn.agent = f.premiumColumn;
+      else if (lbl.includes("client") && !roleToColumn.client) roleToColumn.client = f.premiumColumn;
+    }
+    const fieldRoleMap: Record<string, string> = {
+      net_premium_cents: "net",
+      agent_commission_cents: "agent",
+      client_premium_cents: "client",
     };
-
-    const amountCol = columnMap[field] ?? policyPremiums.netPremiumCents;
+    const role = fieldRoleMap[field] ?? "net";
+    const colName = roleToColumn[role] ?? "netPremiumCents";
+    const cols = policyPremiums as unknown as Record<string, unknown>;
+    const amountCol = (cols[colName] ?? policyPremiums.netPremiumCents) as typeof policyPremiums.netPremiumCents;
 
     let query: any = db
       .select({

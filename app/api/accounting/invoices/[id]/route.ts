@@ -11,6 +11,13 @@ import { users, clients } from "@/db/schema/core";
 import { policyPremiums } from "@/db/schema/premiums";
 import { and, eq, desc, inArray, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
+import { loadAccountingFields, resolvePremiumTypeColumn, getColumnType } from "@/lib/accounting-fields";
+
+const CENTS_COLUMNS = [
+  "grossPremiumCents", "netPremiumCents", "clientPremiumCents",
+  "agentCommissionCents", "creditPremiumCents", "levyCents",
+  "stampDutyCents", "discountCents",
+];
 
 export const dynamic = "force-dynamic";
 
@@ -50,35 +57,48 @@ export async function GET(
       .leftJoin(policies, eq(policies.id, accountingInvoiceItems.policyId))
       .where(eq(accountingInvoiceItems.invoiceId, invoiceId));
 
-    // Enrich items with net premium from policy_premiums
+    // Enrich items with live premium data from policy_premiums
     const premiumIds = rawItems.map((i) => i.policyPremiumId).filter(Boolean) as number[];
-    let premiumMap = new Map<number, { netCents: number; extraValues: Record<string, unknown> | null; collaboratorId: number | null; insurerPolicyId: number | null }>();
+
+    type PremiumRow = typeof policyPremiums.$inferSelect;
+    let premiumMap = new Map<number, PremiumRow>();
+
     if (premiumIds.length > 0) {
       const premiums = await db
-        .select({
-          id: policyPremiums.id,
-          netPremiumCents: policyPremiums.netPremiumCents,
-          extraValues: policyPremiums.extraValues,
-          collaboratorId: policyPremiums.collaboratorId,
-          insurerPolicyId: policyPremiums.insurerPolicyId,
-        })
+        .select()
         .from(policyPremiums)
         .where(inArray(policyPremiums.id, premiumIds));
 
       for (const p of premiums) {
-        const extra = (p.extraValues ?? {}) as Record<string, unknown>;
-        let netCents = p.netPremiumCents ?? 0;
-        if (netCents === 0) {
-          const netVal = Number(extra.netPremium ?? extra.npremium ?? extra.net_premium ?? 0);
-          if (netVal) netCents = Math.round(netVal * 100);
-        }
-        premiumMap.set(p.id, { netCents, extraValues: p.extraValues as Record<string, unknown> | null, collaboratorId: p.collaboratorId, insurerPolicyId: p.insurerPolicyId });
+        premiumMap.set(p.id, p);
       }
     }
 
+    const accountingFields = await loadAccountingFields();
+    const resolvedCol = resolvePremiumTypeColumn(invoice.premiumType, accountingFields);
+
+    const centsColumns = CENTS_COLUMNS;
+
     const items = rawItems.map((item) => {
       const pm = item.policyPremiumId ? premiumMap.get(item.policyPremiumId) : undefined;
-      return { ...item, netPremiumCents: pm?.netCents ?? 0 };
+
+      const currentPremiumCents = pm
+        ? Math.abs(Number((pm as Record<string, unknown>)[resolvedCol.column]) || 0)
+        : null;
+
+      let allPremiumCents: Record<string, number> | null = null;
+      if (pm) {
+        allPremiumCents = {};
+        for (const col of centsColumns) {
+          allPremiumCents[col] = ((pm as Record<string, unknown>)[col] as number) ?? 0;
+        }
+      }
+
+      return {
+        ...item,
+        currentPremiumCents,
+        allPremiumCents,
+      };
     });
 
     // Resolve entity names: client, agent, collaborator/insurer per line
@@ -204,6 +224,10 @@ export async function GET(
       documents: paymentDocs.filter((d: any) => d.paymentId === p.id),
     }));
 
+    const premiumFields = accountingFields
+      .filter((f) => f.premiumColumn)
+      .map((f) => ({ key: f.key, label: f.label, column: f.premiumColumn!, inputType: f.inputType }));
+
     return NextResponse.json({
       ...invoice,
       items,
@@ -211,6 +235,7 @@ export async function GET(
       documents,
       childInvoices,
       entityNames,
+      premiumFields,
     });
   } catch (err) {
     console.error("GET /api/accounting/invoices/[id] error:", err);

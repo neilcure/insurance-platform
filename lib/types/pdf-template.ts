@@ -144,6 +144,7 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
   package: [],
   accounting: [
     "grossPremium", "netPremium", "clientPremium", "agentCommission",
+    "creditPremium", "levy", "stampDuty", "discount",
     "commissionRate", "currency", "margin", "lineLabel",
     "insurerName", "insurerContactName", "insurerContactEmail", "insurerContactPhone",
     "insurerAddress",
@@ -161,6 +162,7 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
     "invoiceNumber", "invoiceDate", "dueDate", "totalAmount", "paidAmount",
     "remainingAmount", "status", "entityName", "entityType", "premiumType",
     "direction", "currency", "invoiceType", "periodStart", "periodEnd", "notes",
+    "cancellationDate", "refundReason", "parentInvoiceNumber",
   ],
   static: [],
 };

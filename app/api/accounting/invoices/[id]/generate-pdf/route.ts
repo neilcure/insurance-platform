@@ -14,10 +14,11 @@ import type { DocumentStatusMap, DocumentStatusEntry } from "@/lib/types/account
 
 export const dynamic = "force-dynamic";
 
-type DocTypeKey = "quotation" | "invoice" | "receipt" | "statement";
+type DocTypeKey = "quotation" | "invoice" | "receipt" | "statement" | "credit_note";
 
 function inferDocType(templateLabel: string): DocTypeKey | null {
   const lower = templateLabel.toLowerCase();
+  if (lower.includes("credit note") || lower.includes("creditnote") || lower.includes("credit_note")) return "credit_note";
   if (lower.includes("receipt")) return "receipt";
   if (lower.includes("statement")) return "statement";
   if (lower.includes("quotation") || lower.includes("quote")) return "quotation";
@@ -138,6 +139,16 @@ export async function POST(
       };
     })();
 
+    let parentInvoiceNumber: string | null = null;
+    if (invoice.parentInvoiceId) {
+      const [parent] = await db
+        .select({ invoiceNumber: accountingInvoices.invoiceNumber })
+        .from(accountingInvoices)
+        .where(eq(accountingInvoices.id, invoice.parentInvoiceId))
+        .limit(1);
+      parentInvoiceNumber = parent?.invoiceNumber ?? null;
+    }
+
     const invoiceData: InvoiceContext = {
       invoiceNumber: invoice.invoiceNumber,
       invoiceDate: invoice.invoiceDate,
@@ -154,6 +165,9 @@ export async function POST(
       periodStart: invoice.periodStart,
       periodEnd: invoice.periodEnd,
       notes: invoice.notes,
+      cancellationDate: invoice.cancellationDate,
+      refundReason: invoice.refundReason,
+      parentInvoiceNumber,
     };
 
     mergeCtx = { ...mergeCtx, invoiceData };

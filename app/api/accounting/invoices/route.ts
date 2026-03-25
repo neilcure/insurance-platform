@@ -6,7 +6,6 @@ import { memberships, organisations } from "@/db/schema/core";
 import { policyPremiums } from "@/db/schema/premiums";
 import { and, desc, eq, sql, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
-
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
@@ -48,47 +47,38 @@ export async function GET(request: Request) {
 
     const rawRows = await query;
 
-    // Enrich rows with totalGainCents and totalNetPremiumCents from invoice items + policy premiums
+    // Enrich rows with live totalGainCents and totalNetPremiumCents from policy_premiums
     let rows = rawRows;
     if (rawRows.length > 0) {
       const ids = rawRows.map((r: any) => r.id as number);
-      const gainRows = await db
-        .select({
-          invoiceId: accountingInvoiceItems.invoiceId,
-          totalGain: sql<number>`coalesce(sum(${accountingInvoiceItems.gainCents}), 0)::int`,
-        })
-        .from(accountingInvoiceItems)
-        .where(inArray(accountingInvoiceItems.invoiceId, ids))
-        .groupBy(accountingInvoiceItems.invoiceId);
 
-      // Compute total net premium per invoice from linked policy_premiums
-      const netRows = await db
+      // Compute totals from LIVE policy_premiums structured columns
+      const premiumRows = await db
         .select({
           invoiceId: accountingInvoiceItems.invoiceId,
-          totalNet: sql<number>`coalesce(sum(
-            CASE
-              WHEN ${policyPremiums.netPremiumCents} > 0 THEN ${policyPremiums.netPremiumCents}
-              ELSE coalesce(
-                (${policyPremiums.extraValues}->>'npremium')::numeric * 100,
-                (${policyPremiums.extraValues}->>'netPremium')::numeric * 100,
-                (${policyPremiums.extraValues}->>'net_premium')::numeric * 100,
-                0
-              )::int
-            END
-          ), 0)::int`,
+          totalNet: sql<number>`coalesce(sum(coalesce(${policyPremiums.netPremiumCents}, 0)), 0)::int`,
+          totalAgent: sql<number>`coalesce(sum(coalesce(${policyPremiums.agentCommissionCents}, 0)), 0)::int`,
+          totalClient: sql<number>`coalesce(sum(coalesce(${policyPremiums.clientPremiumCents}, 0)), 0)::int`,
         })
         .from(accountingInvoiceItems)
         .leftJoin(policyPremiums, eq(policyPremiums.id, accountingInvoiceItems.policyPremiumId))
         .where(inArray(accountingInvoiceItems.invoiceId, ids))
         .groupBy(accountingInvoiceItems.invoiceId);
 
-      const gainMap = new Map(gainRows.map((g) => [g.invoiceId, g.totalGain]));
-      const netMap = new Map(netRows.map((n) => [n.invoiceId, n.totalNet]));
-      rows = rawRows.map((r: any) => ({
-        ...r,
-        totalGainCents: gainMap.get(r.id) ?? 0,
-        totalNetPremiumCents: netMap.get(r.id) ?? 0,
-      }));
+      const premiumMap = new Map(premiumRows.map((r) => [r.invoiceId, r]));
+
+      rows = rawRows.map((r: any) => {
+        const pm = premiumMap.get(r.id);
+        const net = pm?.totalNet ?? 0;
+        const agent = pm?.totalAgent ?? 0;
+        const client = pm?.totalClient ?? 0;
+        const gain = agent > 0 ? agent - net : client - net;
+        return {
+          ...r,
+          totalGainCents: gain,
+          totalNetPremiumCents: net,
+        };
+      });
     }
 
     if (flowFilter && rows.length > 0) {
@@ -247,7 +237,7 @@ async function generateInvoiceNumber(
   direction: string,
   invoiceType: string,
 ): Promise<string> {
-  const prefix = invoiceType === "statement" ? "ST" : direction === "payable" ? "AP" : "AR";
+  const prefix = invoiceType === "credit_note" ? "CN" : invoiceType === "statement" ? "ST" : direction === "payable" ? "AP" : "AR";
   const year = new Date().getFullYear();
   const countResult = await db
     .select({ count: sql<number>`count(*)::int` })

@@ -6,6 +6,7 @@ import { accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounti
 import { memberships, organisations } from "@/db/schema/core";
 import { and, eq, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
+import { loadAccountingFields, type AccountingFieldDef } from "@/lib/accounting-fields";
 import type { DocumentStatusMap, DocumentStatusEntry, DocLifecycleStatus } from "@/lib/types/accounting";
 
 export const dynamic = "force-dynamic";
@@ -235,40 +236,33 @@ async function autoCreateAccountingInvoice(policyId: number, docType: string, us
   const premiumType = "client_premium";
   const entityType = "client";
 
+  const accountingFields = await loadAccountingFields();
+
   function resolvePremiumAmount(p: typeof premiums[number]): number {
-    const extra = (p.extraValues ?? {}) as Record<string, unknown>;
-    let amt = p.clientPremiumCents ?? p.grossPremiumCents ?? 0;
-    if (amt === 0) {
-      const clientVal = Number(extra.clientPremium ?? extra.cpremium ?? extra.client_premium ?? 0);
-      const grossVal = Number(extra.grossPremium ?? extra.gpremium ?? extra.gross_premium ?? 0);
-      const displayVal = clientVal || grossVal;
-      if (displayVal) amt = Math.round(displayVal * 100);
+    const row = p as Record<string, unknown>;
+    let clientVal = 0;
+    for (const f of accountingFields) {
+      if (!f.premiumColumn) continue;
+      if (f.label.toLowerCase().includes("client")) {
+        clientVal = (row[f.premiumColumn] as number) ?? 0;
+        break;
+      }
     }
-    return amt;
-  }
-
-  function resolveNetPremium(p: typeof premiums[number]): number {
-    const extra = (p.extraValues ?? {}) as Record<string, unknown>;
-    let amt = p.netPremiumCents ?? 0;
-    if (amt === 0) {
-      const netVal = Number(extra.netPremium ?? extra.npremium ?? extra.net_premium ?? 0);
-      if (netVal) amt = Math.round(netVal * 100);
-    }
-    return amt;
-  }
-
-  const hasAgent = !!policy.agentId;
-
-  function resolveAgentPremium(p: typeof premiums[number]): number {
-    const extra = (p.extraValues ?? {}) as Record<string, unknown>;
-    const agentVal = Number(extra.agentPremium ?? extra.apremium ?? extra.agent_premium ?? 0);
-    return agentVal ? Math.round(agentVal * 100) : 0;
+    return clientVal || (p.grossPremiumCents ?? 0);
   }
 
   function computeGain(p: typeof premiums[number]): number {
-    const net = resolveNetPremium(p);
-    if (hasAgent) return resolveAgentPremium(p) - net;
-    return resolvePremiumAmount(p) - net;
+    const row = p as Record<string, unknown>;
+    let client = 0, net = 0, agent = 0;
+    for (const f of accountingFields) {
+      if (!f.premiumColumn) continue;
+      const val = (row[f.premiumColumn] as number) ?? 0;
+      const lbl = f.label.toLowerCase();
+      if (lbl.includes("client")) client = val;
+      else if (lbl.includes("net")) net = val;
+      else if (lbl.includes("agent")) agent = val;
+    }
+    return agent > 0 ? agent - net : client - net;
   }
 
   const isTpoWithOd =

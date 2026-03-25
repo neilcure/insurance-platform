@@ -23,7 +23,6 @@ import {
   User,
   Upload,
   Stamp,
-  Calculator,
   type LucideIcon,
 } from "lucide-react";
 import { getIcon } from "@/lib/icons";
@@ -90,8 +89,6 @@ let adminOpenCache: boolean | null = null;
 let policyOpenCache: boolean | null = null;
 let pkgOpenCache: Record<string, boolean> | null = null;
 
-let accountingBadgeCache: number | null = null;
-
 const BASE_DASHBOARD_ITEMS: { title: string; url: string; icon: LucideIcon }[] = [
   { title: "Agents", url: "/dashboard/agents", icon: UserPlus },
   { title: "Membership", url: "/dashboard/membership", icon: IdCard },
@@ -134,26 +131,6 @@ export function AppSidebar(
   const [pkgOpen, setPkgOpen] = React.useState<Record<string, boolean>>(pkgOpenCache ?? {});
   const [orgName, setOrgName] = React.useState<string | null>(null);
 
-  const [accountingBadge, setAccountingBadge] = React.useState<number>(accountingBadgeCache ?? 0);
-
-  const loadAccountingBadge = React.useCallback(async () => {
-    try {
-      const res = await fetch("/api/accounting/stats", { cache: "no-store" });
-      if (res.ok) {
-        const data = (await res.json()) as { pendingVerification?: number; overdue?: number };
-        const count = (data.pendingVerification ?? 0) + (data.overdue ?? 0);
-        setAccountingBadge(count);
-        accountingBadgeCache = count;
-      }
-    } catch {}
-  }, []);
-
-  React.useEffect(() => { void loadAccountingBadge(); }, [loadAccountingBadge]);
-  React.useEffect(() => {
-    const interval = setInterval(() => void loadAccountingBadge(), 60_000);
-    return () => clearInterval(interval);
-  }, [loadAccountingBadge]);
-
   const navItems = React.useMemo(() => {
     const dashboardFlowItems = flows
       .filter((f) => f.meta?.showInDashboard)
@@ -171,7 +148,6 @@ export function AppSidebar(
         isActive: true,
         items: [
           ...dashboardFlowItems,
-          { title: "Accounting", url: "/dashboard/accounting", icon: Calculator, badge: accountingBadge || null },
           ...BASE_DASHBOARD_ITEMS,
         ],
       },
@@ -182,7 +158,7 @@ export function AppSidebar(
         items: [{ title: "Guide", url: "#" }],
       },
     ];
-  }, [flows, accountingBadge]);
+  }, [flows]);
 
   const loadFlowsOnce = React.useCallback(async () => {
     try {

@@ -565,9 +565,35 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       });
     }
 
+    const stripLinkedKeys = (raw: Record<string, unknown>): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const [pk, pv] of Object.entries(raw)) {
+        if (pk.includes("___linked")) continue;
+        if (pv && typeof pv === "object" && !Array.isArray(pv)) {
+          const inner = pv as Record<string, unknown>;
+          if ("values" in inner && inner.values && typeof inner.values === "object") {
+            const cleaned: Record<string, unknown> = {};
+            for (const [fk, fv] of Object.entries(inner.values as Record<string, unknown>)) {
+              if (!fk.includes("___linked")) cleaned[fk] = fv;
+            }
+            out[pk] = { ...inner, values: cleaned };
+          } else {
+            const cleaned: Record<string, unknown> = {};
+            for (const [fk, fv] of Object.entries(inner)) {
+              if (!fk.includes("___linked")) cleaned[fk] = fv;
+            }
+            out[pk] = cleaned;
+          }
+        } else {
+          out[pk] = pv;
+        }
+      }
+      return out;
+    };
+
     const updated: Record<string, unknown> = {
       ...existing,
-      packagesSnapshot: newPkgs,
+      packagesSnapshot: stripLinkedKeys(newPkgs),
       insuredSnapshot: body.insured ?? existing.insuredSnapshot,
       _audit: auditArr,
       _lastEditedAt: new Date().toISOString(),

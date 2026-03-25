@@ -1,15 +1,14 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { formOptions } from "@/db/schema/form_options";
-import { policies, cars } from "@/db/schema/insurance";
-import { users, clients, organisations } from "@/db/schema/core";
+import { policies } from "@/db/schema/insurance";
 import { and, eq, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { readPdfTemplate } from "@/lib/storage-pdf-templates";
 import { PDF_TEMPLATE_GROUP_KEY } from "@/lib/types/pdf-template";
 import type { PdfTemplateMeta, PdfImageMapping } from "@/lib/types/pdf-template";
 import { generateFilledPdf } from "@/lib/pdf/generate";
-import type { MergeContext } from "@/lib/pdf/resolve-data";
+import { buildMergeContext } from "@/lib/pdf/build-context";
 import { sendEmail } from "@/lib/email";
 
 export const dynamic = "force-dynamic";
@@ -52,11 +51,6 @@ export async function POST(request: Request) {
     .select({
       id: policies.id,
       policyNumber: policies.policyNumber,
-      organisationId: policies.organisationId,
-      clientId: policies.clientId,
-      agentId: policies.agentId,
-      isActive: policies.isActive,
-      createdAt: policies.createdAt,
     })
     .from(policies)
     .where(eq(policies.id, policyId))
@@ -66,92 +60,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Policy not found" }, { status: 404 });
   }
 
-  let carRow: { plateNumber: string | null; make: string | null; model: string | null; year: string | number | null; extraAttributes: unknown } | undefined;
-  try {
-    const rows = await db
-      .select({
-        plateNumber: cars.plateNumber,
-        make: cars.make,
-        model: cars.model,
-        year: cars.year,
-        extraAttributes: cars.extraAttributes,
-      })
-      .from(cars)
-      .where(eq(cars.policyId, policyId))
-      .limit(1);
-    carRow = rows[0];
-  } catch { /* cars table may not exist */ }
-
-  const extra = (carRow?.extraAttributes ?? {}) as Record<string, unknown>;
-  const snapshot = {
-    ...extra,
-    plateNumber: carRow?.plateNumber,
-    make: carRow?.make,
-    model: carRow?.model,
-    year: carRow?.year,
-  };
-
-  let agentData: Record<string, unknown> | null = null;
-  if (policy.agentId) {
-    try {
-      const [agent] = await db
-        .select({ id: users.id, name: users.name, email: users.email, userNumber: users.userNumber })
-        .from(users)
-        .where(eq(users.id, policy.agentId))
-        .limit(1);
-      if (agent) agentData = agent as unknown as Record<string, unknown>;
-    } catch { /* ignore */ }
+  const built = await buildMergeContext(policyId);
+  if (!built) {
+    return NextResponse.json({ error: "Failed to build merge context for policy" }, { status: 500 });
   }
-
-  let clientData: Record<string, unknown> | null = null;
-  const resolvedClientId = policy.clientId ?? (extra.clientId as number | undefined);
-  if (resolvedClientId) {
-    try {
-      const [client] = await db
-        .select({
-          id: clients.id,
-          clientNumber: clients.clientNumber,
-          category: clients.category,
-          displayName: clients.displayName,
-          primaryId: clients.primaryId,
-          contactPhone: clients.contactPhone,
-          extraAttributes: clients.extraAttributes,
-        })
-        .from(clients)
-        .where(eq(clients.id, Number(resolvedClientId)))
-        .limit(1);
-      if (client) {
-        clientData = {
-          ...client,
-          ...(client.extraAttributes as Record<string, unknown> ?? {}),
-        } as unknown as Record<string, unknown>;
-      }
-    } catch { /* ignore */ }
-  }
-
-  let orgData: Record<string, unknown> | null = null;
-  if (policy.organisationId) {
-    try {
-      const [org] = await db
-        .select()
-        .from(organisations)
-        .where(eq(organisations.id, policy.organisationId))
-        .limit(1);
-      if (org) orgData = org as unknown as Record<string, unknown>;
-    } catch { /* ignore */ }
-  }
-
-  const mergeCtx: MergeContext = {
-    policyNumber: policy.policyNumber,
-    createdAt: policy.createdAt,
-    snapshot: snapshot as Record<string, unknown> & {
-      insuredSnapshot?: Record<string, unknown> | null;
-      packagesSnapshot?: Record<string, unknown> | null;
-    },
-    agent: agentData,
-    client: clientData,
-    organisation: orgData,
-  };
+  const mergeCtx = built.ctx;
 
   const attachments: { content: string; name: string }[] = [];
 

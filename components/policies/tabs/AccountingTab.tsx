@@ -7,8 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
-import { Building2, Calculator, ExternalLink, Loader2, Pencil, Save, Users, X } from "lucide-react";
-import Link from "next/link";
+import { Building2, Loader2, Pencil, Save, User, Users, X } from "lucide-react";
 
 type FieldDef = {
   key: string;
@@ -16,6 +15,7 @@ type FieldDef = {
   inputType: string;
   sortOrder: number;
   options?: Array<{ value: string; label: string }>;
+  premiumColumn?: string;
 };
 
 type LineTemplate = { key: string; label: string };
@@ -194,14 +194,6 @@ function LineEditor({
   const [insurerId, setInsurerId] = React.useState<number | null>(initialInsurerId);
   const [collabId, setCollabId] = React.useState<number | null>(initialCollabId);
 
-  const liveMargin = React.useMemo(() => {
-    const client = Number(values.clientPremium) || 0;
-    const net = Number(values.netPremium) || 0;
-    const agent = Number(values.agentCommission) || 0;
-    if (client === 0 && net === 0 && agent === 0) return null;
-    return client - net - agent;
-  }, [values]);
-
   const currency = typeof values.currency === "string" && values.currency ? values.currency : "HKD";
 
   return (
@@ -344,17 +336,6 @@ function LineEditor({
             );
           })}
 
-          {liveMargin !== null && (
-            <>
-              <Separator />
-              <div className="flex items-center justify-between rounded-md bg-neutral-50 px-3 py-2 dark:bg-neutral-900">
-                <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400">Margin</span>
-                <span className={`text-sm font-semibold tabular-nums ${liveMargin >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
-                  {currency} {liveMargin.toFixed(2)}
-                </span>
-              </div>
-            </>
-          )}
         </div>
       </div>
     </div>
@@ -433,6 +414,171 @@ function LineView({ line, fields, canEdit, onEdit, displayPolicyNumber }: { line
 }
 
 
+// --- Accounting flow record view ---
+type AccountingRecord = {
+  recordId: number;
+  recordNumber: string;
+  flowKey: string;
+  fields: { key: string; label: string; value: unknown }[];
+  createdAt: string;
+};
+
+type SectionEntities = {
+  collabName: string | null;
+  insurerName: string | null;
+  agentName: string | null;
+};
+
+type SectionData = {
+  label: string;
+  policyNumber: string | null;
+  entities: SectionEntities;
+  fields: { def: FieldDef; value: unknown }[];
+};
+
+const isPdField = (f: FieldDef) => {
+  const l = f.label.toLowerCase();
+  const k = f.key.toLowerCase();
+  return l.includes("(pd)") || l.includes("(od)") || k.endsWith("pd") || k.endsWith("od")
+    || k.includes("owndamage") || k.includes("ownvehicle");
+};
+
+function AccountingSection({ section, currency }: { section: SectionData; currency: string }) {
+  const hasEntities = !!section.entities.collabName || !!section.entities.insurerName || !!section.entities.agentName;
+
+  return (
+    <div className="rounded-md border border-neutral-200 dark:border-neutral-800">
+      <div className="border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+        <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">{section.label}</div>
+        {section.policyNumber && (
+          <div className="text-[10px] font-mono text-neutral-400 dark:text-neutral-500">
+            Policy No: {section.policyNumber}
+          </div>
+        )}
+      </div>
+
+      {hasEntities && (
+        <div className="space-y-0.5 border-b border-neutral-100 px-3 py-1.5 dark:border-neutral-800">
+          {section.entities.collabName && (
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <Users className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+              <span className="text-neutral-500 dark:text-neutral-400">Collaborator:</span>
+              <span className="font-medium text-neutral-700 dark:text-neutral-300">{section.entities.collabName}</span>
+            </div>
+          )}
+          {section.entities.insurerName && (
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <Building2 className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+              <span className="text-neutral-500 dark:text-neutral-400">Insurer:</span>
+              <span className="font-medium text-neutral-700 dark:text-neutral-300">{section.entities.insurerName}</span>
+            </div>
+          )}
+          {section.entities.agentName && (
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <User className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+              <span className="text-neutral-500 dark:text-neutral-400">Agent:</span>
+              <span className="font-medium text-neutral-700 dark:text-neutral-300">{section.entities.agentName}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="px-3 py-1">
+        {section.fields.length === 0 ? (
+          <div className="py-3 text-center text-xs text-neutral-400 dark:text-neutral-500">—</div>
+        ) : (
+          section.fields.map((f) => (
+            <div key={f.def.key} className="flex items-center justify-between py-1.5">
+              <span className="text-xs text-neutral-500 dark:text-neutral-400">{f.def.label}</span>
+              <span className="text-sm font-medium tabular-nums text-neutral-900 dark:text-neutral-100">
+                {formatDisplayValue(f.value, f.def, currency)}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AccountingRecordView({
+  record, allFields, snapshotEntities, agentName, policyNumber, expectedTemplates,
+}: {
+  record: AccountingRecord;
+  allFields: FieldDef[];
+  snapshotEntities: Record<string, { insurerId: number | null; insurerName: string | null; collabId: number | null; collabName: string | null }>;
+  agentName: string | null;
+  policyNumber?: string;
+  expectedTemplates: { key: string; label: string }[];
+}) {
+  const valMap = new Map(record.fields.map((f) => [f.key, f.value]));
+  const currency = (typeof valMap.get("currency") === "string" && valMap.get("currency")) || "HKD";
+
+  const mainHint = snapshotEntities["main"] ?? { collabName: null, insurerName: null };
+  const odHint = snapshotEntities["od"] ?? { collabName: null, insurerName: null };
+
+  const mainFields: { def: FieldDef; value: unknown }[] = [];
+  const pdFields: { def: FieldDef; value: unknown }[] = [];
+
+  for (const f of allFields) {
+    const v = valMap.get(f.key);
+    if (v === undefined || v === null || v === "") continue;
+    if (isPdField(f)) {
+      pdFields.push({ def: f, value: v });
+    } else {
+      mainFields.push({ def: f, value: v });
+    }
+  }
+
+  const hasPdSection = pdFields.length > 0 || odHint.collabName || odHint.insurerName;
+
+  const mainLabel = expectedTemplates[0]?.label ?? "Third Party";
+  const pdLabel = expectedTemplates[1]?.label ?? "Own Vehicle Damage";
+
+  const isTpoOd = expectedTemplates.length >= 2;
+  const mainPolNum = policyNumber
+    ? (isTpoOd ? `${policyNumber}(a)` : policyNumber)
+    : null;
+  const pdPolNum = policyNumber && isTpoOd ? `${policyNumber}(b)` : null;
+
+  const sections: SectionData[] = [
+    {
+      label: mainLabel,
+      policyNumber: mainPolNum,
+      entities: { collabName: mainHint.collabName, insurerName: mainHint.insurerName, agentName },
+      fields: mainFields,
+    },
+  ];
+
+  if (hasPdSection) {
+    sections.push({
+      label: pdLabel,
+      policyNumber: pdPolNum,
+      entities: { collabName: odHint.collabName, insurerName: odHint.insurerName, agentName: null },
+      fields: pdFields,
+    });
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-mono text-neutral-400 dark:text-neutral-500">{record.recordNumber}</span>
+        <a
+          href={`/dashboard/flows/${encodeURIComponent(record.flowKey)}`}
+          className="inline-flex items-center gap-1 rounded border border-neutral-300 px-2 py-0.5 text-[11px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        >
+          <Pencil className="h-3 w-3" /> Edit
+        </a>
+      </div>
+
+      {sections.map((s) => (
+        <AccountingSection key={s.label} section={s} currency={currency as string} />
+      ))}
+    </div>
+  );
+}
+
+
 // --- Main AccountingTab ---
 export function AccountingTab({
   policyId,
@@ -449,11 +595,13 @@ export function AccountingTab({
 }) {
   const [fields, setFields] = React.useState<FieldDef[]>([]);
   const [lines, setLines] = React.useState<LineData[]>([]);
+  const [accountingRecords, setAccountingRecords] = React.useState<AccountingRecord[]>([]);
   const [coverTypeOptions, setCoverTypeOptions] = React.useState<CoverTypeOption[]>([]);
   const [availableInsurers, setAvailableInsurers] = React.useState<EntityOption[]>([]);
   const [availableCollabs, setAvailableCollabs] = React.useState<EntityOption[]>([]);
   type EntityHint = { insurerId: number | null; insurerName: string | null; collabId: number | null; collabName: string | null };
   const [snapshotEntities, setSnapshotEntities] = React.useState<Record<string, EntityHint>>({});
+  const [agentName, setAgentName] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [editingKey, setEditingKey] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
@@ -471,19 +619,24 @@ export function AccountingTab({
       const json = await res.json();
       setFields(json.fields ?? []);
       setLines(json.lines ?? []);
+      setAccountingRecords(json.accountingRecords ?? []);
       setCoverTypeOptions(json.coverTypeOptions ?? []);
       setAvailableInsurers(json.availableInsurers ?? []);
       setAvailableCollabs(json.availableCollabs ?? []);
       setSnapshotEntities(json.snapshotEntities ?? {});
+      setAgentName(json.agentName ?? null);
     } catch {
       setFields([]);
       setLines([]);
+      setAccountingRecords([]);
     } finally {
       setLoading(false);
     }
   }, [policyId]);
 
   React.useEffect(() => { void load(); }, [load]);
+
+  const hasAccountingRecords = accountingRecords.length > 0;
 
   const expectedTemplates = React.useMemo(
     () => resolveTemplates(coverTypeOptions, policyExtra),
@@ -497,6 +650,7 @@ export function AccountingTab({
   }, [expectedTemplates]);
 
   const displayLines = React.useMemo(() => {
+    if (hasAccountingRecords) return [];
     const result: LineData[] = [];
     const hasOdHint = "od" in snapshotEntities;
     const hintForLine = (lineKey: string, lineLabel: string, idx: number): EntityHint => {
@@ -534,7 +688,7 @@ export function AccountingTab({
       if (hasPremiumData) result.push(line);
     }
     return result;
-  }, [expectedTemplates, lines, fields, snapshotEntities]);
+  }, [expectedTemplates, lines, fields, snapshotEntities, hasAccountingRecords]);
 
   async function handleSave(lineKey: string, lineLabel: string, values: Record<string, unknown>, insurerId: number | null, collabId: number | null) {
     const snap = editingInitialSnapshotRef.current;
@@ -597,6 +751,57 @@ export function AccountingTab({
     );
   }
 
+  // Accounting flow records take precedence over old premium lines
+  if (hasAccountingRecords) {
+    return (
+      <div className="space-y-4">
+        {accountingRecords.map((rec) => (
+          <AccountingRecordView
+            key={rec.recordId}
+            record={rec}
+            allFields={fields}
+            snapshotEntities={snapshotEntities}
+            agentName={agentName}
+            policyNumber={policyNumber}
+            expectedTemplates={expectedTemplates}
+          />
+        ))}
+
+        {accountingRecords.length > 1 && (() => {
+          const currency = "HKD";
+          const currencyFields = fields.filter((f) => f.inputType === "currency");
+          const sumField = (key: string) => {
+            let total = 0;
+            let found = false;
+            for (const rec of accountingRecords) {
+              const fld = rec.fields.find((f) => f.key === key);
+              if (fld) {
+                const v = Number(fld.value);
+                if (Number.isFinite(v)) { total += v; found = true; }
+              }
+            }
+            return found ? total : null;
+          };
+          const totals = currencyFields
+            .map((f) => ({ key: f.key, label: f.label, total: sumField(f.key) }))
+            .filter((t) => t.total !== null);
+          if (totals.length === 0) return null;
+          return (
+            <div className="mt-2 border-t border-neutral-200 pt-2 dark:border-neutral-700">
+              <div className="text-xs font-semibold text-neutral-600 dark:text-neutral-300 mb-1">Total</div>
+              {totals.map((t) => (
+                <div key={t.key} className="flex items-center justify-between py-1">
+                  <span className="text-xs text-neutral-500 dark:text-neutral-400">{t.label}</span>
+                  <span className="text-sm font-bold tabular-nums text-neutral-900 dark:text-neutral-100">{fmtCurrency(t.total, currency)}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+      </div>
+    );
+  }
+
   if (editingKey !== null) {
     const line = displayLines.find((l) => l.lineKey === editingKey);
     if (!line) {
@@ -628,13 +833,6 @@ export function AccountingTab({
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium">Accounting</div>
-        <Button size="sm" variant="outline" asChild>
-          <Link href="/dashboard/accounting" target="_blank">
-            <Calculator className="h-3.5 w-3.5 sm:hidden lg:inline" />
-            <span className="hidden sm:inline">Manage Payments</span>
-            <ExternalLink className="ml-1 h-3 w-3" />
-          </Link>
-        </Button>
       </div>
 
       {displayLines.map((line, idx) => (
@@ -663,7 +861,6 @@ export function AccountingTab({
         const currency = (typeof displayLines[0]?.values?.currency === "string" && displayLines[0].values.currency) || "HKD";
 
         const currencyFields = fields.filter((f) => f.inputType === "currency");
-        const percentFields = fields.filter((f) => f.inputType === "percent");
         const sumField = (key: string) => {
           let total = 0;
           let found = false;

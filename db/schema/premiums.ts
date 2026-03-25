@@ -18,6 +18,10 @@ export const policyPremiums = pgTable("policy_premiums", {
   netPremiumCents: integer("net_premium_cents"),
   clientPremiumCents: integer("client_premium_cents"),
   agentCommissionCents: integer("agent_commission_cents"),
+  creditPremiumCents: integer("credit_premium_cents"),
+  levyCents: integer("levy_cents"),
+  stampDutyCents: integer("stamp_duty_cents"),
+  discountCents: integer("discount_cents"),
   commissionRate: numeric("commission_rate", { precision: 6, scale: 2 }),
 
   extraValues: jsonb("extra_values").$type<Record<string, unknown> | null>().default(null),

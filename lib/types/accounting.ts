@@ -1,10 +1,10 @@
-export type InvoiceType = "individual" | "statement";
+export type InvoiceType = "individual" | "statement" | "credit_note";
 export type InvoiceDirection = "payable" | "receivable";
 export type PremiumType = "net_premium" | "agent_premium" | "client_premium";
 export type EntityType = "collaborator" | "agent" | "client";
 export type ScheduleFrequency = "weekly" | "monthly";
 
-export type InvoiceStatus = "draft" | "pending" | "partial" | "paid" | "submitted" | "verified" | "overdue" | "cancelled";
+export type InvoiceStatus = "draft" | "pending" | "partial" | "paid" | "submitted" | "verified" | "overdue" | "cancelled" | "refunded";
 export type PaymentStatus = "recorded" | "submitted" | "verified" | "rejected" | "confirmed";
 
 export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
@@ -16,6 +16,7 @@ export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
   verified: "Verified",
   overdue: "Overdue",
   cancelled: "Cancelled",
+  refunded: "Refunded",
 };
 
 export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
@@ -35,6 +36,12 @@ export const PREMIUM_TYPE_LABELS: Record<PremiumType, string> = {
 export const DIRECTION_LABELS: Record<InvoiceDirection, string> = {
   payable: "Payable (We Pay)",
   receivable: "Receivable (We Receive)",
+};
+
+export const INVOICE_TYPE_LABELS: Record<InvoiceType, string> = {
+  individual: "Individual",
+  statement: "Statement",
+  credit_note: "Credit Note",
 };
 
 export const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
@@ -108,6 +115,8 @@ export type AccountingInvoiceRow = {
   updatedAt: string;
   totalGainCents?: number;
   totalNetPremiumCents?: number;
+  cancellationDate?: string | null;
+  refundReason?: string | null;
 };
 
 export type AccountingInvoiceItemRow = {
@@ -119,6 +128,10 @@ export type AccountingInvoiceItemRow = {
   amountCents: number;
   gainCents: number | null;
   netPremiumCents?: number;
+  /** Current premium amount from policy_premiums (for drift detection, uses invoice's premiumType column) */
+  currentPremiumCents?: number | null;
+  /** All premium columns (keyed by DB column name, e.g. netPremiumCents, agentCommissionCents, …) */
+  allPremiumCents?: Record<string, number> | null;
   description: string | null;
   createdAt: string;
   policyNumber?: string;
@@ -187,6 +200,13 @@ export type InvoiceEntityNames = {
   perLine: Record<string, LineEntityInfo>;
 };
 
+export type PremiumFieldDef = {
+  key: string;
+  label: string;
+  column: string;
+  inputType: string;
+};
+
 export type InvoiceWithItems = AccountingInvoiceRow & {
   items: AccountingInvoiceItemRow[];
   payments: AccountingPaymentRow[];
@@ -194,4 +214,5 @@ export type InvoiceWithItems = AccountingInvoiceRow & {
   childInvoices?: AccountingInvoiceRow[];
   documentStatus: DocumentStatusMap | null;
   entityNames?: InvoiceEntityNames;
+  premiumFields?: PremiumFieldDef[];
 };

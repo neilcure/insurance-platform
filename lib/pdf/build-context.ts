@@ -4,6 +4,20 @@ import { policyPremiums } from "@/db/schema/premiums";
 import { users, clients, organisations } from "@/db/schema/core";
 import { eq, sql } from "drizzle-orm";
 import type { MergeContext, AccountingLineContext } from "./resolve-data";
+import { loadAccountingFields, buildColumnFieldMap, getColumnType } from "@/lib/accounting-fields";
+
+const DB_COLUMN_OPTIONS = [
+  { value: "grossPremiumCents", label: "Gross Premium", type: "cents" },
+  { value: "netPremiumCents", label: "Net Premium", type: "cents" },
+  { value: "clientPremiumCents", label: "Client Premium", type: "cents" },
+  { value: "agentCommissionCents", label: "Agent Commission", type: "cents" },
+  { value: "creditPremiumCents", label: "Credit Premium", type: "cents" },
+  { value: "levyCents", label: "Levy", type: "cents" },
+  { value: "stampDutyCents", label: "Stamp Duty", type: "cents" },
+  { value: "discountCents", label: "Discount", type: "cents" },
+  { value: "commissionRate", label: "Commission Rate", type: "rate" },
+  { value: "currency", label: "Currency", type: "string" },
+] as const;
 
 export async function buildMergeContext(policyId: number): Promise<{
   ctx: MergeContext;
@@ -156,22 +170,51 @@ export async function buildMergeContext(policyId: number): Promise<{
       }
 
       const centsToDisplay = (v: number | null | undefined) => (v != null ? v / 100 : null);
+      const acctFields = await loadAccountingFields();
+      const colFieldMap = buildColumnFieldMap(acctFields);
+
+      const CANONICAL_KEYS: Record<string, string> = {};
+      for (const opt of DB_COLUMN_OPTIONS) {
+        if (opt.type !== "cents") continue;
+        const short = opt.value.replace(/Cents$/, "").replace(/^([a-z])/, (_, c: string) => c.toLowerCase());
+        CANONICAL_KEYS[opt.value] = short;
+      }
 
       accountingLines = premiumRows.map((row) => {
         const rowExtra = (row.extraValues ?? {}) as Record<string, unknown>;
-        const vals: Record<string, unknown> = {
-          grossPremium: centsToDisplay(row.grossPremiumCents),
-          netPremium: centsToDisplay(row.netPremiumCents),
-          clientPremium: centsToDisplay(row.clientPremiumCents),
-          agentCommission: centsToDisplay(row.agentCommissionCents),
-          commissionRate: row.commissionRate !== null ? Number(row.commissionRate) : null,
-          currency: row.currency,
-          ...rowExtra,
-        };
-        const clientAmt = Number(vals.clientPremium) || 0;
-        const net = Number(vals.netPremium) || 0;
-        const agent = Number(vals.agentCommission) || 0;
-        const margin = clientAmt === 0 && net === 0 && agent === 0 ? null : clientAmt - net - agent;
+        const vals: Record<string, unknown> = { ...rowExtra };
+
+        for (const opt of DB_COLUMN_OPTIONS) {
+          const rawVal = (row as Record<string, unknown>)[opt.value];
+          const colType = getColumnType(opt.value);
+          let displayVal: unknown;
+          if (colType === "cents") {
+            displayVal = centsToDisplay(rawVal as number | null);
+          } else if (colType === "rate") {
+            displayVal = rawVal !== null && rawVal !== undefined ? Number(rawVal) : null;
+          } else {
+            displayVal = rawVal ?? null;
+          }
+          const canonicalKey = CANONICAL_KEYS[opt.value];
+          if (canonicalKey) vals[canonicalKey] = displayVal;
+          const adminField = colFieldMap[opt.value];
+          if (adminField && adminField.key !== canonicalKey) {
+            vals[adminField.key] = displayVal;
+          }
+        }
+
+        let marginClient = 0, marginNet = 0, marginAgent = 0;
+        for (const f of acctFields) {
+          if (!f.premiumColumn) continue;
+          const val = ((row as Record<string, unknown>)[f.premiumColumn] as number) ?? 0;
+          const lbl = f.label.toLowerCase();
+          if (lbl.includes("client")) marginClient = val;
+          else if (lbl.includes("net")) marginNet = val;
+          else if (lbl.includes("agent")) marginAgent = val;
+        }
+        const gainVal = marginAgent > 0 ? marginAgent - marginNet : marginClient - marginNet;
+        const hasAny = marginClient !== 0 || marginNet !== 0 || marginAgent !== 0;
+        const margin = hasAny ? gainVal : null;
         return {
           lineKey: row.lineKey,
           lineLabel: row.lineLabel ?? row.lineKey,

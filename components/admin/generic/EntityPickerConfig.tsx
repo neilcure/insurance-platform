@@ -90,6 +90,12 @@ export function EntityPickerConfigEditor({
     }
   }, [selectedSourcePkg, loadPkgFields]);
 
+  React.useEffect(() => {
+    if (value?.flow) {
+      void loadPkgFields("insured");
+    }
+  }, [value?.flow, loadPkgFields]);
+
   if (!value) {
     return (
       <div className="rounded-md border border-dashed border-neutral-300 p-3 dark:border-neutral-700">
@@ -111,7 +117,22 @@ export function EntityPickerConfigEditor({
   }
 
   const currentPkgFields = targetFieldsOverride ?? (pkgFieldsCache[currentPkg] ?? []);
-  const sourceFields = selectedSourcePkg ? (pkgFieldsCache[selectedSourcePkg] ?? []) : [];
+  const policyTopLevelFields = [
+    { value: "policyNumber", label: "Policy Number" },
+    { value: "policyId", label: "Policy ID" },
+    { value: "insuredDisplayName", label: "Insured Display Name (auto: company or personal)" },
+    { value: "insuredType", label: "Insured Type (company/personal)" },
+  ];
+  const insuredFields = (pkgFieldsCache["insured"] ?? []).map((f) => ({ value: f.value, label: f.label }));
+  const selectedPkgFields = selectedSourcePkg && selectedSourcePkg !== "insured"
+    ? (pkgFieldsCache[selectedSourcePkg] ?? []).map((f) => ({ value: f.value, label: f.label }))
+    : [];
+  const sourceFieldGroups: { group: string; fields: { value: string; label: string }[] }[] = [
+    { group: "Policy", fields: policyTopLevelFields },
+    ...(insuredFields.length > 0 ? [{ group: "Insured", fields: insuredFields }] : []),
+    ...(selectedPkgFields.length > 0 ? [{ group: sourcePkgs.find((p) => p.value === selectedSourcePkg)?.label ?? selectedSourcePkg, fields: selectedPkgFields }] : []),
+  ];
+  const hasSourceOptions = sourceFieldGroups.some((g) => g.fields.length > 0);
 
   return (
     <div className="space-y-3 rounded-md border border-neutral-300 p-3 dark:border-neutral-700">
@@ -132,7 +153,7 @@ export function EntityPickerConfigEditor({
         <div className="space-y-1">
           <Label className="text-xs">Source Flow</Label>
           <select
-            className="h-8 w-full rounded-md border border-neutral-200 bg-white px-2 text-xs dark:border-neutral-800 dark:bg-neutral-900"
+            className="h-8 w-full rounded-md border border-neutral-200 bg-white px-2 text-xs dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
             value={value.flow}
             onChange={(e) => {
               setSelectedSourcePkg("");
@@ -163,7 +184,7 @@ export function EntityPickerConfigEditor({
           <div className="space-y-1">
             <Label className="text-[10px] text-neutral-400">Source Package (for mapping)</Label>
             <select
-              className="h-8 w-full rounded-md border border-neutral-200 bg-white px-2 text-xs dark:border-neutral-800 dark:bg-neutral-900"
+              className="h-8 w-full rounded-md border border-neutral-200 bg-white px-2 text-xs dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
               value={selectedSourcePkg}
               onChange={(e) => {
                 setSelectedSourcePkg(e.target.value);
@@ -181,9 +202,9 @@ export function EntityPickerConfigEditor({
             <div key={idx} className="flex items-end gap-1">
               <div className="flex-1 space-y-0.5">
                 <Label className="text-[10px] text-neutral-400">Source field</Label>
-                {sourceFields.length > 0 ? (
+                {hasSourceOptions ? (
                   <select
-                    className="h-7 w-full rounded border border-neutral-200 bg-white px-1 text-[11px] dark:border-neutral-700 dark:bg-neutral-900"
+                    className="h-7 w-full rounded border border-neutral-200 bg-white px-1 text-[11px] dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                     value={m.sourceField}
                     onChange={(e) => {
                       const next = [...value.mappings];
@@ -192,9 +213,15 @@ export function EntityPickerConfigEditor({
                     }}
                   >
                     <option value="">-- field --</option>
-                    {sourceFields.map((f) => (
-                      <option key={f.value} value={f.value}>{f.label} ({f.value})</option>
-                    ))}
+                    {sourceFieldGroups.map((g) =>
+                      g.fields.length > 0 ? (
+                        <optgroup key={g.group} label={g.group}>
+                          {g.fields.map((f) => (
+                            <option key={`${g.group}_${f.value}`} value={f.value}>{f.label} ({f.value})</option>
+                          ))}
+                        </optgroup>
+                      ) : null
+                    )}
                   </select>
                 ) : (
                   <Input
@@ -214,7 +241,7 @@ export function EntityPickerConfigEditor({
                 <Label className="text-[10px] text-neutral-400">Target field</Label>
                 {currentPkgFields.length > 0 ? (
                   <select
-                    className="h-7 w-full rounded border border-neutral-200 bg-white px-1 text-[11px] dark:border-neutral-700 dark:bg-neutral-900"
+                    className="h-7 w-full rounded border border-neutral-200 bg-white px-1 text-[11px] dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                     value={m.targetField}
                     onChange={(e) => {
                       const next = [...value.mappings];

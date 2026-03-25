@@ -29,7 +29,7 @@ export const accountingInvoices = pgTable("accounting_invoices", {
   entityType: varchar("entity_type", { length: 20 }).notNull(), // 'collaborator', 'agent', 'client'
   entityName: varchar("entity_name", { length: 256 }),
   scheduleId: integer("schedule_id").references(() => accountingPaymentSchedules.id, { onDelete: "set null" }),
-  parentInvoiceId: integer("parent_invoice_id"),
+  parentInvoiceId: integer("parent_invoice_id").references((): any => accountingInvoices.id, { onDelete: "set null" }),
   totalAmountCents: integer("total_amount_cents").notNull().default(0),
   paidAmountCents: integer("paid_amount_cents").notNull().default(0),
   currency: varchar("currency", { length: 8 }).notNull().default("HKD"),
@@ -40,6 +40,8 @@ export const accountingInvoices = pgTable("accounting_invoices", {
   status: varchar("status", { length: 20 }).notNull().default("draft"),
   documentStatus: jsonb("document_status"),
   notes: text("notes"),
+  cancellationDate: date("cancellation_date"),
+  refundReason: text("refund_reason"),
   verifiedBy: integer("verified_by").references(() => users.id, { onDelete: "set null" }),
   verifiedAt: timestamp("verified_at", { mode: "string" }),
   createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
@@ -92,7 +94,7 @@ export const accountingDocuments = pgTable("accounting_documents", {
   id: serial("id").primaryKey(),
   invoiceId: integer("invoice_id").references(() => accountingInvoices.id, { onDelete: "cascade" }),
   paymentId: integer("payment_id").references(() => accountingPayments.id, { onDelete: "cascade" }),
-  docType: varchar("doc_type", { length: 30 }).notNull(), // 'invoice', 'payment_proof', 'receipt', 'quotation', 'statement'
+  docType: varchar("doc_type", { length: 30 }).notNull(), // 'invoice', 'payment_proof', 'receipt', 'quotation', 'statement', 'credit_note'
   fileName: varchar("file_name", { length: 255 }).notNull(),
   storedPath: varchar("stored_path", { length: 500 }).notNull(),
   fileSize: integer("file_size"),

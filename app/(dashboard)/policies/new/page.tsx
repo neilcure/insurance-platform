@@ -5094,6 +5094,7 @@ export default function NewPolicyStep1Page() {
                             const bestByToken = new Map<string, { fieldKey: string; value: unknown; score: number }>();
                             for (const [k, v] of Object.entries(values)) {
                               if (categoryKeys.includes(k)) continue;
+                              if (k.includes("___linked")) continue;
                               const matchPrefix = prefixes.find((pre) => k.startsWith(pre));
                               if (!matchPrefix) continue;
                               const fieldKey = k.slice(matchPrefix.length);

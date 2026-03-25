@@ -1215,7 +1215,7 @@ export default function FlowNewPage() {
               categoryValue = String(cv);
             }
             for (const [k, v] of Object.entries(values)) {
-              if (k.startsWith(prefix) && k !== `${p}__category`) {
+              if (k.startsWith(prefix) && k !== `${p}__category` && !k.includes("___linked")) {
                 pkgValues[k] = v;
               }
             }

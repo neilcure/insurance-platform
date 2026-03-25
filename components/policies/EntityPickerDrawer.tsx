@@ -18,6 +18,7 @@ export type EntityPickerSelection = {
   policyId: number;
   policyNumber: string;
   extraAttributes: Record<string, unknown>;
+  agent?: { id: number; userNumber?: string | null; name?: string | null; email?: string } | null;
 };
 
 function norm(k: string): string {
@@ -169,11 +170,13 @@ export function EntityPickerDrawer({
         policyId: number;
         policyNumber?: string;
         extraAttributes?: Record<string, unknown> | null;
+        agent?: { id: number; userNumber?: string | null; name?: string | null; email?: string } | null;
       };
       onSelect({
         policyId: detail.policyId,
         policyNumber: detail.policyNumber ?? String(detail.policyId),
         extraAttributes: (detail.extraAttributes ?? {}) as Record<string, unknown>,
+        agent: detail.agent ?? null,
       });
       onClose();
     } catch {

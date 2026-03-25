@@ -31,6 +31,9 @@ export type InvoiceContext = {
   periodStart: string | null;
   periodEnd: string | null;
   notes: string | null;
+  cancellationDate?: string | null;
+  refundReason?: string | null;
+  parentInvoiceNumber?: string | null;
 };
 
 export type MergeContext = {
@@ -248,7 +251,7 @@ function resolveAccountingTotal(
   lines: AccountingLineContext[],
   fieldKey: string,
 ): unknown {
-  const sumKeys = ["grossPremium", "netPremium", "clientPremium", "agentCommission"];
+  const sumKeys = ["grossPremium", "netPremium", "clientPremium", "agentCommission", "creditPremium", "levy", "stampDuty", "discount"];
   if (sumKeys.includes(fieldKey)) {
     let total = 0;
     let found = false;
@@ -355,6 +358,9 @@ function resolveInvoice(
     case "periodStart": return inv.periodStart ?? "";
     case "periodEnd": return inv.periodEnd ?? "";
     case "notes": return inv.notes ?? "";
+    case "cancellationDate": return inv.cancellationDate ?? "";
+    case "refundReason": return inv.refundReason ?? "";
+    case "parentInvoiceNumber": return inv.parentInvoiceNumber ?? "";
     default: return "";
   }
 }

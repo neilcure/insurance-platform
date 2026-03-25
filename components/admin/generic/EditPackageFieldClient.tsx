@@ -10,6 +10,18 @@ import { Save, X } from "lucide-react";
 import { toast } from "sonner";
 import { ShowWhenConfig } from "@/components/admin/generic/ShowWhenConfig";
 import { GroupShowWhenConfig } from "@/components/admin/generic/GroupShowWhenConfig";
+const DB_COLUMN_OPTIONS = [
+  { value: "grossPremiumCents", label: "Gross Premium", type: "cents" },
+  { value: "netPremiumCents", label: "Net Premium", type: "cents" },
+  { value: "clientPremiumCents", label: "Client Premium", type: "cents" },
+  { value: "agentCommissionCents", label: "Agent Commission", type: "cents" },
+  { value: "creditPremiumCents", label: "Credit Premium", type: "cents" },
+  { value: "levyCents", label: "Levy", type: "cents" },
+  { value: "stampDutyCents", label: "Stamp Duty", type: "cents" },
+  { value: "discountCents", label: "Discount", type: "cents" },
+  { value: "commissionRate", label: "Commission Rate", type: "rate" },
+  { value: "currency", label: "Currency", type: "string" },
+];
 import { BooleanChildrenEditor, MetaJsonPreview } from "@/components/admin/generic/BooleanChildrenEditor";
 import { TopLevelSelectEditor, TopLevelRepeatableEditor } from "@/components/admin/generic/FieldTypeEditors";
 import { GroupAssignmentSection } from "@/components/admin/generic/GroupAssignmentSection";
@@ -386,6 +398,27 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
               </div>
             </div>
           ) : null}
+
+          {pkg === "accounting" && (
+            <div className="grid gap-1">
+              <Label>DB Column Mapping</Label>
+              <select
+                className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                value={String((form.meta as any)?.premiumColumn ?? "")}
+                onChange={(e) => updateMeta("premiumColumn" as any, (e.target.value || undefined) as any)}
+              >
+                <option value="">None (stored in extra values)</option>
+                {DB_COLUMN_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label} ({opt.type === "cents" ? "cents" : opt.type === "rate" ? "decimal" : "text"})
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                Maps this field to a dedicated database column for accounting calculations, invoicing, and sync. Currency fields use cents conversion automatically.
+              </p>
+            </div>
+          )}
 
           {(["select", "multi_select"] as string[]).includes((form.meta?.inputType ?? "") as string) ? (
             <TopLevelSelectEditor

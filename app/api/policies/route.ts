@@ -9,7 +9,7 @@ import { policyCreateSchema } from "@/lib/validation/policy";
 import { requireUser } from "@/lib/auth/require-user";
 import { canCreatePolicy } from "@/lib/auth/rbac";
 import { getPolicyColumns } from "@/lib/db/column-check";
-// removed insured upsert/validation; insured snapshot only
+import { loadAccountingFields, buildFieldColumnMap, getColumnType } from "@/lib/accounting-fields";
 
 type FinalPolicyPayload = {
   insured?: any;
@@ -373,11 +373,38 @@ export async function POST(request: Request) {
           }
           return "UNKNOWN";
         })();
+        const cleanPackages = (raw: unknown): unknown => {
+          if (!raw || typeof raw !== "object") return raw;
+          const out: Record<string, unknown> = {};
+          for (const [pk, pv] of Object.entries(raw as Record<string, unknown>)) {
+            if (pk.includes("___linked")) continue;
+            if (pv && typeof pv === "object" && !Array.isArray(pv)) {
+              const inner = pv as Record<string, unknown>;
+              if ("values" in inner && inner.values && typeof inner.values === "object") {
+                const cleaned: Record<string, unknown> = {};
+                for (const [fk, fv] of Object.entries(inner.values as Record<string, unknown>)) {
+                  if (!fk.includes("___linked")) cleaned[fk] = fv;
+                }
+                out[pk] = { ...inner, values: cleaned };
+              } else {
+                const cleaned: Record<string, unknown> = {};
+                for (const [fk, fv] of Object.entries(inner)) {
+                  if (!fk.includes("___linked")) cleaned[fk] = fv;
+                }
+                out[pk] = cleaned;
+              }
+            } else {
+              out[pk] = pv;
+            }
+          }
+          return out;
+        };
+
         const snapshot = {
           ...(vehicle || {}),
           insuredSnapshot: (body as any).insured,
           clientId: ensuredClientId,
-          packagesSnapshot: packages,
+          packagesSnapshot: cleanPackages(packages),
           coverType: (policy as any)?.coverType ?? undefined,
           excessSection1: (policy as any)?.coverType === "comprehensive" ? (policy as any).excessSection1 : undefined,
           ...(flowKey ? { flowKey } : {}),
@@ -494,12 +521,8 @@ export async function POST(request: Request) {
 
       // Extract accounting fields and persist to policy_premiums, respecting line config
       try {
-        const CENTS_KEYS: Record<string, string> = {
-          grossPremium: "grossPremiumCents",
-          netPremium: "netPremiumCents",
-          clientPremium: "clientPremiumCents",
-          agentCommission: "agentCommissionCents",
-        };
+        const acctFields = await loadAccountingFields();
+        const fieldColumnMap = buildFieldColumnMap(acctFields);
 
         const acctPkg = (packages as any)?.accounting;
         const acctValues =
@@ -530,24 +553,35 @@ export async function POST(request: Request) {
         };
 
         const buildPremiumPayload = () => {
-          const structuredCents: Record<string, number | null> = {};
-          for (const [fieldKey, colName] of Object.entries(CENTS_KEYS)) {
-            structuredCents[colName] = toCents(fieldKey);
+          const structuredColumns: Record<string, unknown> = {};
+          const knownKeys = new Set<string>();
+          for (const f of acctFields) {
+            const col = fieldColumnMap[f.key];
+            if (col) {
+              knownKeys.add(f.key);
+              const colType = getColumnType(col);
+              if (colType === "cents") {
+                structuredColumns[col] = toCents(f.key);
+              } else if (colType === "rate") {
+                const raw = Number(normalized[f.key]);
+                structuredColumns[col] = Number.isFinite(raw) ? raw.toFixed(2) : null;
+              } else if (colType === "string") {
+                const sv = normalized[f.key];
+                structuredColumns[col] = typeof sv === "string" && sv.trim() ? sv.trim() : null;
+              }
+            }
           }
-          const rateRaw = Number(normalized.commissionRate);
-          const commRate = Number.isFinite(rateRaw) ? rateRaw.toFixed(2) : null;
           const currency =
-            typeof normalized.currency === "string" && normalized.currency.trim()
-              ? normalized.currency.trim().toUpperCase()
+            typeof structuredColumns.currency === "string" && structuredColumns.currency
+              ? structuredColumns.currency.toUpperCase()
               : "HKD";
-          const knownKeys = new Set([...Object.keys(CENTS_KEYS), "commissionRate", "currency"]);
           const extraValues: Record<string, unknown> = {};
           for (const [k, v] of Object.entries(normalized)) {
-            if (!knownKeys.has(k) && v !== null && v !== undefined && v !== "") {
+            if (!knownKeys.has(k) && !fieldColumnMap[k] && v !== null && v !== undefined && v !== "") {
               extraValues[k] = v;
             }
           }
-          return { structuredCents, commRate, currency, extraValues };
+          return { structuredCents: structuredColumns, commRate: structuredColumns.commissionRate as string | null ?? null, currency, extraValues };
         };
 
         // Load line templates from policy_category form options

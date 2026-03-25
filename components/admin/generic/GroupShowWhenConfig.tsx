@@ -58,7 +58,7 @@ function RuleRow({
   onLoadPkgFields: (pkg: string) => void;
   pkgFieldsCache: Record<string, FieldInfo[]>;
 }) {
-  const selectCls = "rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900";
+  const selectCls = "rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100";
 
   const selectedPkg = rule.package || currentPkg;
   const isCrossPkg = selectedPkg !== currentPkg;
@@ -301,7 +301,9 @@ export function GroupShowWhenConfig({
   }, [rules, pkgFieldsCache, loadPkgFields]);
 
   const effectivePkg = currentPkg ?? "";
-  const effectivePackages = allPackages ?? (effectivePkg ? [{ label: effectivePkg, value: effectivePkg }] : []);
+  const effectivePackages = (allPackages && allPackages.length > 0)
+    ? allPackages
+    : (effectivePkg ? [{ label: effectivePkg, value: effectivePkg }] : []);
 
   function updateRule(idx: number, next: GswRule) {
     const updated = [...rules];

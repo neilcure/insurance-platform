@@ -15,6 +15,7 @@ import { resolveFieldValue, evaluateFormula } from "@/lib/formula";
 import type { SelectOption, RepeatableFieldConfig, RepeatableConfig } from "@/lib/types/form";
 import { EntityPickerDrawer, type EntityPickerSelection } from "@/components/policies/EntityPickerDrawer";
 import { AgentPickerDrawer, type AgentPickerSelection } from "@/components/policies/AgentPickerDrawer";
+import { LinkedPolicyCard } from "@/components/policies/LinkedPolicyCard";
 import { Search } from "lucide-react";
 
 type EntityPickerFieldMapping = {
@@ -27,6 +28,36 @@ type EntityPickerMeta = {
   buttonLabel?: string;
   mappings: EntityPickerFieldMapping[];
 };
+
+function normKey(k: string): string {
+  return k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function resolveInsuredVirtuals(snap: Record<string, unknown> | null): Record<string, string> {
+  if (!snap) return {};
+  const result: Record<string, string> = {};
+  const rawType = String(snap?.insuredType ?? snap?.insured__category ?? snap?.category ?? "").trim().toLowerCase();
+  const isPersonal = rawType === "personal";
+
+  let firstName = "", lastName = "", companyName = "", fullName = "";
+  for (const [k, v] of Object.entries(snap)) {
+    const n = normKey(k), s = String(v ?? "").trim();
+    if (!s) continue;
+    if (!lastName && /lastname|surname|lname/.test(n)) lastName = s;
+    if (!firstName && /firstname|fname/.test(n)) firstName = s;
+    if (!companyName && /companyname|organisationname|orgname|corporatename/.test(n)) companyName = s;
+    if (!fullName && /fullname|displayname|^name$/.test(n)) fullName = s;
+  }
+
+  const personalName = [lastName, firstName].filter(Boolean).join(" ") || fullName;
+  result.insuredDisplayName = isPersonal
+    ? (personalName || companyName || "")
+    : (companyName || personalName || "");
+  if (rawType) result.insuredType = rawType;
+
+  return result;
+}
+
 function getRepeatable(raw: unknown): RepeatableConfig {
   if (Array.isArray(raw)) {
     const first = raw[0];
@@ -84,13 +115,27 @@ function SubFieldRepeatable({
       if (!entityPicker || pickerRowIdx === null) return;
       const extra = selection.extraAttributes;
       const pkgs = (extra?.packagesSnapshot ?? {}) as Record<string, unknown>;
+      const insuredSnap = (extra?.insuredSnapshot ?? null) as Record<string, unknown> | null;
+      const topLevel: Record<string, unknown> = {
+        policyNumber: selection.policyNumber,
+        policyId: selection.policyId,
+        ...resolveInsuredVirtuals(insuredSnap),
+      };
       const findValue = (sourceField: string): unknown => {
+        if (sourceField in topLevel) return topLevel[sourceField];
         for (const [, data] of Object.entries(pkgs)) {
           if (!data || typeof data !== "object") continue;
           const values = (data as { values?: Record<string, unknown> }).values ?? (data as Record<string, unknown>);
           if (sourceField in values) return values[sourceField];
           for (const [k, v] of Object.entries(values)) {
             const kTail = k.includes("__") ? k.split("__").pop() : k;
+            if (kTail === sourceField) return v;
+          }
+        }
+        if (insuredSnap) {
+          if (sourceField in insuredSnap) return insuredSnap[sourceField];
+          for (const [k, v] of Object.entries(insuredSnap)) {
+            const kTail = k.includes("__") ? k.split("__").pop() : k.includes("_") ? k.split("_").pop() : k;
             if (kTail === sourceField) return v;
           }
         }
@@ -948,6 +993,38 @@ export function PackageBlock({
 
   const allFormValues = useWatch({ control: form.control }) as Record<string, unknown>;
 
+  // On mount/load: inject linked policy snapshot values so showWhen/groupShowWhen can evaluate
+  const linkedSnapshotsRef = React.useRef<string>("");
+  React.useEffect(() => {
+    // Find all ___linkedPackagesSnapshot fields in the form (scoped per field)
+    const snapshotEntries: string[] = [];
+    for (const key of Object.keys(allFormValues)) {
+      if (key.endsWith("___linkedPackagesSnapshot")) {
+        const raw = String(allFormValues[key] ?? "");
+        if (raw) snapshotEntries.push(raw);
+      }
+    }
+    const fingerprint = snapshotEntries.join("|");
+    if (!fingerprint || fingerprint === linkedSnapshotsRef.current) return;
+    linkedSnapshotsRef.current = fingerprint;
+    for (const raw of snapshotEntries) {
+      try {
+        const snap = JSON.parse(raw) as Record<string, unknown>;
+        for (const [pkgKey, data] of Object.entries(snap)) {
+          if (!data || typeof data !== "object") continue;
+          const structured = data as { values?: Record<string, unknown> };
+          const vals = structured.values ?? (data as Record<string, unknown>);
+          if (!vals || typeof vals !== "object") continue;
+          for (const [fieldKey, fieldVal] of Object.entries(vals)) {
+            if (fieldVal === undefined || fieldVal === null || typeof fieldVal === "object") continue;
+            const fk = fieldKey.startsWith(`${pkgKey}__`) ? fieldKey : `${pkgKey}__${fieldKey}`;
+            form.setValue(fk as never, fieldVal as never, { shouldDirty: false });
+          }
+        }
+      } catch { /* ignore */ }
+    }
+  }, [allFormValues, form]);
+
   // Auto-sync: when another package's category changes, re-match our category
   React.useEffect(() => {
     if (categories.length <= 1) return;
@@ -1058,8 +1135,15 @@ export function PackageBlock({
     (picker: EntityPickerMeta, selection: EntityPickerSelection, triggerField?: string) => {
       const extra = selection.extraAttributes;
       const pkgs = (extra?.packagesSnapshot ?? {}) as Record<string, unknown>;
+      const insuredSnap = (extra?.insuredSnapshot ?? null) as Record<string, unknown> | null;
+      const topLevel: Record<string, unknown> = {
+        policyNumber: selection.policyNumber,
+        policyId: selection.policyId,
+        ...resolveInsuredVirtuals(insuredSnap),
+      };
 
       const findValue = (sourceField: string): unknown => {
+        if (sourceField in topLevel) return topLevel[sourceField];
         for (const [, data] of Object.entries(pkgs)) {
           if (!data || typeof data !== "object") continue;
           const structured = data as { values?: Record<string, unknown> };
@@ -1067,6 +1151,13 @@ export function PackageBlock({
           if (sourceField in values) return values[sourceField];
           for (const [k, v] of Object.entries(values)) {
             const kTail = k.includes("__") ? k.split("__").pop() : k;
+            if (kTail === sourceField) return v;
+          }
+        }
+        if (insuredSnap) {
+          if (sourceField in insuredSnap) return insuredSnap[sourceField];
+          for (const [k, v] of Object.entries(insuredSnap)) {
+            const kTail = k.includes("__") ? k.split("__").pop() : k.includes("_") ? k.split("_").pop() : k;
             if (kTail === sourceField) return v;
           }
         }
@@ -1092,6 +1183,47 @@ export function PackageBlock({
             firstMappingRedirected = true;
           }
           form.setValue(targetKey as never, val as never, { shouldDirty: true });
+        }
+      }
+
+      const flowKey = String(extra?.flowKey ?? "");
+      const fieldBase = triggerField || `${pkg}___default`;
+
+      // Clear previously injected linked-policy values BEFORE writing the new snapshot
+      const prevSnapJson = String(form.getValues(`${fieldBase}___linkedPackagesSnapshot` as never) ?? "");
+      if (prevSnapJson) {
+        try {
+          const old = JSON.parse(prevSnapJson) as Record<string, unknown>;
+          for (const [pkgKey, data] of Object.entries(old)) {
+            if (!data || typeof data !== "object") continue;
+            const structured = data as { values?: Record<string, unknown> };
+            const vals = structured.values ?? (data as Record<string, unknown>);
+            if (!vals || typeof vals !== "object") continue;
+            for (const [fieldKey] of Object.entries(vals)) {
+              const fk = fieldKey.startsWith(`${pkgKey}__`) ? fieldKey : `${pkgKey}__${fieldKey}`;
+              form.setValue(fk as never, "" as never, { shouldDirty: false });
+            }
+          }
+        } catch { /* ignore */ }
+      }
+
+      form.setValue(`${fieldBase}___linkedPolicyId` as never, selection.policyId as never, { shouldDirty: true });
+      form.setValue(`${fieldBase}___linkedPolicyNumber` as never, selection.policyNumber as never, { shouldDirty: true });
+      form.setValue(`${fieldBase}___linkedInsuredSnapshot` as never, JSON.stringify(insuredSnap ?? {}) as never, { shouldDirty: true });
+      form.setValue(`${fieldBase}___linkedPackagesSnapshot` as never, JSON.stringify(pkgs ?? {}) as never, { shouldDirty: true });
+      form.setValue(`${fieldBase}___linkedFlowKey` as never, flowKey as never, { shouldDirty: true });
+      form.setValue(`${fieldBase}___linkedAgent` as never, JSON.stringify(selection.agent ?? null) as never, { shouldDirty: true });
+
+      // Inject new linked policy's package values so showWhen/groupShowWhen conditions work
+      for (const [pkgKey, data] of Object.entries(pkgs)) {
+        if (!data || typeof data !== "object") continue;
+        const structured = data as { values?: Record<string, unknown> };
+        const vals = structured.values ?? (data as Record<string, unknown>);
+        if (!vals || typeof vals !== "object") continue;
+        for (const [fieldKey, fieldVal] of Object.entries(vals)) {
+          if (fieldVal === undefined || fieldVal === null || typeof fieldVal === "object") continue;
+          const fk = fieldKey.startsWith(`${pkgKey}__`) ? fieldKey : `${pkgKey}__${fieldKey}`;
+          form.setValue(fk as never, fieldVal as never, { shouldDirty: false });
         }
       }
 
@@ -2091,32 +2223,74 @@ export function PackageBlock({
                     );
                   }
                   if (meta.entityPicker?.flow) {
+                    const linkedPolId = String(allFormValues[`${nameBase}___linkedPolicyId`] ?? "");
+                    const linkedPolNum = String(allFormValues[`${nameBase}___linkedPolicyNumber`] ?? "");
+                    const linkedInsuredJson = String(allFormValues[`${nameBase}___linkedInsuredSnapshot`] ?? "");
+                    const linkedPkgsJson = String(allFormValues[`${nameBase}___linkedPackagesSnapshot`] ?? "");
+                    const linkedFlowKey = String(allFormValues[`${nameBase}___linkedFlowKey`] ?? "");
+                    const linkedAgentJson = String(allFormValues[`${nameBase}___linkedAgent`] ?? "");
                     return (
-                      <div key={nameBase} className="col-span-2 space-y-1">
-                        <Label>
-                          {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
-                        </Label>
-                        <div className="flex items-center gap-1.5">
-                          <Input
-                            className="flex-1"
-                            type={isNumber ? "number" : isDate ? "text" : "text"}
-                            placeholder={isDate ? "DD-MM-YYYY" : undefined}
-                            inputMode={isDate ? "numeric" : undefined}
-                            {...form.register(nameBase as never, options)}
-                          />
-                          <button
-                            type="button"
-                            className="group/ep relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-neutral-200 bg-white text-neutral-600 transition-all duration-300 ease-out hover:w-auto hover:gap-1.5 hover:px-3 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
-                            onClick={() => { setActiveEntityPicker(meta.entityPicker!); setActiveEntityPickerField(nameBase); }}
-                            title={meta.entityPicker.buttonLabel || "Browse"}
-                          >
-                            <Search className="h-3.5 w-3.5 shrink-0" />
-                            <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium opacity-0 transition-all duration-300 ease-out group-hover/ep:max-w-48 group-hover/ep:opacity-100">
-                              {meta.entityPicker.buttonLabel || "Browse"}
-                            </span>
-                          </button>
+                      <React.Fragment key={nameBase}>
+                        <div className="col-span-2 space-y-1">
+                          <Label>
+                            {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                          </Label>
+                          <div className="flex items-center gap-1.5">
+                            <Input
+                              className="flex-1"
+                              type={isNumber ? "number" : isDate ? "text" : "text"}
+                              placeholder={isDate ? "DD-MM-YYYY" : undefined}
+                              inputMode={isDate ? "numeric" : undefined}
+                              {...form.register(nameBase as never, options)}
+                            />
+                            <button
+                              type="button"
+                              className="group/ep relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-neutral-200 bg-white text-neutral-600 transition-all duration-300 ease-out hover:w-auto hover:gap-1.5 hover:px-3 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+                              onClick={() => { setActiveEntityPicker(meta.entityPicker!); setActiveEntityPickerField(nameBase); }}
+                              title={meta.entityPicker.buttonLabel || "Browse"}
+                            >
+                              <Search className="h-3.5 w-3.5 shrink-0" />
+                              <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium opacity-0 transition-all duration-300 ease-out group-hover/ep:max-w-48 group-hover/ep:opacity-100">
+                                {meta.entityPicker.buttonLabel || "Browse"}
+                              </span>
+                            </button>
+                          </div>
                         </div>
-                      </div>
+                        {linkedPolNum && (
+                          <LinkedPolicyCard
+                            policyId={linkedPolId}
+                            policyNumber={linkedPolNum}
+                            insuredSnapshotJson={linkedInsuredJson}
+                            packagesSnapshotJson={linkedPkgsJson}
+                            flowKey={linkedFlowKey}
+                            agentJson={linkedAgentJson}
+                            title={meta.entityPicker.buttonLabel || displayLabel}
+                            onClear={() => {
+                              // Clear injected linked-policy package values
+                              try {
+                                const snap = JSON.parse(linkedPkgsJson || "{}") as Record<string, unknown>;
+                                for (const [pkgKey, data] of Object.entries(snap)) {
+                                  if (!data || typeof data !== "object") continue;
+                                  const structured = data as { values?: Record<string, unknown> };
+                                  const vals = structured.values ?? (data as Record<string, unknown>);
+                                  if (!vals || typeof vals !== "object") continue;
+                                  for (const [fieldKey] of Object.entries(vals)) {
+                                    const fk = fieldKey.startsWith(`${pkgKey}__`) ? fieldKey : `${pkgKey}__${fieldKey}`;
+                                    form.setValue(fk as never, "" as never, { shouldDirty: false });
+                                  }
+                                }
+                              } catch { /* ignore */ }
+                              form.setValue(`${nameBase}___linkedPolicyId` as never, "" as never, { shouldDirty: true });
+                              form.setValue(`${nameBase}___linkedPolicyNumber` as never, "" as never, { shouldDirty: true });
+                              form.setValue(`${nameBase}___linkedInsuredSnapshot` as never, "" as never, { shouldDirty: true });
+                              form.setValue(`${nameBase}___linkedPackagesSnapshot` as never, "" as never, { shouldDirty: true });
+                              form.setValue(`${nameBase}___linkedFlowKey` as never, "" as never, { shouldDirty: true });
+                              form.setValue(`${nameBase}___linkedAgent` as never, "" as never, { shouldDirty: true });
+                              form.setValue(nameBase as never, "" as never, { shouldDirty: true });
+                            }}
+                          />
+                        )}
+                      </React.Fragment>
                     );
                   }
                   return (

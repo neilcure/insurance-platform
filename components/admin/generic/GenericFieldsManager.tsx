@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { Plus, Pencil, Eye, EyeOff, Save, X, Trash2, ChevronUp, ChevronDown } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { GroupShowWhenConfig } from "@/components/admin/generic/GroupShowWhenConfig";
+import { EntityPickerConfigEditor, type EntityPickerConfig } from "@/components/admin/generic/EntityPickerConfig";
 import type { InputType } from "@/lib/types/form";
 import { InputTypeSelect } from "@/components/admin/generic/InputTypeSelect";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
@@ -68,6 +69,7 @@ type FieldMeta = {
   numberFormat?: "plain" | "currency" | "percent"; // for number inputs
   currencyCode?: string; // when numberFormat === "currency"
   decimals?: number; // for number formatting
+  entityPicker?: EntityPickerConfig;
 };
 
 type FieldRow = {
@@ -165,6 +167,18 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  React.useEffect(() => {
+    if (allPackagesForGroups.length > 0) return;
+    void (async () => {
+      try {
+        const res = await fetch("/api/form-options?groupKey=packages", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { label: string; value: string }[];
+        setAllPackagesForGroups(Array.isArray(data) ? data : []);
+      } catch { /* ignore */ }
+    })();
+  }, [allPackagesForGroups.length]);
 
   const openCopyDialog = React.useCallback(async () => {
     try {
@@ -366,6 +380,16 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     setApplyToAll(isAll);
     setEditing(row);
     setOpen(true);
+    if (grpArr.length > 0 && allPackagesForGroups.length === 0) {
+      void (async () => {
+        try {
+          const res = await fetch("/api/form-options?groupKey=packages", { cache: "no-store" });
+          if (!res.ok) return;
+          const data = (await res.json()) as { label: string; value: string }[];
+          setAllPackagesForGroups(Array.isArray(data) ? data : []);
+        } catch { /* ignore */ }
+      })();
+    }
   }
   async function save() {
     try {
@@ -3331,6 +3355,8 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                     }}
                     fields={rows as any}
                     excludeFieldId={editing?.id}
+                    allPackages={allPackagesForGroups}
+                    currentPkg={pkg}
                   />
                 ));
               })()}
@@ -3397,6 +3423,11 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                 );
               })()}
             </div>
+            <EntityPickerConfigEditor
+              value={(form.meta as FieldMeta | undefined)?.entityPicker as EntityPickerConfig | undefined}
+              onChange={(next) => updateMeta("entityPicker", next as any)}
+              currentPkg={pkg}
+            />
             <div className="grid gap-1">
               <label className="flex items-center gap-2 text-sm">
                 <input
