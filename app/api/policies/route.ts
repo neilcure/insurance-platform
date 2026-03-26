@@ -838,6 +838,38 @@ export async function GET(request: Request) {
           `);
           rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
         }
+      } else if (user.userType === "direct_client") {
+        // Client users only see policyset records where they are the insured
+        const userId = Number(user.id);
+        const result = await db.execute(sql`
+          select
+            p.id as "policyId",
+            p.policy_number as "policyNumber",
+            p.organisation_id as "organisationId",
+            p.created_at as "createdAt",
+            p.is_active as "isActive",
+            c.id as "carId",
+            c.plate_number as "plateNumber",
+            c.make as "make",
+            c.model as "model",
+            c.year as "year",
+            c.extra_attributes as "carExtra"
+          from "policies" p
+          left join "cars" c on c.policy_id = p.id
+          inner join "clients" cl on cl.user_id = ${userId}
+          where (
+            ${polCols.hasClientId ? sql`p.client_id = cl.id OR` : sql``}
+            (c.extra_attributes)::jsonb ->> 'flowKey' = 'policyset'
+            AND (
+              ((c.extra_attributes)::text ILIKE '%' || cl.display_name || '%')
+              OR ((c.extra_attributes)::text ILIKE '%' || cl.primary_id || '%')
+              ${polCols.hasClientId ? sql`OR p.client_id = cl.id` : sql``}
+            )
+          )
+          order by p.created_at desc, p.id desc
+          limit ${qLimit} offset ${qOffset}
+        `);
+        rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
       } else {
         let scoped: any = baseSelect.innerJoin(
           memberships,
@@ -859,7 +891,7 @@ export async function GET(request: Request) {
         if (hasFlowFilter) q = q.where(flowFilterExpr!);
         q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
         rows = await q;
-      } else if (user.userType === "agent") {
+      } else if (user.userType === "agent" || user.userType === "direct_client") {
         rows = [];
       } else {
         let scoped: any = baseSelect.innerJoin(

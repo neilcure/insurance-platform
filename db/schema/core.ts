@@ -88,6 +88,7 @@ export const clients = pgTable("clients", {
   contactPhone: text("contact_phone"),
   extraAttributes: jsonb("extra_attributes").$type<Record<string, unknown> | null>().default(null),
   createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
+  userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
 });
@@ -112,6 +113,18 @@ export const userCounters = pgTable(
     pk: primaryKey({ name: "user_counters_pk", columns: [t.orgId, t.userType] }),
   })
 );
+
+export const auditLog = pgTable("audit_log", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
+  userType: text("user_type"),
+  action: text("action").notNull(),
+  entityType: text("entity_type").notNull(),
+  entityId: integer("entity_id"),
+  changes: jsonb("changes").$type<Record<string, unknown> | null>().default(null),
+  isRead: boolean("is_read").notNull().default(false),
+  createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
+});
 
 // Track which agent is currently assigned to a client, with history
 export const clientAgentAssignments = pgTable("client_agent_assignments", {

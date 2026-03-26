@@ -4,6 +4,7 @@ import * as React from "react";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { normalizeFieldKey, isHiddenPackage } from "@/lib/utils";
 import { ClientLinkedPolicies } from "@/components/policies/ClientLinkedPolicies";
+import { AccountingTab } from "@/components/policies/tabs/AccountingTab";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 type FieldMeta = {
@@ -72,6 +73,8 @@ function registerChildLabels(
   });
 }
 
+const LEGACY_PKG_MAP: Record<string, string> = { accounting: "premiumRecord" };
+
 async function loadFieldMeta(packageNames: string[]): Promise<{
   pkgMeta: Record<string, FieldMeta>;
   packageLabels: Record<string, string>;
@@ -81,10 +84,13 @@ async function loadFieldMeta(packageNames: string[]): Promise<{
   const ts = Date.now();
   const [packagesRes, ...fieldAndCatResults] = await Promise.all([
     fetch(`/api/form-options?groupKey=packages&_t=${ts}`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
-    ...packageNames.flatMap(pkg => [
-      fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}&_t=${ts}`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
-      fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_category`)}&_t=${ts}`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
-    ]),
+    ...packageNames.flatMap(pkg => {
+      const lookupPkg = LEGACY_PKG_MAP[pkg] ?? pkg;
+      return [
+        fetch(`/api/form-options?groupKey=${encodeURIComponent(`${lookupPkg}_fields`)}&_t=${ts}`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
+        fetch(`/api/form-options?groupKey=${encodeURIComponent(`${lookupPkg}_category`)}&_t=${ts}`, { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []),
+      ];
+    }),
   ]);
 
   const packageLabels: Record<string, string> = {};
@@ -95,6 +101,12 @@ async function loadFieldMeta(packageNames: string[]): Promise<{
       if (!key) continue;
       packageLabels[key] = toKey(row?.label) || key;
       packageSortOrders[key] = toNum(row?.sortOrder);
+    }
+  }
+  for (const [legacy, current] of Object.entries(LEGACY_PKG_MAP)) {
+    if (!packageLabels[legacy] && packageLabels[current]) {
+      packageLabels[legacy] = packageLabels[current];
+      packageSortOrders[legacy] = packageSortOrders[current] ?? 0;
     }
   }
 
@@ -550,10 +562,14 @@ function MultiSelectViewRow({ fieldLabel, groups }: {
   );
 }
 
-export function PolicySnapshotView({ detail, entityLabel, onEditPackage }: {
+export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEditPackage, hiddenPackages, canEditPremium, onPremiumUpdate }: {
   detail: PolicyDetail;
   entityLabel?: string;
   onEditPackage?: (pkgName: string, pkgLabel: string, values: Record<string, unknown>) => void;
+  canEditPackage?: (pkgName: string) => boolean;
+  hiddenPackages?: Set<string>;
+  canEditPremium?: boolean;
+  onPremiumUpdate?: () => void;
 }) {
   const [meta, setMeta] = React.useState<{
     pkgMeta: Record<string, FieldMeta>;
@@ -711,7 +727,7 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage }: {
   // Package entries sorted by configured order
   const sortedPkgEntries = React.useMemo(() => {
     const entries = Object.entries(allPkgs).filter(([name]) =>
-      !isHiddenPackage(name, packageLabels[name])
+      !isHiddenPackage(name, packageLabels[name]) && !hiddenPackages?.has(name)
     );
     return entries.sort((a, b) => {
       const ao = meta?.packageSortOrders?.[a[0]] ?? 0;
@@ -719,7 +735,7 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage }: {
       if (ao !== bo) return ao - bo;
       return (packageLabels[a[0]] ?? a[0]).localeCompare(packageLabels[b[0]] ?? b[0], undefined, { sensitivity: "base" });
     });
-  }, [allPkgs, packageLabels, meta?.packageSortOrders]);
+  }, [allPkgs, packageLabels, meta?.packageSortOrders, hiddenPackages]);
 
 
   return (
@@ -779,12 +795,30 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage }: {
                 packageLabel={packageLabels[pkgName] ?? pkgName}
                 categoryLabel={meta?.categoryLabels?.[pkgName]?.[String(isStructuredPkg(pkg) ? (pkg as StructuredPkg).category : "")] ?? undefined}
                 recentKeys={recentKeys}
-                onEdit={onEditPackage ? () => onEditPackage(pkgName, packageLabels[pkgName] ?? pkgName, values) : undefined}
+                onEdit={onEditPackage && (!canEditPackage || canEditPackage(pkgName))
+                  ? () => onEditPackage(pkgName, packageLabels[pkgName] ?? pkgName, values)
+                  : undefined}
               />
             );
           })}
         </div>
       ) : null}
+
+      {hiddenPackages && (hiddenPackages.has("accounting") || hiddenPackages.has("premiumRecord")) && (
+        <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+          <div className="mb-2 text-sm font-semibold text-neutral-700 dark:text-neutral-300">
+            {packageLabels["premiumRecord"] ?? packageLabels["accounting"] ?? "Premium Record"}
+          </div>
+          <AccountingTab
+            policyId={detail.policyId}
+            policyNumber={detail.policyNumber}
+            canEdit={canEditPremium ?? false}
+            policyExtra={detail.extraAttributes as Record<string, unknown> | null | undefined}
+            onUpdate={onPremiumUpdate}
+            context="self"
+          />
+        </div>
+      )}
 
       {isClientRecord ? (
         <ClientLinkedPolicies

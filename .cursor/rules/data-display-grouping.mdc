@@ -1,0 +1,44 @@
+---
+description: Data display grouping — all record data must be displayed in grouped, sectioned cards for readability
+globs: components/**/*.tsx
+alwaysApply: false
+---
+
+# Data Display Grouping Convention
+
+All record/entity data must be displayed in **grouped sections** with related information together. Never render flat key-value dumps.
+
+## Shared components
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| `AccountingRecordView` | `components/policies/tabs/AccountingTab.tsx` | Renders premium records with sections, entities, formatted values |
+| `AccountingSection` | same file | Renders one cover-type section (e.g. "Third Party", "Own Vehicle Damage") |
+| `PolicySnapshotView` | `components/policies/PolicySnapshotView.tsx` | Renders package snapshots grouped by package with labels |
+
+## Rules
+
+1. **Same data, same component** — if the same data type appears in multiple pages (e.g. premium data on both Policy details and Premium Record details), use a single shared component. Never duplicate rendering logic.
+
+2. **Group by logical entity** — premium fields go under their cover-type section (Third Party / Own Vehicle Damage). Entity info (Collaborator, Insurer, Agent) displays at section or record level, not mixed into field rows.
+
+3. **Formatted values** — currency fields use `fmtCurrency()`, percentages append `%`, booleans show "Yes"/"No", selects resolve to option labels. Never show raw stored values.
+
+4. **Inline rendering for "self" context** — when a record page displays its own data (e.g. Premium Record showing its own premium info), render the shared component inline on the Overview, NOT in a separate tab. Use `context="self"` with `AccountingTab`.
+
+5. **Entity resolution fallback** — for `context="self"`, if entities (Collaborator, Insurer, Agent) are not found in the record's own snapshot, fall back to the linked policy's snapshot via `resolveEntitiesFromSnapshot()` in `app/api/policies/[id]/premiums/route.ts`.
+
+6. **Hidden raw packages** — when a shared component renders a package's data (e.g. `AccountingTab` renders premium data), hide the raw package from `PolicySnapshotView` via the `hiddenPackages` prop to avoid duplication.
+
+## Example: Premium Record on Overview
+
+```tsx
+{/* Hide raw premium package from generic snapshot view */}
+<PolicySnapshotView
+  detail={detail}
+  hiddenPackages={new Set(["accounting", "premiumRecord"])}
+  canEditPremium={isAdmin}
+  onPremiumUpdate={refresh}
+/>
+{/* PolicySnapshotView internally renders AccountingTab with context="self" */}
+```

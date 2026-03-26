@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { users } from "@/db/schema/core";
+import { users, clients } from "@/db/schema/core";
 import { requireUser } from "@/lib/auth/require-user";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import InviteForm from "@/components/admin/invite-form";
@@ -81,6 +81,22 @@ export default async function AdminUsersPage() {
     }
   }
 
+  // Load linked client names for direct_client users
+  let clientLinks: Record<number, string> = {};
+  try {
+    const clientUserIds = rows.filter((r) => r.userType === "direct_client").map((r) => r.id);
+    if (clientUserIds.length > 0) {
+      const linkRows = await db
+        .select({ userId: clients.userId, displayName: clients.displayName })
+        .from(clients);
+      for (const lr of linkRows) {
+        if (lr.userId && clientUserIds.includes(lr.userId)) {
+          clientLinks[lr.userId] = lr.displayName;
+        }
+      }
+    }
+  } catch {}
+
   // Ensure stable ordering regardless of active status or refreshes
   const makeSortKey = (r: UserRow) =>
     `${(r.userNumber ?? "").toString()}|${(r.email || "").toLowerCase()}|${String(r.id).padStart(10, "0")}`;
@@ -96,7 +112,7 @@ export default async function AdminUsersPage() {
       <Separator />
       <SettingsBlock title="User Settings" description="Invite users, change roles, activate/deactivate or delete accounts.">
         <div className="space-y-4">
-          <InviteForm allowedTypes={me.userType === "admin" ? ["admin","agent","accounting","internal_staff"] : ["accounting","internal_staff"]} />
+          <InviteForm allowedTypes={me.userType === "admin" ? ["admin","agent","accounting","internal_staff","direct_client"] : ["accounting","internal_staff"]} />
           <Separator />
           <div className="flex justify-end">
             <BackfillUserNumbersButton />
@@ -135,7 +151,7 @@ export default async function AdminUsersPage() {
                       </div>
                     </TableCell>
                     <TableCell className="block w-full md:table-cell md:text-left">
-                      <UserRowActions userId={u.id} userType={u.userType} isActive={u.isActive} canAssignAdmin={me.userType === "admin"} />
+                      <UserRowActions userId={u.id} userType={u.userType} isActive={u.isActive} canAssignAdmin={me.userType === "admin"} linkedClientName={clientLinks[u.id] ?? null} />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -144,6 +160,7 @@ export default async function AdminUsersPage() {
           </div>
         </div>
       </SettingsBlock>
+
     </main>
   );
 }

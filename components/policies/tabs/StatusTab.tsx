@@ -69,29 +69,31 @@ export function StatusTab({
         </Badge>
       </div>
 
-      <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-        <div className="mb-2 text-sm font-medium">Change Status</div>
-        <div className="flex items-center gap-2">
-          <select
-            className="h-8 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-          >
-            {STATUS_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          <Button
-            size="sm"
-            onClick={updateStatus}
-            disabled={saving || selected === (currentStatus || "active")}
-          >
-            {saving ? "Saving..." : "Update"}
-          </Button>
+      {onStatusChange && (
+        <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+          <div className="mb-2 text-sm font-medium">Change Status</div>
+          <div className="flex items-center gap-2">
+            <select
+              className="h-8 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+            >
+              {STATUS_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              onClick={updateStatus}
+              disabled={saving || selected === (currentStatus || "active")}
+            >
+              {saving ? "Saving..." : "Update"}
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
 
       {history.length > 0 && (
         <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">

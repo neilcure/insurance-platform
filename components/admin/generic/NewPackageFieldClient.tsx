@@ -27,6 +27,14 @@ const DB_COLUMN_OPTIONS = [
   { value: "commissionRate", label: "Commission Rate", type: "rate" },
   { value: "currency", label: "Currency", type: "string" },
 ];
+const PREMIUM_CONTEXT_OPTIONS = [
+  { value: "policy", label: "Policy" },
+  { value: "collaborator", label: "Collaborator (Premium Payable)" },
+  { value: "insurer", label: "Insurance Company (Insurer Premium)" },
+  { value: "client", label: "Client (Client Premium)" },
+  { value: "agent", label: "Agent (Agent Premium)" },
+];
+const isPremiumPkg = (p: string) => p === "premiumRecord" || p === "accounting";
 import { InputTypeSelect, type InputType } from "@/components/admin/generic/InputTypeSelect";
 
 export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
@@ -324,25 +332,63 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
             </div>
           ) : null}
 
-          {pkg === "accounting" && (
-            <div className="grid gap-1">
-              <Label>DB Column Mapping</Label>
-              <select
-                className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                value={String((form.meta as any)?.premiumColumn ?? "")}
-                onChange={(e) => updateMeta("premiumColumn" as any, (e.target.value || undefined) as any)}
-              >
-                <option value="">None (stored in extra values)</option>
-                {DB_COLUMN_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label} ({opt.type === "cents" ? "cents" : opt.type === "rate" ? "decimal" : "text"})
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                Maps this field to a dedicated database column for accounting calculations, invoicing, and sync. Currency fields use cents conversion automatically.
-              </p>
-            </div>
+          {isPremiumPkg(pkg) && (
+            <>
+              <div className="grid gap-1">
+                <Label>DB Column Mapping</Label>
+                <select
+                  className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  value={String((form.meta as any)?.premiumColumn ?? "")}
+                  onChange={(e) => updateMeta("premiumColumn" as any, (e.target.value || undefined) as any)}
+                >
+                  <option value="">None (stored in extra values)</option>
+                  {DB_COLUMN_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label} ({opt.type === "cents" ? "cents" : opt.type === "rate" ? "decimal" : "text"})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Maps this field to a dedicated database column for accounting calculations, invoicing, and sync. Currency fields use cents conversion automatically.
+                </p>
+              </div>
+              <div className="grid gap-1">
+                <Label>Show in Premium Tabs</Label>
+                <div className="space-y-1.5 rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
+                  {PREMIUM_CONTEXT_OPTIONS.map((ctx) => {
+                    const current: string[] = Array.isArray((form.meta as any)?.premiumContexts)
+                      ? (form.meta as any).premiumContexts
+                      : [];
+                    const checked = current.length === 0 || current.includes(ctx.value);
+                    return (
+                      <label key={ctx.value} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 rounded border-neutral-300 dark:border-neutral-600"
+                          checked={checked}
+                          onChange={() => {
+                            let next: string[];
+                            if (current.length === 0) {
+                              next = PREMIUM_CONTEXT_OPTIONS.map((o) => o.value).filter((v) => v !== ctx.value);
+                            } else if (checked) {
+                              next = current.filter((v) => v !== ctx.value);
+                            } else {
+                              next = [...current, ctx.value];
+                            }
+                            if (next.length === PREMIUM_CONTEXT_OPTIONS.length) next = [];
+                            updateMeta("premiumContexts" as any, (next.length > 0 ? next : undefined) as any);
+                          }}
+                        />
+                        <span className="text-neutral-700 dark:text-neutral-300">{ctx.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Choose which Premium tabs display this field. Empty = show everywhere.
+                </p>
+              </div>
+            </>
           )}
 
           {["select", "multi_select"].includes((form.meta?.inputType ?? "") as string) ? (

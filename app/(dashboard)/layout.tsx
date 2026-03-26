@@ -23,6 +23,7 @@ export default async function DashboardGroupLayout({
       <AppSidebar
         isAdmin={(((session.user as any)?.userType) ?? "") === "admin"}
         canManageSettings={["admin", "agent", "internal_staff"].includes((((session.user as any)?.userType) ?? ""))}
+        userType={((session.user as any)?.userType ?? "") as string}
         user={{ name: (session.user as any)?.name ?? null, email: (session.user as any)?.email ?? null }}
       />
       <SidebarInset>

@@ -23,6 +23,7 @@ import {
   User,
   Upload,
   Stamp,
+  ClipboardList,
   type LucideIcon,
 } from "lucide-react";
 import { getIcon } from "@/lib/icons";
@@ -112,14 +113,17 @@ export function AppSidebar(
   props: React.ComponentProps<typeof Sidebar> & {
     isAdmin?: boolean;
     canManageSettings?: boolean;
+    userType?: string;
     user?: { name?: string | null; email?: string | null };
   }
 ) {
-  const { isAdmin = false, canManageSettings = false, user, ...sidebarProps } = props as {
+  const { isAdmin = false, canManageSettings = false, userType = "", user, ...sidebarProps } = props as {
     isAdmin?: boolean;
     canManageSettings?: boolean;
+    userType?: string;
     user?: { name?: string | null; email?: string | null };
   };
+  const isClientUser = userType === "direct_client";
   const userKey = React.useMemo(() => (user?.email || user?.name || "anon") as string, [user?.email, user?.name]);
   const [flows, setFlows] = React.useState<SidebarFlow[]>(() => flowsCache ?? []);
   const [packages, setPackages] = React.useState<SidebarPackage[]>(
@@ -130,8 +134,23 @@ export function AppSidebar(
   const [policyOpen, setPolicyOpen] = React.useState<boolean>(policyOpenCache ?? true);
   const [pkgOpen, setPkgOpen] = React.useState<Record<string, boolean>>(pkgOpenCache ?? {});
   const [orgName, setOrgName] = React.useState<string | null>(null);
+  const [auditBadge, setAuditBadge] = React.useState(0);
 
   const navItems = React.useMemo(() => {
+    if (isClientUser) {
+      return [
+        {
+          title: "Dashboard",
+          url: "/dashboard",
+          icon: LayoutDashboard,
+          isActive: true,
+          items: [
+            { title: "My Policies", url: "/dashboard/policies", icon: FileText },
+            { title: "My Profile", url: "/dashboard/account", icon: User },
+          ],
+        },
+      ];
+    }
     const dashboardFlowItems = flows
       .filter((f) => f.meta?.showInDashboard)
       .sort((a, b) => a.sortOrder - b.sortOrder)
@@ -158,9 +177,10 @@ export function AppSidebar(
         items: [{ title: "Guide", url: "#" }],
       },
     ];
-  }, [flows]);
+  }, [flows, isClientUser]);
 
   const loadFlowsOnce = React.useCallback(async () => {
+    if (isClientUser) return;
     try {
       const res = await fetch("/api/form-options?groupKey=flows", { cache: "no-store" });
       if (!res.ok) return;
@@ -170,7 +190,7 @@ export function AppSidebar(
       try { sessionStorage.setItem("sidebar.flows", JSON.stringify(list)); } catch {}
       flowsCache = list;
     } catch {}
-  }, []);
+  }, [isClientUser]);
 
   // Fetch helper reused by effects and custom events
   const loadPackagesOnce = React.useCallback(async () => {
@@ -268,6 +288,26 @@ export function AppSidebar(
   }, [adminOpen, policyOpen, pkgOpen]);
 
   const fetchOrgName = React.useCallback(async () => {
+    if (isClientUser) {
+      // For client users, fetch their client profile name
+      try {
+        const cached = sessionStorage.getItem(`sidebar.clientName:${userKey}`);
+        if (cached) setOrgName(cached);
+      } catch {}
+      try {
+        const res = await fetch("/api/account/client-profile", { cache: "no-store" });
+        if (res.ok) {
+          const data = (await res.json()) as { client?: { displayName?: string; clientNumber?: string } | null };
+          const name = data?.client?.displayName ?? "";
+          setOrgName(name || null);
+          try {
+            if (name) sessionStorage.setItem(`sidebar.clientName:${userKey}`, name);
+            else sessionStorage.removeItem(`sidebar.clientName:${userKey}`);
+          } catch {}
+        }
+      } catch { setOrgName(null); }
+      return;
+    }
     try {
       const cached = sessionStorage.getItem(`sidebar.orgName:${userKey}`);
       if (cached) setOrgName(cached);
@@ -293,14 +333,34 @@ export function AppSidebar(
     } catch {
       setOrgName(null);
     }
-  }, [userKey]);
+  }, [userKey, isClientUser]);
+
+  // Poll unread audit log count for admin users
+  const fetchAuditBadge = React.useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const res = await fetch("/api/admin/audit-log?count=true", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setAuditBadge(data?.unreadCount ?? 0);
+      }
+    } catch {}
+  }, [isAdmin]);
 
   // Initial fetch only once
   React.useEffect(() => {
     void loadFlowsOnce();
     void loadPackagesOnce();
     void fetchOrgName();
-  }, [loadFlowsOnce, loadPackagesOnce, fetchOrgName]);
+    void fetchAuditBadge();
+  }, [loadFlowsOnce, loadPackagesOnce, fetchOrgName, fetchAuditBadge]);
+
+  // Poll audit badge every 30 seconds
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    const interval = setInterval(() => void fetchAuditBadge(), 30_000);
+    return () => clearInterval(interval);
+  }, [isAdmin, fetchAuditBadge]);
 
   // Listen for account changes to refresh org name live
   React.useEffect(() => {
@@ -363,6 +423,18 @@ export function AppSidebar(
                       <SidebarMenuButton tooltip="User Settings" asChild>
                         <Link href="/admin/users">
                           <UserCog className="h-3.5 w-3.5 shrink-0" />
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton tooltip="Activity Log" asChild>
+                        <Link href="/admin/activity-log" className="relative">
+                          <ClipboardList className="h-3.5 w-3.5 shrink-0" />
+                          {auditBadge > 0 && (
+                            <span className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-500 text-[8px] font-bold text-white">
+                              {auditBadge > 9 ? "9+" : auditBadge}
+                            </span>
+                          )}
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
@@ -485,6 +557,19 @@ export function AppSidebar(
                               <Link href="/admin/users">
                                 <UserCog className="h-4 w-4 shrink-0" />
                                 <span>User Settings</span>
+                              </Link>
+                            </SidebarMenuButton>
+                          </li>
+                          <li>
+                            <SidebarMenuButton tooltip="Activity Log" asChild>
+                              <Link href="/admin/activity-log" className="relative">
+                                <ClipboardList className="h-4 w-4 shrink-0" />
+                                <span>Activity Log</span>
+                                {auditBadge > 0 && (
+                                  <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white">
+                                    {auditBadge > 99 ? "99+" : auditBadge}
+                                  </span>
+                                )}
                               </Link>
                             </SidebarMenuButton>
                           </li>

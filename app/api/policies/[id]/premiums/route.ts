@@ -9,7 +9,7 @@ import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { appendPolicyAudit } from "@/lib/audit";
 import { sql } from "drizzle-orm";
-import { loadAccountingFields, buildFieldColumnMap, getColumnType, type AccountingFieldDef } from "@/lib/accounting-fields";
+import { loadAccountingFields, buildFieldColumnMap, getColumnType, filterFieldsByContext, type AccountingFieldDef, type PremiumContext } from "@/lib/accounting-fields";
 
 export const dynamic = "force-dynamic";
 
@@ -219,7 +219,335 @@ function extractEntityName(carExtra: Record<string, unknown> | null | undefined)
   return extractCollaboratorName(carExtra);
 }
 
-export async function GET(_: Request, ctx: Ctx) {
+async function getEntityDisplayName(recordId: number): Promise<string | null> {
+  try {
+    const [row] = await db
+      .select({ carExtra: cars.extraAttributes })
+      .from(cars)
+      .where(eq(cars.policyId, recordId))
+      .limit(1);
+    if (!row) return null;
+    const name = extractEntityName(row.carExtra as Record<string, unknown> | null);
+    return name || null;
+  } catch { return null; }
+}
+
+async function findClientPolicies(clientRecordId: number): Promise<{ policyId: number; policyNumber: string }[]> {
+  try {
+    const [clientRow] = await db
+      .select({ pNum: policies.policyNumber, carExtra: cars.extraAttributes })
+      .from(policies)
+      .leftJoin(cars, eq(cars.policyId, policies.id))
+      .where(eq(policies.id, clientRecordId))
+      .limit(1);
+    if (!clientRow) return [];
+
+    const clientNumber = clientRow.pNum;
+    const results = await db
+      .select({ pId: policies.id, pNum: policies.policyNumber })
+      .from(policies)
+      .leftJoin(cars, eq(cars.policyId, policies.id))
+      .where(and(
+        sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') = 'policyset'`,
+        sql`(
+          ((${cars.extraAttributes})::jsonb ->> 'clientNumber') = ${clientNumber}
+          OR (((${cars.extraAttributes})::jsonb -> 'insuredSnapshot') ->> 'clientPolicyNumber') = ${clientNumber}
+          OR ((${cars.extraAttributes})::text ILIKE ${'%"clientNumber":"' + clientNumber + '"%'})
+          OR ((${cars.extraAttributes})::text ILIKE ${'%"clientId":' + String(clientRecordId) + '%'})
+        )`,
+      ))
+      .orderBy(desc(policies.createdAt))
+      .limit(50);
+
+    return results.map((r) => ({ policyId: r.pId, policyNumber: r.pNum }));
+  } catch { return []; }
+}
+
+async function findAgentPolicies(agentRecordId: number): Promise<{ policyId: number; policyNumber: string }[]> {
+  try {
+    const polCols = await getPolicyColumns();
+    if (!polCols.hasAgentId) return [];
+
+    const results = await db.execute(sql`
+      SELECT p.id as "policyId", p.policy_number as "policyNumber"
+      FROM "policies" p
+      LEFT JOIN "cars" c ON c.policy_id = p.id
+      WHERE p.agent_id = ${agentRecordId}
+        AND ((c.extra_attributes)::jsonb ->> 'flowKey') = 'policyset'
+      ORDER BY p.created_at DESC
+      LIMIT 50
+    `);
+    const rows = Array.isArray(results) ? results : (results as any)?.rows ?? [];
+    return rows.map((r: any) => ({ policyId: Number(r.policyId), policyNumber: String(r.policyNumber) }));
+  } catch { return []; }
+}
+
+/**
+ * Maps user type to a premium context for role-based field filtering.
+ * Admin / internal_staff / accounting see everything (returns null = no extra filter).
+ * Clients only see fields tagged with "client".
+ * Agents only see fields tagged with "agent".
+ */
+function userTypeToContext(userType: string): PremiumContext | null {
+  if (["admin", "internal_staff", "accounting"].includes(userType)) return null;
+  if (userType === "agent") return "agent";
+  return "client";
+}
+
+/**
+ * Default role-based filter when admin has not configured premiumContexts on any field.
+ * Restricts visibility by matching field key/label to the user's role so that
+ * clients only see "client premium" and agents only see "agent premium".
+ * Currency field is always included for formatting purposes.
+ */
+function applyDefaultRoleFilter(fields: AccountingFieldDef[], role: PremiumContext): AccountingFieldDef[] {
+  return fields.filter((f) => {
+    const k = f.key.toLowerCase();
+    const l = f.label.toLowerCase();
+    if (k === "currency" || l === "currency") return true;
+    if (role === "client") return k.includes("client") || l.includes("client");
+    if (role === "agent") return k.includes("agent") || l.includes("agent");
+    return true;
+  });
+}
+
+/**
+ * Fast path for context="self" — the record IS the premium record.
+ * Only needs: own record data, entity names from linked policy, agent name.
+ * Skips: policy_premiums scan, loading all collaborators/insurers, cover type options.
+ */
+async function handleSelfContext(
+  policyId: number,
+  fields: FieldDef[],
+  user: { userType: string },
+) {
+  type AccountingRecord = {
+    recordId: number; recordNumber: string; flowKey: string;
+    fields: { key: string; label: string; value: unknown }[];
+    createdAt: string; linkedPolicyNumber?: string;
+  };
+  type EntityHint = {
+    insurerId: number | null; insurerName: string | null;
+    collabId: number | null; collabName: string | null;
+  };
+
+  const stripPrefix = (k: string) => { const idx = k.indexOf("__"); return idx >= 0 ? k.slice(idx + 2) : k; };
+
+  // 1) Load self record
+  const [selfRow] = await db
+    .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
+    .from(policies)
+    .leftJoin(cars, eq(cars.policyId, policies.id))
+    .where(eq(policies.id, policyId))
+    .limit(1);
+
+  if (!selfRow) {
+    return NextResponse.json({ policyId, context: "self", fields, lines: [], coverTypeOptions: [], availableInsurers: [], availableCollabs: [], snapshotEntities: {}, accountingRecords: [], agentName: null });
+  }
+
+  const extra = (selfRow.cExtra ?? {}) as Record<string, unknown>;
+  const fk = String(extra.flowKey ?? "");
+  const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
+
+  // Extract record fields
+  const allVals = new Map<string, unknown>();
+  for (const pkgData of Object.values(pkgs)) {
+    if (!pkgData || typeof pkgData !== "object") continue;
+    const vals = ("values" in (pkgData as Record<string, unknown>)
+      ? (pkgData as { values?: Record<string, unknown> }).values
+      : pkgData) as Record<string, unknown> | undefined;
+    if (!vals) continue;
+    for (const [k, v] of Object.entries(vals)) {
+      if (v === undefined || v === null || v === "") continue;
+      allVals.set(k, v);
+      allVals.set(stripPrefix(k), v);
+    }
+  }
+  const recFields: { key: string; label: string; value: unknown }[] = [];
+  for (const f of fields) {
+    if (recFields.some((rf) => rf.key === f.key)) continue;
+    const v = allVals.get(f.key) ?? allVals.get(`premiumRecord__${f.key}`) ?? allVals.get(`accounting__${f.key}`);
+    if (v !== undefined && v !== null && v !== "") {
+      recFields.push({ key: f.key, label: f.label, value: v });
+    }
+  }
+
+  const accountingRecords: AccountingRecord[] = recFields.length > 0
+    ? [{ recordId: selfRow.pId, recordNumber: selfRow.pNum, flowKey: fk, fields: recFields, createdAt: selfRow.pCreated }]
+    : [];
+
+  // 2) Find linked policy number from policyReference field
+  const polRefField = recFields.find(
+    (f) => f.key.toLowerCase().includes("policyref") || f.key.toLowerCase().includes("policy_ref"),
+  );
+  const linkedNum = typeof polRefField?.value === "string" ? polRefField.value.trim() : null;
+  let linkedPolicyId: number | null = null;
+  if (linkedNum) {
+    try {
+      const [lp] = await db.select({ id: policies.id }).from(policies).where(eq(policies.policyNumber, linkedNum)).limit(1);
+      if (lp) linkedPolicyId = lp.id;
+    } catch { /* ignore */ }
+  }
+
+  // 3) Resolve entities from linked policy's snapshot (much faster than loading all entities)
+  const snapshotEntities: Record<string, EntityHint> = {};
+  const entitySourceId = linkedPolicyId ?? policyId;
+  try {
+    const [carRow] = await db
+      .select({ extra: cars.extraAttributes })
+      .from(cars)
+      .where(eq(cars.policyId, entitySourceId))
+      .limit(1);
+    const carExtra = (carRow?.extra ?? {}) as Record<string, unknown>;
+    const srcPkgs = (carExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
+
+    const bare = (s: string) => s.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
+    const isOdKey = (k: string) => {
+      const b = bare(k); return b.endsWith("pd") || b.endsWith("od") || b.includes("owndamage") || b.includes("ownvehicle");
+    };
+    const isInsurerKey = (k: string) => {
+      const b = bare(k);
+      return b.includes("insurancecompany") || b.includes("insurer") || b.includes("insuranceco") || b.includes("inscompany") || b.includes("inssection");
+    };
+    const isCollabKey = (k: string) => {
+      const b = bare(k);
+      return b.includes("collorator") || b.includes("collaborator") || b.includes("collabrator");
+    };
+
+    // Load ONLY the entities referenced, not all entities in the system
+    const collabNames = new Map<string, { id: number; name: string }>();
+    const insurerNames = new Map<string, { id: number; name: string }>();
+
+    // Collect candidate entity names from snapshot fields
+    const candidateInsurers: string[] = [];
+    const candidateCollabs: string[] = [];
+    for (const data of Object.values(srcPkgs)) {
+      if (!data || typeof data !== "object") continue;
+      const vals = ("values" in (data as Record<string, unknown>)
+        ? (data as { values?: Record<string, unknown> }).values
+        : data) as Record<string, unknown> | undefined;
+      if (!vals) continue;
+      for (const [k, v] of Object.entries(vals)) {
+        if (typeof v !== "string" || !v.trim()) continue;
+        if (isInsurerKey(k)) candidateInsurers.push(v.trim());
+        if (isCollabKey(k)) candidateCollabs.push(v.trim());
+      }
+    }
+
+    // Look up only the referenced collaborators/insurers by name (targeted queries)
+    if (candidateCollabs.length > 0) {
+      try {
+        const collabRows = await db
+          .select({ policyId: policies.id, carExtra: cars.extraAttributes })
+          .from(policies)
+          .leftJoin(cars, eq(cars.policyId, policies.id))
+          .where(sql`(cars.extra_attributes)::jsonb ->> 'flowKey' = 'collaboratorSet'`)
+          .limit(50);
+        for (const r of collabRows) {
+          const name = extractCollaboratorName(r.carExtra as Record<string, unknown> | null);
+          if (name) collabNames.set(name.toLowerCase(), { id: r.policyId, name });
+        }
+      } catch { /* ignore */ }
+    }
+    if (candidateInsurers.length > 0) {
+      const ifk = await findInsurerFlowKey();
+      if (ifk) {
+        try {
+          const insurerRows = await db
+            .select({ policyId: policies.id, carExtra: cars.extraAttributes })
+            .from(policies)
+            .leftJoin(cars, eq(cars.policyId, policies.id))
+            .where(sql`(cars.extra_attributes)::jsonb ->> 'flowKey' = ${ifk}`)
+            .limit(50);
+          for (const r of insurerRows) {
+            const name = extractEntityName(r.carExtra as Record<string, unknown> | null);
+            if (name) insurerNames.set(name.toLowerCase(), { id: r.policyId, name });
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    const matchInsurer = (val: string) => {
+      const lower = val.toLowerCase().trim();
+      if (!lower) return null;
+      const exact = insurerNames.get(lower);
+      if (exact) return exact;
+      for (const [name, entity] of insurerNames) { if (lower.includes(name) || name.includes(lower)) return entity; }
+      return null;
+    };
+    const matchCollab = (val: string) => {
+      const lower = val.toLowerCase().trim();
+      if (!lower) return null;
+      const exact = collabNames.get(lower);
+      if (exact) return exact;
+      for (const [name, entity] of collabNames) { if (lower.includes(name) || name.includes(lower)) return entity; }
+      return null;
+    };
+    const ensureHint = (hint: string) => {
+      if (!snapshotEntities[hint]) snapshotEntities[hint] = { insurerId: null, insurerName: null, collabId: null, collabName: null };
+      return snapshotEntities[hint];
+    };
+
+    for (const data of Object.values(srcPkgs)) {
+      if (!data || typeof data !== "object") continue;
+      const vals = ("values" in (data as Record<string, unknown>)
+        ? (data as { values?: Record<string, unknown> }).values
+        : data) as Record<string, unknown> | undefined;
+      if (!vals) continue;
+      for (const [k, v] of Object.entries(vals)) {
+        if (typeof v !== "string" || !v.trim()) continue;
+        const hint = isOdKey(k) ? "od" : "main";
+        const entry = ensureHint(hint);
+        if (isInsurerKey(k) && !entry.insurerId) { const ins = matchInsurer(v); if (ins) { entry.insurerId = ins.id; entry.insurerName = ins.name; } }
+        if (isCollabKey(k) && !entry.collabId) { const col = matchCollab(v); if (col) { entry.collabId = col.id; entry.collabName = col.name; } }
+      }
+    }
+    // Pass 2 fallback
+    for (const data of Object.values(srcPkgs)) {
+      if (!data || typeof data !== "object") continue;
+      const vals = ("values" in (data as Record<string, unknown>)
+        ? (data as { values?: Record<string, unknown> }).values
+        : data) as Record<string, unknown> | undefined;
+      if (!vals) continue;
+      for (const [k, v] of Object.entries(vals)) {
+        if (typeof v !== "string" || !v.trim()) continue;
+        if (isInsurerKey(k) || isCollabKey(k)) continue;
+        const hint = isOdKey(k) ? "od" : "main";
+        const entry = ensureHint(hint);
+        if (!entry.insurerId) { const ins = matchInsurer(v); if (ins) { entry.insurerId = ins.id; entry.insurerName = ins.name; } }
+        if (!entry.collabId) { const col = matchCollab(v); if (col) { entry.collabId = col.id; entry.collabName = col.name; } }
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  // 4) Resolve agent from linked policy (or self)
+  let agentName: string | null = null;
+  try {
+    const polCols = await getPolicyColumns();
+    if (polCols.hasAgentId) {
+      const agentSourceId = linkedPolicyId ?? policyId;
+      const agentRes = await db.execute(sql`
+        select u.name, u.user_number as "userNumber"
+        from "policies" p left join "users" u on u.id = p.agent_id
+        where p.id = ${agentSourceId} limit 1
+      `);
+      const ar = Array.isArray(agentRes) ? agentRes : (agentRes as any)?.rows ?? [];
+      if (ar.length > 0) {
+        const r = ar[0] as { name?: string; userNumber?: string };
+        const parts = [r.userNumber, r.name].filter(Boolean);
+        agentName = parts.length > 0 ? parts.join(" — ") : null;
+      }
+    }
+  } catch { /* ignore */ }
+
+  return NextResponse.json({
+    policyId, context: "self", fields,
+    lines: [], coverTypeOptions: [], availableInsurers: [], availableCollabs: [],
+    snapshotEntities, accountingRecords, agentName,
+  });
+}
+
+export async function GET(request: Request, ctx: Ctx) {
   try {
     const user = await requireUser();
     const { id: idParam } = await ctx.params;
@@ -230,7 +558,29 @@ export async function GET(_: Request, ctx: Ctx) {
     const hasAccess = await verifyPolicyAccess(policyId, user);
     if (!hasAccess) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    const [fields, coverTypeOptions] = await Promise.all([loadAccountingFields(), loadCoverTypeOptions()]);
+    const url = new URL(request.url);
+    const context = (url.searchParams.get("context") ?? "policy") as PremiumContext;
+
+    const allFields = await loadAccountingFields();
+
+    // Role-based filtering: non-admin users only see fields tagged for their role
+    const roleContext = userTypeToContext(user.userType);
+    let fields = filterFieldsByContext(allFields, context);
+    if (roleContext) {
+      const anyFieldHasContexts = allFields.some((f) => f.premiumContexts && f.premiumContexts.length > 0);
+      if (anyFieldHasContexts) {
+        fields = filterFieldsByContext(fields, roleContext);
+      } else {
+        fields = applyDefaultRoleFilter(fields, roleContext);
+      }
+    }
+
+    // --- Fast path for "self" context: only needs own record + entity resolution ---
+    if (context === "self") {
+      return await handleSelfContext(policyId, fields, user);
+    }
+
+    const coverTypeOptions = await loadCoverTypeOptions();
 
     let rows: (typeof policyPremiums.$inferSelect)[] = [];
     try {
@@ -325,55 +675,56 @@ export async function GET(_: Request, ctx: Ctx) {
     // Infer insurer/collab from policy snapshot using field-key semantics
     type EntityHint = { insurerId: number | null; insurerName: string | null; collabId: number | null; collabName: string | null };
     const snapshotEntities: Record<string, EntityHint> = {};
-    try {
+
+    const bare = (s: string) => s.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
+    const isOdKey = (k: string) => {
+      const b = bare(k);
+      return b.endsWith("pd") || b.endsWith("od") || b.includes("owndamage") || b.includes("ownvehicle");
+    };
+    const isInsurerKey = (k: string) => {
+      const b = bare(k);
+      return b.includes("insurancecompany") || b.includes("insurer") || b.includes("insuranceco")
+        || b.includes("inscompany") || b.includes("inssection");
+    };
+    const isCollabKey = (k: string) => {
+      const b = bare(k);
+      return b.includes("collorator") || b.includes("collaborator") || b.includes("collabrator");
+    };
+
+    const insurerNameSet = new Map<string, { id: number; name: string }>();
+    for (const ins of availableInsurers) insurerNameSet.set(ins.name.toLowerCase(), ins);
+    const collabNameSet = new Map<string, { id: number; name: string }>();
+    for (const c of availableCollabs) collabNameSet.set(c.name.toLowerCase(), c);
+
+    const matchInsurer = (val: string): { id: number; name: string } | null => {
+      const lower = val.toLowerCase().trim();
+      if (!lower) return null;
+      const exact = insurerNameSet.get(lower);
+      if (exact) return exact;
+      for (const [name, entity] of insurerNameSet) {
+        if (lower.includes(name) || name.includes(lower)) return entity;
+      }
+      return null;
+    };
+    const matchCollab = (val: string): { id: number; name: string } | null => {
+      const lower = val.toLowerCase().trim();
+      if (!lower) return null;
+      const exact = collabNameSet.get(lower);
+      if (exact) return exact;
+      for (const [name, entity] of collabNameSet) {
+        if (lower.includes(name) || name.includes(lower)) return entity;
+      }
+      return null;
+    };
+
+    const resolveEntitiesFromSnapshot = async (targetPolicyId: number) => {
       const [carRow2] = await db
         .select({ extra: cars.extraAttributes })
         .from(cars)
-        .where(eq(cars.policyId, policyId))
+        .where(eq(cars.policyId, targetPolicyId))
         .limit(1);
       const carExtra = (carRow2?.extra ?? {}) as Record<string, unknown>;
       const pkgs = (carExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
-
-      const bare = (s: string) => s.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
-      const isOdKey = (k: string) => {
-        const b = bare(k);
-        return b.endsWith("pd") || b.endsWith("od") || b.includes("owndamage") || b.includes("ownvehicle");
-      };
-      const isInsurerKey = (k: string) => {
-        const b = bare(k);
-        return b.includes("insurancecompany") || b.includes("insurer") || b.includes("insuranceco")
-          || b.includes("inscompany") || b.includes("inssection");
-      };
-      const isCollabKey = (k: string) => {
-        const b = bare(k);
-        return b.includes("collorator") || b.includes("collaborator") || b.includes("collabrator");
-      };
-
-      const insurerNameSet = new Map<string, { id: number; name: string }>();
-      for (const ins of availableInsurers) insurerNameSet.set(ins.name.toLowerCase(), ins);
-      const collabNameSet = new Map<string, { id: number; name: string }>();
-      for (const c of availableCollabs) collabNameSet.set(c.name.toLowerCase(), c);
-
-      const matchInsurer = (val: string): { id: number; name: string } | null => {
-        const lower = val.toLowerCase().trim();
-        if (!lower) return null;
-        const exact = insurerNameSet.get(lower);
-        if (exact) return exact;
-        for (const [name, entity] of insurerNameSet) {
-          if (lower.includes(name) || name.includes(lower)) return entity;
-        }
-        return null;
-      };
-      const matchCollab = (val: string): { id: number; name: string } | null => {
-        const lower = val.toLowerCase().trim();
-        if (!lower) return null;
-        const exact = collabNameSet.get(lower);
-        if (exact) return exact;
-        for (const [name, entity] of collabNameSet) {
-          if (lower.includes(name) || name.includes(lower)) return entity;
-        }
-        return null;
-      };
 
       const ensureHint = (hint: string) => {
         if (!snapshotEntities[hint]) {
@@ -382,7 +733,6 @@ export async function GET(_: Request, ctx: Ctx) {
         return snapshotEntities[hint];
       };
 
-      // Pass 1: use field-key semantics for targeted matching
       for (const data of Object.values(pkgs)) {
         if (!data || typeof data !== "object") continue;
         const vals = ("values" in (data as Record<string, unknown>)
@@ -404,7 +754,6 @@ export async function GET(_: Request, ctx: Ctx) {
         }
       }
 
-      // Pass 2: fallback – scan remaining string values for unresolved slots
       for (const data of Object.values(pkgs)) {
         if (!data || typeof data !== "object") continue;
         const vals = ("values" in (data as Record<string, unknown>)
@@ -426,122 +775,221 @@ export async function GET(_: Request, ctx: Ctx) {
           }
         }
       }
-    } catch { /* non-fatal */ }
+    };
 
-    // Find accounting flow records that reference this policy
+    try { await resolveEntitiesFromSnapshot(policyId); } catch { /* non-fatal */ }
+
+    // Find accounting flow records based on context
     type AccountingRecord = {
       recordId: number;
       recordNumber: string;
       flowKey: string;
       fields: { key: string; label: string; value: unknown }[];
       createdAt: string;
+      linkedPolicyNumber?: string;
     };
     let accountingRecords: AccountingRecord[] = [];
-    try {
-      const [policyInfo] = await db
-        .select({ policyNumber: policies.policyNumber })
-        .from(policies)
-        .where(eq(policies.id, policyId))
-        .limit(1);
 
-      if (policyInfo?.policyNumber) {
-        const pn = policyInfo.policyNumber;
-        const linkedRows = await db
-          .select({
-            pId: policies.id,
-            pNum: policies.policyNumber,
-            pCreated: policies.createdAt,
-            cExtra: cars.extraAttributes,
-          })
+    const stripPrefix = (k: string) => {
+      const idx = k.indexOf("__");
+      return idx >= 0 ? k.slice(idx + 2) : k;
+    };
+
+    const extractRecordFields = (
+      lr: { pId: number; pNum: string; pCreated: string; cExtra: unknown },
+    ): AccountingRecord | null => {
+      const extra = (lr.cExtra ?? {}) as Record<string, unknown>;
+      const fk = String(extra.flowKey ?? "");
+      const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
+      const recFields: { key: string; label: string; value: unknown }[] = [];
+
+      const allVals = new Map<string, unknown>();
+      for (const [, pkgData] of Object.entries(pkgs)) {
+        if (!pkgData || typeof pkgData !== "object") continue;
+        const vals = ("values" in (pkgData as Record<string, unknown>)
+          ? (pkgData as { values?: Record<string, unknown> }).values
+          : pkgData) as Record<string, unknown> | undefined;
+        if (!vals) continue;
+        for (const [k, v] of Object.entries(vals)) {
+          if (v === undefined || v === null || v === "") continue;
+          allVals.set(k, v);
+          allVals.set(stripPrefix(k), v);
+        }
+      }
+
+      for (const f of fields) {
+        if (recFields.some((rf) => rf.key === f.key)) continue;
+        const v = allVals.get(f.key) ?? allVals.get(`premiumRecord__${f.key}`) ?? allVals.get(`accounting__${f.key}`);
+        if (v !== undefined && v !== null && v !== "") {
+          recFields.push({ key: f.key, label: f.label, value: v });
+        }
+      }
+
+      if (recFields.length === 0) return null;
+      return { recordId: lr.pId, recordNumber: lr.pNum, flowKey: fk, fields: recFields, createdAt: lr.pCreated };
+    };
+
+    try {
+      if (context === "policy") {
+        // Default: find accounting records that reference this policy's number
+        const [policyInfo] = await db
+          .select({ policyNumber: policies.policyNumber })
           .from(policies)
-          .leftJoin(cars, eq(cars.policyId, policies.id))
-          .where(
-            and(
+          .where(eq(policies.id, policyId))
+          .limit(1);
+
+        if (policyInfo?.policyNumber) {
+          const pn = policyInfo.policyNumber;
+          const linkedRows = await db
+            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
+            .from(policies)
+            .leftJoin(cars, eq(cars.policyId, policies.id))
+            .where(and(
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') IS NOT NULL`,
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != ''`,
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'policyset'`,
               sql`(${cars.extraAttributes})::text LIKE ${'%' + pn + '%'}`,
-            ),
-          )
-          .orderBy(desc(policies.createdAt))
-          .limit(50);
+            ))
+            .orderBy(desc(policies.createdAt))
+            .limit(50);
 
-        const stripPrefix = (k: string) => {
-          const idx = k.indexOf("__");
-          return idx >= 0 ? k.slice(idx + 2) : k;
-        };
+          for (const lr of linkedRows) {
+            const rec = extractRecordFields(lr);
+            if (rec) accountingRecords.push(rec);
+          }
+        }
+      } else if (context === "collaborator" || context === "insurer") {
+        // Find this entity's name, then search accounting records referencing it
+        const entityName = await getEntityDisplayName(policyId);
+        if (entityName) {
+          const escapedName = entityName.replace(/[%_]/g, "\\$&");
+          const linkedRows = await db
+            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
+            .from(policies)
+            .leftJoin(cars, eq(cars.policyId, policies.id))
+            .where(and(
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') IS NOT NULL`,
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != ''`,
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'policyset'`,
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'collaboratorSet'`,
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'InsuranceSet'`,
+              sql`(${cars.extraAttributes})::text LIKE ${'%' + escapedName + '%'}`,
+            ))
+            .orderBy(desc(policies.createdAt))
+            .limit(100);
 
-        for (const lr of linkedRows) {
-          const extra = (lr.cExtra ?? {}) as Record<string, unknown>;
-          const fk = String(extra.flowKey ?? "");
-          const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
-          const recFields: { key: string; label: string; value: unknown }[] = [];
-
-          // Build a normalized lookup: stripped key → value
-          const allVals = new Map<string, unknown>();
-          for (const [, pkgData] of Object.entries(pkgs)) {
-            if (!pkgData || typeof pkgData !== "object") continue;
-            const vals = ("values" in (pkgData as Record<string, unknown>)
-              ? (pkgData as { values?: Record<string, unknown> }).values
-              : pkgData) as Record<string, unknown> | undefined;
-            if (!vals) continue;
-            for (const [k, v] of Object.entries(vals)) {
-              if (v === undefined || v === null || v === "") continue;
-              allVals.set(k, v);
-              allVals.set(stripPrefix(k), v);
+          for (const lr of linkedRows) {
+            const rec = extractRecordFields(lr);
+            if (rec) {
+              // Find the linked policy number from the record's snapshot
+              const extra = (lr.cExtra ?? {}) as Record<string, unknown>;
+              const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
+              let linkedPolNum: string | undefined;
+              for (const pkgData of Object.values(pkgs)) {
+                if (!pkgData || typeof pkgData !== "object") continue;
+                const vals = ("values" in (pkgData as Record<string, unknown>)
+                  ? (pkgData as { values?: Record<string, unknown> }).values
+                  : pkgData) as Record<string, unknown> | undefined;
+                if (!vals) continue;
+                for (const [k, v] of Object.entries(vals)) {
+                  const bare = stripPrefix(k).toLowerCase().replace(/[^a-z]/g, "");
+                  if ((bare === "policynumber" || bare === "policyno") && typeof v === "string" && v.trim()) {
+                    linkedPolNum = v.trim();
+                    break;
+                  }
+                }
+                if (linkedPolNum) break;
+              }
+              rec.linkedPolicyNumber = linkedPolNum;
+              accountingRecords.push(rec);
             }
           }
+        }
+      } else if (context === "client") {
+        // Find all policies belonging to this client, then find their accounting records
+        const clientPolicies = await findClientPolicies(policyId);
+        for (const cp of clientPolicies) {
+          const linkedRows = await db
+            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
+            .from(policies)
+            .leftJoin(cars, eq(cars.policyId, policies.id))
+            .where(and(
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') IS NOT NULL`,
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != ''`,
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'policyset'`,
+              sql`(${cars.extraAttributes})::text LIKE ${'%' + cp.policyNumber + '%'}`,
+            ))
+            .orderBy(desc(policies.createdAt))
+            .limit(20);
 
-          for (const f of fields) {
-            if (recFields.some((rf) => rf.key === f.key)) continue;
-            const v = allVals.get(f.key) ?? allVals.get(`accounting__${f.key}`);
-            if (v !== undefined && v !== null && v !== "") {
-              recFields.push({ key: f.key, label: f.label, value: v });
+          for (const lr of linkedRows) {
+            const rec = extractRecordFields(lr);
+            if (rec) {
+              rec.linkedPolicyNumber = cp.policyNumber;
+              accountingRecords.push(rec);
             }
           }
+        }
+      } else if (context === "agent") {
+        // Find all policies assigned to this agent, then find their accounting records
+        const agentPolicies = await findAgentPolicies(policyId);
+        for (const ap of agentPolicies) {
+          const linkedRows = await db
+            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
+            .from(policies)
+            .leftJoin(cars, eq(cars.policyId, policies.id))
+            .where(and(
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') IS NOT NULL`,
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != ''`,
+              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'policyset'`,
+              sql`(${cars.extraAttributes})::text LIKE ${'%' + ap.policyNumber + '%'}`,
+            ))
+            .orderBy(desc(policies.createdAt))
+            .limit(20);
 
-          if (recFields.length > 0) {
-            accountingRecords.push({
-              recordId: lr.pId,
-              recordNumber: lr.pNum,
-              flowKey: fk,
-              fields: recFields,
-              createdAt: lr.pCreated,
-            });
+          for (const lr of linkedRows) {
+            const rec = extractRecordFields(lr);
+            if (rec) {
+              rec.linkedPolicyNumber = ap.policyNumber;
+              accountingRecords.push(rec);
+            }
           }
         }
       }
     } catch { /* non-fatal */ }
 
-    // Resolve agent for this policy
+    // Resolve agent name for this policy (visible to all users — it's a contact reference)
     let agentName: string | null = null;
-    const polCols2 = await getPolicyColumns();
-    if (polCols2.hasAgentId) {
-      try {
-        const agentRes = await db.execute(sql`
-          select u.name, u.user_number as "userNumber"
-          from "policies" p
-          left join "users" u on u.id = p.agent_id
-          where p.id = ${policyId}
-          limit 1
-        `);
-        const ar = Array.isArray(agentRes) ? agentRes : (agentRes as any)?.rows ?? [];
-        if (ar.length > 0) {
-          const r = ar[0] as { name?: string; userNumber?: string };
-          const parts = [r.userNumber, r.name].filter(Boolean);
-          agentName = parts.length > 0 ? parts.join(" — ") : null;
-        }
-      } catch { /* ignore */ }
+    if (context === "policy") {
+      const polCols2 = await getPolicyColumns();
+      if (polCols2.hasAgentId) {
+        try {
+          const agentRes = await db.execute(sql`
+            select u.name, u.user_number as "userNumber"
+            from "policies" p
+            left join "users" u on u.id = p.agent_id
+            where p.id = ${policyId}
+            limit 1
+          `);
+          const ar = Array.isArray(agentRes) ? agentRes : (agentRes as any)?.rows ?? [];
+          if (ar.length > 0) {
+            const r = ar[0] as { name?: string; userNumber?: string };
+            const parts = [r.userNumber, r.name].filter(Boolean);
+            agentName = parts.length > 0 ? parts.join(" — ") : null;
+          }
+        } catch { /* ignore */ }
+      }
     }
 
     return NextResponse.json({
       policyId,
+      context,
       fields,
-      lines,
-      coverTypeOptions,
-      availableInsurers,
-      availableCollabs,
-      snapshotEntities,
+      lines: context === "policy" ? lines : [],
+      coverTypeOptions: context === "policy" ? coverTypeOptions : [],
+      availableInsurers: context === "policy" ? availableInsurers : [],
+      availableCollabs: context === "policy" ? availableCollabs : [],
+      snapshotEntities: context === "policy" ? snapshotEntities : {},
       accountingRecords,
       agentName,
     });

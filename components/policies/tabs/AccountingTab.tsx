@@ -8,12 +8,15 @@ import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
 import { Building2, Loader2, Pencil, Save, User, Users, X } from "lucide-react";
+import { FieldEditDialog, type EditField } from "@/components/ui/field-edit-dialog";
 
 type FieldDef = {
   key: string;
   label: string;
   inputType: string;
   sortOrder: number;
+  groupOrder?: number;
+  groupName?: string;
   options?: Array<{ value: string; label: string }>;
   premiumColumn?: string;
 };
@@ -415,12 +418,15 @@ function LineView({ line, fields, canEdit, onEdit, displayPolicyNumber }: { line
 
 
 // --- Accounting flow record view ---
+type PremiumContext = "policy" | "collaborator" | "insurer" | "client" | "agent" | "self";
+
 type AccountingRecord = {
   recordId: number;
   recordNumber: string;
   flowKey: string;
   fields: { key: string; label: string; value: unknown }[];
   createdAt: string;
+  linkedPolicyNumber?: string;
 };
 
 type SectionEntities = {
@@ -451,7 +457,7 @@ function AccountingSection({ section, currency }: { section: SectionData; curren
       <div className="border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
         <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">{section.label}</div>
         {section.policyNumber && (
-          <div className="text-[10px] font-mono text-neutral-400 dark:text-neutral-500">
+          <div className="text-xs font-mono text-neutral-500 dark:text-neutral-400">
             Policy No: {section.policyNumber}
           </div>
         )}
@@ -502,7 +508,7 @@ function AccountingSection({ section, currency }: { section: SectionData; curren
 }
 
 function AccountingRecordView({
-  record, allFields, snapshotEntities, agentName, policyNumber, expectedTemplates,
+  record, allFields, snapshotEntities, agentName, policyNumber, expectedTemplates, premiumContext, canEdit = false, onEdit,
 }: {
   record: AccountingRecord;
   allFields: FieldDef[];
@@ -510,9 +516,14 @@ function AccountingRecordView({
   agentName: string | null;
   policyNumber?: string;
   expectedTemplates: { key: string; label: string }[];
+  premiumContext?: PremiumContext;
+  canEdit?: boolean;
+  onEdit?: (record: AccountingRecord) => void;
 }) {
   const valMap = new Map(record.fields.map((f) => [f.key, f.value]));
   const currency = (typeof valMap.get("currency") === "string" && valMap.get("currency")) || "HKD";
+
+  const displayPolNum = record.linkedPolicyNumber ?? policyNumber;
 
   const mainHint = snapshotEntities["main"] ?? { collabName: null, insurerName: null };
   const odHint = snapshotEntities["od"] ?? { collabName: null, insurerName: null };
@@ -536,16 +547,20 @@ function AccountingRecordView({
   const pdLabel = expectedTemplates[1]?.label ?? "Own Vehicle Damage";
 
   const isTpoOd = expectedTemplates.length >= 2;
-  const mainPolNum = policyNumber
-    ? (isTpoOd ? `${policyNumber}(a)` : policyNumber)
+  const mainPolNum = displayPolNum
+    ? (isTpoOd ? `${displayPolNum}(a)` : displayPolNum)
     : null;
-  const pdPolNum = policyNumber && isTpoOd ? `${policyNumber}(b)` : null;
+  const pdPolNum = displayPolNum && isTpoOd ? `${displayPolNum}(b)` : null;
+
+  const showEntities = premiumContext === "policy" || premiumContext === "self" || !premiumContext;
 
   const sections: SectionData[] = [
     {
       label: mainLabel,
       policyNumber: mainPolNum,
-      entities: { collabName: mainHint.collabName, insurerName: mainHint.insurerName, agentName },
+      entities: showEntities
+        ? { collabName: mainHint.collabName, insurerName: mainHint.insurerName, agentName: null }
+        : { collabName: null, insurerName: null, agentName: null },
       fields: mainFields,
     },
   ];
@@ -554,7 +569,9 @@ function AccountingRecordView({
     sections.push({
       label: pdLabel,
       policyNumber: pdPolNum,
-      entities: { collabName: odHint.collabName, insurerName: odHint.insurerName, agentName: null },
+      entities: showEntities
+        ? { collabName: odHint.collabName, insurerName: odHint.insurerName, agentName: null }
+        : { collabName: null, insurerName: null, agentName: null },
       fields: pdFields,
     });
   }
@@ -562,14 +579,35 @@ function AccountingRecordView({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-mono text-neutral-400 dark:text-neutral-500">{record.recordNumber}</span>
-        <a
-          href={`/dashboard/flows/${encodeURIComponent(record.flowKey)}`}
-          className="inline-flex items-center gap-1 rounded border border-neutral-300 px-2 py-0.5 text-[11px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-        >
-          <Pencil className="h-3 w-3" /> Edit
-        </a>
+        <div className="flex items-center gap-2">
+          {premiumContext !== "self" && (
+            <span className="text-xs font-mono font-medium text-neutral-500 dark:text-neutral-400">{record.recordNumber}</span>
+          )}
+          {record.linkedPolicyNumber && premiumContext !== "policy" && premiumContext !== "self" && (
+            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs font-mono text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+              Policy: {record.linkedPolicyNumber}
+            </span>
+          )}
+        </div>
+        {canEdit && onEdit && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[11px]"
+            onClick={() => onEdit(record)}
+          >
+            <Pencil className="mr-1 h-3 w-3" /> Edit
+          </Button>
+        )}
       </div>
+
+      {agentName && (
+        <div className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-3 py-2 text-[11px] dark:border-neutral-800">
+          <User className="h-3 w-3 text-neutral-400 dark:text-neutral-500" />
+          <span className="text-neutral-500 dark:text-neutral-400">Agent:</span>
+          <span className="font-medium text-neutral-700 dark:text-neutral-300">{agentName}</span>
+        </div>
+      )}
 
       {sections.map((s) => (
         <AccountingSection key={s.label} section={s} currency={currency as string} />
@@ -586,12 +624,14 @@ export function AccountingTab({
   canEdit,
   policyExtra,
   onUpdate,
+  context = "policy",
 }: {
   policyId: number;
   policyNumber?: string;
   canEdit: boolean;
   policyExtra?: Record<string, unknown> | null;
   onUpdate?: () => void;
+  context?: PremiumContext;
 }) {
   const [fields, setFields] = React.useState<FieldDef[]>([]);
   const [lines, setLines] = React.useState<LineData[]>([]);
@@ -611,10 +651,66 @@ export function AccountingTab({
     collaboratorId: number | null;
   } | null>(null);
 
+  const [recEditOpen, setRecEditOpen] = React.useState(false);
+  const [recEditRecord, setRecEditRecord] = React.useState<AccountingRecord | null>(null);
+  const [recEditFields, setRecEditFields] = React.useState<EditField[]>([]);
+  const [recEditValues, setRecEditValues] = React.useState<Record<string, unknown>>({});
+  const [recEditSaving, setRecEditSaving] = React.useState(false);
+
+  function openRecordEdit(record: AccountingRecord) {
+    const editFields: EditField[] = fields.map((f) => ({
+      key: f.key,
+      label: f.label,
+      inputType: f.inputType,
+      sortOrder: f.sortOrder,
+      groupOrder: f.groupOrder,
+      groupName: f.groupName,
+      options: f.options,
+    }));
+    const vals: Record<string, unknown> = {};
+    for (const f of fields) {
+      const rf = record.fields.find((rf) => rf.key === f.key);
+      vals[f.key] = rf?.value ?? (f.inputType === "boolean" ? false : "");
+    }
+    setRecEditRecord(record);
+    setRecEditFields(editFields);
+    setRecEditValues(vals);
+    setRecEditOpen(true);
+  }
+
+  async function saveRecordEdit() {
+    if (!recEditRecord) return;
+    setRecEditSaving(true);
+    try {
+      const pkgKey = "premiumRecord";
+      const prefixed: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(recEditValues)) {
+        prefixed[`${pkgKey}__${k}`] = v;
+      }
+      const res = await fetch(`/api/policies/${recEditRecord.recordId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          packagesSnapshot: { [pkgKey]: { values: prefixed } },
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      toast.success("Premium record updated");
+      setRecEditOpen(false);
+      setRecEditRecord(null);
+      await load();
+      onUpdate?.();
+    } catch (err: unknown) {
+      toast.error((err as { message?: string })?.message ?? "Failed to save");
+    } finally {
+      setRecEditSaving(false);
+    }
+  }
+
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/policies/${policyId}/premiums`, { cache: "no-store" });
+      const res = await fetch(`/api/policies/${policyId}/premiums?context=${encodeURIComponent(context)}`, { cache: "no-store" });
       if (!res.ok) throw new Error("Failed to load");
       const json = await res.json();
       setFields(json.fields ?? []);
@@ -632,7 +728,7 @@ export function AccountingTab({
     } finally {
       setLoading(false);
     }
-  }, [policyId]);
+  }, [policyId, context]);
 
   React.useEffect(() => { void load(); }, [load]);
 
@@ -740,13 +836,18 @@ export function AccountingTab({
     );
   }
 
-  if (fields.length === 0) {
+  if (fields.length === 0 && accountingRecords.length === 0) {
+    const msg = (context !== "policy" && context !== "self")
+      ? "No premium records found for this entity."
+      : "No accounting fields configured.";
     return (
       <div className="rounded-md border border-dashed border-neutral-300 p-6 text-center dark:border-neutral-700">
-        <div className="text-sm text-neutral-500 dark:text-neutral-400">No accounting fields configured.</div>
-        <div className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
-          Create an <span className="font-medium">accounting</span> package in Admin &rarr; Policy Settings &rarr; Packages, then add fields to it.
-        </div>
+        <div className="text-sm text-neutral-500 dark:text-neutral-400">{msg}</div>
+        {(context === "policy" || context === "self") && (
+          <div className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+            Create a <span className="font-medium">premiumRecord</span> package in Admin &rarr; Policy Settings &rarr; Packages, then add fields to it.
+          </div>
+        )}
       </div>
     );
   }
@@ -764,6 +865,9 @@ export function AccountingTab({
             agentName={agentName}
             policyNumber={policyNumber}
             expectedTemplates={expectedTemplates}
+            premiumContext={context}
+            canEdit={canEdit}
+            onEdit={openRecordEdit}
           />
         ))}
 
@@ -798,6 +902,25 @@ export function AccountingTab({
             </div>
           );
         })()}
+
+        <FieldEditDialog
+          open={recEditOpen}
+          onOpenChange={setRecEditOpen}
+          title={`Edit Premium — ${recEditRecord?.recordNumber ?? ""}`}
+          fields={recEditFields}
+          values={recEditValues}
+          onValuesChange={setRecEditValues}
+          saving={recEditSaving}
+          onSave={saveRecordEdit}
+        />
+      </div>
+    );
+  }
+
+  if (context !== "policy" && context !== "self" && !hasAccountingRecords) {
+    return (
+      <div className="rounded-md border border-dashed border-neutral-300 p-6 text-center dark:border-neutral-700">
+        <div className="text-sm text-neutral-500 dark:text-neutral-400">No premium records found.</div>
       </div>
     );
   }

@@ -3,6 +3,7 @@ import { db } from "@/db/client";
 import { memberships, organisations, users } from "@/db/schema/core";
 import { eq } from "drizzle-orm";
 import { AccountInfoWizard } from "@/components/account/AccountInfoWizard";
+import { ClientProfileWizard } from "@/components/account/ClientProfileWizard";
 import { ChangePasswordCard } from "@/components/account/ChangePasswordCard";
 import { ServerErrorToast } from "@/components/ui/ServerErrorToast";
 
@@ -17,6 +18,7 @@ export default async function AccountPage() {
         email: string;
         name: string | null;
         timezone?: string | null;
+        userType?: string;
       }
     | undefined;
   try {
@@ -26,6 +28,7 @@ export default async function AccountPage() {
         email: users.email,
         name: users.name,
         timezone: users.timezone,
+        userType: users.userType,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -34,6 +37,32 @@ export default async function AccountPage() {
     loadError = err?.message ?? "Failed to load account info";
   }
 
+  const isClientUser = u?.userType === "direct_client";
+
+  // For client users, show the dynamic client profile wizard
+  if (isClientUser) {
+    return (
+      <main className="mx-auto max-w-6xl space-y-8">
+        {loadError ? <ServerErrorToast message={loadError} /> : null}
+        <div>
+          <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">My Profile</h1>
+          <p className="text-sm text-neutral-600 dark:text-neutral-400">
+            View and update your personal and contact information.
+          </p>
+        </div>
+        <ClientProfileWizard
+          userName={u?.name ?? null}
+          userEmail={u?.email ?? ""}
+          userTimezone={(u as any)?.timezone ?? null}
+        />
+        <div className="mx-auto max-w-3xl">
+          <ChangePasswordCard />
+        </div>
+      </main>
+    );
+  }
+
+  // For admin / agent / internal / accounting — existing Organisation + Address flow
   let orgRow:
     | {
         organisationId: number;

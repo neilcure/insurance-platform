@@ -20,6 +20,7 @@ export type EditField = {
   groupOrder?: number;
   groupName?: string;
   options?: Array<{ value: string; label: string }>;
+  readOnly?: boolean;
 };
 
 export type FieldEditDialogProps = {
@@ -69,6 +70,19 @@ export function FieldEditDialog({
             <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
               {fields.map((f) => {
                 const value = values[f.key];
+
+                if (f.readOnly) {
+                  return (
+                    <div key={f.key}>
+                      <label className="text-sm text-neutral-500 dark:text-neutral-400">
+                        {f.label}
+                      </label>
+                      <div className="mt-1 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800/50 dark:text-neutral-300">
+                        {String(value ?? "—")}
+                      </div>
+                    </div>
+                  );
+                }
 
                 if (f.inputType === "boolean") {
                   const checked = value === true || value === "true";
@@ -229,6 +243,7 @@ export function FieldEditDialog({
 export async function loadEditFields(
   pkgName: string,
   currentValues: Record<string, unknown>,
+  snapshotPkgName?: string,
 ): Promise<{ fields: EditField[]; values: Record<string, unknown> }> {
   const res = await fetch(
     `/api/form-options?groupKey=${encodeURIComponent(`${pkgName}_fields`)}&_t=${Date.now()}`,
@@ -255,6 +270,7 @@ export async function loadEditFields(
         groupOrder: Number(m?.groupOrder ?? 0),
         groupName: typeof m?.group === "string" ? m.group : "",
         options: opts.length > 0 ? opts : undefined,
+        readOnly: !!m?.entityPicker,
       };
     })
     .filter((f: { key: string }) => f.key);
@@ -267,12 +283,15 @@ export async function loadEditFields(
     return a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
   });
 
+  const oldPkg = snapshotPkgName && snapshotPkgName !== pkgName ? snapshotPkgName : null;
   const merged: Record<string, unknown> = {};
   for (const f of fields) {
     const v =
       currentValues[f.key] ??
       currentValues[`${pkgName}__${f.key}`] ??
-      currentValues[`${pkgName}_${f.key}`];
+      currentValues[`${pkgName}_${f.key}`] ??
+      (oldPkg ? currentValues[`${oldPkg}__${f.key}`] : undefined) ??
+      (oldPkg ? currentValues[`${oldPkg}_${f.key}`] : undefined);
     merged[f.key] = v ?? (f.inputType === "boolean" ? false : "");
   }
   return { fields, values: merged };

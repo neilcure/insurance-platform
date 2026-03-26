@@ -1,15 +1,17 @@
 /**
  * Accounting field management.
- * Reads field definitions from the admin-configured "accounting" package in form_options.
+ * Reads field definitions from the admin-configured "premiumRecord" package in form_options.
  * No hardcoded field names — everything comes from the package config.
  */
 import { db } from "@/db/client";
 import { formOptions } from "@/db/schema/form_options";
 import { and, eq } from "drizzle-orm";
 
-const ACCOUNTING_PKG = "accounting";
+const ACCOUNTING_PKG = "premiumRecord";
 
 export type ColumnType = "cents" | "rate" | "string";
+
+export type PremiumContext = "policy" | "collaborator" | "insurer" | "client" | "agent" | "self";
 
 export type AccountingFieldDef = {
   key: string;
@@ -20,6 +22,7 @@ export type AccountingFieldDef = {
   groupName?: string;
   options?: Array<{ value: string; label: string }>;
   premiumColumn?: string;
+  premiumContexts?: PremiumContext[];
 };
 
 /**
@@ -63,6 +66,9 @@ export async function loadAccountingFields(): Promise<AccountingFieldDef[]> {
         options: opts.length > 0 ? opts : undefined,
         premiumColumn: typeof m?.premiumColumn === "string"
           ? m.premiumColumn.replace(/^"|"$/g, "")
+          : undefined,
+        premiumContexts: Array.isArray(m?.premiumContexts)
+          ? (m.premiumContexts as PremiumContext[])
           : undefined,
       };
     })
@@ -130,4 +136,20 @@ export function resolvePremiumTypeColumn(
     column: firstCentsField?.premiumColumn ?? "netPremiumCents",
     label: firstCentsField?.label ?? "Premium",
   };
+}
+
+/**
+ * Filters fields to only those visible in a given premium context.
+ * "policy" context always returns all fields (master view).
+ * Fields with no `premiumContexts` set are visible everywhere.
+ */
+export function filterFieldsByContext(
+  fields: AccountingFieldDef[],
+  context: PremiumContext,
+): AccountingFieldDef[] {
+  if (context === "policy" || context === "self") return fields;
+  return fields.filter((f) => {
+    if (!f.premiumContexts || f.premiumContexts.length === 0) return true;
+    return f.premiumContexts.includes(context);
+  });
 }

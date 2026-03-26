@@ -174,6 +174,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
   const session = useSession();
   const sessionUserType = (session.data?.user as any)?.userType as string | undefined;
   const isAdmin = sessionUserType === "admin" || sessionUserType === "internal_staff";
+  const isClientUser = sessionUserType === "direct_client";
   const [rows, setRows] = React.useState<Row[]>(initialRows);
   const [query, setQuery] = React.useState("");
   const [openId, setOpenId] = React.useState<number | null>(null);
@@ -647,6 +648,23 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
     [detail],
   );
 
+  const premiumTabConfig = React.useMemo(() => {
+    const fk = (detailFlowKey ?? "").toLowerCase();
+    if (fk === "appaccounting") return null;
+    if (fk === "policyset" || fk === "" || !detailFlowKey) return { label: "Premium", context: "policy" as const };
+    if (fk.includes("collaborator") || fk === "collaboratorset") return { label: "Premium Payable", context: "collaborator" as const };
+    if (fk.includes("insurance") || fk === "insuranceset") return { label: "Insurer Premium", context: "insurer" as const };
+    if (fk.includes("client")) return { label: "Client Premium", context: "client" as const };
+    if (fk.includes("agent")) return { label: "Agent Premium", context: "agent" as const };
+    return null;
+  }, [detailFlowKey]);
+
+  const snapshotHiddenPkgs = React.useMemo(() => {
+    const fk = (detailFlowKey ?? "").toLowerCase();
+    if (fk === "appaccounting") return new Set(["accounting", "premiumRecord"]);
+    return undefined;
+  }, [detailFlowKey]);
+
   React.useEffect(() => {
     if (!detail) {
       setHasActions(false);
@@ -691,6 +709,22 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
     return () => { cancelled = true; };
   }, [detail, detailFlowKey]);
 
+  const isOwnPackage = React.useCallback((pkgName: string): boolean => {
+    const fk = (detailFlowKey ?? "").toLowerCase();
+    const pk = pkgName.toLowerCase();
+    if (fk === "appaccounting") {
+      return pk === "accounting" || pk === "premiumrecord";
+    }
+    // policyset and clientSet both own insured/contactinfo
+    if (fk === "policyset" || fk === "clientset" || fk === "" || !detailFlowKey) {
+      return pk !== "accounting" && pk !== "premiumrecord";
+    }
+    // Other flows (collaboratorSet, InsuranceSet, agentSet, etc.)
+    // own their specific packages but NOT insured/contactinfo or premium
+    return pk !== "accounting" && pk !== "premiumrecord"
+      && pk !== "insured" && pk !== "contactinfo";
+  }, [detailFlowKey]);
+
   async function openEditDialog(pkgName: string, pkgLabel: string, currentValues: Record<string, unknown>) {
     editInitialSnapshotRef.current = {};
     setEditPkg(pkgName);
@@ -700,7 +734,8 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
     setEditOpen(true);
     setEditLoading(true);
     try {
-      const { fields, values } = await loadEditFields(pkgName, currentValues);
+      const lookupPkg = pkgName === "accounting" ? "premiumRecord" : pkgName;
+      const { fields, values } = await loadEditFields(lookupPkg, currentValues, pkgName);
       setEditFields(fields);
       setEditValues(values);
       editInitialSnapshotRef.current = formSnapshot(values);
@@ -988,23 +1023,25 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
               <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center justify-end gap-2.5">
                 <Eye className={`h-4 w-4 opacity-0 group-hover:opacity-80 transition-opacity shrink-0 cursor-pointer ${r.isActive === false ? "text-red-500" : "text-green-500"}`} onClick={() => openDetails(r.policyId)} />
-                <RowActionMenu
-                  actions={[
-                    {
-                      label: r.isActive === false ? "Enable" : "Disable",
-                      icon: r.isActive === false
-                        ? <CheckCircle2 className="h-4 w-4" />
-                        : <Ban className="h-4 w-4" />,
-                      onClick: () => setToggleConfirm({ id: r.policyId, currentlyActive: r.isActive !== false }),
-                    },
-                    {
-                      label: "Delete",
-                      icon: <Trash2 className="h-4 w-4" />,
-                      onClick: () => remove(r.policyId),
-                      variant: "destructive",
-                    },
-                  ]}
-                />
+                {!isClientUser && (
+                  <RowActionMenu
+                    actions={[
+                      {
+                        label: r.isActive === false ? "Enable" : "Disable",
+                        icon: r.isActive === false
+                          ? <CheckCircle2 className="h-4 w-4" />
+                          : <Ban className="h-4 w-4" />,
+                        onClick: () => setToggleConfirm({ id: r.policyId, currentlyActive: r.isActive !== false }),
+                      },
+                      {
+                        label: "Delete",
+                        icon: <Trash2 className="h-4 w-4" />,
+                        onClick: () => remove(r.policyId),
+                        variant: "destructive",
+                      },
+                    ]}
+                  />
+                )}
                 </div>
               </TableCell>
             </TableRow>
@@ -1038,11 +1075,11 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
                     status: string; changedAt: string; changedBy?: string; note?: string;
                   }>) ?? undefined
                 }
-                onStatusChange={refreshCurrent}
+                onStatusChange={isClientUser ? undefined : refreshCurrent}
               />
             ),
           },
-          ...(hasActions ? [{
+          ...(!isClientUser && hasActions ? [{
             id: "actions",
             label: "Actions",
             icon: <Zap className="h-3 w-3" />,
@@ -1057,7 +1094,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
               />
             ),
           }] : []),
-          ...(hasDocs ? [{
+          ...(!isClientUser && hasDocs ? [{
             id: "documents",
             label: "Documents",
             icon: <FileText className="h-3 w-3" />,
@@ -1068,7 +1105,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
               />
             ),
           }] : []),
-          ...(hasUploads ? [{
+          ...(!isClientUser && hasUploads ? [{
             id: "uploads",
             label: "Uploads",
             icon: <Upload className="h-3 w-3" />,
@@ -1080,33 +1117,44 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
               />
             ),
           }] : []),
-          {
+          ...(premiumTabConfig ? [{
             id: "accounting",
-            label: "Accounting",
+            label: premiumTabConfig.label,
             icon: <DollarSign className="h-3 w-3" />,
             content: (
               <AccountingTab
                 policyId={detail.policyId}
                 policyNumber={detail.policyNumber}
-                canEdit={isAdmin || sessionUserType === "accounting"}
+                canEdit={(isAdmin || sessionUserType === "accounting") && premiumTabConfig.context === "policy"}
                 policyExtra={detail.extraAttributes as Record<string, unknown> | null | undefined}
                 onUpdate={refreshCurrent}
+                context={premiumTabConfig.context}
               />
             ),
-          },
+          }] : []),
         ] satisfies Omit<DrawerTab, "permanent">[]) : undefined}
       >
         {detail ? (
           <>
-            <PolicySnapshotView detail={detail} entityLabel={label} onEditPackage={openEditDialog} />
-            <NotesPanel
-              notes={
-                (Array.isArray((detail.extraAttributes as Record<string, unknown> | undefined)?.notes)
-                  ? (detail.extraAttributes as Record<string, unknown>).notes as NoteEntry[]
-                  : [])
-              }
-              onDelete={deleteNote}
+            <PolicySnapshotView
+              detail={detail}
+              entityLabel={label}
+              onEditPackage={isClientUser ? undefined : openEditDialog}
+              canEditPackage={isOwnPackage}
+              hiddenPackages={snapshotHiddenPkgs}
+              canEditPremium={isAdmin || sessionUserType === "accounting"}
+              onPremiumUpdate={refreshCurrent}
             />
+            {!isClientUser && (
+              <NotesPanel
+                notes={
+                  (Array.isArray((detail.extraAttributes as Record<string, unknown> | undefined)?.notes)
+                    ? (detail.extraAttributes as Record<string, unknown>).notes as NoteEntry[]
+                    : [])
+                }
+                onDelete={deleteNote}
+              />
+            )}
           </>
         ) : (
           <div className="text-neutral-500 dark:text-neutral-400">No details.</div>

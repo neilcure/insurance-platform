@@ -1,17 +1,84 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
-import { users, userInvites, memberships } from "@/db/schema/core";
+import { users, userInvites, memberships, clients } from "@/db/schema/core";
+import { cars } from "@/db/schema/insurance";
 import { requireUser } from "@/lib/auth/require-user";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { sendEmail, getBaseUrlFromRequestUrl } from "@/lib/email";
 import { generateNextUserNumber } from "@/lib/user-number";
 
+/**
+ * Creates a clients table entry from a clientSet flow record (cars row).
+ * Returns the new client ID, or null if it fails.
+ */
+async function createClientFromFlow(carId: number, createdBy: number): Promise<number | null> {
+  const [carRow] = await db
+    .select({ extraAttributes: cars.extraAttributes })
+    .from(cars)
+    .where(eq(cars.id, carId))
+    .limit(1);
+
+  if (!carRow) return null;
+  const ea = carRow.extraAttributes as Record<string, unknown> | null;
+  if (!ea || ea.flowKey !== "clientSet") return null;
+
+  const snap = (ea.insuredSnapshot ?? {}) as Record<string, unknown>;
+  const category = String(snap.insuredType ?? snap.insured_category ?? "personal").toLowerCase();
+  const isCompany = category === "company";
+
+  let displayName = "";
+  let primaryId = "";
+
+  if (isCompany) {
+    displayName = String(snap["insured__companyName"] ?? snap["insured__companyname"] ?? snap["insured_companyname"] ?? "");
+    primaryId = String(snap["insured__brNumber"] ?? snap["insured__brnumber"] ?? snap["insured_brnumber"] ?? "");
+  } else {
+    const last = String(snap["insured__lastname"] ?? snap["insured_lastname"] ?? "");
+    const first = String(snap["insured__firstname"] ?? snap["insured_firstname"] ?? "");
+    displayName = [last, first].filter(Boolean).join(" ");
+    primaryId = String(snap["insured__idNumber"] ?? snap["insured__idnumber"] ?? snap["insured_idnumber"] ?? "");
+  }
+
+  if (!displayName) displayName = "Client";
+
+  const extra: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(snap)) {
+    if (k.startsWith("_")) continue;
+    extra[k] = v;
+  }
+
+  const phone = String(snap["contactinfo__mobile"] ?? snap["contactinfo_mobile"] ?? snap["contactinfo__tel"] ?? snap["contactinfo_tel"] ?? "");
+
+  const [newClient] = await db
+    .insert(clients)
+    .values({
+      clientNumber: `C-FLOW-${carId}`,
+      category,
+      displayName,
+      primaryId,
+      contactPhone: phone || null,
+      extraAttributes: extra,
+      createdBy,
+    })
+    .returning({ id: clients.id });
+
+  // Fix clientNumber to standard format
+  if (newClient) {
+    const paddedId = String(newClient.id).padStart(6, "0");
+    await db.update(clients).set({ clientNumber: `C${paddedId}` }).where(eq(clients.id, newClient.id));
+  }
+
+  return newClient?.id ?? null;
+}
+
 type PostBody = {
   email: string;
   name?: string;
-  userType: "admin" | "agent" | "accounting" | "internal_staff";
+  userType: "admin" | "agent" | "accounting" | "internal_staff" | "direct_client";
+  clientId?: number;
+  flowCarId?: number;
 };
 
 export async function POST(request: Request) {
@@ -26,9 +93,42 @@ export async function POST(request: Request) {
     if (!email) {
       return NextResponse.json({ error: "Email required" }, { status: 400 });
     }
-    if (body.userType === "direct_client" || body.userType === "service_provider") {
-      return NextResponse.json({ error: "This type is not managed as a User. Choose Admin, Agent, Accounting or Internal Staff." }, { status: 400 });
+    if (body.userType === "service_provider") {
+      return NextResponse.json({ error: "Service provider type is not supported." }, { status: 400 });
     }
+
+    // For direct_client: resolve the client record (from table or flow)
+    let resolvedClientId: number | null = null;
+    if (body.userType === "direct_client") {
+      if (me.userType !== "admin") {
+        return NextResponse.json({ error: "Only admin can create client accounts." }, { status: 403 });
+      }
+      if (!body.clientId && !body.flowCarId) {
+        return NextResponse.json({ error: "A client record must be selected for direct_client accounts." }, { status: 400 });
+      }
+
+      if (body.flowCarId) {
+        // Create clients table entry from flow record
+        resolvedClientId = await createClientFromFlow(Number(body.flowCarId), Number(me.id));
+        if (!resolvedClientId) {
+          return NextResponse.json({ error: "Failed to resolve client from flow record." }, { status: 400 });
+        }
+      } else {
+        resolvedClientId = Number(body.clientId);
+        const [existingClient] = await db
+          .select({ id: clients.id, userId: clients.userId })
+          .from(clients)
+          .where(eq(clients.id, resolvedClientId))
+          .limit(1);
+        if (!existingClient) {
+          return NextResponse.json({ error: "Client record not found." }, { status: 404 });
+        }
+        if (existingClient.userId) {
+          return NextResponse.json({ error: "This client record is already linked to a user account." }, { status: 409 });
+        }
+      }
+    }
+
     if (me.userType !== "admin" && (body.userType === "admin" || body.userType === "agent")) {
       return NextResponse.json({ error: "Only admin can assign admin/agent roles." }, { status: 403 });
     }
@@ -67,6 +167,18 @@ export async function POST(request: Request) {
       }
     } catch {}
 
+    // Link user to client record for direct_client
+    if (body.userType === "direct_client" && resolvedClientId) {
+      try {
+        await db
+          .update(clients)
+          .set({ userId: createdUser.id })
+          .where(and(eq(clients.id, resolvedClientId), isNull(clients.userId)));
+      } catch (err) {
+        console.error("Failed to link client record:", err);
+      }
+    }
+
     // Auto-assign userNumber for non-direct_client types
     try {
       if (createdUser?.userType && ["admin", "agent", "accounting", "internal_staff"].includes(createdUser.userType as any)) {
@@ -75,7 +187,6 @@ export async function POST(request: Request) {
         createdUser.userNumber = userNumber as any;
       }
     } catch (err) {
-      // Best-effort: do not fail invite creation if numbering fails
       console.error("Failed to generate userNumber:", err);
     }
 
