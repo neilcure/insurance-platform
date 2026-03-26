@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { policyPremiums } from "@/db/schema/premiums";
 import { policies, cars } from "@/db/schema/insurance";
-import { memberships, organisations } from "@/db/schema/core";
+import { memberships, organisations, clients } from "@/db/schema/core";
 import { formOptions } from "@/db/schema/form_options";
 import { and, eq, desc } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
@@ -235,7 +235,7 @@ async function getEntityDisplayName(recordId: number): Promise<string | null> {
 async function findClientPolicies(clientRecordId: number): Promise<{ policyId: number; policyNumber: string }[]> {
   try {
     const [clientRow] = await db
-      .select({ pNum: policies.policyNumber, carExtra: cars.extraAttributes })
+      .select({ pNum: policies.policyNumber, clientId: policies.clientId, carExtra: cars.extraAttributes })
       .from(policies)
       .leftJoin(cars, eq(cars.policyId, policies.id))
       .where(eq(policies.id, clientRecordId))
@@ -243,23 +243,59 @@ async function findClientPolicies(clientRecordId: number): Promise<{ policyId: n
     if (!clientRow) return [];
 
     const clientNumber = clientRow.pNum;
-    const results = await db
-      .select({ pId: policies.id, pNum: policies.policyNumber })
-      .from(policies)
-      .leftJoin(cars, eq(cars.policyId, policies.id))
-      .where(and(
-        sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') = 'policyset'`,
-        sql`(
-          ((${cars.extraAttributes})::jsonb ->> 'clientNumber') = ${clientNumber}
-          OR (((${cars.extraAttributes})::jsonb -> 'insuredSnapshot') ->> 'clientPolicyNumber') = ${clientNumber}
-          OR ((${cars.extraAttributes})::text ILIKE ${'%"clientNumber":"' + clientNumber + '"%'})
-          OR ((${cars.extraAttributes})::text ILIKE ${'%"clientId":' + String(clientRecordId) + '%'})
-        )`,
-      ))
-      .orderBy(desc(policies.createdAt))
-      .limit(50);
+    const seen = new Set<number>();
+    const result: { policyId: number; policyNumber: string }[] = [];
 
-    return results.map((r) => ({ policyId: r.pId, policyNumber: r.pNum }));
+    // 1) Search via policies.client_id (most reliable link)
+    let dbClientId = clientRow.clientId;
+    if (!dbClientId) {
+      try {
+        const [c] = await db.select({ id: clients.id }).from(clients)
+          .where(eq(clients.clientNumber, clientNumber)).limit(1);
+        if (c) dbClientId = c.id;
+      } catch { /* ignore */ }
+    }
+    if (dbClientId) {
+      try {
+        const byClientId = await db
+          .select({ pId: policies.id, pNum: policies.policyNumber })
+          .from(policies)
+          .leftJoin(cars, eq(cars.policyId, policies.id))
+          .where(and(
+            eq(policies.clientId, dbClientId),
+            sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') = 'policyset'`,
+          ))
+          .orderBy(desc(policies.createdAt))
+          .limit(50);
+        for (const r of byClientId) {
+          if (!seen.has(r.pId)) { seen.add(r.pId); result.push({ policyId: r.pId, policyNumber: r.pNum }); }
+        }
+      } catch { /* ignore */ }
+    }
+
+    // 2) Search via JSON snapshot references (fallback / legacy)
+    try {
+      const bySnapshot = await db
+        .select({ pId: policies.id, pNum: policies.policyNumber })
+        .from(policies)
+        .leftJoin(cars, eq(cars.policyId, policies.id))
+        .where(and(
+          sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') = 'policyset'`,
+          sql`(
+            ((${cars.extraAttributes})::jsonb ->> 'clientNumber') = ${clientNumber}
+            OR (((${cars.extraAttributes})::jsonb -> 'insuredSnapshot') ->> 'clientPolicyNumber') = ${clientNumber}
+            OR ((${cars.extraAttributes})::text ILIKE ${'%"clientNumber":"' + clientNumber + '"%'})
+            OR ((${cars.extraAttributes})::text ILIKE ${'%"clientId":' + String(clientRecordId) + '%'})
+          )`,
+        ))
+        .orderBy(desc(policies.createdAt))
+        .limit(50);
+      for (const r of bySnapshot) {
+        if (!seen.has(r.pId)) { seen.add(r.pId); result.push({ policyId: r.pId, policyNumber: r.pNum }); }
+      }
+    } catch { /* ignore */ }
+
+    return result;
   } catch { return []; }
 }
 
@@ -909,6 +945,9 @@ export async function GET(request: Request, ctx: Ctx) {
         // Find all policies belonging to this client, then find their accounting records
         const clientPolicies = await findClientPolicies(policyId);
         for (const cp of clientPolicies) {
+          // Resolve entities from each linked policy's snapshot
+          try { await resolveEntitiesFromSnapshot(cp.policyId); } catch { /* non-fatal */ }
+
           const linkedRows = await db
             .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
             .from(policies)
@@ -989,7 +1028,7 @@ export async function GET(request: Request, ctx: Ctx) {
       coverTypeOptions: context === "policy" ? coverTypeOptions : [],
       availableInsurers: context === "policy" ? availableInsurers : [],
       availableCollabs: context === "policy" ? availableCollabs : [],
-      snapshotEntities: context === "policy" ? snapshotEntities : {},
+      snapshotEntities,
       accountingRecords,
       agentName,
     });

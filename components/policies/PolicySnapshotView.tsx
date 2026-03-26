@@ -775,7 +775,7 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEdit
         );
       })() : null}
 
-      {detail.client ? (
+      {!isClientRecord && detail.client ? (
         <div className="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
           <div className="mb-1 text-sm font-medium">Client</div>
           <div className="font-mono text-sm">{detail.client.clientNumber || "N/A"}</div>

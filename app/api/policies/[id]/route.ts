@@ -301,6 +301,15 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
     } catch {
       // ignore resolution errors
     }
+    // For client flow records, keep the client's clientNumber in sync with policyNumber
+    // so there is only one identifier visible to the user.
+    const flowKey = String((base.extraAttributes as any)?.flowKey ?? "").toLowerCase();
+    if (flowKey.includes("client") && resolvedClient && resolvedClient.clientNumber !== base.policyNumber) {
+      try {
+        await db.update(clients).set({ clientNumber: base.policyNumber }).where(eq(clients.id, resolvedClient.id));
+        resolvedClient = { ...resolvedClient, clientNumber: base.policyNumber };
+      } catch { /* best effort */ }
+    }
     // Resolve agent linked to this policy (if column present)
     let resolvedAgent:
       | { id: number; userNumber: string | null; name: string | null; email: string }

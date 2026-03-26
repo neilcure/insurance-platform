@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { Loader2 } from "lucide-react";
+import { Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import { SlideDrawer } from "@/components/ui/slide-drawer";
 import { PolicySnapshotView } from "@/components/policies/PolicySnapshotView";
 import type { PolicyDetail } from "@/lib/types/policy";
@@ -26,6 +26,7 @@ export function ClientLinkedPolicies({
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [loadingId, setLoadingId] = React.useState<number | null>(null);
   const [mounted, setMounted] = React.useState(false);
+  const [collapsed, setCollapsed] = React.useState(false);
 
   React.useEffect(() => { setMounted(true); }, []);
 
@@ -97,31 +98,40 @@ export function ClientLinkedPolicies({
 
   return (
     <>
-      <div className="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
-        <div className="mb-1 text-sm font-medium">
+      <div className="rounded-md border border-neutral-200 dark:border-neutral-800">
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          className="flex w-full items-center gap-1 px-2 py-1.5 text-sm font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+        >
+          {collapsed
+            ? <ChevronRight className="h-3.5 w-3.5 text-neutral-400" />
+            : <ChevronDown className="h-3.5 w-3.5 text-neutral-400" />}
           Policies
-          <span className="ml-1.5 text-[10px] font-normal text-neutral-400">({policies.length})</span>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {policies.map((p) => (
-            <button
-              key={p.policyId}
-              type="button"
-              onClick={() => openPolicy(p.policyId)}
-              disabled={loadingId === p.policyId}
-              className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 font-mono text-[11px] transition-colors ${
-                p.isActive
-                  ? "border-green-300 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-800 dark:bg-green-950/40 dark:text-green-400 dark:hover:bg-green-900/50"
-                  : "border-neutral-300 bg-neutral-50 text-neutral-400 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-500 dark:hover:bg-neutral-800"
-              }`}
-            >
-              {loadingId === p.policyId ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : null}
-              {p.policyNumber}
-            </button>
-          ))}
-        </div>
+          <span className="ml-0.5 text-[10px] font-normal text-neutral-400">({policies.length})</span>
+        </button>
+        {!collapsed && (
+          <div className="flex flex-wrap gap-1.5 border-t border-neutral-200 px-2 py-1.5 dark:border-neutral-800">
+            {policies.map((p) => (
+              <button
+                key={p.policyId}
+                type="button"
+                onClick={() => openPolicy(p.policyId)}
+                disabled={loadingId === p.policyId}
+                className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 font-mono text-[11px] transition-colors ${
+                  p.isActive
+                    ? "border-green-300 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-800 dark:bg-green-950/40 dark:text-green-400 dark:hover:bg-green-900/50"
+                    : "border-neutral-300 bg-neutral-50 text-neutral-400 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-500 dark:hover:bg-neutral-800"
+                }`}
+              >
+                {loadingId === p.policyId ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : null}
+                {p.policyNumber}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {selectedDetail && mounted

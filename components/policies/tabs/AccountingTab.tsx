@@ -7,7 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
-import { Building2, Loader2, Pencil, Save, User, Users, X } from "lucide-react";
+import { Building2, ChevronDown, ChevronRight, Loader2, Pencil, Save, User, Users, X } from "lucide-react";
 import { FieldEditDialog, type EditField } from "@/components/ui/field-edit-dialog";
 
 type FieldDef = {
@@ -552,7 +552,7 @@ function AccountingRecordView({
     : null;
   const pdPolNum = displayPolNum && isTpoOd ? `${displayPolNum}(b)` : null;
 
-  const showEntities = premiumContext === "policy" || premiumContext === "self" || !premiumContext;
+  const showEntities = premiumContext !== "collaborator" && premiumContext !== "insurer";
 
   const sections: SectionData[] = [
     {
@@ -578,18 +578,8 @@ function AccountingRecordView({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {premiumContext !== "self" && (
-            <span className="text-xs font-mono font-medium text-neutral-500 dark:text-neutral-400">{record.recordNumber}</span>
-          )}
-          {record.linkedPolicyNumber && premiumContext !== "policy" && premiumContext !== "self" && (
-            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs font-mono text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
-              Policy: {record.linkedPolicyNumber}
-            </span>
-          )}
-        </div>
-        {canEdit && onEdit && (
+      {canEdit && onEdit && (
+        <div className="flex justify-end">
           <Button
             size="sm"
             variant="outline"
@@ -598,8 +588,8 @@ function AccountingRecordView({
           >
             <Pencil className="mr-1 h-3 w-3" /> Edit
           </Button>
-        )}
-      </div>
+        </div>
+      )}
 
       {agentName && (
         <div className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-3 py-2 text-[11px] dark:border-neutral-800">
@@ -616,6 +606,44 @@ function AccountingRecordView({
   );
 }
 
+
+function CollapsibleRecord({
+  record,
+  premiumContext,
+  children,
+}: {
+  record: { recordId: number; recordNumber: string; linkedPolicyNumber?: string };
+  premiumContext?: PremiumContext;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = React.useState(true);
+  const showPolicyBadge = !!record.linkedPolicyNumber && premiumContext !== "policy" && premiumContext !== "self";
+
+  return (
+    <div className="rounded-md border border-neutral-200 dark:border-neutral-800">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+      >
+        {open
+          ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+          : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-neutral-400" />}
+        <span className="font-mono text-xs font-medium text-neutral-600 dark:text-neutral-300">{record.recordNumber}</span>
+        {showPolicyBadge && (
+          <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-mono text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+            Policy: {record.linkedPolicyNumber}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="border-t border-neutral-200 px-3 py-2 dark:border-neutral-800">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // --- Main AccountingTab ---
 export function AccountingTab({
@@ -855,20 +883,21 @@ export function AccountingTab({
   // Accounting flow records take precedence over old premium lines
   if (hasAccountingRecords) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-3">
         {accountingRecords.map((rec) => (
-          <AccountingRecordView
-            key={rec.recordId}
-            record={rec}
-            allFields={fields}
-            snapshotEntities={snapshotEntities}
-            agentName={agentName}
-            policyNumber={policyNumber}
-            expectedTemplates={expectedTemplates}
-            premiumContext={context}
-            canEdit={canEdit}
-            onEdit={openRecordEdit}
-          />
+          <CollapsibleRecord key={rec.recordId} record={rec} premiumContext={context}>
+            <AccountingRecordView
+              record={rec}
+              allFields={fields}
+              snapshotEntities={snapshotEntities}
+              agentName={agentName}
+              policyNumber={policyNumber}
+              expectedTemplates={expectedTemplates}
+              premiumContext={context}
+              canEdit={canEdit}
+              onEdit={openRecordEdit}
+            />
+          </CollapsibleRecord>
         ))}
 
         {accountingRecords.length > 1 && (() => {
