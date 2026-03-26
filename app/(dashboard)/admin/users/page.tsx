@@ -81,17 +81,19 @@ export default async function AdminUsersPage() {
     }
   }
 
-  // Load linked client names for direct_client users
+  // Load linked client names and client numbers for direct_client users
   let clientLinks: Record<number, string> = {};
+  let clientNumbers: Record<number, string> = {};
   try {
     const clientUserIds = rows.filter((r) => r.userType === "direct_client").map((r) => r.id);
     if (clientUserIds.length > 0) {
       const linkRows = await db
-        .select({ userId: clients.userId, displayName: clients.displayName })
+        .select({ userId: clients.userId, displayName: clients.displayName, clientNumber: clients.clientNumber })
         .from(clients);
       for (const lr of linkRows) {
         if (lr.userId && clientUserIds.includes(lr.userId)) {
           clientLinks[lr.userId] = lr.displayName;
+          clientNumbers[lr.userId] = lr.clientNumber;
         }
       }
     }
@@ -130,22 +132,22 @@ export default async function AdminUsersPage() {
                 {rows.map((u) => (
                   <TableRow key={u.id}>
                     <TableCell
-                      title={u.userNumber ?? ""}
+                      title={(u.userType === "direct_client" ? clientNumbers[u.id] : u.userNumber) ?? ""}
                       className={`hidden md:table-cell font-mono text-xs ${
                         u.isActive ? "text-green-600 dark:text-green-400" : "text-neutral-600 dark:text-neutral-400"
                       }`}
                     >
-                      {u.userNumber ?? "—"}
+                      {(u.userType === "direct_client" ? clientNumbers[u.id] : u.userNumber) ?? "—"}
                     </TableCell>
                     <TableCell className="block w-full md:table-cell">
                       <div className="flex items-center gap-2 md:block">
                         <span
-                          title={u.userNumber ?? ""}
+                          title={(u.userType === "direct_client" ? clientNumbers[u.id] : u.userNumber) ?? ""}
                           className={`md:hidden font-mono text-xs ${
                             u.isActive ? "text-green-600 dark:text-green-400" : "text-neutral-600 dark:text-neutral-400"
                           }`}
                         >
-                          {u.userNumber ?? "—"}
+                          {(u.userType === "direct_client" ? clientNumbers[u.id] : u.userNumber) ?? "—"}
                         </span>
                         <span className="font-mono text-sm">{u.email}</span>
                       </div>
