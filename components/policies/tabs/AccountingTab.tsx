@@ -679,6 +679,23 @@ export function AccountingTab({
     collaboratorId: number | null;
   } | null>(null);
 
+  const entityOptionsRef = React.useRef<{ loaded: boolean; loading: boolean }>({ loaded: false, loading: false });
+  const ensureEntityOptions = React.useCallback(async (): Promise<boolean> => {
+    if (entityOptionsRef.current.loaded) return true;
+    if (entityOptionsRef.current.loading) return false;
+    entityOptionsRef.current.loading = true;
+    try {
+      const res = await fetch("/api/premium-entity-options", { cache: "no-store" });
+      if (!res.ok) return false;
+      const json = await res.json();
+      setAvailableInsurers(json.availableInsurers ?? []);
+      setAvailableCollabs(json.availableCollabs ?? []);
+      entityOptionsRef.current.loaded = true;
+      return true;
+    } catch { return false; }
+    finally { entityOptionsRef.current.loading = false; }
+  }, []);
+
   const [recEditOpen, setRecEditOpen] = React.useState(false);
   const [recEditRecord, setRecEditRecord] = React.useState<AccountingRecord | null>(null);
   const [recEditFields, setRecEditFields] = React.useState<EditField[]>([]);
@@ -745,8 +762,6 @@ export function AccountingTab({
       setLines(json.lines ?? []);
       setAccountingRecords(json.accountingRecords ?? []);
       setCoverTypeOptions(json.coverTypeOptions ?? []);
-      setAvailableInsurers(json.availableInsurers ?? []);
-      setAvailableCollabs(json.availableCollabs ?? []);
       setSnapshotEntities(json.snapshotEntities ?? {});
       setAgentName(json.agentName ?? null);
     } catch {
@@ -998,13 +1013,15 @@ export function AccountingTab({
               ? policyNumberForLine(policyNumber, line.lineKey, idx, displayLines.length, isTpoWithOd)
               : undefined
           }
-          onEdit={() => {
+          onEdit={async () => {
             editingInitialSnapshotRef.current = {
               values: formSnapshot(line.values),
               insurerId: line.insurerId,
               collaboratorId: line.collaboratorId,
             };
-            setEditingKey(line.lineKey);
+            const ok = await ensureEntityOptions();
+            if (ok) setEditingKey(line.lineKey);
+            else toast.error("Failed to load entity options");
           }}
         />
       ))}
