@@ -49,7 +49,7 @@ export function BooleanBranchFields({
       {arr.map((bc, bIdx) => {
         const bcName = `${name}__${isYes ? "true" : "false"}__bc${bIdx}`;
         const bcType = bc?.inputType ?? "string";
-        if (bcType === "currency") {
+        if (bcType === "currency" || bcType === "negative_currency") {
           const cc = String(bc?.currencyCode ?? "").trim();
           const dec = Number(bc?.decimals ?? 2);
           const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -602,7 +602,7 @@ export const InlineSelectWithChildren = React.memo(function InlineSelectWithChil
         );
         return;
       }
-      if (cType === "currency") {
+      if (cType === "currency" || cType === "negative_currency") {
         const cc = String(child?.currencyCode ?? "").trim();
         const dec = Number(child?.decimals ?? 2);
         const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;

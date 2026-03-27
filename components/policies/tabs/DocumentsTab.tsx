@@ -144,7 +144,7 @@ function formatValue(
   const s = String(raw).trim();
   if (!s) return "";
 
-  if (format === "currency") {
+  if (format === "currency" || format === "negative_currency") {
     const n = Number(raw);
     if (!Number.isFinite(n)) return s;
     try {

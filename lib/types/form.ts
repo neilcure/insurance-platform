@@ -2,6 +2,7 @@ export type InputType =
   | "string"
   | "number"
   | "currency"
+  | "negative_currency"
   | "percent"
   | "date"
   | "select"
@@ -12,7 +13,7 @@ export type InputType =
   | "list"
   | "agent_picker";
 
-export type SelectOption = { label?: string; value?: string };
+export type SelectOption = { label?: string; value?: string; scrollToPackage?: string; scrollToGroup?: string; scrollToField?: string };
 
 export type BooleanBranchChild = {
   label?: string;

@@ -51,7 +51,7 @@ const fmtCurrency = (val: unknown, currency: string): string => {
 
 function formatDisplayValue(val: unknown, field: FieldDef, currency: string): string {
   if (val === null || val === undefined || val === "") return "—";
-  if (field.inputType === "currency") return fmtCurrency(val, currency);
+  if (field.inputType === "currency" || field.inputType === "negative_currency") return fmtCurrency(val, currency);
   if (field.inputType === "percent") {
     const n = Number(val);
     return Number.isFinite(n) ? `${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%` : String(val);
@@ -272,18 +272,18 @@ function LineEditor({
               );
             }
 
-            if (f.inputType === "number" || f.inputType === "currency" || f.inputType === "percent") {
-              const maxDecimals = f.inputType === "currency" ? 2 : f.inputType === "percent" ? 2 : undefined;
+            if (f.inputType === "number" || f.inputType === "currency" || f.inputType === "negative_currency" || f.inputType === "percent") {
+              const maxDecimals = f.inputType === "currency" || f.inputType === "negative_currency" ? 2 : f.inputType === "percent" ? 2 : undefined;
               return (
                 <div key={f.key}>
                   <label className="text-xs text-neutral-600 dark:text-neutral-300">{f.label}</label>
                   <div className="mt-1 flex items-center gap-2">
-                    {f.inputType === "currency" && (
+                    {(f.inputType === "currency" || f.inputType === "negative_currency") && (
                       <span className="shrink-0 text-xs font-medium text-neutral-500 dark:text-neutral-400">{currency}</span>
                     )}
                     <Input
                       type="number"
-                      step={f.inputType === "currency" || f.inputType === "percent" ? "0.01" : "any"}
+                      step={f.inputType === "currency" || f.inputType === "negative_currency" || f.inputType === "percent" ? "0.01" : "any"}
                       value={String(val ?? "")}
                       onChange={(e) => {
                         const raw = e.target.value;
@@ -391,7 +391,7 @@ function LineView({ line, fields, canEdit, onEdit, displayPolicyNumber }: { line
             {fields.map((f, idx) => (
               <React.Fragment key={f.key}>
                 {idx > 0 && <Separator className="my-0.5" />}
-                <SummaryRow label={f.label} value={formatDisplayValue(line.values[f.key], f, currency)} />
+                <SummaryRow label={f.label} value={formatDisplayValue(line.values[f.key], f, currency)} className={f.inputType === "negative_currency" ? "text-red-600 dark:text-red-400" : undefined} />
               </React.Fragment>
             ))}
             {line.margin !== null && (
@@ -496,7 +496,7 @@ function AccountingSection({ section, currency }: { section: SectionData; curren
           section.fields.map((f) => (
             <div key={f.def.key} className="flex items-center justify-between py-1.5">
               <span className="text-xs text-neutral-500 dark:text-neutral-400">{f.def.label}</span>
-              <span className="text-sm font-medium tabular-nums text-neutral-900 dark:text-neutral-100">
+              <span className={`text-sm font-medium tabular-nums ${f.def.inputType === "negative_currency" ? "text-red-600 dark:text-red-400" : "text-neutral-900 dark:text-neutral-100"}`}>
                 {formatDisplayValue(f.value, f.def, currency)}
               </span>
             </div>
@@ -917,7 +917,7 @@ export function AccountingTab({
 
         {accountingRecords.length > 1 && (() => {
           const currency = "HKD";
-          const currencyFields = fields.filter((f) => f.inputType === "currency");
+          const currencyFields = fields.filter((f) => f.inputType === "currency" || f.inputType === "negative_currency");
           const sumField = (key: string) => {
             let total = 0;
             let found = false;
@@ -1029,7 +1029,7 @@ export function AccountingTab({
       {displayLines.length > 1 && (() => {
         const currency = (typeof displayLines[0]?.values?.currency === "string" && displayLines[0].values.currency) || "HKD";
 
-        const currencyFields = fields.filter((f) => f.inputType === "currency");
+        const currencyFields = fields.filter((f) => f.inputType === "currency" || f.inputType === "negative_currency");
         const sumField = (key: string) => {
           let total = 0;
           let found = false;

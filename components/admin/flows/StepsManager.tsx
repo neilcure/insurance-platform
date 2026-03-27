@@ -34,6 +34,8 @@ type StepRow = {
     /** Per-category visibility: hide a category tab unless cross-package conditions pass.
      *  Key format: `${pkg}__${categoryValue}` */
     categoryShowWhen?: Record<string, { package: string; category: string | string[] }[]>;
+    /** When set, the "Select Existing" picker searches from this flow instead of the current one. */
+    recordPickerFlow?: string;
   } | null;
 };
 
@@ -246,6 +248,7 @@ export default function StepsManager({ flow }: { flow: string }) {
         embeddedFlow: embeddedFlow || undefined,
         embeddedFlowLabel: embeddedFlowLabel || undefined,
         showWhen: stepShowWhen.length > 0 ? stepShowWhen : undefined,
+        recordPickerFlow: (form.meta?.recordPickerFlow ?? "").trim() || undefined,
       },
     };
   }
@@ -583,6 +586,27 @@ export default function StepsManager({ flow }: { flow: string }) {
                   </div>
                 </>
               ) : null}
+            </div>
+            <div className="grid gap-1">
+              <Label>Record Picker Flow Override <span className="text-xs text-neutral-400">(optional)</span></Label>
+              <select
+                className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+                value={String(form.meta?.recordPickerFlow ?? "")}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    meta: { ...(f.meta ?? {}), recordPickerFlow: e.target.value || undefined } as StepRow["meta"],
+                  }))
+                }
+              >
+                <option value="">Same as current flow</option>
+                {flows.map((f) => (
+                  <option key={f.value} value={f.value}>{f.label}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
+                When set, the &ldquo;Select Existing&rdquo; button will search records from this flow instead of the current one (useful for endorsements).
+              </p>
             </div>
             <div className="grid gap-1">
               <Label>Packages {form.meta?.embeddedFlow ? "(ignored when embedding)" : ""}</Label>

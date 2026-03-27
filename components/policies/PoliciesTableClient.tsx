@@ -927,9 +927,16 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
     if (!ok) return;
     try {
       const res = await fetch(`/api/policies/${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error(await res.text());
-      setRows((r) => r.filter((x) => x.policyId !== id));
-      toast.success("Deleted");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? "Delete failed");
+
+      if (data.softDeleted) {
+        setRows((r) => r.map((x) => x.policyId === id ? { ...x, isActive: false } : x));
+        toast.success(data.message ?? "Endorsement deactivated and changes rolled back.");
+      } else {
+        setRows((r) => r.filter((x) => x.policyId !== id));
+        toast.success("Deleted");
+      }
       if (openId === id) closeDrawer();
     } catch (err: unknown) {
       const message = (err as { message?: string } | undefined)?.message ?? "Delete failed";

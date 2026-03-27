@@ -403,6 +403,8 @@ export async function POST(request: Request) {
           return out;
         };
 
+        const linkedPolicyId = (json as any).linkedPolicyId;
+        const endorsementChanges = Array.isArray((json as any).endorsementChanges) ? (json as any).endorsementChanges : undefined;
         const snapshot = {
           ...(vehicle || {}),
           insuredSnapshot: (body as any).insured,
@@ -411,6 +413,8 @@ export async function POST(request: Request) {
           coverType: (policy as any)?.coverType ?? undefined,
           excessSection1: (policy as any)?.coverType === "comprehensive" ? (policy as any).excessSection1 : undefined,
           ...(flowKey ? { flowKey } : {}),
+          ...(linkedPolicyId ? { linkedPolicyId: Number(linkedPolicyId) } : {}),
+          ...(endorsementChanges ? { _endorsementChanges: endorsementChanges } : {}),
         } as Record<string, unknown>;
 
         // Normalize vehicle primitives for DB column types
@@ -734,6 +738,9 @@ export async function GET(request: Request) {
     const hasPolicyNumberFilter = typeof policyNumberParam === "string" && policyNumberParam.trim().length > 0;
     const hasClientNumberFilter = typeof clientNumberParam === "string" && clientNumberParam.trim().length > 0;
     const hasFlowFilter = typeof flowParam === "string" && flowParam.trim().length > 0;
+    const linkedPolicyIdParam = url.searchParams.get("linkedPolicyId");
+    const linkedPolicyIdFilter = Number(linkedPolicyIdParam);
+    const hasLinkedPolicyFilter = Number.isFinite(linkedPolicyIdFilter) && linkedPolicyIdFilter > 0;
     const MAX_LIMIT = 500;
     const DEFAULT_LIMIT = 200;
     const qLimit = Math.min(Math.max(Number(url.searchParams.get("limit")) || DEFAULT_LIMIT, 1), MAX_LIMIT);
@@ -795,6 +802,9 @@ export async function GET(request: Request) {
     const flowFilterExpr = hasFlowFilter
       ? sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') = ${flowParam}`
       : undefined;
+    const linkedPolicyFilterExpr = hasLinkedPolicyFilter
+      ? sql`(((${cars.extraAttributes})::jsonb ->> 'linkedPolicyId')::int = ${linkedPolicyIdFilter})`
+      : undefined;
     try {
       if (user.userType === "admin" || user.userType === "internal_staff") {
         let q: any = baseSelect;
@@ -802,6 +812,7 @@ export async function GET(request: Request) {
         if (hasClientFilter) q = q.where(clientFilterExpr!);
         if (hasClientNumberFilter) q = q.where(clientNumberFilterExpr!);
         if (hasFlowFilter) q = q.where(flowFilterExpr!);
+        if (hasLinkedPolicyFilter) q = q.where(linkedPolicyFilterExpr!);
         q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
         rows = await q;
       } else if (user.userType === "agent") {
@@ -829,6 +840,7 @@ export async function GET(request: Request) {
               ${hasClientFilter && polCols.hasClientId ? sql`and p.client_id = ${Number(url.searchParams.get("clientId"))}` : sql``}
               ${hasClientNumberFilter ? sql`and ((c.extra_attributes)::jsonb ->> 'clientNumber') = ${clientNumberParam!}` : sql``}
               ${hasFlowFilter ? sql`and ((c.extra_attributes)::jsonb ->> 'flowKey') = ${flowParam}` : sql``}
+              ${hasLinkedPolicyFilter ? sql`and (((c.extra_attributes)::jsonb ->> 'linkedPolicyId')::int = ${linkedPolicyIdFilter})` : sql``}
             order by p.created_at desc, p.id desc
             limit ${qLimit} offset ${qOffset}
           `);
@@ -875,6 +887,7 @@ export async function GET(request: Request) {
         if (hasClientFilter) scoped = scoped.where(clientFilterExpr!);
         if (hasClientNumberFilter) scoped = scoped.where(clientNumberFilterExpr!);
         if (hasFlowFilter) scoped = scoped.where(flowFilterExpr!);
+        if (hasLinkedPolicyFilter) scoped = scoped.where(linkedPolicyFilterExpr!);
         scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
         rows = await scoped;
       }
@@ -885,6 +898,7 @@ export async function GET(request: Request) {
         if (hasClientFilter) q = q.where(clientFilterExpr!);
         if (hasClientNumberFilter) q = q.where(clientNumberFilterExpr!);
         if (hasFlowFilter) q = q.where(flowFilterExpr!);
+        if (hasLinkedPolicyFilter) q = q.where(linkedPolicyFilterExpr!);
         q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
         rows = await q;
       } else if (user.userType === "agent" || user.userType === "direct_client") {
@@ -898,6 +912,7 @@ export async function GET(request: Request) {
         if (hasClientFilter) scoped = scoped.where(clientFilterExpr!);
         if (hasClientNumberFilter) scoped = scoped.where(clientNumberFilterExpr!);
         if (hasFlowFilter) scoped = scoped.where(flowFilterExpr!);
+        if (hasLinkedPolicyFilter) scoped = scoped.where(linkedPolicyFilterExpr!);
         scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
         rows = await scoped;
       }

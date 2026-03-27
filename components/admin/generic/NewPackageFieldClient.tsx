@@ -309,7 +309,7 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
             </div>
           ) : null}
 
-          {form.meta?.inputType === "currency" ? (
+          {(form.meta?.inputType === "currency" || form.meta?.inputType === "negative_currency") ? (
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label>Currency Code</Label>

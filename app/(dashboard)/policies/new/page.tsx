@@ -231,7 +231,7 @@ const InlineSelectWithChildrenMemo = React.memo(function InlineSelectWithChildre
         );
         return;
       }
-      if (cType === "currency") {
+      if (cType === "currency" || cType === "negative_currency") {
         const cc = String((child as any)?.currencyCode ?? "").trim();
         const dec = Number((child as any)?.decimals ?? 2);
         const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -467,7 +467,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                   };
                   const displayLabel = applyLabelCase(f.label, meta.labelCase);
                   const inputType = meta.inputType ?? "string";
-                  const isCurrency = inputType === "currency";
+                  const isCurrency = inputType === "currency" || inputType === "negative_currency";
                   const isPercent = inputType === "percent";
                   const isNumber = inputType === "number" || isCurrency || isPercent;
                   const isDate = inputType === "date";
@@ -555,7 +555,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                         </div>
                                       );
                                     }
-                                    if (cType === "currency") {
+                                    if (cType === "currency" || cType === "negative_currency") {
                                       const cc = String((cf as any)?.currencyCode ?? "").trim();
                                       const dec = Number((cf as any)?.decimals ?? 2);
                                       const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -724,7 +724,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                       </div>
                                     );
                                   }
-                                  if (cType === "currency") {
+                                  if (cType === "currency" || cType === "negative_currency") {
                                     const cc = String((child as any)?.currencyCode ?? "").trim();
                                     const dec = Number((child as any)?.decimals ?? 2);
                                     const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -946,7 +946,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                     </div>
                                                   );
                                                 }
-                                                if (ccType === "currency") {
+                                                if (ccType === "currency" || ccType === "negative_currency") {
                                                   const cc = String((cf as any)?.currencyCode ?? "").trim();
                                                   const dec = Number((cf as any)?.decimals ?? 2);
                                                   const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -993,7 +993,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                   </div>
                                 );
                               }
-                              if (cType === "currency") {
+                              if (cType === "currency" || cType === "negative_currency") {
                                 const cc = String((child as any)?.currencyCode ?? "").trim();
                                 const dec = Number((child as any)?.decimals ?? 2);
                                 const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -1167,7 +1167,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                     </div>
                                                   );
                                                 }
-                                                if (ccType === "currency") {
+                                                if (ccType === "currency" || ccType === "negative_currency") {
                                                   const cc = String((cf as any)?.currencyCode ?? "").trim();
                                                   const dec = Number((cf as any)?.decimals ?? 2);
                                                   const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -1214,7 +1214,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                   </div>
                                 );
                               }
-                              if (cType === "currency") {
+                              if (cType === "currency" || cType === "negative_currency") {
                                 const cc = String((child as any)?.currencyCode ?? "").trim();
                                 const dec = Number((child as any)?.decimals ?? 2);
                                 const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -2903,7 +2903,7 @@ export default function NewPolicyStep1Page() {
                                   </div>
                                 );
                               }
-                              if (cType === "currency") {
+                              if (cType === "currency" || cType === "negative_currency") {
                                 const cc = String((child as any)?.currencyCode ?? "").trim();
                                 const dec = Number((child as any)?.decimals ?? 2);
                                 const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -3102,7 +3102,7 @@ export default function NewPolicyStep1Page() {
                                                 </div>
                                               );
                                             }
-                                            if (ccType === "currency") {
+                                            if (ccType === "currency" || ccType === "negative_currency") {
                                               const cc = String((cf as any)?.currencyCode ?? "").trim();
                                               const dec = Number((cf as any)?.decimals ?? 2);
                                               const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -3150,7 +3150,7 @@ export default function NewPolicyStep1Page() {
                             );
                           }
                           // Default child types
-                          if (cType === "currency") {
+                          if (cType === "currency" || cType === "negative_currency") {
                             const cc = String((child as any)?.currencyCode ?? "").trim();
                             const dec = Number((child as any)?.decimals ?? 2);
                             const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -3315,7 +3315,7 @@ export default function NewPolicyStep1Page() {
                                                 </div>
                                               );
                                             }
-                                            if (ccType === "currency") {
+                                            if (ccType === "currency" || ccType === "negative_currency") {
                                               const cc = String((cf as any)?.currencyCode ?? "").trim();
                                               const dec = Number((cf as any)?.decimals ?? 2);
                                               const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -3363,7 +3363,7 @@ export default function NewPolicyStep1Page() {
                             );
                           }
                           // Default child types
-                          if (cType === "currency") {
+                          if (cType === "currency" || cType === "negative_currency") {
                             const cc = String((child as any)?.currencyCode ?? "").trim();
                             const dec = Number((child as any)?.decimals ?? 2);
                             const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;

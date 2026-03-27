@@ -32,6 +32,12 @@ export type RecordDetailsDrawerProps = {
   functionTabs?: Omit<DrawerTab, "permanent">[];
   /** Custom log panel content — replaces the default AuditLogPanel when provided */
   logContent?: React.ReactNode;
+  /** Z-index class for stacked/nested drawers */
+  zClass?: string;
+  /** When true, backdrop doesn't block pointer events behind it */
+  passthrough?: boolean;
+  /** Which side the drawer opens from */
+  side?: "left" | "right";
   children: React.ReactNode;
 };
 
@@ -47,6 +53,9 @@ export function RecordDetailsDrawer({
   auditProps,
   functionTabs,
   logContent,
+  zClass,
+  passthrough,
+  side,
   children,
 }: RecordDetailsDrawerProps) {
   const [auditOpen, setAuditOpen] = React.useState(false);
@@ -137,12 +146,22 @@ export function RecordDetailsDrawer({
         onClose={onClose}
         title={title}
         tabStrip={<DrawerTabStrip />}
+        {...(side ? { side } : {})}
+        {...(zClass ? { zClass } : {})}
+        {...(passthrough ? { passthrough } : {})}
       >
         {drawerBody}
       </SlideDrawer>
     </DrawerTabsProvider>
   ) : (
-    <SlideDrawer open={drawerOpen} onClose={onClose} title={title}>
+    <SlideDrawer
+      open={drawerOpen}
+      onClose={onClose}
+      title={title}
+      {...(side ? { side } : {})}
+      {...(zClass ? { zClass } : {})}
+      {...(passthrough ? { passthrough } : {})}
+    >
       {drawerBody}
     </SlideDrawer>
   );
@@ -157,7 +176,7 @@ export function RecordDetailsDrawer({
           onClose={closeAudit}
           title="Change Log"
           side="right"
-          zClass="z-60"
+          zClass={zClass ? "z-[70]" : "z-60"}
           passthrough
         >
           <div className="p-3 text-xs">

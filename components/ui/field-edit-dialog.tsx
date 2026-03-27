@@ -107,7 +107,7 @@ export function FieldEditDialog({
                   );
                 }
 
-                if (f.inputType === "number" || f.inputType === "currency" || f.inputType === "percent") {
+                if (f.inputType === "number" || f.inputType === "currency" || f.inputType === "negative_currency" || f.inputType === "percent") {
                   return (
                     <div key={f.key}>
                       <label className="text-sm text-neutral-600 dark:text-neutral-300">
@@ -116,7 +116,7 @@ export function FieldEditDialog({
                       <div className="flex items-center gap-2">
                         <Input
                           type="number"
-                          step={f.inputType === "currency" || f.inputType === "percent" ? "0.01" : undefined}
+                          step={f.inputType === "currency" || f.inputType === "negative_currency" || f.inputType === "percent" ? "0.01" : undefined}
                           value={String(value ?? "")}
                           onChange={(e) => {
                             const raw = e.target.value;

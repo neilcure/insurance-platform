@@ -63,6 +63,7 @@ type StepRow = {
     embeddedFlow?: string;
     embeddedFlowLabel?: string;
     _sourceFlow?: string;
+    recordPickerFlow?: string;
   };
 };
 
@@ -279,6 +280,7 @@ export default function FlowNewPage() {
   const form = useForm<Record<string, unknown>>({ mode: "onSubmit" });
 
   const [flowInfo, setFlowInfo] = React.useState<FlowOption | null>(null);
+  const [flowOptions, setFlowOptions] = React.useState<FlowOption[]>([]);
   const [steps, setSteps] = React.useState<StepRow[]>([]);
   const [pkgOptions, setPkgOptions] = React.useState<PkgOption[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -315,10 +317,15 @@ export default function FlowNewPage() {
   const [loadingRecords, setLoadingRecords] = React.useState(false);
   const [recordSearch, setRecordSearch] = React.useState("");
   const [selectedRecordId, setSelectedRecordId] = React.useState<number | null>(null);
+  const selectedRecordFlowRef = React.useRef<string | null>(null);
 
   // Address Tool state
   const [addressFieldMap, setAddressFieldMap] = React.useState<AddressFieldMap>({});
   const [areaOptions, setAreaOptions] = React.useState<{ label?: string; value?: string }[]>([]);
+
+  // Auto-scroll state for endorsement workflow
+  const pendingScrollGroupRef = React.useRef<string | null>(null);
+  const scrollAfterLoadRef = React.useRef(false);
 
   // Load flow, steps (with embedded expansion), packages, account
   React.useEffect(() => {
@@ -339,6 +346,7 @@ export default function FlowNewPage() {
 
         if (flowsRes.ok) {
           const flows = (await flowsRes.json()) as FlowOption[];
+          setFlowOptions(flows);
           const match = flows.find((f) => f.value === flowKey);
           if (match) setFlowInfo(match);
         }
@@ -351,42 +359,90 @@ export default function FlowNewPage() {
           const expanded: StepRow[] = [];
           let wizardStepCounter = 1;
 
-          for (const step of sorted) {
-            const meta = step.meta ?? {};
-            if (meta.embeddedFlow) {
-              const embedRes = await fetch(
-                `/api/form-options?groupKey=${encodeURIComponent(`flow_${meta.embeddedFlow}_steps`)}`,
-                { cache: "no-store" },
-              );
-              if (!embedRes.ok || cancelled) continue;
-              const embedData = (await embedRes.json()) as StepRow[];
-              const embedSteps = Array.isArray(embedData)
-                ? [...embedData].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-                : [];
-              const labelOverride = meta.embeddedFlowLabel?.trim();
-              const byStep = new Map<number, StepRow[]>();
-              for (const es of embedSteps) {
-                const n = Number(es.meta?.wizardStep ?? 0) || 999;
-                if (!byStep.has(n)) byStep.set(n, []);
-                byStep.get(n)!.push(es);
-              }
-              const sortedGroupKeys = [...byStep.keys()].sort((a, b) => a - b);
-              for (const k of sortedGroupKeys) {
-                const group = byStep.get(k) ?? [];
-                for (const es of group) {
+          async function expandEmbeddedFlow(
+            embeddedFlowKey: string,
+            labelOverride: string | undefined,
+            sourceFlow: string,
+            depth: number,
+          ) {
+            if (depth > 5 || cancelled) return;
+            const embedRes = await fetch(
+              `/api/form-options?groupKey=${encodeURIComponent(`flow_${embeddedFlowKey}_steps`)}`,
+              { cache: "no-store" },
+            );
+            if (!embedRes.ok || cancelled) return;
+            const embedData = (await embedRes.json()) as StepRow[];
+            const embedSteps = Array.isArray(embedData)
+              ? [...embedData].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+              : [];
+            const byStep = new Map<number, StepRow[]>();
+            for (const es of embedSteps) {
+              const rawWs = Number(es.meta?.wizardStep ?? -1);
+              const n = rawWs > 0 ? rawWs : (Number.isFinite(es.sortOrder) ? es.sortOrder : 999);
+              if (!byStep.has(n)) byStep.set(n, []);
+              byStep.get(n)!.push(es);
+            }
+            const sortedGroupKeys = [...byStep.keys()].sort((a, b) => a - b);
+            for (const k of sortedGroupKeys) {
+              const group = byStep.get(k) ?? [];
+              for (const es of group) {
+                const esMeta = es.meta ?? {};
+                if (esMeta.embeddedFlow) {
+                  const nestedHasOwn = Array.isArray(esMeta.packages) && esMeta.packages.length > 0;
+                  if (nestedHasOwn) {
+                    expanded.push({
+                      ...es,
+                      id: es.id * 10000 + wizardStepCounter,
+                      meta: {
+                        ...esMeta,
+                        wizardStep: wizardStepCounter,
+                        wizardStepLabel: labelOverride || esMeta.wizardStepLabel,
+                        _sourceFlow: sourceFlow,
+                      },
+                    });
+                    wizardStepCounter++;
+                  }
+                  await expandEmbeddedFlow(
+                    esMeta.embeddedFlow as string,
+                    (esMeta.embeddedFlowLabel as string)?.trim() || labelOverride,
+                    esMeta.embeddedFlow as string,
+                    depth + 1,
+                  );
+                } else {
                   expanded.push({
                     ...es,
                     id: es.id * 10000 + wizardStepCounter,
                     meta: {
-                      ...es.meta,
+                      ...esMeta,
                       wizardStep: wizardStepCounter,
-                      wizardStepLabel: labelOverride || es.meta?.wizardStepLabel,
-                      _sourceFlow: meta.embeddedFlow,
+                      wizardStepLabel: labelOverride || esMeta.wizardStepLabel,
+                      _sourceFlow: sourceFlow,
                     },
                   });
                 }
+              }
+              const anyAdded = group.some((es) => !es.meta?.embeddedFlow || (Array.isArray(es.meta?.packages) && es.meta!.packages.length > 0));
+              if (anyAdded) wizardStepCounter++;
+            }
+          }
+
+          for (const step of sorted) {
+            const meta = step.meta ?? {};
+            if (meta.embeddedFlow) {
+              const hasOwnPackages = Array.isArray(meta.packages) && meta.packages.length > 0;
+              if (hasOwnPackages) {
+                expanded.push({
+                  ...step,
+                  meta: { ...meta, wizardStep: wizardStepCounter },
+                });
                 wizardStepCounter++;
               }
+              await expandEmbeddedFlow(
+                meta.embeddedFlow as string,
+                (meta.embeddedFlowLabel as string)?.trim(),
+                meta.embeddedFlow as string,
+                0,
+              );
             } else {
               expanded.push({
                 ...step,
@@ -602,14 +658,30 @@ export default function FlowNewPage() {
     }
   }, [recordPickerOpen]);
 
-  // Load flow records when picker opens
+  // Load flow records when picker opens (uses step-level recordPickerFlow override if set)
   React.useEffect(() => {
     let cancelled = false;
     async function loadRecords() {
       if (!recordPickerOpen || !flowKey) return;
+      // Compute the effective picker flow from step meta
+      const stepGroup = (() => {
+        const sorted2 = [...steps].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+        const grps: Record<number, StepRow[]> = {};
+        for (const s of sorted2) {
+          const n = Number(s.meta?.wizardStep ?? 0) || 999;
+          if (!grps[n]) grps[n] = [];
+          grps[n]!.push(s);
+        }
+        return grps[wizardStep] ?? [];
+      })();
+      const selVal = selectedRowByStep[wizardStep];
+      const activeRow = stepGroup.length === 1
+        ? stepGroup[0]
+        : stepGroup.find((r) => r.value === selVal) ?? null;
+      const pickerFlow = activeRow?.meta?.recordPickerFlow || flowKey;
       setLoadingRecords(true);
       try {
-        const res = await fetch(`/api/policies?flow=${encodeURIComponent(flowKey)}`, { cache: "no-store" });
+        const res = await fetch(`/api/policies?flow=${encodeURIComponent(pickerFlow)}`, { cache: "no-store" });
         const json = (res.ok ? ((await res.json()) as RecordRow[]) : []);
         if (!cancelled) {
           const norm = (k: string) => k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
@@ -683,7 +755,7 @@ export default function FlowNewPage() {
     }
     void loadRecords();
     return () => { cancelled = true; };
-  }, [recordPickerOpen, flowKey]);
+  }, [recordPickerOpen, flowKey, steps, wizardStep, selectedRowByStep]);
 
   const filteredRecords = React.useMemo(() => {
     const q = recordSearch.trim().toLowerCase();
@@ -775,11 +847,36 @@ export default function FlowNewPage() {
       fillFormFromRecord(form, extra);
       loadedSnapshotRef.current = JSON.stringify(form.getValues());
       setSelectedRecordId(detail.policyId ?? policyId);
+      const stepGroup = (() => {
+        const sorted2 = [...steps].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+        const grps: Record<number, StepRow[]> = {};
+        for (const s of sorted2) {
+          const n = Number(s.meta?.wizardStep ?? 0) || 999;
+          if (!grps[n]) grps[n] = [];
+          grps[n]!.push(s);
+        }
+        return grps[wizardStep] ?? [];
+      })();
+      const selVal = selectedRowByStep[wizardStep];
+      const activeRow = stepGroup.length === 1
+        ? stepGroup[0]
+        : stepGroup.find((r) => r.value === selVal) ?? null;
+      const pickerFlow = activeRow?.meta?.recordPickerFlow || null;
+      selectedRecordFlowRef.current = pickerFlow && pickerFlow !== flowKey ? pickerFlow : null;
+
       setRecordPickerOpen(false);
       toast.success(
         `Record loaded: ${detail.policyNumber ?? policyId}`,
         { duration: 1500 },
       );
+
+      // After loading, scroll to the target section if a scrollToPackage/scrollToGroup is set
+      scrollAfterLoadRef.current = true;
+      setTimeout(() => {
+        if (!pendingScrollGroupRef.current) return;
+        scrollToTarget(pendingScrollGroupRef.current);
+        scrollAfterLoadRef.current = false;
+      }, 600);
     } catch {
       toast.error("Failed to load record details");
     }
@@ -1014,6 +1111,129 @@ export default function FlowNewPage() {
     return sourceFlow.toLowerCase().includes("client");
   }, [currentGroup]);
 
+  // Derive recordPickerFlow from the active step's selected row (or first row)
+  const activeRecordPickerFlow = React.useMemo(() => {
+    const selectedRowValue = selectedRowByStep[wizardStep];
+    const row = currentGroup.length === 1
+      ? currentGroup[0]
+      : currentGroup.find((r) => r.value === selectedRowValue) ?? null;
+    return row?.meta?.recordPickerFlow ?? undefined;
+  }, [currentGroup, selectedRowByStep, wizardStep]);
+
+  const effectiveRecordPickerFlow = activeRecordPickerFlow ?? flowKey;
+
+  const recordPickerTitle = React.useMemo(() => {
+    if (!activeRecordPickerFlow || activeRecordPickerFlow === flowKey) return title;
+    const matchFlow = flowOptions.find((f) => f.value === activeRecordPickerFlow);
+    return matchFlow?.meta?.dashboardLabel || matchFlow?.label || activeRecordPickerFlow;
+  }, [activeRecordPickerFlow, flowKey, flowOptions, title]);
+
+  // Handle auto-scroll from PackageBlock (triggered by option scrollToPackage/scrollToGroup)
+  const scrollToTarget = React.useCallback((target: string) => {
+    const [sectionPart, fieldPart] = target.split("|field:");
+    const fieldKey = fieldPart?.trim() || null;
+
+    let sectionEl: Element | null = null;
+    if (sectionPart.startsWith("pkg:")) {
+      const pkgKey = sectionPart.slice(4);
+      sectionEl = document.getElementById(`pkg-block-${pkgKey}`) ??
+        document.querySelector(`[data-pkg-block="${pkgKey}"]`);
+    } else if (sectionPart.startsWith("grp:")) {
+      const grpName = sectionPart.slice(4);
+      const slug = grpName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+      sectionEl = document.querySelector(`[data-group-name="${grpName}"]`) ??
+        document.querySelector(`[id*="pkg-group-"][id$="-${slug}"]`);
+    }
+
+    if (!sectionEl) return;
+
+    const applyHighlight = (highlightEl: Element, inputEl?: Element | null) => {
+      highlightEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      highlightEl.classList.remove("endorsement-highlight");
+      void (highlightEl as HTMLElement).offsetWidth;
+      highlightEl.classList.add("endorsement-highlight");
+
+      if (inputEl) {
+        const dismiss = () => {
+          highlightEl.classList.add("endorsement-highlight-fade");
+          setTimeout(() => {
+            highlightEl.classList.remove("endorsement-highlight", "endorsement-highlight-fade");
+          }, 600);
+          inputEl.removeEventListener("input", dismiss);
+          inputEl.removeEventListener("change", dismiss);
+        };
+        inputEl.addEventListener("input", dismiss, { once: true });
+        inputEl.addEventListener("change", dismiss, { once: true });
+      }
+    };
+
+    if (fieldKey) {
+      const pkgKey = sectionPart.startsWith("pkg:") ? sectionPart.slice(4) : "";
+      const fieldName = pkgKey ? `${pkgKey}__${fieldKey}` : fieldKey;
+      const fieldEl = sectionEl.querySelector(`[name="${fieldName}"]`) ??
+        sectionEl.querySelector(`[name$="__${fieldKey}"]`) ??
+        sectionEl.querySelector(`[data-field-key="${fieldKey}"]`);
+      if (fieldEl) {
+        let wrapper: Element | null = fieldEl;
+        while (wrapper && wrapper !== sectionEl) {
+          const parent: Element | null = wrapper.parentElement;
+          if (parent?.classList.contains("grid") && parent.classList.contains("gap-4")) {
+            break;
+          }
+          wrapper = parent;
+        }
+        if (!wrapper || wrapper === sectionEl) {
+          wrapper = fieldEl.closest(".space-y-1, .space-y-2, .col-span-2") ?? fieldEl.parentElement;
+        }
+        applyHighlight(wrapper ?? fieldEl, fieldEl);
+        return;
+      }
+    }
+
+    // Highlight the entire section — stays until any input inside it changes
+    sectionEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    sectionEl.classList.remove("endorsement-highlight");
+    void (sectionEl as HTMLElement).offsetWidth;
+    sectionEl.classList.add("endorsement-highlight");
+    const dismissSection = () => {
+      sectionEl!.classList.add("endorsement-highlight-fade");
+      setTimeout(() => {
+        sectionEl!.classList.remove("endorsement-highlight", "endorsement-highlight-fade");
+      }, 600);
+    };
+    sectionEl.addEventListener("input", dismissSection, { once: true });
+    sectionEl.addEventListener("change", dismissSection, { once: true });
+  }, []);
+
+  const handleAutoScrollGroup = React.useCallback((target: string, _pkg: string) => {
+    pendingScrollGroupRef.current = target;
+
+    const sectionPart = target.split("|field:")[0];
+    const targetPkg = sectionPart.startsWith("pkg:") ? sectionPart.slice(4) : null;
+
+    if (targetPkg) {
+      let targetStep: number | null = null;
+      for (const [stepNum, stepRows] of Object.entries(groups)) {
+        for (const row of stepRows) {
+          const pkgs = Array.isArray(row.meta?.packages) ? (row.meta!.packages as string[]) : [];
+          if (pkgs.includes(targetPkg)) {
+            targetStep = Number(stepNum);
+            break;
+          }
+        }
+        if (targetStep !== null) break;
+      }
+
+      if (targetStep !== null && targetStep !== wizardStep && wizardNums.includes(targetStep)) {
+        setHighestCompleted((h) => Math.max(h, wizardStep));
+        setWizardStep(targetStep);
+        return;
+      }
+    }
+
+    requestAnimationFrame(() => scrollToTarget(target));
+  }, [scrollToTarget, groups, wizardStep, wizardNums]);
+
   const goto = (step: number) => {
     if (step < wizardStep) {
       setWizardStep(step);
@@ -1069,6 +1289,27 @@ export default function FlowNewPage() {
       setWizardStep(nextNums[0]!);
     }
   }, [wizardStep, wizardNums]);
+
+  // After step transition, scroll+highlight the pending target (e.g. from endorsement change type)
+  React.useEffect(() => {
+    if (!pendingScrollGroupRef.current) return;
+    const target = pendingScrollGroupRef.current;
+    let attempt = 0;
+    const maxAttempts = 5;
+    const tryScroll = () => {
+      attempt++;
+      scrollToTarget(target);
+      if (attempt < maxAttempts) {
+        const sectionPart = target.split("|field:")[0];
+        const exists = sectionPart.startsWith("pkg:")
+          ? document.querySelector(`[data-pkg-block="${sectionPart.slice(4)}"]`)
+          : document.querySelector(`[data-group-name="${sectionPart.slice(4)}"]`);
+        if (!exists) setTimeout(tryScroll, 400);
+      }
+    };
+    const timer = setTimeout(tryScroll, 500);
+    return () => clearTimeout(timer);
+  }, [wizardStep, scrollToTarget]);
 
   const handleContinue = async () => {
     // If user chose "Create a New Client" but hasn't clicked the Create Client button yet, block
@@ -1259,7 +1500,133 @@ export default function FlowNewPage() {
         ? { policy: { agentId: selectedAgentId } }
         : {};
 
-      if (isUpdate && selectedRecordId) {
+      let resultPolicyId: number | null = null;
+
+      // Determine if this is an endorsement-style flow (recordPickerFlow from another flow)
+      let recordPickerFlowValue: string | null = null;
+      const ownFlowPkgs = new Set<string>();
+      const embeddedPkgs = new Set<string>();
+      for (const stepRows of Object.values(groups)) {
+        for (const row of stepRows) {
+          const rpf = row.meta?.recordPickerFlow;
+          if (rpf && rpf !== flowKey) recordPickerFlowValue = rpf;
+          const pkgs = Array.isArray(row.meta?.packages) ? (row.meta!.packages as string[]) : [];
+          const isEmbedded = !!row.meta?._sourceFlow;
+          for (const p of pkgs) {
+            if (isEmbedded) embeddedPkgs.add(p);
+            else ownFlowPkgs.add(p);
+          }
+        }
+      }
+
+      // Also check selectedRecordFlowRef as fallback for recordPickerFlowValue
+      if (!recordPickerFlowValue && selectedRecordFlowRef.current) {
+        recordPickerFlowValue = selectedRecordFlowRef.current;
+      }
+
+      const effectiveRecordId = selectedRecordId;
+
+      const isEndorsement = !!recordPickerFlowValue && !!effectiveRecordId && embeddedPkgs.size > 0;
+
+      console.log("[doSubmit endorsement debug]", {
+        isEndorsement,
+        recordPickerFlowValue,
+        selectedRecordId,
+        effectiveRecordId,
+        ownFlowPkgs: [...ownFlowPkgs],
+        embeddedPkgs: [...embeddedPkgs],
+        allPackageKeys: Object.keys(packagesPayload),
+        stepsWithSourceFlow: steps.filter((s) => !!s.meta?._sourceFlow).map((s) => ({ label: s.label, sourceFlow: s.meta?._sourceFlow, pkgs: s.meta?.packages })),
+      });
+
+      if (isEndorsement && effectiveRecordId) {
+        // Endorsement: POST order type record + PATCH original policy
+        const orderTypePkgs: typeof packagesPayload = {};
+        const policyPkgs: typeof packagesPayload = {};
+        for (const [pkg, data] of Object.entries(packagesPayload)) {
+          if (embeddedPkgs.has(pkg)) policyPkgs[pkg] = data;
+          else orderTypePkgs[pkg] = data;
+        }
+
+        console.log("[doSubmit split]", {
+          orderTypePkgKeys: Object.keys(orderTypePkgs),
+          policyPkgKeys: Object.keys(policyPkgs),
+        });
+
+        // Compute endorsement changes (old → new) for policy fields
+        const endorsementChanges: { field: string; from: unknown; to: unknown }[] = [];
+        if (loadedSnapshotRef.current) {
+          const oldValues = JSON.parse(loadedSnapshotRef.current) as Record<string, unknown>;
+          const currentValues = form.getValues() as Record<string, unknown>;
+          for (const key of Object.keys(currentValues)) {
+            if (key.startsWith("_") || key.endsWith("__category") || key.includes("___linked")) continue;
+            const isEmbeddedField = [...embeddedPkgs].some((p) => key.startsWith(`${p}__`));
+            if (!isEmbeddedField) continue;
+            const oldVal = oldValues[key];
+            const newVal = currentValues[key];
+            const isEmpty = (v: unknown) => v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+            if (isEmpty(oldVal) && isEmpty(newVal)) continue;
+            if (JSON.stringify(oldVal ?? null) !== JSON.stringify(newVal ?? null)) {
+              endorsementChanges.push({ field: key, from: oldVal ?? null, to: newVal ?? null });
+            }
+          }
+        }
+
+        // 1. Create the endorsement record with ALL packages (full snapshot)
+        const postRes = await fetch("/api/policies", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            packages: packagesPayload,
+            insured: insuredSnapshot,
+            flowKey,
+            linkedPolicyId: effectiveRecordId,
+            endorsementChanges: endorsementChanges.length > 0 ? endorsementChanges : undefined,
+            ...agentIdPayload,
+          }),
+        });
+        const postJson = (await postRes.json().catch(() => ({}))) as { error?: string; policyId?: number };
+        if (!postRes.ok) {
+          throw new Error(postJson?.error ?? "Failed to create endorsement record");
+        }
+
+        // 2. Update the original policy — only send packages with actual changes
+        const changedPkgs: typeof policyPkgs = {};
+        if (loadedSnapshotRef.current) {
+          const oldValues = JSON.parse(loadedSnapshotRef.current) as Record<string, unknown>;
+          for (const [pkg, data] of Object.entries(policyPkgs)) {
+            const changedValues: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(data.values)) {
+              if (JSON.stringify(oldValues[k] ?? null) !== JSON.stringify(v ?? null)) {
+                changedValues[k] = v;
+              }
+            }
+            if (Object.keys(changedValues).length > 0) {
+              changedPkgs[pkg] = { ...data, values: changedValues };
+            }
+          }
+        } else {
+          Object.assign(changedPkgs, policyPkgs);
+        }
+
+        if (Object.keys(changedPkgs).length > 0) {
+          const patchRes = await fetch(`/api/policies/${effectiveRecordId}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              packages: changedPkgs,
+              ...agentIdPayload,
+            }),
+          });
+          if (!patchRes.ok) {
+            const patchJson = (await patchRes.json().catch(() => ({}))) as { error?: string };
+            throw new Error(patchJson?.error ?? "Failed to update policy");
+          }
+        }
+
+        resultPolicyId = postJson.policyId ?? null;
+        toast.success("Endorsement created & policy updated", { duration: 2000 });
+      } else if (isUpdate && selectedRecordId) {
         const res = await fetch(`/api/policies/${selectedRecordId}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
@@ -1270,12 +1637,11 @@ export default function FlowNewPage() {
             ...agentIdPayload,
           }),
         });
-        const json = await res.json().catch(() => ({}));
+        const json = (await res.json().catch(() => ({}))) as { error?: string; policyId?: number };
         if (!res.ok) {
-          throw new Error(
-            (json as { error?: string })?.error ?? "Update failed",
-          );
+          throw new Error(json?.error ?? "Update failed");
         }
+        resultPolicyId = json.policyId ?? selectedRecordId;
         toast.success("Record updated", { duration: 1500 });
       } else {
         const res = await fetch("/api/policies", {
@@ -1288,15 +1654,22 @@ export default function FlowNewPage() {
             ...agentIdPayload,
           }),
         });
-        const json = await res.json().catch(() => ({}));
+        const json = (await res.json().catch(() => ({}))) as { error?: string; policyId?: number };
         if (!res.ok) {
-          throw new Error(
-            (json as { error?: string })?.error ?? "Submit failed",
-          );
+          throw new Error(json?.error ?? "Submit failed");
         }
+        resultPolicyId = json.policyId ?? null;
         toast.success("Record created", { duration: 1500 });
       }
-      router.push(`/dashboard/flows/${encodeURIComponent(flowKey)}`);
+
+      // Redirect: endorsement → original policy; otherwise → current flow
+      if (effectiveRecordId && recordPickerFlowValue) {
+        router.push(`/dashboard/flows/${encodeURIComponent(recordPickerFlowValue)}?open=${effectiveRecordId}`);
+      } else if (resultPolicyId) {
+        router.push(`/dashboard/flows/${encodeURIComponent(flowKey)}?open=${resultPolicyId}`);
+      } else {
+        router.push(`/dashboard/flows/${encodeURIComponent(flowKey)}`);
+      }
     } catch (err: unknown) {
       const message =
         (err as { message?: string } | undefined)?.message ??
@@ -1305,6 +1678,7 @@ export default function FlowNewPage() {
     } finally {
       setSubmitting(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- steps used for debug logging only
   }, [form, groups, selectedRecordId, selectedClientId, flowKey, router]);
 
   const handleFinish = async () => {
@@ -1312,6 +1686,18 @@ export default function FlowNewPage() {
       toast.error("Please click \"Create Client\" to create the client first.");
       return;
     }
+
+    // Endorsement-style flow: always POST new + PATCH original (no confirm dialog)
+    const hasEmbedded = steps.some((s) => !!s.meta?._sourceFlow);
+    if (hasEmbedded && !selectedRecordId) {
+      toast.error("Please select an existing policy to endorse first.");
+      return;
+    }
+    if (selectedRecordId && hasEmbedded) {
+      void doSubmit(false);
+      return;
+    }
+
     if (selectedRecordId) {
       const currentValues = JSON.stringify(form.getValues());
       if (loadedSnapshotRef.current && currentValues !== loadedSnapshotRef.current) {
@@ -1484,7 +1870,7 @@ export default function FlowNewPage() {
             variant="secondary"
             onClick={() => (hasClientStep || isEmbeddedClientStep) ? setClientPickerOpen(true) : setRecordPickerOpen(true)}
           >
-            {(hasClientStep || isEmbeddedClientStep) ? "Select Existing Client" : `Select Existing ${title}`}
+            {(hasClientStep || isEmbeddedClientStep) ? "Select Existing Client" : `Select Existing ${recordPickerTitle}`}
           </Button>
         </div>
       </div>
@@ -1686,7 +2072,8 @@ export default function FlowNewPage() {
                       pkg={p}
                       allowedCategories={finalCats}
                       isAdmin={userType === "admin"}
-                      hideGroupLabels={!!pkgGrpHidden[p]}/>
+                      hideGroupLabels={!!pkgGrpHidden[p]}
+                      onAutoScrollGroup={handleAutoScrollGroup}/>
                   );
                 })
               )}
@@ -1696,10 +2083,15 @@ export default function FlowNewPage() {
           <Separator />
 
           <div className="flex items-center justify-end gap-2">
+            <Button variant="outline" onClick={() => router.push(`/dashboard/flows/${encodeURIComponent(flowKey)}`)}>
+              <X className="h-4 w-4 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Cancel</span>
+            </Button>
             {wizardStep > (wizardNums[0] ?? 1) ? (
               <Button
                 variant="outline"
                 onClick={() => {
+                  pendingScrollGroupRef.current = null;
                   const prev = [...wizardNums]
                     .reverse()
                     .find((n) => n < wizardStep);
@@ -1709,12 +2101,7 @@ export default function FlowNewPage() {
                 <ArrowLeft className="h-4 w-4 sm:hidden lg:inline" />
                 <span className="hidden sm:inline">Back</span>
               </Button>
-            ) : (
-              <Button variant="outline" onClick={() => router.back()}>
-                <X className="h-4 w-4 sm:hidden lg:inline" />
-                <span className="hidden sm:inline">Cancel</span>
-              </Button>
-            )}
+            ) : null}
             {!selectedClientId ? (
               isCreateNewClientMode ? (
                 <Button variant="secondary" onClick={handleCreateClient} disabled={creatingClient}>
@@ -1728,7 +2115,7 @@ export default function FlowNewPage() {
               ) : (
                 <Button variant="secondary" onClick={() => (hasClientStep || isEmbeddedClientStep) ? setClientPickerOpen(true) : setRecordPickerOpen(true)}>
                   <UserSearch className="h-4 w-4 sm:hidden lg:inline" />
-                  <span className="hidden sm:inline">{(hasClientStep || isEmbeddedClientStep) ? "Select Existing Client" : `Select Existing ${title}`}</span>
+                  <span className="hidden sm:inline">{(hasClientStep || isEmbeddedClientStep) ? "Select Existing Client" : `Select Existing ${recordPickerTitle}`}</span>
                 </Button>
               )
             ) : null}
@@ -1843,7 +2230,7 @@ export default function FlowNewPage() {
           className={`${recordDrawerOpen ? "translate-x-0" : "-translate-x-full"} w-[280px] sm:w-[320px] md:w-[380px]`}
         >
           <DrawerHeader>
-            <DrawerTitle>Select Existing {title}</DrawerTitle>
+            <DrawerTitle>Select Existing {recordPickerTitle}</DrawerTitle>
           </DrawerHeader>
           <div className="space-y-3 p-4">
             <Input
@@ -1860,7 +2247,7 @@ export default function FlowNewPage() {
                 </div>
               ) : filteredRecords.length === 0 ? (
                 <div className="p-3 text-sm text-neutral-500 dark:text-neutral-400">
-                  No existing {title.toLowerCase()} records found.
+                  No existing {recordPickerTitle.toLowerCase()} records found.
                 </div>
               ) : (
                 <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">

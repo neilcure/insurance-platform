@@ -1,11 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { createPortal } from "react-dom";
 import { Loader2, ChevronDown, ChevronRight } from "lucide-react";
-import { SlideDrawer } from "@/components/ui/slide-drawer";
-import { PolicySnapshotView } from "@/components/policies/PolicySnapshotView";
-import type { PolicyDetail } from "@/lib/types/policy";
+import { PolicyDetailsDrawer } from "@/components/policies/PolicyDetailsDrawer";
 
 type LinkedPolicy = {
   policyId: number;
@@ -22,13 +19,9 @@ export function ClientLinkedPolicies({
 }) {
   const [policies, setPolicies] = React.useState<LinkedPolicy[]>([]);
   const [loaded, setLoaded] = React.useState(false);
-  const [selectedDetail, setSelectedDetail] = React.useState<PolicyDetail | null>(null);
+  const [selectedId, setSelectedId] = React.useState<number | null>(null);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
-  const [loadingId, setLoadingId] = React.useState<number | null>(null);
-  const [mounted, setMounted] = React.useState(false);
   const [collapsed, setCollapsed] = React.useState(false);
-
-  React.useEffect(() => { setMounted(true); }, []);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -66,24 +59,14 @@ export function ClientLinkedPolicies({
     return () => { cancelled = true; };
   }, [clientPolicyNumber, clientPolicyId]);
 
-  async function openPolicy(id: number) {
-    setLoadingId(id);
-    try {
-      const res = await fetch(`/api/policies/${id}?_t=${Date.now()}`, { cache: "no-store" });
-      if (!res.ok) return;
-      const data = (await res.json()) as PolicyDetail;
-      setSelectedDetail(data);
-      requestAnimationFrame(() => setDrawerOpen(true));
-    } catch {
-      /* ignore */
-    } finally {
-      setLoadingId(null);
-    }
+  function openPolicy(id: number) {
+    setSelectedId(id);
+    requestAnimationFrame(() => setDrawerOpen(true));
   }
 
   function closeDrawer() {
     setDrawerOpen(false);
-    setTimeout(() => setSelectedDetail(null), 400);
+    setTimeout(() => setSelectedId(null), 400);
   }
 
   if (!loaded) {
@@ -117,16 +100,12 @@ export function ClientLinkedPolicies({
                 key={p.policyId}
                 type="button"
                 onClick={() => openPolicy(p.policyId)}
-                disabled={loadingId === p.policyId}
                 className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 font-mono text-[11px] transition-colors ${
                   p.isActive
                     ? "border-green-300 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-800 dark:bg-green-950/40 dark:text-green-400 dark:hover:bg-green-900/50"
                     : "border-neutral-300 bg-neutral-50 text-neutral-400 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-500 dark:hover:bg-neutral-800"
                 }`}
               >
-                {loadingId === p.policyId ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : null}
                 {p.policyNumber}
               </button>
             ))}
@@ -134,23 +113,13 @@ export function ClientLinkedPolicies({
         )}
       </div>
 
-      {selectedDetail && mounted
-        ? createPortal(
-            <SlideDrawer
-              open={drawerOpen}
-              onClose={closeDrawer}
-              title="Policy Details"
-              side="right"
-              zClass="z-60"
-              passthrough
-            >
-              <div className="overflow-y-auto p-3 text-sm" style={{ maxHeight: "calc(100vh - 52px)" }}>
-                <PolicySnapshotView detail={selectedDetail} entityLabel="Policy" />
-              </div>
-            </SlideDrawer>,
-            document.body,
-          )
-        : null}
+      <PolicyDetailsDrawer
+        policyId={selectedId}
+        open={selectedId !== null}
+        drawerOpen={drawerOpen}
+        onClose={closeDrawer}
+        title="Policy Details"
+      />
     </>
   );
 }

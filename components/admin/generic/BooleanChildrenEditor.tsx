@@ -10,7 +10,7 @@ import type { ShowWhenRule } from "@/lib/types/form";
 
 type InputType = "string" | "number" | "currency" | "date" | "select" | "multi_select" | "boolean" | "repeatable" | "formula";
 
-type BoolChild = {
+export type BoolChild = {
   label?: string;
   inputType?: string;
   options?: OptionRow[];
@@ -30,6 +30,9 @@ export type OptionRow = {
   label?: string;
   value?: string;
   showWhen?: ShowWhenRule[];
+  scrollToGroup?: string;
+  scrollToPackage?: string;
+  scrollToField?: string;
   [key: string]: unknown;
 };
 
@@ -352,7 +355,7 @@ function InlineOptionChildrenEditor({
                 />
               </div>
             )}
-            {ch?.inputType === "currency" && (
+            {(ch?.inputType === "currency" || ch?.inputType === "negative_currency") && (
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <div className="grid gap-1">
                   <Label className="text-xs">Currency Code</Label>
@@ -662,7 +665,7 @@ function NestedBooleanEditor({
                       <option value="formula">Formula</option>
                     </select>
                   </div>
-                  {bChild?.inputType === "currency" && (
+                  {(bChild?.inputType === "currency" || bChild?.inputType === "negative_currency") && (
                     <>
                       <div className="col-span-6">
                         <Input
@@ -803,7 +806,7 @@ function SingleChildEditor({
           </div>
         )}
 
-        {child?.inputType === "currency" && (
+        {(child?.inputType === "currency" || child?.inputType === "negative_currency") && (
           <div className="col-span-12 mt-2 grid gap-2 sm:grid-cols-2">
             <div className="grid gap-1">
               <Label>Currency Code</Label>

@@ -40,7 +40,7 @@ type ChildFieldMeta = {
     fields?: { label?: string; value?: string; inputType?: InputType; options?: { label: string; value: string }[] }[];
   };
 };
-type SelectOption = { label: string; value: string; children?: ChildFieldMeta[] };
+type SelectOption = { label: string; value: string; children?: ChildFieldMeta[]; scrollToPackage?: string; scrollToGroup?: string; scrollToField?: string };
 type FieldMeta = {
   inputType?: InputType;
   required?: boolean;
@@ -115,6 +115,19 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
   const [groupConditionDirty, setGroupConditionDirty] = React.useState(false);
   const [savingGroupCondition, setSavingGroupCondition] = React.useState(false);
   const [allPackagesForGroups, setAllPackagesForGroups] = React.useState<{ label: string; value: string }[]>([]);
+  const [pkgFieldsCache, setPkgFieldsCache] = React.useState<Record<string, { label: string; value: string }[]>>({});
+
+  const pkgFieldsLoadingRef = React.useRef<Set<string>>(new Set());
+  const loadPkgFields = React.useCallback(async (pkgKey: string) => {
+    if (pkgFieldsLoadingRef.current.has(pkgKey)) return;
+    pkgFieldsLoadingRef.current.add(pkgKey);
+    try {
+      const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkgKey}_fields`)}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as { label: string; value: string }[];
+      setPkgFieldsCache((prev) => ({ ...prev, [pkgKey]: Array.isArray(data) ? data : [] }));
+    } catch { /* ignore */ }
+  }, []);
 
   const newGroupInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -126,6 +139,15 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     isActive: true,
     meta: { inputType: "string", required: false, categories: [] },
   });
+
+  React.useEffect(() => {
+    const opts = (form.meta as FieldMeta | undefined)?.options ?? [];
+    for (const o of opts) {
+      if (o.scrollToPackage && !pkgFieldsCache[o.scrollToPackage]) {
+        void loadPkgFields(o.scrollToPackage);
+      }
+    }
+  }, [form.meta, pkgFieldsCache, loadPkgFields]);
 
   const [copyDialogOpen, setCopyDialogOpen] = React.useState(false);
   const [availablePackages, setAvailablePackages] = React.useState<{ label: string; value: string }[]>([]);
@@ -382,7 +404,8 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     setApplyToAll(isAll);
     setEditing(row);
     setOpen(true);
-    if (grpArr.length > 0 && allPackagesForGroups.length === 0) {
+    const hasSelectOptions = Array.isArray(mergedMeta.options) && mergedMeta.options.length > 0;
+    if ((grpArr.length > 0 || hasSelectOptions) && allPackagesForGroups.length === 0) {
       void (async () => {
         try {
           const res = await fetch("/api/form-options?groupKey=packages", { cache: "no-store" });
@@ -544,6 +567,8 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
       .sort((a, b) => a.order - b.order);
   }, [rows]);
   const existingGroupNames = React.useMemo(() => groups.map((g) => g.name).filter((n) => n) as string[], [groups]);
+
+
   const isCustomGroup = React.useMemo(() => {
     const vals = getFieldGroups((form.meta as FieldMeta | undefined)?.group);
     return vals.some((v) => v && !existingGroupNames.includes(v));
@@ -1113,7 +1138,8 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
             ) : null}
 
             {/* Currency config */}
-            {(form.meta as FieldMeta | undefined)?.inputType === "currency" ? (
+            {(form.meta as FieldMeta | undefined)?.inputType === "currency" ||
+            (form.meta as FieldMeta | undefined)?.inputType === "negative_currency" ? (
               <div className="grid gap-2 sm:grid-cols-2">
                 <div className="grid gap-1">
                   <Label>Currency Code</Label>
@@ -1438,6 +1464,53 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                             Remove
                           </Button>
                         </div>
+                        <div className="col-span-12 flex items-center gap-2">
+                          <span className="shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">Scroll to section:</span>
+                          <select
+                            className="h-7 flex-1 rounded border border-neutral-200 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                            value={String((opt as Record<string, unknown>).scrollToPackage ?? "")}
+                            onFocus={() => {
+                              if (allPackagesForGroups.length > 0) return;
+                              void (async () => {
+                                try {
+                                  const res = await fetch("/api/form-options?groupKey=packages", { cache: "no-store" });
+                                  if (!res.ok) return;
+                                  const data = (await res.json()) as { label: string; value: string }[];
+                                  setAllPackagesForGroups(Array.isArray(data) ? data : []);
+                                } catch { /* ignore */ }
+                              })();
+                            }}
+                            onChange={(e) => {
+                              const next: SelectOption[] = [...(form.meta?.options ?? [])];
+                              next[idx] = { ...next[idx], scrollToPackage: e.target.value || undefined, scrollToField: undefined };
+                              updateMeta("options", next);
+                            }}
+                          >
+                            <option value="">— none —</option>
+                            {allPackagesForGroups.map((p) => (
+                              <option key={p.value} value={p.value}>{p.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                        {!!(opt as Record<string, unknown>).scrollToPackage && (
+                          <div className="col-span-12 flex items-center gap-2">
+                            <span className="shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">Highlight field:</span>
+                            <select
+                              className="h-7 flex-1 rounded border border-neutral-200 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                              value={String((opt as Record<string, unknown>).scrollToField ?? "")}
+                              onChange={(e) => {
+                                const next: SelectOption[] = [...(form.meta?.options ?? [])];
+                                next[idx] = { ...next[idx], scrollToField: e.target.value || undefined };
+                                updateMeta("options", next);
+                              }}
+                            >
+                              <option value="">— entire section —</option>
+                              {(pkgFieldsCache[String((opt as Record<string, unknown>).scrollToPackage ?? "")] ?? []).map((f) => (
+                                <option key={f.value} value={f.value}>{f.label}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
                         <div className="col-span-12 rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
                           <div className="mb-2 flex items-center justify-between">
                             <Label>Child fields (optional)</Label>

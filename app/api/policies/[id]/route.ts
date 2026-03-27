@@ -477,7 +477,31 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
     }
 
     const oldPkgs = (existing.packagesSnapshot ?? {}) as Record<string, unknown>;
-    let newPkgs = (body.packages ?? oldPkgs) as Record<string, unknown>;
+    let newPkgs: Record<string, unknown>;
+    if (body.packages) {
+      const incoming = body.packages as Record<string, unknown>;
+      newPkgs = { ...oldPkgs };
+      for (const [pkgName, pkgData] of Object.entries(incoming)) {
+        const existingPkg = oldPkgs[pkgName];
+        if (existingPkg && typeof existingPkg === "object" && pkgData && typeof pkgData === "object") {
+          const oldIsStruct = "values" in (existingPkg as Record<string, unknown>);
+          const newIsStruct = "values" in (pkgData as Record<string, unknown>);
+          if (oldIsStruct && newIsStruct) {
+            const oldVals = (existingPkg as { values?: Record<string, unknown> }).values ?? {};
+            const newVals = (pkgData as { values?: Record<string, unknown> }).values ?? {};
+            newPkgs[pkgName] = { ...existingPkg as object, ...(pkgData as object), values: { ...oldVals, ...newVals } };
+          } else if (!oldIsStruct && !newIsStruct) {
+            newPkgs[pkgName] = { ...existingPkg as object, ...(pkgData as object) };
+          } else {
+            newPkgs[pkgName] = pkgData;
+          }
+        } else {
+          newPkgs[pkgName] = pkgData;
+        }
+      }
+    } else {
+      newPkgs = oldPkgs;
+    }
 
     // Cross-sync: when insuredSnapshot is updated but packagesSnapshot is not
     // explicitly provided, propagate changes to matching insured/contactinfo
@@ -628,10 +652,112 @@ export async function DELETE(_: Request, ctx: { params: Promise<{ id: string }> 
     if (!Number.isFinite(id) || id <= 0) {
       return NextResponse.json({ error: "Invalid id" }, { status: 400 });
     }
-    // Only admin or internal staff can delete policies
     if (!(user.userType === "admin" || user.userType === "internal_staff")) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
+
+    const [carRow] = await db
+      .select({ id: cars.id, extra: cars.extraAttributes })
+      .from(cars)
+      .where(eq(cars.policyId, id))
+      .limit(1);
+    const extra = (carRow?.extra ?? {}) as Record<string, unknown>;
+    const linkedPolicyId = extra.linkedPolicyId ? Number(extra.linkedPolicyId) : null;
+
+    // ── Endorsement record: soft-delete + rollback changes on original policy ──
+    if (linkedPolicyId) {
+      const cols = await getPolicyColumns();
+
+      // 1) Soft-delete: mark endorsement as inactive
+      if (cols.hasIsActive) {
+        await db.update(policies).set({ isActive: false }).where(eq(policies.id, id));
+      }
+
+      // Mark as deleted in extraAttributes for UI filtering
+      const updatedExtra = {
+        ...extra,
+        _deletedAt: new Date().toISOString(),
+        _deletedBy: user.email ?? user.id,
+      };
+      if (carRow) {
+        await db.update(cars).set({ extraAttributes: updatedExtra }).where(eq(cars.id, carRow.id));
+      }
+
+      // 2) Rollback: reverse changes on the original policy using _endorsementChanges
+      const changes = Array.isArray(extra._endorsementChanges)
+        ? (extra._endorsementChanges as { field: string; from: unknown; to: unknown }[])
+        : [];
+
+      if (changes.length > 0) {
+        const [origCarRow] = await db
+          .select({ id: cars.id, extra: cars.extraAttributes })
+          .from(cars)
+          .where(eq(cars.policyId, linkedPolicyId))
+          .limit(1);
+
+        if (origCarRow) {
+          const origExtra = (origCarRow.extra ?? {}) as Record<string, unknown>;
+          const origPkgs = (origExtra.packagesSnapshot ?? {}) as Record<string, Record<string, unknown>>;
+          const rolledBackPkgs = JSON.parse(JSON.stringify(origPkgs)) as Record<string, Record<string, unknown>>;
+
+          for (const change of changes) {
+            const fieldKey = String(change.field);
+            const parts = fieldKey.split("__");
+            if (parts.length < 2) continue;
+            const pkgName = parts[0];
+            const valKey = parts.slice(1).join("__");
+            const pkg = rolledBackPkgs[pkgName];
+            if (!pkg) continue;
+
+            if (pkg.values && typeof pkg.values === "object") {
+              (pkg.values as Record<string, unknown>)[valKey] = change.from;
+            } else {
+              pkg[valKey] = change.from;
+            }
+          }
+
+          // Add audit entry for the rollback
+          const auditLog = Array.isArray(origExtra._editHistory)
+            ? [...(origExtra._editHistory as unknown[])]
+            : [];
+          auditLog.push({
+            at: new Date().toISOString(),
+            by: user.email ?? String(user.id),
+            action: "endorsement_rollback",
+            endorsementId: id,
+            changes: changes.map((c) => ({ key: c.field, from: c.to, to: c.from })),
+          });
+
+          const updatedOrigExtra = {
+            ...origExtra,
+            packagesSnapshot: rolledBackPkgs,
+            _editHistory: auditLog,
+          };
+
+          await db.update(cars).set({ extraAttributes: updatedOrigExtra }).where(eq(cars.id, origCarRow.id));
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        softDeleted: true,
+        rolledBack: changes.length > 0,
+        message: `Endorsement deactivated${changes.length > 0 ? " and changes rolled back on the original policy" : ""}.`,
+      }, { status: 200 });
+    }
+
+    // ── Regular policy: prevent deletion if endorsements are linked ──
+    const linkedEndorsements = await db.execute(
+      sql`SELECT 1 FROM cars WHERE ((extra_attributes)::jsonb ->> 'linkedPolicyId')::int = ${id} LIMIT 1`
+    );
+    const hasLinked = Array.isArray(linkedEndorsements) ? linkedEndorsements.length > 0 : !!(linkedEndorsements as any)?.rows?.length;
+    if (hasLinked) {
+      return NextResponse.json(
+        { error: "Cannot delete this policy because it has endorsement records linked to it. Remove the endorsements first." },
+        { status: 400 },
+      );
+    }
+
     await db.delete(policies).where(eq(policies.id, id));
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (err) {

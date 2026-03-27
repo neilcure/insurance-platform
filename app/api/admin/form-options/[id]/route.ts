@@ -140,6 +140,21 @@ export async function PATCH(
 
   const [row] = await db.update(formOptions).set(update).where(eq(formOptions.id, id)).returning();
 
+  // When a flow key is renamed, cascade to its steps group_key
+  if (
+    currentGroupKey === "flows" &&
+    typeof update.value === "string" &&
+    update.value !== current.value &&
+    current.value
+  ) {
+    const oldStepsKey = `flow_${current.value}_steps`;
+    const newStepsKey = `flow_${update.value}_steps`;
+    await db
+      .update(formOptions)
+      .set({ groupKey: newStepsKey })
+      .where(eq(formOptions.groupKey, oldStepsKey));
+  }
+
   // Propagate groupShowWhen to all fields sharing the same group within this groupKey.
   // Only propagate when groupShowWhen was explicitly included in the saved meta
   // (null = clear, object = set). Absent key = no change to siblings.

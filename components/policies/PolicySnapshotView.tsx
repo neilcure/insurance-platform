@@ -4,6 +4,7 @@ import * as React from "react";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { normalizeFieldKey, isHiddenPackage } from "@/lib/utils";
 import { ClientLinkedPolicies } from "@/components/policies/ClientLinkedPolicies";
+import { EndorsementHistory } from "@/components/policies/EndorsementHistory";
 import { AccountingTab } from "@/components/policies/tabs/AccountingTab";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -277,10 +278,10 @@ function formatFieldValue(
     const d = typeof fmtMeta?.decimals === "number" ? fmtMeta.decimals : 2;
     return `${n.toFixed(d)}%`;
   }
-  if (type === "currency" || type === "number") {
+  if (type === "currency" || type === "negative_currency" || type === "number") {
     const n = typeof value === "number" ? value : Number(value as any);
     if (!Number.isFinite(n)) return String(value ?? "");
-    if (type === "currency") {
+    if (type === "currency" || type === "negative_currency") {
       const code = (fmtMeta?.currencyCode || "HKD").toUpperCase();
       const decimals = fmtMeta?.decimals;
       if (typeof decimals === "number") {
@@ -496,10 +497,11 @@ function PackageSection({
             }
 
             const valueText = formatFieldValue(v, type, getOptMap(k), fmt);
+            const isNegCur = type === "negative_currency";
             return (
               <div key={k} className="flex items-start justify-between gap-3 text-xs">
                 <div className="text-neutral-500 dark:text-neutral-400">{fieldLabel}</div>
-                <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{valueText}</div>
+                <div className={`max-w-[60%] wrap-break-word font-mono text-right ${isNegCur ? "text-red-600 dark:text-red-400" : ""} ${recent ? recentCls : ""}`}>{valueText}</div>
               </div>
             );
           });
@@ -586,6 +588,10 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEdit
     const fk = String(snap.flowKey ?? "").toLowerCase();
     return fk.includes("client");
   }, [snap.flowKey]);
+
+  const isEndorsementRecord = React.useMemo(() => {
+    return snap.linkedPolicyId != null;
+  }, [snap.linkedPolicyId]);
 
   const allPkgs = React.useMemo(() => {
     const merged = { ...pkgs };
@@ -761,6 +767,32 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEdit
         </div>
       ) : null}
 
+      {Array.isArray(snap._endorsementChanges) && (snap._endorsementChanges as { field: string; from: unknown; to: unknown }[]).length > 0 ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50/50 p-3 dark:border-amber-700 dark:bg-amber-950/30">
+          <div className="mb-2 text-sm font-semibold text-amber-800 dark:text-amber-300">Endorsement Changes</div>
+          <div className="space-y-1.5">
+            {(snap._endorsementChanges as { field: string; from: unknown; to: unknown }[]).map((c, i) => {
+              const fieldKey = String(c.field ?? "");
+              const shortKey = fieldKey.includes("__") ? fieldKey.split("__").slice(1).join("__") : fieldKey;
+              const label = meta?.pkgMeta
+                ? Object.values(meta.pkgMeta).reduce<string | null>((found, pm) => found ?? (pm.labels[fieldKey] || pm.labels[shortKey] || null), null)
+                : null;
+              const displayLabel = label ?? shortKey.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase());
+              const fromStr = c.from === null || c.from === undefined || c.from === "" ? "—" : String(c.from);
+              const toStr = c.to === null || c.to === undefined || c.to === "" ? "—" : String(c.to);
+              return (
+                <div key={i} className="text-xs">
+                  <span className="font-medium text-neutral-700 dark:text-neutral-300">{displayLabel}:</span>{" "}
+                  <span className="text-red-600 line-through dark:text-red-400">{fromStr}</span>{" "}
+                  <span className="text-neutral-400">→</span>{" "}
+                  <span className="font-semibold text-green-700 dark:text-green-400">{toStr}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
       {detail.agent && detail.agent.id ? (() => {
         const a = detail.agent!;
         const line1 = (a.userNumber?.trim() ? `${a.userNumber} — ` : "") + (a.name?.trim() ?? "");
@@ -825,6 +857,10 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEdit
           clientPolicyNumber={detail.policyNumber}
           clientPolicyId={detail.policyId}
         />
+      ) : null}
+
+      {!isClientRecord && !isEndorsementRecord ? (
+        <EndorsementHistory policyId={detail.policyId} />
       ) : null}
     </div>
   );

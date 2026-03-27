@@ -15,7 +15,7 @@ import {
 
 type InputType = "string" | "number" | "currency" | "date" | "select" | "multi_select" | "boolean" | "repeatable" | "formula";
 
-type ChildField = {
+export type ChildField = {
   label?: string;
   inputType?: string;
   options?: OptionRow[];
@@ -55,6 +55,7 @@ export function TopLevelSelectEditor({
   onOptionsChange,
   children: optionChildren,
   onChildrenChange,
+  groupNames,
   ...shared
 }: SharedProps & {
   inputType: string;
@@ -64,7 +65,29 @@ export function TopLevelSelectEditor({
   onOptionsChange: (next: OptionRow[]) => void;
   children?: ChildField[][];
   onChildrenChange?: (optIdx: number, next: ChildField[]) => void;
+  groupNames?: string[];
 }) {
+  const [pkgFieldsCache, setPkgFieldsCache] = React.useState<Record<string, { label: string; value: string }[]>>({});
+  const pkgFieldsLoadingRef = React.useRef<Set<string>>(new Set());
+  const loadPkgFields = React.useCallback(async (pkgKey: string) => {
+    if (pkgFieldsLoadingRef.current.has(pkgKey)) return;
+    pkgFieldsLoadingRef.current.add(pkgKey);
+    try {
+      const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkgKey}_fields`)}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as { label: string; value: string }[];
+      setPkgFieldsCache((prev) => ({ ...prev, [pkgKey]: Array.isArray(data) ? data : [] }));
+    } catch { /* ignore */ }
+  }, []);
+
+  React.useEffect(() => {
+    for (const o of options) {
+      if (o.scrollToPackage && !pkgFieldsCache[o.scrollToPackage] && !pkgFieldsLoadingRef.current.has(o.scrollToPackage)) {
+        void loadPkgFields(o.scrollToPackage);
+      }
+    }
+  }, [options, pkgFieldsCache, loadPkgFields]);
+
   const autoFillValue = (idx: number) => {
     const o = options[idx];
     if (o && (o.value ?? "").trim() === "" && (o.label ?? "").trim() !== "") {
@@ -185,6 +208,46 @@ export function TopLevelSelectEditor({
                   </Button>
                 </div>
               </div>
+              {shared.allPackages && shared.allPackages.length > 0 && (
+                <div className="mt-1 flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <span className="shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">Scroll to section:</span>
+                    <select
+                      className="h-7 flex-1 rounded border border-neutral-200 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                      value={String(opt.scrollToPackage ?? "")}
+                      onChange={(e) => {
+                        const next = [...options];
+                        next[idx] = { ...next[idx], scrollToPackage: e.target.value || undefined, scrollToField: undefined };
+                        onOptionsChange(next);
+                      }}
+                    >
+                      <option value="">— none —</option>
+                      {shared.allPackages.map((p) => (
+                        <option key={p.value} value={p.value}>{p.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {opt.scrollToPackage && (
+                    <div className="flex items-center gap-2">
+                      <span className="shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">Highlight field:</span>
+                      <select
+                        className="h-7 flex-1 rounded border border-neutral-200 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                        value={String(opt.scrollToField ?? "")}
+                        onChange={(e) => {
+                          const next = [...options];
+                          next[idx] = { ...next[idx], scrollToField: e.target.value || undefined };
+                          onOptionsChange(next);
+                        }}
+                      >
+                        <option value="">— entire section —</option>
+                        {(pkgFieldsCache[opt.scrollToPackage] ?? []).map((f) => (
+                          <option key={f.value} value={f.value}>{f.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
               {onChildrenChange && (
                 <OptionChildrenEditor
                   children={optionChildren?.[idx] ?? []}
@@ -288,7 +351,7 @@ function SingleOptionChild({
         </div>
       )}
 
-      {child?.inputType === "currency" && (
+      {(child?.inputType === "currency" || child?.inputType === "negative_currency") && (
         <div className="col-span-12 mt-2 grid gap-2 sm:grid-cols-2">
           <div className="grid gap-1">
             <Label>Currency Code</Label>
@@ -449,7 +512,7 @@ function SingleOptionChild({
                           <option value="formula">Formula</option>
                         </select>
                       </div>
-                      {bc?.inputType === "currency" && (
+                      {(bc?.inputType === "currency" || bc?.inputType === "negative_currency") && (
                         <>
                           <div className="col-span-6">
                             <Input

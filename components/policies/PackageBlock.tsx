@@ -237,7 +237,7 @@ function SubFieldRepeatable({
                     </div>
                   );
                 }
-                if (ccType === "currency") {
+                if (ccType === "currency" || ccType === "negative_currency") {
                   const cc = String((cf as any)?.currencyCode ?? "").trim();
                   const dec = Number((cf as any)?.decimals ?? 2);
                   const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -412,7 +412,7 @@ function SelectWithOptionChildren({
                 />
               );
             }
-            if (ocType === "currency") {
+            if (ocType === "currency" || ocType === "negative_currency") {
               const cc = String(oc?.currencyCode ?? "").trim();
               const dec = Number(oc?.decimals ?? 2);
               const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -902,12 +902,14 @@ export function PackageBlock({
   allowedCategories,
   isAdmin,
   hideGroupLabels,
+  onAutoScrollGroup,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   pkg: string;
   allowedCategories?: string[] | undefined;
   isAdmin?: boolean;
   hideGroupLabels?: boolean;
+  onAutoScrollGroup?: (groupName: string, pkg: string) => void;
 }) {
   const [categories, setCategories] = React.useState<{ id: number; label: string; value: string; sortOrder: number; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }[]>([]);
   const catFieldName = `${pkg}__category`;
@@ -1232,8 +1234,54 @@ export function PackageBlock({
     [form, pkg],
   );
 
+  // Auto-scroll: when a select option has scrollToPackage or scrollToGroup, notify parent
+  // Skip the initial mount — only fire when the user actually changes a value
+  const prevScrollTargetRef = React.useRef<string | null>(null);
+  const autoScrollMountedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!onAutoScrollGroup) return;
+
+    let currentTarget: string | undefined;
+    for (const f of pkgFields) {
+      const meta = (f.meta ?? {}) as {
+        inputType?: string;
+        options?: { value?: string; scrollToPackage?: string; scrollToGroup?: string; scrollToField?: string }[];
+      };
+      if (meta.inputType !== "select" || !Array.isArray(meta.options)) continue;
+      const rawFieldKey = String(f.value ?? "").trim();
+      const fieldKey = rawFieldKey.startsWith(`${pkg}__`) ? rawFieldKey : rawFieldKey.startsWith(`${pkg}_`) ? rawFieldKey.slice(`${pkg}_`.length) : rawFieldKey;
+      const nameBase = rawFieldKey.startsWith(`${pkg}__`) ? rawFieldKey : `${pkg}__${fieldKey}`;
+      const currentVal = String(allFormValues[nameBase] ?? "").trim();
+      if (!currentVal) { prevScrollTargetRef.current = null; continue; }
+
+      const matchOpt = meta.options.find((o) => o.value === currentVal);
+      const fieldSuffix = matchOpt?.scrollToField ? `|field:${matchOpt.scrollToField}` : "";
+      const target = matchOpt?.scrollToPackage
+        ? `pkg:${matchOpt.scrollToPackage}${fieldSuffix}`
+        : matchOpt?.scrollToGroup
+          ? `grp:${matchOpt.scrollToGroup}${fieldSuffix}`
+          : undefined;
+
+      if (target) currentTarget = target;
+
+      if (target && target !== prevScrollTargetRef.current) {
+        prevScrollTargetRef.current = target;
+        if (autoScrollMountedRef.current) {
+          onAutoScrollGroup(target, pkg);
+        }
+      } else if (!target) {
+        prevScrollTargetRef.current = null;
+      }
+    }
+
+    if (!autoScrollMountedRef.current) {
+      prevScrollTargetRef.current = currentTarget ?? null;
+      autoScrollMountedRef.current = true;
+    }
+  }, [allFormValues, pkgFields, pkg, onAutoScrollGroup]);
+
   return (
-    <section className="space-y-4">
+    <section id={`pkg-block-${pkg}`} data-pkg-block={pkg} className="space-y-4 scroll-mt-20">
       {categories.length > 1 ? (
         <CategoryTabs
           categories={categories}
@@ -1405,8 +1453,16 @@ export function PackageBlock({
           }
           const groupedElements = entries
             .filter(([, bucket]) => bucket.fields.length > 0)
-            .map(([groupLabel, bucket]) => (
-            <div key={groupLabel || "default"} className="space-y-2">
+            .map(([groupLabel, bucket]) => {
+            const groupSlug = (groupLabel || "default").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+            return (
+            <div
+              key={groupLabel || "default"}
+              id={`pkg-group-${pkg}-${groupSlug}`}
+              data-group-name={groupLabel || "default"}
+              data-pkg={pkg}
+              className="space-y-2 scroll-mt-24"
+            >
               {groupLabel && !hideGroupLabels ? (
                 <div className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{groupLabel}</div>
               ) : null}
@@ -1430,7 +1486,8 @@ export function PackageBlock({
                   };
                   const displayLabel = applyLabelCase(f.label, meta.labelCase);
                   const inputType = meta.inputType ?? "string";
-                  const isCurrency = inputType === "currency";
+                  const isCurrency = inputType === "currency" || inputType === "negative_currency";
+                  const isNegativeCurrency = inputType === "negative_currency";
                   const isPercent = inputType === "percent";
                   const isNumber = inputType === "number" || isCurrency || isPercent;
                   const isDate = inputType === "date";
@@ -1622,7 +1679,7 @@ export function PackageBlock({
                                             </div>
                                           );
                                         }
-                                        if (cType === "currency") {
+                                        if (cType === "currency" || cType === "negative_currency") {
                                           const cc = String((child as any)?.currencyCode ?? "").trim();
                                           const dec = Number((child as any)?.decimals ?? 2);
                                           const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -1828,7 +1885,7 @@ export function PackageBlock({
                                   />
                                 );
                               }
-                              if (cType === "currency") {
+                              if (cType === "currency" || cType === "negative_currency") {
                                 const cc = String((child as any)?.currencyCode ?? "").trim();
                                 const dec = Number((child as any)?.decimals ?? 2);
                                 const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -2016,7 +2073,7 @@ export function PackageBlock({
                                   />
                                 );
                               }
-                              if (cType === "currency") {
+                              if (cType === "currency" || cType === "negative_currency") {
                                 const cc = String((child as any)?.currencyCode ?? "").trim();
                                 const dec = Number((child as any)?.decimals ?? 2);
                                 const step = `0.${"0".repeat(Math.max(0, dec - 1))}1`;
@@ -2156,6 +2213,36 @@ export function PackageBlock({
                     const currencyCode = String((meta as any)?.currencyCode ?? "").trim();
                     const decimals = Number((meta as any)?.decimals ?? 2);
                     const step = `0.${"0".repeat(Math.max(0, decimals - 1))}1`;
+                    if (isNegativeCurrency) {
+                      const reg = form.register(nameBase as never, options);
+                      const origOnBlur = reg.onBlur;
+                      return (
+                        <div key={nameBase} className="space-y-1">
+                          <Label>
+                            {displayLabel} {Boolean(meta.required) ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                          </Label>
+                          <div className="flex items-center gap-2">
+                            {currencyCode ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{currencyCode}</span> : null}
+                            <Input
+                              type="number"
+                              step={step}
+                              placeholder={`-0.${"0".repeat(decimals)}`}
+                              className="text-red-600 dark:text-red-400"
+                              {...reg}
+                              onBlur={(e) => {
+                                const n = parseFloat(e.target.value);
+                                if (!isNaN(n) && n > 0) {
+                                  const neg = -Math.abs(n);
+                                  e.target.value = String(neg);
+                                  form.setValue(nameBase as never, neg as never, { shouldDirty: true });
+                                }
+                                origOnBlur(e);
+                              }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    }
                     return (
                       <div key={nameBase} className="space-y-1">
                         <Label>
@@ -2307,7 +2394,7 @@ export function PackageBlock({
                 })}
               </div>
             </div>
-          ));
+          );});
 
           const debugPanel = isAdmin ? (
             <details key="__debug" className="mt-4 rounded-md border border-dashed border-amber-400/50 bg-amber-50/50 p-2 dark:border-amber-600/30 dark:bg-amber-950/20">

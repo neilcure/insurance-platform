@@ -30,20 +30,90 @@ const PREMIUM_CONTEXT_OPTIONS = [
   { value: "agent", label: "Agent (Agent Premium)" },
 ];
 const isPremiumPkg = (p: string) => p === "premiumRecord" || p === "accounting";
-import { BooleanChildrenEditor, MetaJsonPreview } from "@/components/admin/generic/BooleanChildrenEditor";
-import { TopLevelSelectEditor, TopLevelRepeatableEditor } from "@/components/admin/generic/FieldTypeEditors";
+import { BooleanChildrenEditor, MetaJsonPreview, type BoolChild, type OptionRow } from "@/components/admin/generic/BooleanChildrenEditor";
+import { TopLevelSelectEditor, TopLevelRepeatableEditor, type ChildField } from "@/components/admin/generic/FieldTypeEditors";
 import { GroupAssignmentSection } from "@/components/admin/generic/GroupAssignmentSection";
 import { AutoFillConfigEditor, type AutoFillConfig } from "@/components/admin/generic/AutoFillConfig";
 import { EntityPickerConfigEditor, type EntityPickerConfig } from "@/components/admin/generic/EntityPickerConfig";
 import { InputTypeSelect, type InputType } from "@/components/admin/generic/InputTypeSelect";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
+import type { PkgFieldInfo } from "@/hooks/use-pkg-fields";
+
+type GswRule = { package?: string; field: string; values: string[]; childKey?: string; childValues?: string[] };
+
+type FieldMeta = {
+  inputType?: InputType;
+  required?: boolean;
+  categories?: string[];
+  options?: OptionRow[];
+  booleanChildren?: { true?: BoolChild[]; false?: BoolChild[] };
+  defaultBoolean?: boolean | null;
+  booleanLabels?: { true?: string; false?: string };
+  booleanDisplay?: "radio" | "dropdown";
+  group?: string | string[];
+  groupOrder?: number;
+  labelCase?: "original" | "upper" | "lower" | "title";
+  selectDisplay?: "dropdown" | "radio" | "checkbox";
+  repeatable?: {
+    itemLabel?: string;
+    min?: number;
+    max?: number;
+    fields?: { label?: string; value?: string; inputType?: string; options?: OptionRow[] }[];
+  };
+  showWhen?: { package: string; category: string | string[]; field?: string; fieldValues?: string[]; childKey?: string; childValues?: string[] }[];
+  groupShowWhen?: GswRule[] | null;
+  groupShowWhenMap?: Record<string, GswRule[] | null>;
+  autoFill?: AutoFillConfig;
+  entityPicker?: EntityPickerConfig;
+  agentPickerLabel?: string;
+  formula?: string;
+  currencyCode?: string;
+  decimals?: number;
+  premiumColumn?: string;
+  premiumContexts?: string[];
+};
+
+type ApiFieldRow = {
+  id: number;
+  label: string;
+  value: string;
+  sortOrder?: number;
+  isActive?: boolean;
+  valueType?: string;
+  meta?: FieldMeta | null;
+};
+
+function buildPatchPayload(
+  f: {
+    label: string;
+    value: string;
+    valueType: string;
+    sortOrder: number;
+    isActive: boolean;
+    meta: FieldMeta;
+  },
+  applyAll: boolean,
+): Record<string, unknown> {
+  const normalizedMeta = {
+    ...(f.meta ?? {}),
+    categories: applyAll ? [] : ((f.meta?.categories ?? []) as string[]),
+  };
+  return {
+    label: f.label,
+    value: f.value,
+    sortOrder: Number(f.sortOrder) || 0,
+    isActive: !!f.isActive,
+    valueType: f.valueType ?? "string",
+    meta: normalizedMeta,
+  };
+}
 
 export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: number }) {
   const [categoryOptions, setCategoryOptions] = React.useState<{ label: string; value: string }[]>([]);
   const [allPackages, setAllPackages] = React.useState<{ label: string; value: string }[]>([]);
   const [crossPkgCategories, setCrossPkgCategories] = React.useState<Record<string, { label: string; value: string }[]>>({});
   const [existing, setExisting] = React.useState<
-    { id: number; label: string; value: string; sortOrder: number; isActive?: boolean; meta: { group?: string; inputType?: string; options?: { label: string; value: string }[] } | null }[]
+    { id: number; label: string; value: string; sortOrder: number; isActive?: boolean; valueType?: string; meta: FieldMeta | null }[]
   >([]);
   const [loading, setLoading] = React.useState(true);
   const [form, setForm] = React.useState<{
@@ -52,31 +122,7 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
     valueType: string;
     sortOrder: number;
     isActive: boolean;
-    meta: {
-      inputType?: InputType;
-      required?: boolean;
-      categories?: string[];
-      options?: { label: string; value: string }[];
-      booleanChildren?: { true?: any[]; false?: any[] };
-      defaultBoolean?: boolean | null;
-      booleanLabels?: { true?: string; false?: string };
-      booleanDisplay?: "radio" | "dropdown";
-      group?: string;
-      groupOrder?: number;
-      labelCase?: "original" | "upper" | "lower" | "title";
-      selectDisplay?: "dropdown" | "radio" | "checkbox";
-      repeatable?: {
-        itemLabel?: string;
-        min?: number;
-        max?: number;
-        fields?: { label?: string; value?: string; inputType?: InputType; options?: { label: string; value: string }[] }[];
-      };
-      showWhen?: { package: string; category: string | string[]; field?: string; fieldValues?: string[]; childKey?: string; childValues?: string[] }[];
-      groupShowWhen?: { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null;
-      groupShowWhenMap?: Record<string, { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null>;
-      autoFill?: AutoFillConfig;
-      entityPicker?: EntityPickerConfig;
-    };
+    meta: FieldMeta;
   }>({
     label: "",
     value: "",
@@ -86,33 +132,7 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
     meta: { inputType: "string", required: false, categories: [] },
   });
   const [applyToAll, setApplyToAll] = React.useState(true);
-  const [customGroupMode, setCustomGroupMode] = React.useState(false);
   const editSnapshot = React.useRef<Record<string, unknown> | null>(null);
-
-  function buildPatchPayload(
-    f: {
-      label: string;
-      value: string;
-      valueType: string;
-      sortOrder: number;
-      isActive: boolean;
-      meta: (typeof form)["meta"];
-    },
-    applyAll: boolean,
-  ): Record<string, unknown> {
-    const normalizedMeta = {
-      ...(f.meta ?? {}),
-      categories: applyAll ? [] : ((f.meta?.categories ?? []) as string[]),
-    };
-    return {
-      label: f.label,
-      value: f.value,
-      sortOrder: Number(f.sortOrder) || 0,
-      isActive: !!f.isActive,
-      valueType: f.valueType ?? "string",
-      meta: normalizedMeta,
-    };
-  }
 
   React.useEffect(() => {
     async function loadCats() {
@@ -156,32 +176,31 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
       try {
         const res = await fetch(`/api/admin/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}`, { cache: "no-store" });
         if (!res.ok) return;
-        const data = (await res.json()) as any[];
-        const rows = (Array.isArray(data) ? data : []).map((r: any) => ({
+        const data = (await res.json()) as ApiFieldRow[];
+        const rows = (Array.isArray(data) ? data : []).map((r) => ({
           id: r.id,
           label: r.label,
           value: r.value,
           sortOrder: r.sortOrder ?? 0,
           isActive: r.isActive ?? true,
           valueType: r.valueType ?? "string",
-          meta: (r.meta ?? {}) as { group?: string; inputType?: string; options?: { label: string; value: string }[] } | null,
+          meta: (r.meta ?? {}) as FieldMeta | null,
         }));
         setExisting(rows);
         const current = rows.find((r) => r.id === id);
         if (current) {
-          const mergedMeta = { inputType: "string", required: false, categories: [], ...(current.meta ?? {}) } as any;
-          // Inherit groupShowWhenMap from siblings for each group
+          const mergedMeta: FieldMeta = { inputType: "string", required: false, categories: [], ...(current.meta ?? {}) };
           const grpArr = Array.isArray(mergedMeta.group) ? mergedMeta.group : (typeof mergedMeta.group === "string" && mergedMeta.group.trim() ? [mergedMeta.group.trim()] : []);
           if (grpArr.length > 0 && !mergedMeta.groupShowWhenMap) {
-            const inherited: Record<string, any> = {};
+            const inherited: Record<string, GswRule[] | null> = {};
             for (const groupName of grpArr) {
               const sibling = rows.find((r) => {
-                const rg = (r.meta as any)?.group;
+                const rg = r.meta?.group;
                 const rGroups = Array.isArray(rg) ? rg : (typeof rg === "string" && rg.trim() ? [rg.trim()] : []);
-                return r.id !== id && rGroups.includes(groupName) && ((r.meta as any)?.groupShowWhenMap?.[groupName] || (r.meta as any)?.groupShowWhen);
+                return r.id !== id && rGroups.includes(groupName) && (r.meta?.groupShowWhenMap?.[groupName] || r.meta?.groupShowWhen);
               });
               if (sibling) {
-                inherited[groupName] = (sibling.meta as any)?.groupShowWhenMap?.[groupName] ?? (sibling.meta as any).groupShowWhen;
+                inherited[groupName] = sibling.meta?.groupShowWhenMap?.[groupName] ?? sibling.meta?.groupShowWhen ?? null;
               }
             }
             if (Object.keys(inherited).length > 0) mergedMeta.groupShowWhenMap = inherited;
@@ -191,10 +210,10 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
             value: current.value,
             valueType: current.valueType,
             sortOrder: current.sortOrder,
-            isActive: Boolean((current as any).isActive ?? true),
+            isActive: Boolean(current.isActive ?? true),
             meta: mergedMeta,
           });
-          const isAll = !Array.isArray((current.meta as any)?.categories) || ((current.meta as any)?.categories ?? []).length === 0;
+          const isAll = !Array.isArray(current.meta?.categories) || (current.meta?.categories ?? []).length === 0;
           setApplyToAll(isAll);
           editSnapshot.current = formSnapshot(
             buildPatchPayload(
@@ -203,7 +222,7 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
                 value: current.value,
                 valueType: current.valueType,
                 sortOrder: current.sortOrder,
-                isActive: Boolean((current as any).isActive ?? true),
+                isActive: Boolean(current.isActive ?? true),
                 meta: mergedMeta,
               },
               isAll,
@@ -241,17 +260,13 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
     }
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [existing]);
+
   const currentGroups = React.useMemo(() => {
     const g = form.meta?.group;
     if (Array.isArray(g)) return g.filter(Boolean) as string[];
     const s = String(g ?? "").trim();
     return s ? [s] : [];
   }, [form.meta?.group]);
-  const isCustomGroup = React.useMemo(() => {
-    if (customGroupMode) return true;
-    return currentGroups.some((v) => !existingGroupNames.includes(v));
-  }, [currentGroups, existingGroupNames, customGroupMode]);
-
   function updateMeta<K extends keyof NonNullable<typeof form.meta>>(key: K, value: NonNullable<typeof form.meta>[K]) {
     setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), [key]: value } }));
   }
@@ -359,8 +374,8 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
               <Label>Picker Button Label</Label>
               <Input
                 placeholder="e.g. Browse Agents"
-                value={String(((form.meta as any)?.agentPickerLabel ?? "") || "")}
-                onChange={(e) => updateMeta("agentPickerLabel" as any, e.target.value as any)}
+                value={String(form.meta?.agentPickerLabel ?? "")}
+                onChange={(e) => updateMeta("agentPickerLabel", e.target.value)}
               />
               <p className="text-xs text-neutral-500 dark:text-neutral-400">
                 Label shown on the search button. Defaults to &ldquo;Browse&rdquo; if left empty.
@@ -374,8 +389,8 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
                 <Label>Formula Expression</Label>
                 <Input
                   placeholder="e.g. {sum_insured} * 0.05"
-                  value={String(((form.meta as any)?.formula ?? "") || "")}
-                  onChange={(e) => updateMeta("formula" as any, e.target.value as any)}
+                  value={String(form.meta?.formula ?? "")}
+                  onChange={(e) => updateMeta("formula", e.target.value)}
                 />
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
                   Reference other fields using {"{field_key}"} syntax. Supports numeric math (+, -, *, /), date arithmetic (e.g. {"{start_date}"} + 364), and <strong>TODAY</strong> for the current date (e.g. TODAY, TODAY + 30).
@@ -384,14 +399,14 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
             </div>
           ) : null}
 
-          {form.meta?.inputType === "currency" ? (
+          {(form.meta?.inputType === "currency" || form.meta?.inputType === "negative_currency") ? (
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label>Currency Code</Label>
                 <Input
                   placeholder="e.g. HKD, USD"
-                  value={String(((form.meta as any)?.currencyCode ?? "") || "")}
-                  onChange={(e) => updateMeta("currencyCode" as any, e.target.value as any)}
+                  value={String(form.meta?.currencyCode ?? "")}
+                  onChange={(e) => updateMeta("currencyCode", e.target.value)}
                 />
               </div>
               <div className="grid gap-1">
@@ -400,8 +415,8 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
                   type="number"
                   className="w-28"
                   placeholder="2"
-                  value={String(((form.meta as any)?.decimals ?? 2))}
-                  onChange={(e) => updateMeta("decimals" as any, (Number(e.target.value) || 0) as any)}
+                  value={String(form.meta?.decimals ?? 2)}
+                  onChange={(e) => updateMeta("decimals", Number(e.target.value) || 0)}
                 />
               </div>
             </div>
@@ -413,8 +428,8 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
                 <Label>DB Column Mapping</Label>
                 <select
                   className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                  value={String((form.meta as any)?.premiumColumn ?? "")}
-                  onChange={(e) => updateMeta("premiumColumn" as any, (e.target.value || undefined) as any)}
+                  value={String(form.meta?.premiumColumn ?? "")}
+                  onChange={(e) => updateMeta("premiumColumn", e.target.value || undefined)}
                 >
                   <option value="">None (stored in extra values)</option>
                   {DB_COLUMN_OPTIONS.map((opt) => (
@@ -431,8 +446,8 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
                 <Label>Show in Premium Tabs</Label>
                 <div className="space-y-1.5 rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
                   {PREMIUM_CONTEXT_OPTIONS.map((ctx) => {
-                    const current: string[] = Array.isArray((form.meta as any)?.premiumContexts)
-                      ? (form.meta as any).premiumContexts
+                    const current: string[] = Array.isArray(form.meta?.premiumContexts)
+                      ? form.meta.premiumContexts
                       : [];
                     const checked = current.length === 0 || current.includes(ctx.value);
                     return (
@@ -451,7 +466,7 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
                               next = [...current, ctx.value];
                             }
                             if (next.length === PREMIUM_CONTEXT_OPTIONS.length) next = [];
-                            updateMeta("premiumContexts" as any, (next.length > 0 ? next : undefined) as any);
+                            updateMeta("premiumContexts", next.length > 0 ? next : undefined);
                           }}
                         />
                         <span className="text-neutral-700 dark:text-neutral-300">{ctx.label}</span>
@@ -469,16 +484,21 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
           {(["select", "multi_select"] as string[]).includes((form.meta?.inputType ?? "") as string) ? (
             <TopLevelSelectEditor
               inputType={(form.meta?.inputType ?? "select") as string}
-              selectDisplay={((form.meta?.selectDisplay ?? "dropdown") as string)}
-              onSelectDisplayChange={(v) => updateMeta("selectDisplay", v as any)}
-              options={Array.isArray(form.meta?.options) ? (form.meta?.options as any[]) : []}
-              onOptionsChange={(next) => updateMeta("options", next as any)}
-              children={(Array.isArray(form.meta?.options) ? (form.meta?.options as any[]) : []).map((o: any) => Array.isArray(o?.children) ? o.children : [])}
+              selectDisplay={(form.meta?.selectDisplay ?? "dropdown") as string}
+              onSelectDisplayChange={(v) => updateMeta("selectDisplay", v as FieldMeta["selectDisplay"])}
+              options={Array.isArray(form.meta?.options) ? form.meta.options : []}
+              onOptionsChange={(next) => updateMeta("options", next)}
+              /* eslint-disable-next-line react/no-children-prop -- data prop, not React children */
+              children={(Array.isArray(form.meta?.options) ? form.meta.options : []).map((o) => {
+                const ch = o.children;
+                return Array.isArray(ch) ? (ch as ChildField[]) : [];
+              })}
               onChildrenChange={(optIdx, nextChildren) => {
-                const opts = [...(Array.isArray(form.meta?.options) ? (form.meta?.options as any[]) : [])];
+                const opts = [...(Array.isArray(form.meta?.options) ? form.meta.options : [])];
                 opts[optIdx] = { ...(opts[optIdx] ?? {}), children: nextChildren };
-                updateMeta("options", opts as any);
+                updateMeta("options", opts);
               }}
+              groupNames={existingGroupNames}
               allPackages={allPackages}
               crossPkgCategories={crossPkgCategories}
               onLoadCategories={loadCrossPkgCats}
@@ -487,8 +507,8 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
 
           {form.meta?.inputType === "repeatable" ? (
             <TopLevelRepeatableEditor
-              repeatable={form.meta?.repeatable as any}
-              onChange={(next) => updateMeta("repeatable", next as any)}
+              repeatable={form.meta?.repeatable}
+              onChange={(next) => updateMeta("repeatable", next)}
               allPackages={allPackages}
               crossPkgCategories={crossPkgCategories}
               onLoadCategories={loadCrossPkgCats}
@@ -498,14 +518,14 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
           {form.meta?.inputType === "boolean" ? (
             <>
               <BooleanChildrenEditor
-                booleanChildren={form.meta?.booleanChildren as any}
-                onChange={(next) => updateMeta("booleanChildren", next as any)}
-                defaultBoolean={form.meta?.defaultBoolean as any}
-                onDefaultBooleanChange={(v) => updateMeta("defaultBoolean", v as any)}
-                booleanLabels={form.meta?.booleanLabels as any}
-                onBooleanLabelsChange={(v) => updateMeta("booleanLabels", v as any)}
-                booleanDisplay={(form.meta?.booleanDisplay as any) ?? "radio"}
-                onBooleanDisplayChange={(v) => updateMeta("booleanDisplay", v as any)}
+                booleanChildren={form.meta?.booleanChildren}
+                onChange={(next) => updateMeta("booleanChildren", next)}
+                defaultBoolean={form.meta?.defaultBoolean}
+                onDefaultBooleanChange={(v) => updateMeta("defaultBoolean", v)}
+                booleanLabels={form.meta?.booleanLabels}
+                onBooleanLabelsChange={(v) => updateMeta("booleanLabels", v)}
+                booleanDisplay={form.meta?.booleanDisplay ?? "radio"}
+                onBooleanDisplayChange={(v) => updateMeta("booleanDisplay", v)}
                 allPackages={allPackages}
                 crossPkgCategories={crossPkgCategories}
                 onLoadCategories={loadCrossPkgCats}
@@ -513,7 +533,7 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
               />
               <AutoFillConfigEditor
                 value={form.meta?.autoFill}
-                onChange={(next) => updateMeta("autoFill", next as any)}
+                onChange={(next) => updateMeta("autoFill", next)}
                 allPackages={allPackages}
                 currentPkg={pkg}
                 currentFieldValue={form.value}
@@ -559,28 +579,30 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
 
           <EntityPickerConfigEditor
             value={form.meta?.entityPicker}
-            onChange={(next) => updateMeta("entityPicker", next as any)}
+            onChange={(next) => updateMeta("entityPicker", next)}
             currentPkg={pkg}
             targetFields={(() => {
+              type RepShape = { fields?: { label?: string; value?: string }[] };
               const extra: { label: string; value: string }[] = [];
-              const addRepFields = (rep: { fields?: { label?: string; value?: string }[] } | undefined) => {
+              const addRepFields = (rep: RepShape | undefined) => {
                 if (!rep?.fields) return;
                 for (const f of rep.fields) {
                   if (f?.value) extra.push({ label: `${f.label ?? f.value} (${f.value})`, value: f.value });
                 }
               };
               addRepFields(form.meta?.repeatable);
-              const bc = form.meta?.booleanChildren as Record<string, { inputType?: string; options?: { children?: { inputType?: string; repeatable?: { fields?: { label?: string; value?: string }[] } }[] }[] }[]> | undefined;
+              const bc = form.meta?.booleanChildren;
               if (bc) {
                 for (const branch of Object.values(bc)) {
                   if (!Array.isArray(branch)) continue;
                   for (const child of branch) {
-                    if (child?.inputType === "repeatable") addRepFields((child as any)?.repeatable);
+                    if (child?.inputType === "repeatable") addRepFields(child.repeatable as RepShape | undefined);
                     if (child?.inputType === "select" && Array.isArray(child?.options)) {
                       for (const opt of child.options) {
-                        if (!Array.isArray(opt?.children)) continue;
-                        for (const sc of opt.children) {
-                          if (sc?.inputType === "repeatable") addRepFields(sc?.repeatable);
+                        const optChildren = opt.children as BoolChild[] | undefined;
+                        if (!Array.isArray(optChildren)) continue;
+                        for (const sc of optChildren) {
+                          if (sc?.inputType === "repeatable") addRepFields(sc.repeatable as RepShape | undefined);
                         }
                       }
                     }
@@ -608,8 +630,8 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
             existingGroupNames={existingGroupNames}
             groupOrder={(form.meta?.groupOrder ?? 0) as number}
             onGroupChange={(next) => {
-              const val = next.length === 0 ? "" : next.length === 1 ? next[0] : next;
-              updateMeta("group", val as any);
+              const val: string | string[] = next.length === 0 ? "" : next.length === 1 ? next[0] : next;
+              updateMeta("group", val);
             }}
             onOrderChange={(v) => updateMeta("groupOrder", v)}
           />
@@ -622,10 +644,11 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
                 groupLabel={gName}
                 value={gswVal}
                 onChange={(next) => {
-                  const map = { ...(form.meta?.groupShowWhenMap ?? {}), [gName]: next as any };
-                  updateMeta("groupShowWhenMap", map as any);
+                  const normalized = next === null ? null : Array.isArray(next) ? next : [next];
+                  const map = { ...(form.meta?.groupShowWhenMap ?? {}), [gName]: normalized };
+                  updateMeta("groupShowWhenMap", map);
                 }}
-                fields={existing as any}
+                fields={existing as PkgFieldInfo[]}
                 excludeFieldId={id}
                 allPackages={allPackages}
                 currentPkg={pkg}
