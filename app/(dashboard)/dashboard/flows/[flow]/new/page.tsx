@@ -1499,16 +1499,44 @@ export default function FlowNewPage() {
               <span>
                 Existing {title} record loaded.
               </span>
-              <button
-                type="button"
-                className="underline text-xs"
-                onClick={() => {
-                  setSelectedRecordId(null);
-                  setRecordPickerOpen(true);
-                }}
-              >
-                Change
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="underline text-xs"
+                  onClick={() => {
+                    setSelectedRecordId(null);
+                    setRecordPickerOpen(true);
+                  }}
+                >
+                  Change
+                </button>
+                <button
+                  type="button"
+                  className="underline text-xs text-red-600 dark:text-red-400"
+                  onClick={() => {
+                    setSelectedRecordId(null);
+                    const vals = form.getValues() as Record<string, unknown>;
+                    for (const k of Object.keys(vals)) {
+                      const lower = k.toLowerCase();
+                      if (
+                        lower.startsWith("insured_") || lower.startsWith("insured__") ||
+                        lower.startsWith("contactinfo_") || lower.startsWith("contactinfo__") ||
+                        lower === "insuredtype" ||
+                        lower.endsWith("__category") ||
+                        lower.startsWith("_")
+                      ) continue;
+                      try {
+                        form.setValue(k as never, "" as never, { shouldDirty: false });
+                        form.resetField(k as never, { defaultValue: "" as never });
+                      } catch {}
+                    }
+                    loadedSnapshotRef.current = JSON.stringify(form.getValues());
+                    toast.success("Selection cleared", { duration: 1500 });
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
             </div>
           ) : selectedClientId ? (
             <div className={`rounded-md border p-2 text-sm flex items-center justify-between ${
@@ -1519,18 +1547,51 @@ export default function FlowNewPage() {
               <span>
                 Client {selectedClientNumber || `#${selectedClientId}`} {clientWasCreatedByButton ? "created successfully" : "selected"}.
               </span>
-              <button
-                type="button"
-                className="underline text-xs"
-                onClick={() => {
-                  setClientWasCreatedByButton(false);
-                  setSelectedClientId(null);
-                  setSelectedClientNumber("");
-                  setClientPickerOpen(true);
-                }}
-              >
-                Change
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="underline text-xs"
+                  onClick={() => {
+                    setClientWasCreatedByButton(false);
+                    setSelectedClientId(null);
+                    setSelectedClientNumber("");
+                    setClientPickerOpen(true);
+                  }}
+                >
+                  Change
+                </button>
+                <button
+                  type="button"
+                  className="underline text-xs text-red-600 dark:text-red-400"
+                  onClick={() => {
+                    setClientWasCreatedByButton(false);
+                    setSelectedClientId(null);
+                    setSelectedClientNumber("");
+                    pendingClientFillRef.current = null;
+                    const vals = form.getValues() as Record<string, unknown>;
+                    for (const k of Object.keys(vals)) {
+                      const lower = k.toLowerCase();
+                      if (
+                        lower.startsWith("insured_") || lower.startsWith("insured__") ||
+                        lower.startsWith("contactinfo_") || lower.startsWith("contactinfo__")
+                      ) {
+                        try {
+                          form.setValue(k as never, "" as never, { shouldDirty: false });
+                          form.resetField(k as never, { defaultValue: "" as never });
+                        } catch {}
+                      }
+                    }
+                    try {
+                      form.setValue("insuredType" as never, "" as never, { shouldDirty: false });
+                      form.resetField("insuredType" as never, { defaultValue: "" as never });
+                    } catch {}
+                    loadedSnapshotRef.current = JSON.stringify(form.getValues());
+                    toast.success("Client selection cleared", { duration: 1500 });
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
             </div>
           ) : null}
 

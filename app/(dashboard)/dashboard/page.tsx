@@ -22,22 +22,26 @@ export default async function DashboardPage() {
   try {
     const userId = Number((user as any)?.id);
     if (Number.isFinite(userId)) {
-      const [u] = await db
-        .select({ updatedAt: users.updatedAt, name: users.name, timezone: users.timezone })
-        .from(users)
-        .where(eq(users.id, userId))
-        .limit(1);
-      const [orgRow] = await db
-        .select({
-          updatedAt: organisations.updatedAt,
-          name: organisations.name,
-          contactEmail: organisations.contactEmail,
-          contactPhone: organisations.contactPhone,
-        })
-        .from(memberships)
-        .innerJoin(organisations, eq(organisations.id, memberships.organisationId))
-        .where(eq(memberships.userId, userId))
-        .limit(1);
+      const [userResult, orgResult] = await Promise.all([
+        db
+          .select({ updatedAt: users.updatedAt, name: users.name, timezone: users.timezone })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1),
+        db
+          .select({
+            updatedAt: organisations.updatedAt,
+            name: organisations.name,
+            contactEmail: organisations.contactEmail,
+            contactPhone: organisations.contactPhone,
+          })
+          .from(memberships)
+          .innerJoin(organisations, eq(organisations.id, memberships.organisationId))
+          .where(eq(memberships.userId, userId))
+          .limit(1),
+      ]);
+      const [u] = userResult;
+      const [orgRow] = orgResult;
       const hasUserName = typeof u?.name === "string" && (u?.name as string).trim().length > 0;
       const hasOrg = Boolean(orgRow);
       const hasContact = Boolean((orgRow as any)?.contactEmail || (orgRow as any)?.contactPhone);

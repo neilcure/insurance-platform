@@ -118,13 +118,16 @@ export async function POST(request: Request) {
         }
       }
 
+      // Start getPolicyColumns() early so it runs concurrently with prefix resolution
+      const polColsPromise = getPolicyColumns();
+
       // Resolve flow-specific prefix from settings
       const flowKey = typeof (json as any).flowKey === "string" ? (json as any).flowKey.trim() : "";
       let recordPrefix = "POL";
       if (flowKey) {
         try {
           const orgSuffix = organisationId ? `:${organisationId}` : "";
-          const [fpRow] = await db.select().from(appSettings).where(eq(appSettings.key, `flow_prefixes${orgSuffix}`)).limit(1);
+          const [fpRow] = await db.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, `flow_prefixes${orgSuffix}`)).limit(1);
           const flowPrefixes = (fpRow?.value as Record<string, string> | undefined) ?? {};
           if (flowPrefixes[flowKey]) recordPrefix = flowPrefixes[flowKey];
         } catch { /* use default */ }
@@ -148,7 +151,7 @@ export async function POST(request: Request) {
           try {
             const orgSuffix = organisationId ? `:${organisationId}` : "";
             const [cpRow] = await db
-              .select()
+              .select({ value: appSettings.value })
               .from(appSettings)
               .where(eq(appSettings.key, `client_number_prefixes${orgSuffix}`))
               .limit(1);
@@ -234,7 +237,7 @@ export async function POST(request: Request) {
       }
       const insuredCandidate = buildInsuredCandidate();
 
-      const { hasCreatedBy, hasClientId: hasClientIdColumn, hasAgentId: hasAgentIdColumn } = await getPolicyColumns();
+      const { hasCreatedBy, hasClientId: hasClientIdColumn, hasAgentId: hasAgentIdColumn } = await polColsPromise;
 
       // Per-policy model: no client-level assignment check on create.
 
@@ -635,36 +638,28 @@ export async function POST(request: Request) {
         const hasAnyValue = Object.values(payload.structuredCents).some((v) => v !== null) || payload.commRate !== null;
 
         if (hasAnyValue || Object.keys(payload.extraValues).length > 0) {
-          // Create a premium row for each expected line template
-          for (const tmpl of lineTemplates) {
-            await db
-              .insert(policyPremiums)
-              .values({
-                policyId: result.policy.id,
-                lineKey: tmpl.key,
-                lineLabel: tmpl.label,
-                currency: payload.currency,
-                ...payload.structuredCents,
-                commissionRate: payload.commRate,
-                extraValues: Object.keys(payload.extraValues).length > 0 ? payload.extraValues : null,
-                updatedBy: Number(user.id),
-              })
-              .onConflictDoNothing();
+          const batchValues = lineTemplates.map((tmpl) => ({
+            policyId: result.policy.id,
+            lineKey: tmpl.key,
+            lineLabel: tmpl.label,
+            currency: payload.currency,
+            ...payload.structuredCents,
+            commissionRate: payload.commRate,
+            extraValues: Object.keys(payload.extraValues).length > 0 ? payload.extraValues : null,
+            updatedBy: Number(user.id),
+          }));
+          if (batchValues.length > 0) {
+            await db.insert(policyPremiums).values(batchValues).onConflictDoNothing();
           }
         } else if (lineTemplates.length > 0) {
-          // Even without values, create empty line stubs so accounting tab shows the right sections
-          for (const tmpl of lineTemplates) {
-            await db
-              .insert(policyPremiums)
-              .values({
-                policyId: result.policy.id,
-                lineKey: tmpl.key,
-                lineLabel: tmpl.label,
-                currency: "HKD",
-                updatedBy: Number(user.id),
-              })
-              .onConflictDoNothing();
-          }
+          const stubValues = lineTemplates.map((tmpl) => ({
+            policyId: result.policy.id,
+            lineKey: tmpl.key,
+            lineLabel: tmpl.label,
+            currency: "HKD",
+            updatedBy: Number(user.id),
+          }));
+          await db.insert(policyPremiums).values(stubValues).onConflictDoNothing();
         }
       } catch {
         // Best-effort; don't fail policy creation
@@ -740,7 +735,8 @@ export async function GET(request: Request) {
     const hasClientNumberFilter = typeof clientNumberParam === "string" && clientNumberParam.trim().length > 0;
     const hasFlowFilter = typeof flowParam === "string" && flowParam.trim().length > 0;
     const MAX_LIMIT = 500;
-    const qLimit = Math.min(Math.max(Number(url.searchParams.get("limit")) || MAX_LIMIT, 1), MAX_LIMIT);
+    const DEFAULT_LIMIT = 200;
+    const qLimit = Math.min(Math.max(Number(url.searchParams.get("limit")) || DEFAULT_LIMIT, 1), MAX_LIMIT);
     const qOffset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
     // Scope: admin/internal_staff see all; others limited to their memberships
     const baseSelect = db

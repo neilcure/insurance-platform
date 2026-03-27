@@ -48,7 +48,13 @@ export default async function DashboardGroupLayout({
           </div>
         </header>
         <div className="flex-1 p-3 pt-0 sm:p-6 sm:pt-0">
-          <Suspense>{children}</Suspense>
+          <Suspense fallback={
+            <div className="space-y-4 animate-pulse">
+              <div className="h-8 w-48 rounded bg-neutral-200 dark:bg-neutral-800" />
+              <div className="h-40 rounded-lg bg-neutral-100 dark:bg-neutral-900" />
+              <div className="h-64 rounded-lg bg-neutral-100 dark:bg-neutral-900" />
+            </div>
+          }>{children}</Suspense>
         </div>
       </SidebarInset>
     </SidebarProvider>

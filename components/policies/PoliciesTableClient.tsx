@@ -25,15 +25,35 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Settings2 } from "lucide-react";
-import { PolicySnapshotView } from "@/components/policies/PolicySnapshotView";
+import dynamic from "next/dynamic";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { RecordDetailsDrawer } from "@/components/ui/record-details-drawer";
 import { FieldEditDialog, loadEditFields, type EditField } from "@/components/ui/field-edit-dialog";
-import { StatusTab } from "@/components/policies/tabs/StatusTab";
-import { ActionsTab } from "@/components/policies/tabs/ActionsTab";
-import { DocumentsTab } from "@/components/policies/tabs/DocumentsTab";
-import { UploadDocumentsTab } from "@/components/policies/tabs/UploadDocumentsTab";
-import { AccountingTab } from "@/components/policies/tabs/AccountingTab";
+
+const PolicySnapshotView = dynamic(
+  () => import("@/components/policies/PolicySnapshotView").then((m) => m.PolicySnapshotView),
+  { loading: () => <div className="py-4 text-center text-sm text-neutral-400">Loading...</div> },
+);
+const StatusTab = dynamic(
+  () => import("@/components/policies/tabs/StatusTab").then((m) => m.StatusTab),
+  { loading: () => <div className="py-4 text-center text-sm text-neutral-400">Loading...</div> },
+);
+const ActionsTab = dynamic(
+  () => import("@/components/policies/tabs/ActionsTab").then((m) => m.ActionsTab),
+  { loading: () => <div className="py-4 text-center text-sm text-neutral-400">Loading...</div> },
+);
+const DocumentsTab = dynamic(
+  () => import("@/components/policies/tabs/DocumentsTab").then((m) => m.DocumentsTab),
+  { loading: () => <div className="py-4 text-center text-sm text-neutral-400">Loading...</div> },
+);
+const UploadDocumentsTab = dynamic(
+  () => import("@/components/policies/tabs/UploadDocumentsTab").then((m) => m.UploadDocumentsTab),
+  { loading: () => <div className="py-4 text-center text-sm text-neutral-400">Loading...</div> },
+);
+const AccountingTab = dynamic(
+  () => import("@/components/policies/tabs/AccountingTab").then((m) => m.AccountingTab),
+  { loading: () => <div className="py-4 text-center text-sm text-neutral-400">Loading...</div> },
+);
 import { Activity, Zap, FileText, Upload, DollarSign } from "lucide-react";
 import type { DrawerTab } from "@/components/ui/drawer-tabs";
 import type { WorkflowActionRow } from "@/lib/types/workflow-action";

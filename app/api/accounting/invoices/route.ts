@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
-import { policies, cars } from "@/db/schema/insurance";
 import { memberships, organisations } from "@/db/schema/core";
 import { policyPremiums } from "@/db/schema/premiums";
 import { and, desc, eq, sql, inArray } from "drizzle-orm";
@@ -37,7 +36,19 @@ export async function GET(request: Request) {
       conditions.push(inArray(accountingInvoices.organisationId, orgIds));
     }
 
-    let query: any = db
+    // Apply flow filter as a SQL subquery so pagination works correctly
+    if (flowFilter) {
+      conditions.push(
+        sql`${accountingInvoices.id} IN (
+          SELECT ii.invoice_id FROM accounting_invoice_items ii
+          INNER JOIN policies p ON p.id = ii.policy_id
+          LEFT JOIN cars c ON c.policy_id = p.id
+          WHERE (c.extra_attributes)::jsonb ->> 'flowKey' = ${flowFilter}
+        )`
+      );
+    }
+
+    const rawRows = await db
       .select()
       .from(accountingInvoices)
       .where(conditions.length > 0 ? and(...conditions) : undefined)
@@ -45,14 +56,11 @@ export async function GET(request: Request) {
       .limit(qLimit)
       .offset(qOffset);
 
-    const rawRows = await query;
-
     // Enrich rows with live totalGainCents and totalNetPremiumCents from policy_premiums
     let rows = rawRows;
     if (rawRows.length > 0) {
       const ids = rawRows.map((r: any) => r.id as number);
 
-      // Compute totals from LIVE policy_premiums structured columns
       const premiumRows = await db
         .select({
           invoiceId: accountingInvoiceItems.invoiceId,
@@ -79,40 +87,6 @@ export async function GET(request: Request) {
           totalNetPremiumCents: net,
         };
       });
-    }
-
-    if (flowFilter && rows.length > 0) {
-      const invoiceIds = rows.map((r: any) => r.id);
-      const items = await db
-        .select({
-          invoiceId: accountingInvoiceItems.invoiceId,
-          policyId: accountingInvoiceItems.policyId,
-        })
-        .from(accountingInvoiceItems)
-        .where(inArray(accountingInvoiceItems.invoiceId, invoiceIds));
-
-      const policyIds = [...new Set(items.map((i) => i.policyId))];
-      if (policyIds.length > 0) {
-        const policyFlows = await db
-          .select({
-            id: policies.id,
-            flowKey: sql<string>`(${cars.extraAttributes})::jsonb ->> 'flowKey'`,
-          })
-          .from(policies)
-          .leftJoin(cars, eq(cars.policyId, policies.id))
-          .where(inArray(policies.id, policyIds));
-
-        const flowPolicyIds = new Set(
-          policyFlows.filter((p) => p.flowKey === flowFilter).map((p) => p.id)
-        );
-
-        const invoiceIdsWithFlow = new Set(
-          items.filter((i) => flowPolicyIds.has(i.policyId)).map((i) => i.invoiceId)
-        );
-
-        const filtered = rows.filter((r: any) => invoiceIdsWithFlow.has(r.id));
-        return NextResponse.json(filtered, { status: 200 });
-      }
     }
 
     return NextResponse.json(rows, { status: 200 });

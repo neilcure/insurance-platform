@@ -13,12 +13,13 @@ type AgentRow = {
   createdAt: string;
 };
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const me = await requireUser();
-    // Admin/Internal Staff: all agents
-    // Agent: only self
-    // Others: none
+    const url = new URL(request.url);
+    const qLimit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 200, 1), 500);
+    const qOffset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
+
     if (me.userType === "admin" || me.userType === "internal_staff") {
       const rows =
         (await db
@@ -31,7 +32,10 @@ export async function GET() {
             createdAt: users.createdAt,
           })
           .from(users)
-          .where(eq(users.userType, "agent" as any))) as unknown as AgentRow[];
+          .where(eq(users.userType, "agent" as any))
+          .orderBy(users.createdAt)
+          .limit(qLimit)
+          .offset(qOffset)) as unknown as AgentRow[];
       return NextResponse.json(rows, { status: 200 });
     }
     if (me.userType === "agent") {

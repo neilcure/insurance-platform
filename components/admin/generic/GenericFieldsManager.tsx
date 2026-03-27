@@ -116,6 +116,8 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
   const [savingGroupCondition, setSavingGroupCondition] = React.useState(false);
   const [allPackagesForGroups, setAllPackagesForGroups] = React.useState<{ label: string; value: string }[]>([]);
 
+  const newGroupInputRef = React.useRef<HTMLInputElement>(null);
+
   const [form, setForm] = React.useState<Partial<FieldRow>>({
     label: "",
     value: "",
@@ -3258,48 +3260,91 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
             {/* Sort Order input removed; ordering handled by group and in-dialog reordering */}
             <div className="grid gap-1">
               <Label>Groups (optional — select multiple)</Label>
-              {existingGroupNames.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {existingGroupNames.map((name) => {
-                    const current = getFieldGroups((form.meta as FieldMeta | undefined)?.group);
-                    const checked = current.includes(name);
-                    return (
-                      <label key={name} className="inline-flex items-center gap-1 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => {
-                            const next = checked ? current.filter((g) => g !== name) : [...current.filter(Boolean), name];
-                            const val = next.filter(Boolean);
-                            updateMeta("group", val.length === 0 ? "" : val.length === 1 ? val[0]! : val as any);
-                          }}
-                        />
-                        {name}
-                      </label>
-                    );
-                  })}
-                </div>
-              ) : null}
-              <div className="flex items-center gap-1">
-                <Input
-                  placeholder="Add new group name"
-                  defaultValue=""
-                  className="flex-1"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      const val = (e.target as HTMLInputElement).value.trim();
-                      if (!val) return;
-                      const current = getFieldGroups((form.meta as FieldMeta | undefined)?.group).filter(Boolean);
-                      if (current.includes(val)) return;
-                      const next = [...current, val];
-                      updateMeta("group", next.length === 1 ? next[0]! : next as any);
-                      (e.target as HTMLInputElement).value = "";
-                    }
-                  }}
-                />
-                <span className="text-[10px] text-neutral-500 dark:text-neutral-400 shrink-0">Enter to add</span>
-              </div>
+              {(() => {
+                const currentGroups = getFieldGroups((form.meta as FieldMeta | undefined)?.group).filter(Boolean);
+                return (
+                  <>
+                    {currentGroups.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {currentGroups.map((name) => (
+                          <span
+                            key={name}
+                            className="inline-flex items-center gap-1 rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
+                          >
+                            {name}
+                            <button
+                              type="button"
+                              className="ml-0.5 text-blue-500 hover:text-red-500 dark:text-blue-400 dark:hover:text-red-400"
+                              onClick={() => {
+                                const next = currentGroups.filter((g) => g !== name);
+                                updateMeta("group", next.length === 0 ? "" : next.length === 1 ? next[0]! : next as any);
+                              }}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1">
+                      <select
+                        className="h-9 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                        value=""
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (!val) return;
+                          if (currentGroups.includes(val)) return;
+                          const next = [...currentGroups, val];
+                          updateMeta("group", next.length === 1 ? next[0]! : next as any);
+                        }}
+                      >
+                        <option value="">— Select existing group —</option>
+                        {existingGroupNames.filter((n) => !currentGroups.includes(n)).map((name) => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Input
+                        ref={newGroupInputRef}
+                        placeholder="New group name"
+                        defaultValue=""
+                        className="flex-1"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            const val = (e.target as HTMLInputElement).value.trim();
+                            if (!val) return;
+                            if (currentGroups.includes(val)) return;
+                            const next = [...currentGroups, val];
+                            updateMeta("group", next.length === 1 ? next[0]! : next as any);
+                            (e.target as HTMLInputElement).value = "";
+                          }
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="shrink-0"
+                        onClick={() => {
+                          const input = newGroupInputRef.current;
+                          if (!input) return;
+                          const val = input.value.trim();
+                          if (!val) return;
+                          if (currentGroups.includes(val)) return;
+                          const next = [...currentGroups, val];
+                          updateMeta("group", next.length === 1 ? next[0]! : next as any);
+                          input.value = "";
+                          input.focus();
+                        }}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
             <div className="grid gap-1">
               <Label>Group Sort Order (optional)</Label>

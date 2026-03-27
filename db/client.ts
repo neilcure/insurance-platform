@@ -15,7 +15,8 @@ export const db = new Proxy({} as ReturnType<typeof drizzle>, {
   get(_target, prop) {
     if (!_db) {
       const queryClient = postgres(getDatabaseUrl(), {
-        max: 1,
+        max: 10,
+        idle_timeout: 20,
         ssl: "require",
         types: {
           date: { to: 1184, from: [1082, 1083, 1114, 1184], serialize: (v: unknown) => v, parse: (v: string) => v },

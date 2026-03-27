@@ -4,14 +4,15 @@ import * as React from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { getIcon, getAllIcons, getPopularIconNames } from "@/lib/icons";
+import { getAllIcons, getIconFull } from "@/lib/icons-full";
+import { getPopularIconNames } from "@/lib/icons";
 
 const MAX_GRID = 60;
 
 function SelectedIconPreview({ name }: { name: string }) {
   return (
     <div className="flex items-center gap-2 rounded-md border border-neutral-200 px-2.5 py-1.5 text-sm dark:border-neutral-700">
-      {React.createElement(getIcon(name), { className: "h-4 w-4 shrink-0" })}
+      {React.createElement(getIconFull(name), { className: "h-4 w-4 shrink-0" })}
       <span className="font-mono text-xs text-neutral-600 dark:text-neutral-400">{name}</span>
     </div>
   );
