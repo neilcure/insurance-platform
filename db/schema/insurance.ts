@@ -1,4 +1,4 @@
-import { boolean, integer, jsonb, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 import { organisations, clients, users } from "./core";
 
 export const policies = pgTable("policies", {
@@ -11,7 +11,11 @@ export const policies = pgTable("policies", {
   isActive: boolean("is_active").notNull().default(true),
   documentTracking: jsonb("document_tracking"),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
-});
+}, (t) => ({
+  orgCreatedIdx: index("policies_org_created_idx").on(t.organisationId, t.createdAt),
+  clientIdIdx: index("policies_client_id_idx").on(t.clientId),
+  agentIdIdx: index("policies_agent_id_idx").on(t.agentId),
+}));
 
 export const cars = pgTable("cars", {
   id: serial("id").primaryKey(),
@@ -20,9 +24,10 @@ export const cars = pgTable("cars", {
   make: text("make"),
   model: text("model"),
   year: integer("year"),
-  // Optional JSON snapshot storage for MVP
   extraAttributes: jsonb("extra_attributes").$type<Record<string, unknown> | null>().default(null),
-});
+}, (t) => ({
+  policyIdIdx: index("cars_policy_id_idx").on(t.policyId),
+}));
 
 export const coverages = pgTable("coverages", {
   id: serial("id").primaryKey(),

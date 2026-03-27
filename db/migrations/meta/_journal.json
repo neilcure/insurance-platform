@@ -5,71 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1767023519588,
-      "tag": "0000_loud_zarek",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1767023519600,
-      "tag": "0001_policy_drafts_and_extra_attributes",
-      "breakpoints": false
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1767023519620,
-      "tag": "0002_invites_and_is_active",
-      "breakpoints": false
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1767023519640,
-      "tag": "0003_form_options",
-      "breakpoints": false
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1768100667451,
-      "tag": "0004_neat_ultragirl",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1768143574647,
-      "tag": "0005_abandoned_grim_reaper",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1768146942809,
-      "tag": "0006_tough_kate_bishop",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1768228564500,
-      "tag": "0007_late_the_fallen",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "7",
-      "when": 1768228932284,
-      "tag": "0008_high_bulldozer",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "7",
-      "when": 1772693143154,
-      "tag": "0009_flaky_black_tarantula",
+      "when": 1774584724583,
+      "tag": "0000_confused_colonel_america",
       "breakpoints": true
     }
   ]

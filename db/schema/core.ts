@@ -1,4 +1,4 @@
-import { pgEnum, pgTable, primaryKey, serial, text, integer, timestamp, boolean, varchar, jsonb } from "drizzle-orm/pg-core";
+import { pgEnum, pgTable, primaryKey, serial, text, integer, timestamp, boolean, varchar, jsonb, index } from "drizzle-orm/pg-core";
 
 export const userTypeEnum = pgEnum("user_type", [
   "admin",
@@ -19,12 +19,13 @@ export const users = pgTable("users", {
   name: text("name"),
   timezone: text("timezone"),
   userType: userTypeEnum("user_type").default("agent").notNull(),
-  // Optional auto-generated identifier per user type (not used for direct_client)
   userNumber: text("user_number"),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { mode: "string" }),
-});
+}, (t) => ({
+  userTypeIdx: index("users_user_type_idx").on(t.userType),
+}));
 
 export const organisations = pgTable("organisations", {
   id: serial("id").primaryKey(),
@@ -80,9 +81,8 @@ export const passwordResets = pgTable("password_resets", {
 
 export const clients = pgTable("clients", {
   id: serial("id").primaryKey(),
-  // clientNumber is generated in SQL migration as: 'C' || lpad(id::text, 6, '0')
   clientNumber: text("client_number").notNull().unique(),
-  category: text("category").notNull(), // 'company' | 'personal'
+  category: text("category").notNull(),
   displayName: text("display_name").notNull(),
   primaryId: text("primary_id").notNull(),
   contactPhone: text("contact_phone"),
@@ -91,7 +91,9 @@ export const clients = pgTable("clients", {
   userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
-});
+}, (t) => ({
+  categoryPrimaryIdIdx: index("clients_category_primary_id_idx").on(t.category, t.primaryId),
+}));
 
 // Generic app settings as key-value (JSON) for admin-configurable options
 export const appSettings = pgTable("app_settings", {
@@ -124,7 +126,11 @@ export const auditLog = pgTable("audit_log", {
   changes: jsonb("changes").$type<Record<string, unknown> | null>().default(null),
   isRead: boolean("is_read").notNull().default(false),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
-});
+}, (t) => ({
+  entityIdx: index("audit_log_entity_idx").on(t.entityType, t.entityId),
+  createdIdx: index("audit_log_created_idx").on(t.createdAt),
+  userIdIdx: index("audit_log_user_id_idx").on(t.userId),
+}));
 
 // Track which agent is currently assigned to a client, with history
 export const clientAgentAssignments = pgTable("client_agent_assignments", {
