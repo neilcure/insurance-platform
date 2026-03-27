@@ -11,6 +11,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+// Fast lookup for the most commonly used icons (covers popular picks + sidebar defaults).
+// Icons outside this map are resolved lazily via the full library on first miss.
 const ICON_MAP: Record<string, LucideIcon> = {
   "folder": Folder, "user-check": UserCheck, "phone": Phone, "car": Car,
   "hard-hat": HardHat, "shield-check": ShieldCheck, "user-plus": UserPlus,
@@ -28,9 +30,37 @@ const ICON_MAP: Record<string, LucideIcon> = {
   "map-pin": MapPin, "search": Search, "filter": Filter,
 };
 
+let _fullLib: Record<string, LucideIcon> | null = null;
+
+function loadFullLibSync(): Record<string, LucideIcon> {
+  if (!_fullLib) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _fullLib = require("lucide-react") as Record<string, LucideIcon>;
+  }
+  return _fullLib;
+}
+
+function kebabToPascal(str: string): string {
+  return str
+    .split("-")
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join("");
+}
+
 export function getIcon(name: string | undefined | null): LucideIcon {
   if (!name) return Folder;
-  return ICON_MAP[name] ?? Folder;
+  const fast = ICON_MAP[name];
+  if (fast) return fast;
+
+  // Lazy fallback: resolve from full library and cache for next time
+  const pascal = kebabToPascal(name);
+  const lib = loadFullLibSync();
+  const comp = lib[pascal];
+  if (typeof comp === "function" || (typeof comp === "object" && comp !== null && "render" in comp)) {
+    ICON_MAP[name] = comp as LucideIcon;
+    return comp as LucideIcon;
+  }
+  return Folder;
 }
 
 export const POPULAR_ICON_NAMES = [
