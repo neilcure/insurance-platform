@@ -44,6 +44,7 @@ export type PolicyDetailsDrawerProps = {
   onClose: () => void;
   title?: string;
   entityLabel?: string;
+  hideClientInfo?: boolean;
 };
 
 export function PolicyDetailsDrawer({
@@ -53,6 +54,7 @@ export function PolicyDetailsDrawer({
   onClose,
   title,
   entityLabel,
+  hideClientInfo,
 }: PolicyDetailsDrawerProps) {
   const session = useSession();
   const sessionUserType = (session.data?.user as any)?.userType as string | undefined;
@@ -97,7 +99,7 @@ export function PolicyDetailsDrawer({
   }, [policyId, refreshing, fetchDetail]);
 
   const detailFlowKey = React.useMemo(
-    () => ((detail?.extraAttributes as Record<string, unknown> | undefined)?.flowKey as string) ?? undefined,
+    () => (detail as any)?.flowKey ?? ((detail?.extraAttributes as Record<string, unknown> | undefined)?.flowKey as string) ?? undefined,
     [detail],
   );
 
@@ -113,10 +115,17 @@ export function PolicyDetailsDrawer({
   }, [detailFlowKey]);
 
   const snapshotHiddenPkgs = React.useMemo(() => {
-    const fk = (detailFlowKey ?? "").toLowerCase();
-    if (fk === "appaccounting") return new Set(["accounting", "premiumRecord"]);
-    return undefined;
-  }, [detailFlowKey]);
+    const hidden = new Set<string>();
+    if (premiumTabConfig) {
+      hidden.add("accounting");
+      hidden.add("premiumRecord");
+    }
+    if (hideClientInfo) {
+      hidden.add("insured");
+      hidden.add("contactinfo");
+    }
+    return hidden.size > 0 ? hidden : undefined;
+  }, [premiumTabConfig, hideClientInfo]);
 
   React.useEffect(() => {
     if (!detail) {

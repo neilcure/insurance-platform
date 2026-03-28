@@ -3,6 +3,7 @@ import { db } from "@/db/client";
 import { policies, cars } from "@/db/schema/insurance";
 import { formOptions } from "@/db/schema/form_options";
 import { requireUser } from "@/lib/auth/require-user";
+import { getPolicyColumns } from "@/lib/db/column-check";
 import { sql, eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -59,9 +60,10 @@ async function findInsurerFlowKey(): Promise<string | null> {
     }
   } catch { /* ignore */ }
   try {
-    const result = await db.execute(
-      sql`SELECT 1 FROM cars WHERE (extra_attributes)::jsonb ->> 'flowKey' = 'InsuranceSet' LIMIT 1`,
-    );
+    const polCols = await getPolicyColumns();
+    const result = polCols.hasFlowKey
+      ? await db.execute(sql`SELECT 1 FROM "policies" WHERE "flow_key" = 'InsuranceSet' LIMIT 1`)
+      : await db.execute(sql`SELECT 1 FROM cars WHERE (extra_attributes)::jsonb ->> 'flowKey' = 'InsuranceSet' LIMIT 1`);
     const rows = Array.isArray(result) ? result : (result as any)?.rows ?? [];
     if (rows.length > 0) return "InsuranceSet";
   } catch { /* ignore */ }
@@ -75,10 +77,16 @@ export async function GET() {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    const polCols = await getPolicyColumns();
+    const flowFilter = (fk: string) =>
+      polCols.hasFlowKey
+        ? sql`${policies.flowKey} = ${fk}`
+        : sql`(cars.extra_attributes)::jsonb ->> 'flowKey' = ${fk}`;
+
     const [collabRows, insurerFlowKey] = await Promise.all([
       db.select({ policyId: policies.id, carExtra: cars.extraAttributes })
         .from(policies).leftJoin(cars, eq(cars.policyId, policies.id))
-        .where(sql`(cars.extra_attributes)::jsonb ->> 'flowKey' = 'collaboratorSet'`)
+        .where(flowFilter("collaboratorSet"))
         .orderBy(policies.createdAt)
         .catch(() => [] as { policyId: number; carExtra: unknown }[]),
       findInsurerFlowKey(),
@@ -95,7 +103,7 @@ export async function GET() {
         const insurerRows = await db
           .select({ policyId: policies.id, carExtra: cars.extraAttributes })
           .from(policies).leftJoin(cars, eq(cars.policyId, policies.id))
-          .where(sql`(cars.extra_attributes)::jsonb ->> 'flowKey' = ${insurerFlowKey}`)
+          .where(flowFilter(insurerFlowKey))
           .orderBy(policies.createdAt);
         availableInsurers = insurerRows.map((r) => ({
           id: r.policyId,

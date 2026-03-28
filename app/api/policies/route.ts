@@ -237,7 +237,7 @@ export async function POST(request: Request) {
       }
       const insuredCandidate = buildInsuredCandidate();
 
-      const { hasCreatedBy, hasClientId: hasClientIdColumn, hasAgentId: hasAgentIdColumn } = await polColsPromise;
+      const { hasCreatedBy, hasClientId: hasClientIdColumn, hasAgentId: hasAgentIdColumn, hasFlowKey: hasFlowKeyColumn } = await polColsPromise;
 
       // Per-policy model: no client-level assignment check on create.
 
@@ -256,7 +256,6 @@ export async function POST(request: Request) {
             : ((): number | undefined => {
                 const direct = Number((policy as any)?.agentId);
                 if (Number.isFinite(direct) && direct > 0) return direct;
-                // also accept agentId from packagesSnapshot.policy.values.agentId for admin/internal
                 try {
                   const raw = (packages as any)?.policy?.values?.agentId ?? (packages as any)?.policy?.agentId;
                   const n = Number(raw as any);
@@ -265,7 +264,6 @@ export async function POST(request: Request) {
                 return undefined;
               })();
 
-        // Insert policy according to available columns (avoid raising inside tx)
         let createdPolicy: { id: number; policyNumber: string; organisationId: number; createdAt: string };
         if (hasCreatedBy) {
           [createdPolicy] = await tx
@@ -274,6 +272,7 @@ export async function POST(request: Request) {
               policyNumber: generatedPolicyNumber,
               organisationId,
               createdBy: Number(user.id),
+              ...(hasFlowKeyColumn && flowKey ? { flowKey } : {}),
               ...(hasClientIdColumn && ensuredClientId ? { clientId: ensuredClientId } : {}),
               ...(hasAgentIdColumn && Number.isFinite(Number(requestedAgentId)) ? { agentId: Number(requestedAgentId) } : {}),
             })
@@ -284,27 +283,19 @@ export async function POST(request: Request) {
               createdAt: policies.createdAt,
             });
         } else {
-          // Use raw SQL to guarantee no reference to non-existent created_by column
-          const inserted =
-            hasClientIdColumn && ensuredClientId
-              ? hasAgentIdColumn && Number.isFinite(Number(requestedAgentId))
-                ? await tx.execute(
-                    sql`insert into "policies" ("policy_number","organisation_id","client_id","agent_id") values (${generatedPolicyNumber}, ${organisationId}, ${ensuredClientId}, ${Number(
-                      requestedAgentId
-                    )}) returning "id","policy_number","organisation_id","created_at"`
-                  )
-                : await tx.execute(
-                    sql`insert into "policies" ("policy_number","organisation_id","client_id") values (${generatedPolicyNumber}, ${organisationId}, ${ensuredClientId}) returning "id","policy_number","organisation_id","created_at"`
-                  )
-              : hasAgentIdColumn && Number.isFinite(Number(requestedAgentId))
-              ? await tx.execute(
-                  sql`insert into "policies" ("policy_number","organisation_id","agent_id") values (${generatedPolicyNumber}, ${organisationId}, ${Number(
-                    requestedAgentId
-                  )}) returning "id","policy_number","organisation_id","created_at"`
-                )
-              : await tx.execute(
-                  sql`insert into "policies" ("policy_number","organisation_id") values (${generatedPolicyNumber}, ${organisationId}) returning "id","policy_number","organisation_id","created_at"`
-                );
+          // Raw SQL fallback for legacy DBs without created_by.
+          // Build INSERT dynamically based on which columns exist.
+          const colFrags = [sql`"policy_number"`, sql`"organisation_id"`];
+          const valFrags = [sql`${generatedPolicyNumber}`, sql`${organisationId}`];
+          if (hasFlowKeyColumn && flowKey) { colFrags.push(sql`"flow_key"`); valFrags.push(sql`${flowKey}`); }
+          if (hasClientIdColumn && ensuredClientId) { colFrags.push(sql`"client_id"`); valFrags.push(sql`${ensuredClientId}`); }
+          if (hasAgentIdColumn && Number.isFinite(Number(requestedAgentId))) { colFrags.push(sql`"agent_id"`); valFrags.push(sql`${Number(requestedAgentId)}`); }
+
+          const colsList = sql.join(colFrags, sql`, `);
+          const valsList = sql.join(valFrags, sql`, `);
+          const inserted = await tx.execute(
+            sql`INSERT INTO "policies" (${colsList}) VALUES (${valsList}) RETURNING "id","policy_number","organisation_id","created_at"`
+          );
           const row = (Array.isArray(inserted) ? inserted[0] : (inserted as any)?.rows?.[0]) as {
             id: number;
             policy_number: string;
@@ -669,7 +660,14 @@ export async function POST(request: Request) {
         // Best-effort; don't fail policy creation
       }
 
-      return NextResponse.json({ success: true, policyId: result.policy.id }, { status: 201 });
+      return NextResponse.json({
+        success: true,
+        policyId: result.policy.id,
+        policyNumber: result.policy.policyNumber,
+        recordId: result.policy.id,
+        recordNumber: result.policy.policyNumber,
+        flowKey: flowKey || undefined,
+      }, { status: 201 });
     } else {
       // Legacy body
       if (!canCreatePolicy(user)) {
@@ -753,6 +751,7 @@ export async function GET(request: Request) {
         organisationId: policies.organisationId,
         createdAt: policies.createdAt,
         isActive: policies.isActive,
+        flowKey: policies.flowKey,
         carId: cars.id,
         plateNumber: cars.plateNumber,
         make: cars.make,
@@ -768,6 +767,7 @@ export async function GET(request: Request) {
       policyNumber: string;
       organisationId: number;
       createdAt: string;
+      flowKey: string | null;
       carId: number | null;
       plateNumber: string | null;
       make: string | null;
@@ -800,7 +800,9 @@ export async function GET(request: Request) {
         )`
       : undefined;
     const flowFilterExpr = hasFlowFilter
-      ? sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') = ${flowParam}`
+      ? polCols.hasFlowKey
+        ? sql`${policies.flowKey} = ${flowParam}`
+        : sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') = ${flowParam}`
       : undefined;
     const linkedPolicyFilterExpr = hasLinkedPolicyFilter
       ? sql`(((${cars.extraAttributes})::jsonb ->> 'linkedPolicyId')::int = ${linkedPolicyIdFilter})`
@@ -827,6 +829,7 @@ export async function GET(request: Request) {
               p.organisation_id as "organisationId",
               p.created_at as "createdAt",
               p.is_active as "isActive",
+              ${polCols.hasFlowKey ? sql`p.flow_key as "flowKey",` : sql``}
               c.id as "carId",
               c.plate_number as "plateNumber",
               c.make as "make",
@@ -839,7 +842,7 @@ export async function GET(request: Request) {
               ${hasPolicyNumberFilter ? sql`and p.policy_number = ${policyNumberParam!}` : sql``}
               ${hasClientFilter && polCols.hasClientId ? sql`and p.client_id = ${Number(url.searchParams.get("clientId"))}` : sql``}
               ${hasClientNumberFilter ? sql`and ((c.extra_attributes)::jsonb ->> 'clientNumber') = ${clientNumberParam!}` : sql``}
-              ${hasFlowFilter ? sql`and ((c.extra_attributes)::jsonb ->> 'flowKey') = ${flowParam}` : sql``}
+              ${hasFlowFilter ? (polCols.hasFlowKey ? sql`and p.flow_key = ${flowParam}` : sql`and ((c.extra_attributes)::jsonb ->> 'flowKey') = ${flowParam}`) : sql``}
               ${hasLinkedPolicyFilter ? sql`and (((c.extra_attributes)::jsonb ->> 'linkedPolicyId')::int = ${linkedPolicyIdFilter})` : sql``}
             order by p.created_at desc, p.id desc
             limit ${qLimit} offset ${qOffset}
@@ -856,6 +859,7 @@ export async function GET(request: Request) {
             p.organisation_id as "organisationId",
             p.created_at as "createdAt",
             p.is_active as "isActive",
+            ${polCols.hasFlowKey ? sql`p.flow_key as "flowKey",` : sql``}
             c.id as "carId",
             c.plate_number as "plateNumber",
             c.make as "make",
@@ -867,7 +871,7 @@ export async function GET(request: Request) {
           inner join "clients" cl on cl.user_id = ${userId}
           where (
             ${polCols.hasClientId ? sql`p.client_id = cl.id OR` : sql``}
-            (c.extra_attributes)::jsonb ->> 'flowKey' = 'policyset'
+            ${polCols.hasFlowKey ? sql`p.flow_key = 'policyset'` : sql`(c.extra_attributes)::jsonb ->> 'flowKey' = 'policyset'`}
             AND (
               ((c.extra_attributes)::text ILIKE '%' || cl.display_name || '%')
               OR ((c.extra_attributes)::text ILIKE '%' || cl.primary_id || '%')
@@ -918,7 +922,16 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json(rows, { status: 200 });
+    const enrichedRows = rows.map((r: any) => {
+      const resolvedFlowKey = r.flowKey || (r.carExtra as any)?.flowKey || null;
+      return {
+        ...r,
+        flowKey: resolvedFlowKey,
+        recordId: r.policyId,
+        recordNumber: r.policyNumber,
+      };
+    });
+    return NextResponse.json(enrichedRows, { status: 200 });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

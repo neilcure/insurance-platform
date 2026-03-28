@@ -7,8 +7,13 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
-import { Building2, ChevronDown, ChevronRight, Loader2, Pencil, Save, User, Users, X } from "lucide-react";
+import { Building2, ChevronDown, ChevronRight, ExternalLink, Loader2, Pencil, Save, User, Users, X } from "lucide-react";
 import { FieldEditDialog, type EditField } from "@/components/ui/field-edit-dialog";
+import dynamic from "next/dynamic";
+
+const PolicyDetailsDrawer = dynamic(
+  () => import("@/components/policies/PolicyDetailsDrawer").then((m) => m.PolicyDetailsDrawer),
+);
 
 type FieldDef = {
   key: string;
@@ -388,7 +393,10 @@ function LineView({ line, fields, canEdit, onEdit, displayPolicyNumber }: { line
           </div>
         ) : (
           <>
-            {fields.map((f, idx) => (
+            {fields.filter((f) => {
+              const v = line.values[f.key];
+              return v !== null && v !== undefined && v !== "";
+            }).map((f, idx) => (
               <React.Fragment key={f.key}>
                 {idx > 0 && <Separator className="my-0.5" />}
                 <SummaryRow label={f.label} value={formatDisplayValue(line.values[f.key], f, currency)} className={f.inputType === "negative_currency" ? "text-red-600 dark:text-red-400" : undefined} />
@@ -427,6 +435,7 @@ type AccountingRecord = {
   fields: { key: string; label: string; value: unknown }[];
   createdAt: string;
   linkedPolicyNumber?: string;
+  isActive?: boolean;
 };
 
 type SectionEntities = {
@@ -610,32 +619,54 @@ function AccountingRecordView({
 function CollapsibleRecord({
   record,
   premiumContext,
+  onPolicyClick,
   children,
 }: {
-  record: { recordId: number; recordNumber: string; linkedPolicyNumber?: string };
+  record: { recordId: number; recordNumber: string; linkedPolicyNumber?: string; isActive?: boolean };
   premiumContext?: PremiumContext;
+  onPolicyClick?: (policyId: number) => void;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = React.useState(true);
   const showPolicyBadge = !!record.linkedPolicyNumber && premiumContext !== "policy" && premiumContext !== "self";
+  const canClick = !!onPolicyClick && premiumContext !== "policy" && premiumContext !== "self";
+  const isActive = record.isActive !== false;
+
+  const linkColor = isActive
+    ? "text-green-600 hover:text-green-500 dark:text-green-400 dark:hover:text-green-300"
+    : "text-neutral-400 hover:text-neutral-300 dark:text-neutral-500 dark:hover:text-neutral-400";
 
   return (
     <div className="rounded-md border border-neutral-200 dark:border-neutral-800">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
-      >
-        {open
-          ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-          : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-neutral-400" />}
-        <span className="font-mono text-xs font-medium text-neutral-600 dark:text-neutral-300">{record.recordNumber}</span>
-        {showPolicyBadge && (
+      <div className="flex items-center gap-2 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-2 text-left hover:opacity-80"
+        >
+          {open
+            ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+            : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-neutral-400" />}
+        </button>
+        {canClick ? (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onPolicyClick(record.recordId); }}
+            className={`group flex items-center gap-1 font-mono text-xs font-medium ${linkColor}`}
+            title="Open policy details"
+          >
+            {record.recordNumber}
+            <ExternalLink className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
+          </button>
+        ) : (
+          <span className="font-mono text-xs font-medium text-neutral-600 dark:text-neutral-300">{record.recordNumber}</span>
+        )}
+        {showPolicyBadge && !canClick && (
           <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-mono text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
             Policy: {record.linkedPolicyNumber}
           </span>
         )}
-      </button>
+      </div>
       {open && (
         <div className="border-t border-neutral-200 px-3 py-2 dark:border-neutral-800">
           {children}
@@ -678,6 +709,19 @@ export function AccountingTab({
     insurerId: number | null;
     collaboratorId: number | null;
   } | null>(null);
+
+  const [drawerPolicyId, setDrawerPolicyId] = React.useState<number | null>(null);
+  const [drawerOpen, setDrawerOpen] = React.useState(false);
+
+  const openPolicyDrawer = React.useCallback((id: number) => {
+    setDrawerPolicyId(id);
+    requestAnimationFrame(() => setDrawerOpen(true));
+  }, []);
+
+  const closePolicyDrawer = React.useCallback(() => {
+    setDrawerOpen(false);
+    setTimeout(() => setDrawerPolicyId(null), 400);
+  }, []);
 
   const entityOptionsRef = React.useRef<{ loaded: boolean; loading: boolean }>({ loaded: false, loading: false });
   const ensureEntityOptions = React.useCallback(async (): Promise<boolean> => {
@@ -803,7 +847,15 @@ export function AccountingTab({
     for (const tmpl of expectedTemplates) {
       const existing = lines.find((l) => l.lineKey === tmpl.key);
       if (existing) {
-        result.push({ ...existing, lineLabel: tmpl.label });
+        const entities = hintForLine(tmpl.key, tmpl.label, templateIdx);
+        result.push({
+          ...existing,
+          lineLabel: tmpl.label,
+          insurerId: existing.insurerId ?? entities.insurerId,
+          insurerName: existing.insurerName ?? entities.insurerName,
+          collaboratorId: existing.collaboratorId ?? entities.collabId,
+          collaboratorName: existing.collaboratorName ?? entities.collabName,
+        });
       } else {
         const emptyValues: Record<string, unknown> = {};
         for (const f of fields) emptyValues[f.key] = null;
@@ -900,7 +952,7 @@ export function AccountingTab({
     return (
       <div className="space-y-3">
         {accountingRecords.map((rec) => (
-          <CollapsibleRecord key={rec.recordId} record={rec} premiumContext={context}>
+          <CollapsibleRecord key={rec.recordId} record={rec} premiumContext={context} onPolicyClick={openPolicyDrawer}>
             <AccountingRecordView
               record={rec}
               allFields={fields}
@@ -932,7 +984,7 @@ export function AccountingTab({
           };
           const totals = currencyFields
             .map((f) => ({ key: f.key, label: f.label, total: sumField(f.key) }))
-            .filter((t) => t.total !== null);
+            .filter((t) => t.total !== null && t.total !== 0);
           if (totals.length === 0) return null;
           return (
             <div className="mt-2 border-t border-neutral-200 pt-2 dark:border-neutral-700">
@@ -956,6 +1008,15 @@ export function AccountingTab({
           onValuesChange={setRecEditValues}
           saving={recEditSaving}
           onSave={saveRecordEdit}
+        />
+
+        <PolicyDetailsDrawer
+          policyId={drawerPolicyId}
+          open={drawerPolicyId !== null}
+          drawerOpen={drawerOpen}
+          onClose={closePolicyDrawer}
+          title="Policy Details"
+          hideClientInfo={context === "client"}
         />
       </div>
     );
@@ -1044,7 +1105,7 @@ export function AccountingTab({
           key: f.key,
           label: f.label,
           total: sumField(f.key),
-        })).filter((t) => t.total !== null);
+        })).filter((t) => t.total !== null && t.total !== 0);
 
         let totalMargin = 0;
         let hasMargin = false;

@@ -24,6 +24,7 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
         policyNumber: policies.policyNumber,
         organisationId: policies.organisationId,
         createdAt: policies.createdAt,
+        flowKey: policies.flowKey,
         carId: cars.id,
         plateNumber: cars.plateNumber,
         make: cars.make,
@@ -41,6 +42,7 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       policyNumber: string;
       organisationId: number;
       createdAt: string;
+      flowKey: string | null;
       carId: number | null;
       plateNumber: string | null;
       make: string | null;
@@ -64,6 +66,7 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
               p.policy_number as "policyNumber",
               p.organisation_id as "organisationId",
               p.created_at as "createdAt",
+              ${polCols.hasFlowKey ? sql`p.flow_key as "flowKey",` : sql``}
               c.id as "carId",
               c.plate_number as "plateNumber",
               c.make as "make",
@@ -85,6 +88,7 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
             policyNumber: policies.policyNumber,
             organisationId: policies.organisationId,
             createdAt: policies.createdAt,
+            flowKey: policies.flowKey,
             carId: cars.id,
             plateNumber: cars.plateNumber,
             make: cars.make,
@@ -102,10 +106,6 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
           .limit(1);
       }
     } catch {
-      // Fallback for legacy DBs without created_by:
-      // - Admin/Internal Staff: allow
-      // - Agent: treat as not found to avoid leakage
-      // - Others: membership-based
       if (user.userType === "admin" || user.userType === "internal_staff") {
         rows = await baseSelect;
       } else if (user.userType === "agent") {
@@ -117,6 +117,7 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
             policyNumber: policies.policyNumber,
             organisationId: policies.organisationId,
             createdAt: policies.createdAt,
+            flowKey: policies.flowKey,
             carId: cars.id,
             plateNumber: cars.plateNumber,
             make: cars.make,
@@ -303,7 +304,8 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
     }
     // For client flow records, keep the client's clientNumber in sync with policyNumber
     // so there is only one identifier visible to the user.
-    const flowKey = String((base.extraAttributes as any)?.flowKey ?? "").toLowerCase();
+    const resolvedFlowKey = (base as any).flowKey || String((base.extraAttributes as any)?.flowKey ?? "");
+    const flowKey = resolvedFlowKey.toLowerCase();
     if (flowKey.includes("client") && resolvedClient && resolvedClient.clientNumber !== base.policyNumber) {
       try {
         await db.update(clients).set({ clientNumber: base.policyNumber }).where(eq(clients.id, resolvedClient.id));
@@ -337,7 +339,15 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       }
     }
     const res = NextResponse.json(
-      { ...base, clientId: policyClientId ?? resolvedClient?.id ?? null, client: resolvedClient, agent: resolvedAgent },
+      {
+        ...base,
+        flowKey: resolvedFlowKey || null,
+        recordId: base.policyId,
+        recordNumber: base.policyNumber,
+        clientId: policyClientId ?? resolvedClient?.id ?? null,
+        client: resolvedClient,
+        agent: resolvedAgent,
+      },
       { status: 200 }
     );
     res.headers.set("cache-control", "no-store");
@@ -378,7 +388,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
         await db.update(policies).set({ isActive: body.isActive }).where(eq(policies.id, id));
       }
       if (body.packages === undefined && body.insured === undefined && !body.note && !body.status) {
-        return NextResponse.json({ ok: true, policyId: id, isActive: body.isActive }, { status: 200 });
+        return NextResponse.json({ ok: true, policyId: id, recordId: id, isActive: body.isActive }, { status: 200 });
       }
     }
 
@@ -420,7 +430,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       };
       await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
       if (!body.packages && !body.insured && !body.status) {
-        return NextResponse.json({ ok: true, policyId: id }, { status: 200 });
+        return NextResponse.json({ ok: true, policyId: id, recordId: id }, { status: 200 });
       }
     }
 
@@ -439,7 +449,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
         await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
       }
       if (!body.packages && !body.insured && !body.status) {
-        return NextResponse.json({ ok: true, policyId: id }, { status: 200 });
+        return NextResponse.json({ ok: true, policyId: id, recordId: id }, { status: 200 });
       }
     }
 
@@ -472,7 +482,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       };
       await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
       if (!body.packages && !body.insured) {
-        return NextResponse.json({ ok: true, policyId: id, status: body.status, previousStatus: oldStatus }, { status: 200 });
+        return NextResponse.json({ ok: true, policyId: id, recordId: id, status: body.status, previousStatus: oldStatus }, { status: 200 });
       }
     }
 
@@ -637,7 +647,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       .set({ extraAttributes: updated })
       .where(eq(cars.id, carRow.id));
 
-    return NextResponse.json({ ok: true, policyId: id }, { status: 200 });
+    return NextResponse.json({ ok: true, policyId: id, recordId: id }, { status: 200 });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

@@ -5,8 +5,14 @@ import type { PolicyDetail } from "@/lib/types/policy";
 import { normalizeFieldKey, isHiddenPackage } from "@/lib/utils";
 import { ClientLinkedPolicies } from "@/components/policies/ClientLinkedPolicies";
 import { EndorsementHistory } from "@/components/policies/EndorsementHistory";
-import { AccountingTab } from "@/components/policies/tabs/AccountingTab";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+
+type RepeatableSubField = {
+  label: string;
+  value: string;
+  inputType?: string;
+  options?: { label?: string; value?: string }[];
+};
 
 type FieldMeta = {
   labels: Record<string, string>;
@@ -16,6 +22,7 @@ type FieldMeta = {
   optionLabels: Record<string, Record<string, string>>;
   inputTypes: Record<string, string>;
   currencyCodes: Record<string, string>;
+  repeatableFields: Record<string, RepeatableSubField[]>;
   formattingMeta: Record<string, {
     labelCase?: "original" | "upper" | "lower" | "title";
     valueCase?: "original" | "upper" | "lower" | "title";
@@ -120,7 +127,7 @@ async function loadFieldMeta(packageNames: string[]): Promise<{
 
     const fm: FieldMeta = {
       labels: {}, sortOrders: {}, groupOrders: {}, groupNames: {},
-      optionLabels: {}, inputTypes: {}, currencyCodes: {}, formattingMeta: {},
+      optionLabels: {}, inputTypes: {}, currencyCodes: {}, repeatableFields: {}, formattingMeta: {},
     };
 
     for (const row of Array.isArray(fieldRows) ? fieldRows : []) {
@@ -177,6 +184,21 @@ async function loadFieldMeta(packageNames: string[]): Promise<{
         for (const [br, arr] of [["true", bc.true], ["false", bc.false]] as Array<[string, any[] | undefined]>) {
           if (!Array.isArray(arr)) continue;
           registerChildLabels(key, parentLabel, arr, `${br}__c`, fm, groupOrder, groupName, fm.sortOrders[key] ?? 0);
+        }
+      }
+
+      // Repeatable sub-field definitions
+      if (inputType === "repeatable" && m?.repeatable) {
+        const raw = Array.isArray(m.repeatable) ? m.repeatable[0] : m.repeatable;
+        const repFields = (raw as any)?.fields;
+        if (Array.isArray(repFields)) {
+          const subFields: RepeatableSubField[] = [];
+          for (const rf of repFields) {
+            const sv = toKey(rf?.value);
+            const sl = toKey(rf?.label) || sv;
+            if (sv) subFields.push({ label: sl, value: sv, inputType: rf?.inputType, options: Array.isArray(rf?.options) ? rf.options : undefined });
+          }
+          if (subFields.length > 0) fm.repeatableFields[key] = subFields;
         }
       }
     }
@@ -441,32 +463,57 @@ function PackageSection({
 
             if (type === "repeatable" && Array.isArray(v)) {
               const items = (v as unknown[]).filter(it => it && typeof it === "object") as Array<Record<string, unknown>>;
-              const pickKey = (obj: Record<string, unknown>, pri: string[]) => {
-                const keys = Object.keys(obj);
-                return keys.find(kk => pri.includes(kk.toLowerCase())) ?? keys.find(kk => pri.some(p => kk.toLowerCase().includes(p)));
-              };
+              if (items.length === 0) return null;
+              const subFieldDefs = meta.repeatableFields[rk];
               const code = (fmt?.currencyCode || "HKD").toUpperCase();
-              const names: string[] = [];
-              const prices: string[] = [];
-              for (const it of items) {
-                const nk = pickKey(it, ["name", "tname", "label", "title", "item", "desc"]) ?? Object.keys(it)[0];
-                const pk = pickKey(it, ["price", "aprice", "amount", "cost", "value"]);
-                if (nk) names.push(String(it[nk] ?? ""));
-                if (pk) {
-                  const num = Number(it[pk]);
-                  prices.push(Number.isFinite(num) ? formatCurrency(num, code) : String(it[pk] ?? ""));
+
+              // Build ordered list of sub-field keys with labels
+              const subFields: { key: string; label: string; inputType: string; optMap: Record<string, string> }[] = [];
+              if (subFieldDefs && subFieldDefs.length > 0) {
+                for (const sf of subFieldDefs) {
+                  const optMap: Record<string, string> = {};
+                  if (sf.options) for (const o of sf.options) {
+                    const ov = String(o.value ?? o.label ?? "");
+                    const ol = String(o.label ?? o.value ?? "");
+                    if (ov) optMap[ov] = ol;
+                  }
+                  subFields.push({ key: sf.value, label: sf.label, inputType: sf.inputType ?? "string", optMap });
+                }
+              } else {
+                // Fallback: discover keys from first item
+                const allKeys = new Set<string>();
+                for (const it of items) for (const ik of Object.keys(it)) allKeys.add(ik);
+                for (const ik of allKeys) {
+                  const humanLabel = ik.replace(/([A-Z])/g, " $1").replace(/^./, s => s.toUpperCase());
+                  subFields.push({ key: ik, label: humanLabel, inputType: "string", optMap: {} });
                 }
               }
+
               return (
                 <React.Fragment key={k}>
-                  <div className="flex items-start justify-between gap-3 text-xs">
-                    <div className="text-neutral-500 dark:text-neutral-400">{`${fieldLabel} — Name`}</div>
-                    <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{names.filter(Boolean).join(", ")}</div>
-                  </div>
-                  <div className="flex items-start justify-between gap-3 text-xs">
-                    <div className="text-neutral-500 dark:text-neutral-400">{`${fieldLabel} — Price`}</div>
-                    <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{prices.filter(Boolean).join(", ")}</div>
-                  </div>
+                  {subFields.map(sf => {
+                    const values: string[] = [];
+                    for (const it of items) {
+                      const raw = it[sf.key];
+                      if (raw === undefined || raw === null || raw === "") continue;
+                      const isCurr = sf.inputType === "currency" || sf.inputType === "negative_currency";
+                      if (isCurr) {
+                        const num = Number(raw);
+                        values.push(Number.isFinite(num) ? formatCurrency(num, code) : String(raw));
+                      } else if (sf.inputType === "select" && sf.optMap[String(raw)]) {
+                        values.push(sf.optMap[String(raw)]);
+                      } else {
+                        values.push(String(raw));
+                      }
+                    }
+                    if (values.length === 0) return null;
+                    return (
+                      <div key={sf.key} className="flex items-start justify-between gap-3 text-xs">
+                        <div className="text-neutral-500 dark:text-neutral-400">{`${fieldLabel} — ${sf.label}`}</div>
+                        <div className={`max-w-[60%] wrap-break-word font-mono text-right ${recent ? recentCls : ""}`}>{values.join(", ")}</div>
+                      </div>
+                    );
+                  })}
                 </React.Fragment>
               );
             }
@@ -564,14 +611,12 @@ function MultiSelectViewRow({ fieldLabel, groups }: {
   );
 }
 
-export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEditPackage, hiddenPackages, canEditPremium, onPremiumUpdate }: {
+export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEditPackage, hiddenPackages }: {
   detail: PolicyDetail;
   entityLabel?: string;
   onEditPackage?: (pkgName: string, pkgLabel: string, values: Record<string, unknown>) => void;
   canEditPackage?: (pkgName: string) => boolean;
   hiddenPackages?: Set<string>;
-  canEditPremium?: boolean;
-  onPremiumUpdate?: () => void;
 }) {
   const [meta, setMeta] = React.useState<{
     pkgMeta: Record<string, FieldMeta>;
@@ -807,7 +852,7 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEdit
         );
       })() : null}
 
-      {!isClientRecord && detail.client ? (
+      {!isClientRecord && detail.client && !hiddenPackages?.has("insured") ? (
         <div className="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
           <div className="mb-1 text-sm font-medium">Client</div>
           <div className="font-mono text-sm">{detail.client.clientNumber || "N/A"}</div>
@@ -823,7 +868,7 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEdit
                 key={pkgName}
                 pkgName={pkgName}
                 pkg={pkg}
-                meta={meta?.pkgMeta?.[pkgName] ?? { labels: {}, sortOrders: {}, groupOrders: {}, groupNames: {}, optionLabels: {}, inputTypes: {}, currencyCodes: {}, formattingMeta: {} }}
+                meta={meta?.pkgMeta?.[pkgName] ?? { labels: {}, sortOrders: {}, groupOrders: {}, groupNames: {}, optionLabels: {}, inputTypes: {}, currencyCodes: {}, repeatableFields: {}, formattingMeta: {} }}
                 packageLabel={packageLabels[pkgName] ?? pkgName}
                 categoryLabel={meta?.categoryLabels?.[pkgName]?.[String(isStructuredPkg(pkg) ? (pkg as StructuredPkg).category : "")] ?? undefined}
                 recentKeys={recentKeys}
@@ -836,21 +881,7 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEdit
         </div>
       ) : null}
 
-      {hiddenPackages && (hiddenPackages.has("accounting") || hiddenPackages.has("premiumRecord")) && (
-        <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-          <div className="mb-2 text-sm font-semibold text-neutral-700 dark:text-neutral-300">
-            {packageLabels["premiumRecord"] ?? packageLabels["accounting"] ?? "Premium Record"}
-          </div>
-          <AccountingTab
-            policyId={detail.policyId}
-            policyNumber={detail.policyNumber}
-            canEdit={canEditPremium ?? false}
-            policyExtra={detail.extraAttributes as Record<string, unknown> | null | undefined}
-            onUpdate={onPremiumUpdate}
-            context="self"
-          />
-        </div>
-      )}
+      {/* Premium data is rendered in the dedicated Premium tab, not inline */}
 
       {isClientRecord ? (
         <ClientLinkedPolicies

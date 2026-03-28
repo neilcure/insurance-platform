@@ -664,7 +664,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
   }
 
   const detailFlowKey = React.useMemo(
-    () => ((detail?.extraAttributes as Record<string, unknown> | undefined)?.flowKey as string) ?? undefined,
+    () => (detail as any)?.flowKey ?? ((detail?.extraAttributes as Record<string, unknown> | undefined)?.flowKey as string) ?? undefined,
     [detail],
   );
 
@@ -680,10 +680,13 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
   }, [detailFlowKey]);
 
   const snapshotHiddenPkgs = React.useMemo(() => {
-    const fk = (detailFlowKey ?? "").toLowerCase();
-    if (fk === "appaccounting") return new Set(["accounting", "premiumRecord"]);
-    return undefined;
-  }, [detailFlowKey]);
+    const hidden = new Set<string>();
+    if (premiumTabConfig) {
+      hidden.add("accounting");
+      hidden.add("premiumRecord");
+    }
+    return hidden.size > 0 ? hidden : undefined;
+  }, [premiumTabConfig]);
 
   React.useEffect(() => {
     if (!detail) {
@@ -1169,8 +1172,6 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
               onEditPackage={isClientUser ? undefined : openEditDialog}
               canEditPackage={isOwnPackage}
               hiddenPackages={snapshotHiddenPkgs}
-              canEditPremium={isAdmin || sessionUserType === "accounting"}
-              onPremiumUpdate={refreshCurrent}
             />
             {!isClientUser && (
               <NotesPanel

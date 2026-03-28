@@ -33,6 +33,8 @@ type FlowOption = {
     showInDashboard?: boolean;
     icon?: string;
     dashboardLabel?: string;
+    recordPickerFlow?: string;
+    recordPickerLabel?: string;
   } | null;
 };
 
@@ -287,6 +289,7 @@ export default function FlowNewPage() {
   const [submitting, setSubmitting] = React.useState(false);
   const [confirmUpdateOpen, setConfirmUpdateOpen] = React.useState(false);
   const [confirmClientSaveOpen, setConfirmClientSaveOpen] = React.useState(false);
+  const [confirmNewClientOpen, setConfirmNewClientOpen] = React.useState(false);
   const [savingClient, setSavingClient] = React.useState(false);
   const loadedSnapshotRef = React.useRef<string | null>(null);
   const pendingSubmitRef = React.useRef<(() => void) | null>(null);
@@ -678,7 +681,7 @@ export default function FlowNewPage() {
       const activeRow = stepGroup.length === 1
         ? stepGroup[0]
         : stepGroup.find((r) => r.value === selVal) ?? null;
-      const pickerFlow = activeRow?.meta?.recordPickerFlow || flowKey;
+      const pickerFlow = activeRow?.meta?.recordPickerFlow || flowInfo?.meta?.recordPickerFlow || flowKey;
       setLoadingRecords(true);
       try {
         const res = await fetch(`/api/policies?flow=${encodeURIComponent(pickerFlow)}`, { cache: "no-store" });
@@ -776,6 +779,8 @@ export default function FlowNewPage() {
       const detail = (await res.json()) as {
         policyId: number;
         policyNumber?: string;
+        recordId?: number;
+        recordNumber?: string;
         extraAttributes?: Record<string, unknown> | null;
       };
       const extra = (detail?.extraAttributes ?? {}) as Record<string, unknown>;
@@ -804,11 +809,11 @@ export default function FlowNewPage() {
       pendingClientFillRef.current = { insured, category: category || undefined };
 
       setClientWasCreatedByButton(false);
-      setSelectedClientId(detail.policyId);
-      setSelectedClientNumber(detail.policyNumber ?? String(detail.policyId));
+      setSelectedClientId(detail.recordId ?? detail.policyId);
+      setSelectedClientNumber(detail.recordNumber ?? detail.policyNumber ?? String(detail.policyId));
       setClientPickerOpen(false);
       toast.success(
-        `Client selected: ${detail.policyNumber ?? detail.policyId}`,
+        `Client selected: ${detail.recordNumber ?? detail.policyNumber ?? detail.policyId}`,
         { duration: 1500 },
       );
 
@@ -841,12 +846,14 @@ export default function FlowNewPage() {
       const detail = (await res.json()) as {
         policyId?: number;
         policyNumber?: string;
+        recordId?: number;
+        recordNumber?: string;
         extraAttributes?: Record<string, unknown> | null;
       };
       const extra = (detail?.extraAttributes ?? {}) as Record<string, unknown>;
       fillFormFromRecord(form, extra);
       loadedSnapshotRef.current = JSON.stringify(form.getValues());
-      setSelectedRecordId(detail.policyId ?? policyId);
+      setSelectedRecordId(detail.recordId ?? detail.policyId ?? policyId);
       const stepGroup = (() => {
         const sorted2 = [...steps].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
         const grps: Record<number, StepRow[]> = {};
@@ -861,12 +868,12 @@ export default function FlowNewPage() {
       const activeRow = stepGroup.length === 1
         ? stepGroup[0]
         : stepGroup.find((r) => r.value === selVal) ?? null;
-      const pickerFlow = activeRow?.meta?.recordPickerFlow || null;
+      const pickerFlow = activeRow?.meta?.recordPickerFlow || flowInfo?.meta?.recordPickerFlow || null;
       selectedRecordFlowRef.current = pickerFlow && pickerFlow !== flowKey ? pickerFlow : null;
 
       setRecordPickerOpen(false);
       toast.success(
-        `Record loaded: ${detail.policyNumber ?? policyId}`,
+        `${title} loaded: ${detail.recordNumber ?? detail.policyNumber ?? policyId}`,
         { duration: 1500 },
       );
 
@@ -1008,13 +1015,13 @@ export default function FlowNewPage() {
         body: JSON.stringify({ insured: insuredOut, flowKey: targetFlow }),
       });
       const jClient = (await resClient.json().catch(() => ({}))) as Record<string, unknown>;
-      const newPolicyId = Number(jClient?.policyId ?? jClient?.id ?? 0);
-      if (resClient.ok && newPolicyId > 0) {
-        setSelectedClientId(newPolicyId);
-        setSelectedClientNumber(String(jClient.policyNumber ?? newPolicyId));
+      const newRecordId = Number(jClient?.recordId ?? jClient?.policyId ?? jClient?.id ?? 0);
+      if (resClient.ok && newRecordId > 0) {
+        setSelectedClientId(newRecordId);
+        setSelectedClientNumber(String(jClient.recordNumber ?? jClient.policyNumber ?? newRecordId));
         setClientWasCreatedByButton(true);
         toast.success(
-          `Client created: ${jClient.policyNumber ?? newPolicyId}`,
+          `Client created: ${jClient.recordNumber ?? jClient.policyNumber ?? newRecordId}`,
         );
       } else {
         toast.error((jClient?.error as string) ?? "Failed to create client");
@@ -1111,14 +1118,14 @@ export default function FlowNewPage() {
     return sourceFlow.toLowerCase().includes("client");
   }, [currentGroup]);
 
-  // Derive recordPickerFlow from the active step's selected row (or first row)
+  // Derive recordPickerFlow: step-level override > flow-level meta > current flow
   const activeRecordPickerFlow = React.useMemo(() => {
     const selectedRowValue = selectedRowByStep[wizardStep];
     const row = currentGroup.length === 1
       ? currentGroup[0]
       : currentGroup.find((r) => r.value === selectedRowValue) ?? null;
-    return row?.meta?.recordPickerFlow ?? undefined;
-  }, [currentGroup, selectedRowByStep, wizardStep]);
+    return row?.meta?.recordPickerFlow ?? flowInfo?.meta?.recordPickerFlow ?? undefined;
+  }, [currentGroup, selectedRowByStep, wizardStep, flowInfo]);
 
   const effectiveRecordPickerFlow = activeRecordPickerFlow ?? flowKey;
 
@@ -1127,6 +1134,11 @@ export default function FlowNewPage() {
     const matchFlow = flowOptions.find((f) => f.value === activeRecordPickerFlow);
     return matchFlow?.meta?.dashboardLabel || matchFlow?.label || activeRecordPickerFlow;
   }, [activeRecordPickerFlow, flowKey, flowOptions, title]);
+
+  const recordPickerButtonLabel = React.useMemo(() => {
+    if (flowInfo?.meta?.recordPickerLabel) return flowInfo.meta.recordPickerLabel;
+    return `Select Existing ${recordPickerTitle}`;
+  }, [flowInfo, recordPickerTitle]);
 
   // Handle auto-scroll from PackageBlock (triggered by option scrollToPackage/scrollToGroup)
   const scrollToTarget = React.useCallback((target: string) => {
@@ -1311,14 +1323,92 @@ export default function FlowNewPage() {
     return () => clearTimeout(timer);
   }, [wizardStep, scrollToTarget]);
 
+  const doCreateClientFromForm = async () => {
+    const values = form.getValues() as Record<string, unknown>;
+    const getVal = (key: string): unknown => {
+      const direct = values[key];
+      if (typeof direct !== "undefined") return direct;
+      const lower = key.toLowerCase();
+      for (const [k, v] of Object.entries(values)) {
+        if (k.toLowerCase() === lower) return v;
+      }
+      return undefined;
+    };
+    const pickByTokens = (tokens: string[]): unknown => {
+      for (const [k, v] of Object.entries(values)) {
+        const nk = k.toLowerCase();
+        if (tokens.some((t) => nk.includes(t))) {
+          if (typeof v === "string" && v.trim().length > 0) return v;
+        }
+      }
+      return undefined;
+    };
+
+    const insuredPayload: Record<string, unknown> = {
+      insuredType: (getVal("insuredType") ?? getVal("insured__category") ?? values.insuredType) as unknown,
+    };
+    const insuredType = String(insuredPayload.insuredType ?? "").trim();
+    if (insuredType === "company") {
+      insuredPayload.companyName =
+        getVal("companyName") ?? pickByTokens(["companyname", "company"]);
+      insuredPayload.brNumber =
+        getVal("brNumber") ?? pickByTokens(["brnumber", "businessreg"]);
+    } else if (insuredType === "personal") {
+      const firstName = getVal("firstName") ?? pickByTokens(["firstname"]);
+      const lastName = getVal("lastName") ?? pickByTokens(["lastname", "surname"]);
+      const nameField = getVal("fullName") ?? pickByTokens(["fullname", "name"]);
+      insuredPayload.fullName =
+        typeof nameField === "string" && nameField.trim()
+          ? nameField
+          : [lastName, firstName]
+              .map((x) => (typeof x === "string" ? x.trim() : ""))
+              .filter(Boolean)
+              .join(" ");
+      insuredPayload.idNumber = getVal("idNumber") ?? pickByTokens(["hkid", "idnumber"]);
+    }
+
+    const insuredOut: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(values)) {
+      if (v === undefined || v === null) continue;
+      if (typeof v === "string" && !v.trim()) continue;
+      const lower = k.toLowerCase();
+      if (
+        lower.startsWith("insured_") ||
+        lower.startsWith("insured__") ||
+        lower.startsWith("contactinfo_") ||
+        lower.startsWith("contactinfo__")
+      ) {
+        insuredOut[k] = v;
+      }
+    }
+    if (insuredType) insuredOut.insuredType = insuredType;
+    const targetFlow = clientFlowKey || "clientSet";
+    try {
+      const resClient = await fetch("/api/policies", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ insured: insuredOut, flowKey: targetFlow }),
+      });
+      const jClient = await resClient.json().catch(() => ({}));
+      const newRecordId = Number((jClient as any)?.recordId ?? (jClient as any)?.policyId ?? (jClient as any)?.id ?? 0);
+      if (resClient.ok && newRecordId > 0) {
+        setSelectedClientId(newRecordId);
+        setSelectedClientNumber(String((jClient as any).recordNumber ?? (jClient as any).policyNumber ?? newRecordId));
+        toast.success(`Client created: ${(jClient as any).recordNumber ?? (jClient as any).policyNumber ?? newRecordId}`);
+      } else {
+        toast.error((jClient as any)?.error ?? "Failed to create client");
+      }
+    } catch {
+      toast.error("Failed to create/find client");
+    }
+  };
+
   const handleContinue = async () => {
-    // If user chose "Create a New Client" but hasn't clicked the Create Client button yet, block
     if (isCreateNewClientMode && !selectedClientId) {
       toast.error("Please click \"Create Client\" to create the client first.");
       return;
     }
 
-    // On embedded client step with an existing client selected, check for changes
     if (isEmbeddedClientStep && selectedClientId && loadedSnapshotRef.current) {
       const currentValues = JSON.stringify(form.getValues());
       if (currentValues !== loadedSnapshotRef.current) {
@@ -1330,8 +1420,9 @@ export default function FlowNewPage() {
 
     const values = form.getValues() as Record<string, unknown>;
     const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
-    let shouldCreateClient = false;
 
+    // Check if explicit "create new" was selected via a toggle field
+    let shouldCreateClient = false;
     if (!selectedClientId) {
       for (const [k, v] of Object.entries(values)) {
         const nk = normalize(k);
@@ -1349,85 +1440,15 @@ export default function FlowNewPage() {
     }
 
     if (shouldCreateClient) {
-      try {
-        const getVal = (key: string): unknown => {
-          const direct = values[key];
-          if (typeof direct !== "undefined") return direct;
-          const lower = key.toLowerCase();
-          for (const [k, v] of Object.entries(values)) {
-            if (k.toLowerCase() === lower) return v;
-          }
-          return undefined;
-        };
-        const pickByTokens = (tokens: string[]): unknown => {
-          for (const [k, v] of Object.entries(values)) {
-            const nk = k.toLowerCase();
-            if (tokens.some((t) => nk.includes(t))) {
-              if (typeof v === "string" && v.trim().length > 0) return v;
-            }
-          }
-          return undefined;
-        };
+      await doCreateClientFromForm();
+      proceedToNextStep();
+      return;
+    }
 
-        const insuredPayload: Record<string, unknown> = {
-          insuredType: (getVal("insuredType") ?? getVal("insured__category") ?? values.insuredType) as unknown,
-        };
-        const insuredType = String(insuredPayload.insuredType ?? "").trim();
-        if (insuredType === "company") {
-          insuredPayload.companyName =
-            getVal("companyName") ??
-            pickByTokens(["companyname", "company"]);
-          insuredPayload.brNumber =
-            getVal("brNumber") ?? pickByTokens(["brnumber", "businessreg"]);
-        } else if (insuredType === "personal") {
-          const firstName = getVal("firstName") ?? pickByTokens(["firstname"]);
-          const lastName = getVal("lastName") ?? pickByTokens(["lastname", "surname"]);
-          const nameField = getVal("fullName") ?? pickByTokens(["fullname", "name"]);
-          insuredPayload.fullName =
-            typeof nameField === "string" && nameField.trim()
-              ? nameField
-              : [lastName, firstName]
-                  .map((x) => (typeof x === "string" ? x.trim() : ""))
-                  .filter(Boolean)
-                  .join(" ");
-          insuredPayload.idNumber = getVal("idNumber") ?? pickByTokens(["hkid", "idnumber"]);
-        }
-
-        const insuredOut: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(values)) {
-          if (v === undefined || v === null) continue;
-          if (typeof v === "string" && !v.trim()) continue;
-          const lower = k.toLowerCase();
-          if (
-            lower.startsWith("insured_") ||
-            lower.startsWith("insured__") ||
-            lower.startsWith("contactinfo_") ||
-            lower.startsWith("contactinfo__")
-          ) {
-            insuredOut[k] = v;
-          }
-        }
-        if (insuredType) insuredOut.insuredType = insuredType;
-        const targetFlow = clientFlowKey || "clientSet";
-        const resClient = await fetch("/api/policies", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ insured: insuredOut, flowKey: targetFlow }),
-        });
-        const jClient = await resClient.json().catch(() => ({}));
-        const newPolicyId = Number((jClient as any)?.policyId ?? (jClient as any)?.id ?? 0);
-        if (resClient.ok && newPolicyId > 0) {
-          setSelectedClientId(newPolicyId);
-          setSelectedClientNumber(String((jClient as any).policyNumber ?? newPolicyId));
-          toast.success(
-            `Client created: ${(jClient as any).policyNumber ?? newPolicyId}`,
-          );
-        } else {
-          toast.error((jClient as any)?.error ?? "Failed to create client");
-        }
-      } catch {
-        toast.error("Failed to create/find client");
-      }
+    // On a client step without a selected client, prompt the user
+    if (!selectedClientId && (hasClientStep || isEmbeddedClientStep)) {
+      setConfirmNewClientOpen(true);
+      return;
     }
 
     proceedToNextStep();
@@ -1585,7 +1606,7 @@ export default function FlowNewPage() {
             ...agentIdPayload,
           }),
         });
-        const postJson = (await postRes.json().catch(() => ({}))) as { error?: string; policyId?: number };
+        const postJson = (await postRes.json().catch(() => ({}))) as { error?: string; policyId?: number; recordId?: number };
         if (!postRes.ok) {
           throw new Error(postJson?.error ?? "Failed to create endorsement record");
         }
@@ -1624,8 +1645,8 @@ export default function FlowNewPage() {
           }
         }
 
-        resultPolicyId = postJson.policyId ?? null;
-        toast.success("Endorsement created & policy updated", { duration: 2000 });
+        resultPolicyId = postJson.recordId ?? postJson.policyId ?? null;
+        toast.success("Endorsement created & original record updated", { duration: 2000 });
       } else if (isUpdate && selectedRecordId) {
         const res = await fetch(`/api/policies/${selectedRecordId}`, {
           method: "PATCH",
@@ -1637,12 +1658,12 @@ export default function FlowNewPage() {
             ...agentIdPayload,
           }),
         });
-        const json = (await res.json().catch(() => ({}))) as { error?: string; policyId?: number };
+        const json = (await res.json().catch(() => ({}))) as { error?: string; policyId?: number; recordId?: number };
         if (!res.ok) {
           throw new Error(json?.error ?? "Update failed");
         }
-        resultPolicyId = json.policyId ?? selectedRecordId;
-        toast.success("Record updated", { duration: 1500 });
+        resultPolicyId = json.recordId ?? json.policyId ?? selectedRecordId;
+        toast.success(`${title} updated`, { duration: 1500 });
       } else {
         const res = await fetch("/api/policies", {
           method: "POST",
@@ -1654,12 +1675,12 @@ export default function FlowNewPage() {
             ...agentIdPayload,
           }),
         });
-        const json = (await res.json().catch(() => ({}))) as { error?: string; policyId?: number };
+        const json = (await res.json().catch(() => ({}))) as { error?: string; policyId?: number; recordId?: number };
         if (!res.ok) {
           throw new Error(json?.error ?? "Submit failed");
         }
-        resultPolicyId = json.policyId ?? null;
-        toast.success("Record created", { duration: 1500 });
+        resultPolicyId = json.recordId ?? json.policyId ?? null;
+        toast.success(`${title} created`, { duration: 1500 });
       }
 
       // Redirect: endorsement → original policy; otherwise → current flow
@@ -1689,7 +1710,15 @@ export default function FlowNewPage() {
 
     // Endorsement-style flow: always POST new + PATCH original (no confirm dialog)
     const hasEmbedded = steps.some((s) => !!s.meta?._sourceFlow);
-    if (hasEmbedded && !selectedRecordId) {
+    const hasCrossFlowPicker = (() => {
+      for (const stepRows of Object.values(groups)) {
+        for (const row of stepRows) {
+          if (row.meta?.recordPickerFlow && row.meta.recordPickerFlow !== flowKey) return true;
+        }
+      }
+      return !!selectedRecordFlowRef.current;
+    })();
+    if (hasEmbedded && hasCrossFlowPicker && !selectedRecordId) {
       toast.error("Please select an existing policy to endorse first.");
       return;
     }
@@ -1870,7 +1899,7 @@ export default function FlowNewPage() {
             variant="secondary"
             onClick={() => (hasClientStep || isEmbeddedClientStep) ? setClientPickerOpen(true) : setRecordPickerOpen(true)}
           >
-            {(hasClientStep || isEmbeddedClientStep) ? "Select Existing Client" : `Select Existing ${recordPickerTitle}`}
+            {(hasClientStep || isEmbeddedClientStep) ? "Select Existing Client" : recordPickerButtonLabel}
           </Button>
         </div>
       </div>
@@ -2115,7 +2144,7 @@ export default function FlowNewPage() {
               ) : (
                 <Button variant="secondary" onClick={() => (hasClientStep || isEmbeddedClientStep) ? setClientPickerOpen(true) : setRecordPickerOpen(true)}>
                   <UserSearch className="h-4 w-4 sm:hidden lg:inline" />
-                  <span className="hidden sm:inline">{(hasClientStep || isEmbeddedClientStep) ? "Select Existing Client" : `Select Existing ${recordPickerTitle}`}</span>
+                  <span className="hidden sm:inline">{(hasClientStep || isEmbeddedClientStep) ? "Select Existing Client" : recordPickerButtonLabel}</span>
                 </Button>
               )
             ) : null}
@@ -2230,7 +2259,7 @@ export default function FlowNewPage() {
           className={`${recordDrawerOpen ? "translate-x-0" : "-translate-x-full"} w-[280px] sm:w-[320px] md:w-[380px]`}
         >
           <DrawerHeader>
-            <DrawerTitle>Select Existing {recordPickerTitle}</DrawerTitle>
+            <DrawerTitle>{recordPickerButtonLabel}</DrawerTitle>
           </DrawerHeader>
           <div className="space-y-3 p-4">
             <Input
@@ -2302,6 +2331,38 @@ export default function FlowNewPage() {
               }}
             >
               Confirm &amp; Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm new client creation dialog */}
+      <Dialog open={confirmNewClientOpen} onOpenChange={setConfirmNewClientOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create a New Client?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-neutral-600 dark:text-neutral-400">
+            You have not selected an existing client. Would you like to create a new client with the information you entered, or go back and select an existing client?
+          </p>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirmNewClientOpen(false);
+                (hasClientStep || isEmbeddedClientStep) ? setClientPickerOpen(true) : setRecordPickerOpen(true);
+              }}
+            >
+              Select Existing Client
+            </Button>
+            <Button
+              onClick={async () => {
+                setConfirmNewClientOpen(false);
+                await doCreateClientFromForm();
+                proceedToNextStep();
+              }}
+            >
+              Create New Client
             </Button>
           </DialogFooter>
         </DialogContent>

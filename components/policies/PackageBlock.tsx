@@ -1392,40 +1392,48 @@ export function PackageBlock({
               }
             }
           }
-          const entries = Array.from(groupMap.entries())
-            .sort((a, b) => a[1].order - b[1].order)
+          type GswRule = { package?: string; field: string; values: string[]; childKey?: string; childValues?: string[] };
+          type GswMap = Record<string, GswRule[] | null>;
+          const debugGroupRows: { group: string; fieldCount: number; visible: boolean; detail: string }[] = [];
+          const allGroupEntries = Array.from(groupMap.entries())
+            .sort((a, b) => a[1].order - b[1].order);
+          const entries = allGroupEntries
             .filter(([groupLabel, bucket]) => {
-              type GswRule = { package?: string; field: string; values: string[]; childKey?: string; childValues?: string[] };
-              type GswMap = Record<string, GswRule[] | null>;
-              // Resolve per-group conditions: check groupShowWhenMap first, then fall back to flat groupShowWhen
               let raw: GswRule | GswRule[] | null | undefined;
+              let gswLogic: "and" | "or" = "and";
               for (const f of bucket.fields) {
-                const meta = f.meta as { groupShowWhen?: GswRule | GswRule[] | GswMap | null; groupShowWhenMap?: GswMap } | null;
-                // Per-group map takes priority
+                const meta = f.meta as { groupShowWhen?: GswRule | GswRule[] | GswMap | null; groupShowWhenMap?: GswMap; groupShowWhenLogic?: "and" | "or"; groupShowWhenLogicMap?: Record<string, "and" | "or"> } | null;
                 const map = meta?.groupShowWhenMap;
                 if (map && groupLabel && typeof map === "object" && !Array.isArray(map) && groupLabel in map) {
                   raw = map[groupLabel];
+                  gswLogic = meta?.groupShowWhenLogicMap?.[groupLabel] ?? meta?.groupShowWhenLogic ?? "and";
                   break;
                 }
-                // Fall back to legacy flat groupShowWhen (but only if it's not a map itself)
                 const legacy = meta?.groupShowWhen;
                 if (legacy != null) {
                   if (typeof legacy === "object" && !Array.isArray(legacy) && !("field" in legacy)) {
-                    // It's a map-style groupShowWhen (keyed by group name)
                     if (groupLabel && groupLabel in (legacy as GswMap)) {
                       raw = (legacy as GswMap)[groupLabel];
+                      gswLogic = meta?.groupShowWhenLogicMap?.[groupLabel] ?? meta?.groupShowWhenLogic ?? "and";
                       break;
                     }
                   } else {
                     raw = legacy as GswRule | GswRule[];
+                    gswLogic = meta?.groupShowWhenLogic ?? "and";
                     break;
                   }
                 }
               }
-              if (!raw) return true;
+              if (!raw) {
+                debugGroupRows.push({ group: groupLabel || "(default)", fieldCount: bucket.fields.length, visible: true, detail: "no groupShowWhen" });
+                return true;
+              }
               const rules: GswRule[] = Array.isArray(raw) ? raw : [raw];
-              if (rules.length === 0 || !rules[0]?.field) return true;
-              return rules.every((gsw) => {
+              if (rules.length === 0 || !rules[0]?.field) {
+                debugGroupRows.push({ group: groupLabel || "(default)", fieldCount: bucket.fields.length, visible: true, detail: "empty rules" });
+                return true;
+              }
+              const evalRule = (gsw: GswRule) => {
                 if (!gsw.field) return true;
                 const rulePkg = gsw.package || pkg;
                 const fieldVal = String(allFormValues[`${rulePkg}__${gsw.field}`] ?? "").trim().toLowerCase();
@@ -1441,7 +1449,22 @@ export function PackageBlock({
                   }
                 }
                 return true;
-              });
+              };
+              const pass = gswLogic === "or" ? rules.some(evalRule) : rules.every(evalRule);
+              const logicLabel = gswLogic === "or" ? "OR" : "AND";
+              const detail = rules.map((gsw) => {
+                const rulePkg = gsw.package || pkg;
+                const fk = `${rulePkg}__${gsw.field}`;
+                const fv = String(allFormValues[fk] ?? "").trim();
+                let d = `pkg="${rulePkg}" field="${gsw.field}" val="${fv}" allowed=[${(gsw.values ?? []).join(",")}]`;
+                if (gsw.childKey) {
+                  const cv = String(allFormValues[`${rulePkg}__${gsw.childKey}`] ?? "").trim();
+                  d += ` childKey="${gsw.childKey}" childVal="${cv}" childAllowed=[${(gsw.childValues ?? []).join(",")}]`;
+                }
+                return d;
+              }).join(` ${logicLabel} `);
+              debugGroupRows.push({ group: groupLabel || "(default)", fieldCount: bucket.fields.length, visible: pass, detail: `${pass ? "PASS" : "FAIL"} (${logicLabel}): ${detail}` });
+              return pass;
             });
           const seenInGroups = new Set<number>();
           for (const [, bucket] of entries) {
@@ -2396,12 +2419,40 @@ export function PackageBlock({
             </div>
           );});
 
+          const hiddenGroupCount = debugGroupRows.filter((g) => !g.visible).length;
           const debugPanel = isAdmin ? (
             <details key="__debug" className="mt-4 rounded-md border border-dashed border-amber-400/50 bg-amber-50/50 p-2 dark:border-amber-600/30 dark:bg-amber-950/20">
               <summary className="cursor-pointer text-xs font-medium text-amber-700 dark:text-amber-400">
                 Debug: Field Visibility ({pkg}) &mdash; {debugRows.filter((r) => r.visible).length}/{debugRows.length} visible, selectedCategory=&quot;{selectedCategory}&quot;, categories loaded={categories.length}
+                {hiddenGroupCount > 0 ? <span className="ml-2 text-red-500 dark:text-red-400">&bull; {hiddenGroupCount} group(s) hidden by groupShowWhen</span> : null}
               </summary>
               <div className="mt-2 max-h-64 overflow-auto text-[10px] font-mono leading-relaxed">
+                {debugGroupRows.length > 0 && debugGroupRows.some((g) => g.detail !== "no groupShowWhen") ? (
+                  <>
+                    <div className="mb-2 text-xs font-semibold text-amber-600 dark:text-amber-300">Group Visibility</div>
+                    <table className="mb-3 w-full border-collapse">
+                      <thead>
+                        <tr className="border-b border-amber-300 dark:border-amber-700 text-left">
+                          <th className="px-1 py-0.5">Group</th>
+                          <th className="px-1 py-0.5">Fields</th>
+                          <th className="px-1 py-0.5">Visible</th>
+                          <th className="px-1 py-0.5">Detail</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {debugGroupRows.map((g) => (
+                          <tr key={g.group} className={g.visible ? "" : "text-red-600 dark:text-red-400"}>
+                            <td className="px-1 py-0.5">{g.group}</td>
+                            <td className="px-1 py-0.5">{g.fieldCount}</td>
+                            <td className="px-1 py-0.5">{g.visible ? "YES" : "NO"}</td>
+                            <td className="px-1 py-0.5 break-all">{g.detail}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                ) : null}
+                <div className="mb-1 text-xs font-semibold text-amber-600 dark:text-amber-300">Field Visibility</div>
                 <table className="w-full border-collapse">
                   <thead>
                     <tr className="border-b border-amber-300 dark:border-amber-700 text-left">

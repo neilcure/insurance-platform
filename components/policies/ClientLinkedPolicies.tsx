@@ -119,6 +119,7 @@ export function ClientLinkedPolicies({
         drawerOpen={drawerOpen}
         onClose={closeDrawer}
         title="Policy Details"
+        hideClientInfo
       />
     </>
   );

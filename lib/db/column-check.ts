@@ -6,6 +6,7 @@ interface PolicyColumnsPresence {
   hasAgentId: boolean;
   hasCreatedBy: boolean;
   hasIsActive: boolean;
+  hasFlowKey: boolean;
 }
 
 let cached: PolicyColumnsPresence | null = null;
@@ -22,7 +23,7 @@ export async function getPolicyColumns(): Promise<PolicyColumnsPresence> {
     select column_name
     from information_schema.columns
     where table_name = 'policies'
-      and column_name in ('client_id', 'agent_id', 'created_by', 'is_active')
+      and column_name in ('client_id', 'agent_id', 'created_by', 'is_active', 'flow_key')
   `);
 
   const rows: Array<{ column_name: string }> = Array.isArray(result)
@@ -35,6 +36,7 @@ export async function getPolicyColumns(): Promise<PolicyColumnsPresence> {
     hasAgentId: names.has("agent_id"),
     hasCreatedBy: names.has("created_by"),
     hasIsActive: names.has("is_active"),
+    hasFlowKey: names.has("flow_key"),
   };
   return cached;
 }

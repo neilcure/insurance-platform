@@ -280,6 +280,8 @@ export function GroupShowWhenConfig({
   allPackages,
   currentPkg,
   groupLabel,
+  logic,
+  onLogicChange,
 }: {
   value: GroupShowWhen;
   onChange: (next: GroupShowWhen) => void;
@@ -288,6 +290,8 @@ export function GroupShowWhenConfig({
   allPackages?: { label: string; value: string }[];
   currentPkg?: string;
   groupLabel?: string;
+  logic?: "and" | "or";
+  onLogicChange?: (next: "and" | "or") => void;
 }) {
   const rules = normalizeRules(value);
   const { pkgFieldsCache, loadPkgFields } = usePkgFields();
@@ -331,6 +335,20 @@ export function GroupShowWhenConfig({
     <div className="grid gap-1">
       <Label className="text-xs">{title}</Label>
       <p className="text-xs text-neutral-500">{desc}</p>
+
+      {rules.length > 1 && onLogicChange ? (
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-neutral-500 dark:text-neutral-400">Match:</span>
+          <label className="inline-flex items-center gap-1">
+            <input type="radio" name={`gsw-logic-${groupLabel ?? "default"}`} checked={logic !== "or"} onChange={() => onLogicChange("and")} />
+            ALL conditions (AND)
+          </label>
+          <label className="inline-flex items-center gap-1">
+            <input type="radio" name={`gsw-logic-${groupLabel ?? "default"}`} checked={logic === "or"} onChange={() => onLogicChange("or")} />
+            ANY condition (OR)
+          </label>
+        </div>
+      ) : null}
 
       {rules.map((rule, idx) => (
         <RuleRow

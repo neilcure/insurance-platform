@@ -6,11 +6,14 @@ import { serverFetch } from "@/lib/auth/server-fetch";
 type PolicyRowRaw = {
   policyId: number;
   policyNumber: string;
+  recordId?: number;
+  recordNumber?: string;
+  flowKey?: string | null;
   createdAt: string;
   isActive?: boolean;
   carExtra?: Record<string, unknown> | null;
 };
-type PolicyRow = { policyId: number; policyNumber: string; createdAt: string; isActive: boolean; displayName?: string; carExtra?: Record<string, unknown> | null };
+type PolicyRow = { policyId: number; policyNumber: string; recordId?: number; recordNumber?: string; flowKey?: string | null; createdAt: string; isActive: boolean; displayName?: string; carExtra?: Record<string, unknown> | null };
 
 type FlowOption = {
   id: number;
@@ -111,6 +114,9 @@ async function fetchPolicies(flowKey: string): Promise<PolicyRow[]> {
   return raw.map((r) => ({
     policyId: r.policyId,
     policyNumber: r.policyNumber,
+    recordId: r.recordId ?? r.policyId,
+    recordNumber: r.recordNumber ?? r.policyNumber,
+    flowKey: r.flowKey ?? null,
     createdAt: r.createdAt,
     isActive: r.isActive !== false,
     displayName: extractDisplayName(r.carExtra),

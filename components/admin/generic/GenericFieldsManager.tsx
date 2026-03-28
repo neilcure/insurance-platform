@@ -61,6 +61,8 @@ type FieldMeta = {
   groupOrder?: number; // Optional sort order for the group itself
   groupShowWhen?: { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null;
   groupShowWhenMap?: Record<string, { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null>;
+  groupShowWhenLogic?: "and" | "or";
+  groupShowWhenLogicMap?: Record<string, "and" | "or">;
   selectDisplay?: "dropdown" | "radio" | "checkbox"; // How to render select/multi_select
   // Display formatting
   labelCase?: "original" | "upper" | "lower" | "title";
@@ -112,6 +114,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
   const [confirmDeleteGroup, setConfirmDeleteGroup] = React.useState<string | null>(null);
   const [editingGroupCondition, setEditingGroupCondition] = React.useState<string | null>(null);
   const [pendingGroupCondition, setPendingGroupCondition] = React.useState<unknown>(null);
+  const [pendingGroupLogic, setPendingGroupLogic] = React.useState<"and" | "or">("and");
   const [groupConditionDirty, setGroupConditionDirty] = React.useState(false);
   const [savingGroupCondition, setSavingGroupCondition] = React.useState(false);
   const [allPackagesForGroups, setAllPackagesForGroups] = React.useState<{ label: string; value: string }[]>([]);
@@ -714,7 +717,19 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
     return null;
   }
 
-  async function saveGroupCondition(groupName: string, condition: unknown) {
+  function getGroupLogic(groupName: string): "and" | "or" {
+    const group = groups.find((g) => g.name === groupName);
+    if (!group) return "and";
+    for (const id of group.ids) {
+      const row = rows.find((r) => r.id === id);
+      const meta = row?.meta as FieldMeta | null;
+      if (meta?.groupShowWhenLogicMap?.[groupName]) return meta.groupShowWhenLogicMap[groupName];
+      if (meta?.groupShowWhenLogic) return meta.groupShowWhenLogic;
+    }
+    return "and";
+  }
+
+  async function saveGroupCondition(groupName: string, condition: unknown, logic?: "and" | "or") {
     const group = groups.find((g) => g.name === groupName);
     if (!group) return;
     const updates: Promise<Response>[] = [];
@@ -725,6 +740,11 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
       const gswMap = { ...((meta.groupShowWhenMap ?? {}) as Record<string, unknown>) };
       gswMap[groupName] = condition;
       meta.groupShowWhenMap = gswMap;
+      if (logic) {
+        const logicMap = { ...((meta.groupShowWhenLogicMap ?? {}) as Record<string, string>) };
+        logicMap[groupName] = logic;
+        meta.groupShowWhenLogicMap = logicMap;
+      }
       updates.push(
         fetch(`/api/admin/form-options/${id}`, {
           method: "PATCH",
@@ -886,6 +906,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                             } else {
                               setEditingGroupCondition(g.name);
                               setPendingGroupCondition(getGroupCondition(g.name));
+                              setPendingGroupLogic(getGroupLogic(g.name));
                               setGroupConditionDirty(false);
                             }
                             if (allPackagesForGroups.length === 0) {
@@ -951,7 +972,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                             disabled={savingGroupCondition}
                             onClick={async () => {
                               setSavingGroupCondition(true);
-                              await saveGroupCondition(g.name, pendingGroupCondition);
+                              await saveGroupCondition(g.name, pendingGroupCondition, pendingGroupLogic);
                               setSavingGroupCondition(false);
                               setGroupConditionDirty(false);
                               setEditingGroupCondition(null);
@@ -980,6 +1001,11 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                         fields={rows as Parameters<typeof GroupShowWhenConfig>[0]["fields"]}
                         allPackages={allPackagesForGroups}
                         currentPkg={pkg}
+                        logic={pendingGroupLogic}
+                        onLogicChange={(next) => {
+                          setPendingGroupLogic(next);
+                          setGroupConditionDirty(true);
+                        }}
                       />
                     </div>
                   </div>
@@ -3461,7 +3487,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
               {(() => {
                 const cGroups = getFieldGroups((form.meta as FieldMeta | undefined)?.group).filter(Boolean);
                 if (cGroups.length === 0) return null;
-                const meta = form.meta as (FieldMeta & { groupShowWhenMap?: Record<string, any> }) | undefined;
+                const meta = form.meta as (FieldMeta & { groupShowWhenMap?: Record<string, any>; groupShowWhenLogicMap?: Record<string, "and" | "or"> }) | undefined;
                 return cGroups.map((gName) => (
                   <GroupShowWhenConfig
                     key={gName}
@@ -3475,6 +3501,11 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                     excludeFieldId={editing?.id}
                     allPackages={allPackagesForGroups}
                     currentPkg={pkg}
+                    logic={meta?.groupShowWhenLogicMap?.[gName] ?? meta?.groupShowWhenLogic ?? "and"}
+                    onLogicChange={(next) => {
+                      const logicMap = { ...(meta?.groupShowWhenLogicMap ?? {}), [gName]: next };
+                      updateMeta("groupShowWhenLogicMap", logicMap as any);
+                    }}
                   />
                 ));
               })()}

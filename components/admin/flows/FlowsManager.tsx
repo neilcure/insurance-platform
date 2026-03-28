@@ -17,6 +17,8 @@ type FlowMeta = {
   showInDashboard?: boolean;
   icon?: string;
   dashboardLabel?: string;
+  recordPickerFlow?: string;
+  recordPickerLabel?: string;
 } | null;
 
 type OptionRow = {
@@ -94,6 +96,8 @@ export default function FlowsManager() {
         showInDashboard: !!row.meta?.showInDashboard,
         icon: row.meta?.icon || undefined,
         dashboardLabel: row.meta?.dashboardLabel || undefined,
+        recordPickerFlow: row.meta?.recordPickerFlow || undefined,
+        recordPickerLabel: row.meta?.recordPickerLabel || undefined,
       },
     });
   }
@@ -108,6 +112,8 @@ export default function FlowsManager() {
           showInDashboard: !!form.meta?.showInDashboard,
           icon: form.meta?.icon || undefined,
           dashboardLabel: form.meta?.dashboardLabel || undefined,
+          recordPickerFlow: form.meta?.recordPickerFlow || undefined,
+          recordPickerLabel: form.meta?.recordPickerLabel || undefined,
         };
         const current = formSnapshot({
           label: form.label,
@@ -126,6 +132,8 @@ export default function FlowsManager() {
         showInDashboard: !!form.meta?.showInDashboard,
         icon: form.meta?.icon || undefined,
         dashboardLabel: form.meta?.dashboardLabel || undefined,
+        recordPickerFlow: form.meta?.recordPickerFlow || undefined,
+        recordPickerLabel: form.meta?.recordPickerLabel || undefined,
       };
       if (editing) {
         const res = await fetch(`/api/admin/form-options/${editing.id}`, {
@@ -356,6 +364,47 @@ export default function FlowsManager() {
                     />
                   </>
                 )}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-700">
+              <div className="mb-2 text-sm font-medium text-neutral-700 dark:text-neutral-300">Record Picker Settings</div>
+              <div className="grid gap-3">
+                <div className="grid gap-1">
+                  <Label>Record Picker Flow (which flow&apos;s records to browse)</Label>
+                  <select
+                    className="h-9 w-full rounded-md border border-neutral-300 bg-white px-3 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                    value={form.meta?.recordPickerFlow ?? ""}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        meta: { ...f.meta, recordPickerFlow: e.target.value || undefined },
+                      }))
+                    }
+                  >
+                    <option value="">Same as this flow (default)</option>
+                    {rows
+                      .filter((r) => r.value !== form.value)
+                      .map((r) => (
+                        <option key={r.id} value={r.value}>
+                          {r.label} ({r.value})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <div className="grid gap-1">
+                  <Label>Button Label (optional, overrides &quot;Select Existing ...&quot;)</Label>
+                  <Input
+                    value={form.meta?.recordPickerLabel ?? ""}
+                    placeholder={`Select Existing ${form.meta?.dashboardLabel || form.label || "Policies"}`}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        meta: { ...f.meta, recordPickerLabel: e.target.value || undefined },
+                      }))
+                    }
+                  />
+                </div>
               </div>
             </div>
 

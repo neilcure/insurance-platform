@@ -232,7 +232,7 @@ async function getEntityDisplayName(recordId: number): Promise<string | null> {
   } catch { return null; }
 }
 
-async function findClientPolicies(clientRecordId: number): Promise<{ policyId: number; policyNumber: string }[]> {
+async function findClientPolicies(clientRecordId: number): Promise<{ policyId: number; policyNumber: string; isActive: boolean }[]> {
   try {
     const [clientRow] = await db
       .select({ pNum: policies.policyNumber, clientId: policies.clientId, carExtra: cars.extraAttributes })
@@ -244,7 +244,7 @@ async function findClientPolicies(clientRecordId: number): Promise<{ policyId: n
 
     const clientNumber = clientRow.pNum;
     const seen = new Set<number>();
-    const result: { policyId: number; policyNumber: string }[] = [];
+    const result: { policyId: number; policyNumber: string; isActive: boolean }[] = [];
 
     // 1) Search via policies.client_id (most reliable link)
     let dbClientId = clientRow.clientId;
@@ -258,7 +258,7 @@ async function findClientPolicies(clientRecordId: number): Promise<{ policyId: n
     if (dbClientId) {
       try {
         const byClientId = await db
-          .select({ pId: policies.id, pNum: policies.policyNumber })
+          .select({ pId: policies.id, pNum: policies.policyNumber, pActive: policies.isActive })
           .from(policies)
           .leftJoin(cars, eq(cars.policyId, policies.id))
           .where(and(
@@ -268,7 +268,7 @@ async function findClientPolicies(clientRecordId: number): Promise<{ policyId: n
           .orderBy(desc(policies.createdAt))
           .limit(50);
         for (const r of byClientId) {
-          if (!seen.has(r.pId)) { seen.add(r.pId); result.push({ policyId: r.pId, policyNumber: r.pNum }); }
+          if (!seen.has(r.pId)) { seen.add(r.pId); result.push({ policyId: r.pId, policyNumber: r.pNum, isActive: r.pActive }); }
         }
       } catch { /* ignore */ }
     }
@@ -276,7 +276,7 @@ async function findClientPolicies(clientRecordId: number): Promise<{ policyId: n
     // 2) Search via JSON snapshot references (fallback / legacy)
     try {
       const bySnapshot = await db
-        .select({ pId: policies.id, pNum: policies.policyNumber })
+        .select({ pId: policies.id, pNum: policies.policyNumber, pActive: policies.isActive })
         .from(policies)
         .leftJoin(cars, eq(cars.policyId, policies.id))
         .where(and(
@@ -291,7 +291,7 @@ async function findClientPolicies(clientRecordId: number): Promise<{ policyId: n
         .orderBy(desc(policies.createdAt))
         .limit(50);
       for (const r of bySnapshot) {
-        if (!seen.has(r.pId)) { seen.add(r.pId); result.push({ policyId: r.pId, policyNumber: r.pNum }); }
+        if (!seen.has(r.pId)) { seen.add(r.pId); result.push({ policyId: r.pId, policyNumber: r.pNum, isActive: r.pActive }); }
       }
     } catch { /* ignore */ }
 
@@ -332,9 +332,9 @@ function userTypeToContext(userType: string): PremiumContext | null {
 
 /**
  * Default role-based filter when admin has not configured premiumContexts on any field.
- * Restricts visibility by matching field key/label to the user's role so that
- * clients only see "client premium" and agents only see "agent premium".
- * Currency field is always included for formatting purposes.
+ * - Clients only see fields with "client" in key/label.
+ * - Agents see gross, agent, and client fields — but NOT net premium (admin only).
+ * - Currency field is always included for formatting purposes.
  */
 function applyDefaultRoleFilter(fields: AccountingFieldDef[], role: PremiumContext): AccountingFieldDef[] {
   return fields.filter((f) => {
@@ -342,7 +342,10 @@ function applyDefaultRoleFilter(fields: AccountingFieldDef[], role: PremiumConte
     const l = f.label.toLowerCase();
     if (k === "currency" || l === "currency") return true;
     if (role === "client") return k.includes("client") || l.includes("client");
-    if (role === "agent") return k.includes("agent") || l.includes("agent");
+    if (role === "agent") {
+      const isNet = (k.includes("net") || l.includes("net")) && !k.includes("agent") && !l.includes("agent");
+      return !isNet;
+    }
     return true;
   });
 }
@@ -598,6 +601,64 @@ export async function GET(request: Request, ctx: Ctx) {
     const fieldColumnMap = buildFieldColumnMap(fields);
     const lines: LineData[] = premiumRows.map((r) => rowToLineData(r, fields, entityLookup, fieldColumnMap));
 
+    // Merge premiumRecord snapshot values into lines.
+    // The snapshot may have values that weren't stored in policy_premiums
+    // (e.g. if the premiumRecord package was configured after the record was created).
+    if (isPolicy) {
+      try {
+        const [snapRow] = await db
+          .select({ extra: cars.extraAttributes })
+          .from(cars)
+          .where(eq(cars.policyId, policyId))
+          .limit(1);
+        if (snapRow) {
+          const snapExtra = (snapRow.extra ?? {}) as Record<string, unknown>;
+          const snapPkgs = (snapExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
+          const premPkg = (snapPkgs.premiumRecord ?? snapPkgs.accounting) as Record<string, unknown> | undefined;
+          if (premPkg && typeof premPkg === "object") {
+            const snapVals = ("values" in premPkg ? (premPkg as { values?: Record<string, unknown> }).values : premPkg) as Record<string, unknown> | undefined;
+            if (snapVals && typeof snapVals === "object") {
+              const stripPfx = (k: string) => { const idx = k.indexOf("__"); return idx >= 0 ? k.slice(idx + 2) : k; };
+              const snapMap = new Map<string, unknown>();
+              for (const [k, v] of Object.entries(snapVals)) {
+                if (v === undefined || v === null || v === "") continue;
+                snapMap.set(stripPfx(k), v);
+              }
+
+              if (lines.length > 0) {
+                for (const line of lines) {
+                  for (const f of fields) {
+                    if (line.values[f.key] === null || line.values[f.key] === undefined || line.values[f.key] === "") {
+                      const snapVal = snapMap.get(f.key);
+                      if (snapVal !== undefined && snapVal !== null && snapVal !== "") {
+                        line.values[f.key] = snapVal;
+                      }
+                    }
+                  }
+                }
+              } else if (snapMap.size > 0) {
+                const vals: Record<string, unknown> = {};
+                for (const f of fields) {
+                  vals[f.key] = snapMap.get(f.key) ?? null;
+                }
+                lines.push({
+                  lineKey: "main",
+                  lineLabel: "Premium",
+                  values: vals,
+                  margin: null,
+                  updatedAt: null,
+                  insurerId: null,
+                  insurerName: null,
+                  collaboratorId: null,
+                  collaboratorName: null,
+                });
+              }
+            }
+          }
+        }
+      } catch { /* non-fatal */ }
+    }
+
     type EntityHint = { insurerId: number | null; insurerName: string | null; collabId: number | null; collabName: string | null };
     const snapshotEntities: Record<string, EntityHint> = {};
 
@@ -664,6 +725,7 @@ export async function GET(request: Request, ctx: Ctx) {
       fields: { key: string; label: string; value: unknown }[];
       createdAt: string;
       linkedPolicyNumber?: string;
+      isActive?: boolean;
     };
     let accountingRecords: AccountingRecord[] = [];
 
@@ -783,12 +845,125 @@ export async function GET(request: Request, ctx: Ctx) {
           }
         }
       } else if (context === "client") {
-        // Find all policies belonging to this client, then find their accounting records
         const clientPolicies = await findClientPolicies(policyId);
+        const fColMap = buildFieldColumnMap(fields);
+
         for (const cp of clientPolicies) {
-          // Resolve entities from each linked policy's snapshot
           try { await resolveEntitiesFromSnapshot(cp.policyId); } catch { /* non-fatal */ }
 
+          // Load policy_premiums lines for this policy
+          const cpPremiumRows = await db
+            .select()
+            .from(policyPremiums)
+            .where(eq(policyPremiums.policyId, cp.policyId))
+            .orderBy(policyPremiums.createdAt)
+            .catch((): (typeof policyPremiums.$inferSelect)[] => []);
+
+          if (cpPremiumRows.length > 0) {
+            const cpEntityLookup = await lookupEntityNamesById(cpPremiumRows);
+            const cpLines = cpPremiumRows.map((r) => rowToLineData(r, fields, cpEntityLookup, fColMap));
+
+            // Also merge snapshot fallback values
+            try {
+              const [snapR] = await db
+                .select({ extra: cars.extraAttributes })
+                .from(cars)
+                .where(eq(cars.policyId, cp.policyId))
+                .limit(1);
+              if (snapR) {
+                const sExtra = (snapR.extra ?? {}) as Record<string, unknown>;
+                const sPkgs = (sExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
+                const sPrem = (sPkgs.premiumRecord ?? sPkgs.accounting) as Record<string, unknown> | undefined;
+                if (sPrem && typeof sPrem === "object") {
+                  const sVals = ("values" in sPrem ? (sPrem as { values?: Record<string, unknown> }).values : sPrem) as Record<string, unknown> | undefined;
+                  if (sVals && typeof sVals === "object") {
+                    const sMap = new Map<string, unknown>();
+                    for (const [sk, sv] of Object.entries(sVals)) {
+                      if (sv === undefined || sv === null || sv === "") continue;
+                      const idx = sk.indexOf("__");
+                      sMap.set(idx >= 0 ? sk.slice(idx + 2) : sk, sv);
+                    }
+                    for (const ln of cpLines) {
+                      for (const f of fields) {
+                        if (ln.values[f.key] === null || ln.values[f.key] === undefined || ln.values[f.key] === "") {
+                          const sv = sMap.get(f.key);
+                          if (sv !== undefined && sv !== null && sv !== "") ln.values[f.key] = sv;
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            } catch { /* non-fatal */ }
+
+            // Convert lines to AccountingRecord format
+            for (const ln of cpLines) {
+              const recFields: { key: string; label: string; value: unknown }[] = [];
+              for (const f of fields) {
+                const v = ln.values[f.key];
+                if (v !== null && v !== undefined && v !== "") {
+                  recFields.push({ key: f.key, label: f.label, value: v });
+                }
+              }
+              if (recFields.length > 0) {
+                accountingRecords.push({
+                  recordId: cp.policyId,
+                  recordNumber: cp.policyNumber,
+                  flowKey: "policyset",
+                  fields: recFields,
+                  createdAt: "",
+                  linkedPolicyNumber: cp.policyNumber,
+                  isActive: cp.isActive,
+                });
+              }
+            }
+          } else {
+            // No policy_premiums rows — try snapshot directly
+            try {
+              const [snapR] = await db
+                .select({ pCreated: policies.createdAt, cExtra: cars.extraAttributes })
+                .from(policies)
+                .leftJoin(cars, eq(cars.policyId, policies.id))
+                .where(eq(policies.id, cp.policyId))
+                .limit(1);
+              if (snapR) {
+                const sExtra = (snapR.cExtra ?? {}) as Record<string, unknown>;
+                const sPkgs = (sExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
+                const sPrem = (sPkgs.premiumRecord ?? sPkgs.accounting) as Record<string, unknown> | undefined;
+                if (sPrem && typeof sPrem === "object") {
+                  const sVals = ("values" in sPrem ? (sPrem as { values?: Record<string, unknown> }).values : sPrem) as Record<string, unknown> | undefined;
+                  if (sVals && typeof sVals === "object") {
+                    const sMap = new Map<string, unknown>();
+                    for (const [sk, sv] of Object.entries(sVals)) {
+                      if (sv === undefined || sv === null || sv === "") continue;
+                      const idx = sk.indexOf("__");
+                      sMap.set(idx >= 0 ? sk.slice(idx + 2) : sk, sv);
+                    }
+                    const recFields: { key: string; label: string; value: unknown }[] = [];
+                    for (const f of fields) {
+                      const v = sMap.get(f.key);
+                      if (v !== undefined && v !== null && v !== "") {
+                        recFields.push({ key: f.key, label: f.label, value: v });
+                      }
+                    }
+                    if (recFields.length > 0) {
+                      accountingRecords.push({
+                        recordId: cp.policyId,
+                        recordNumber: cp.policyNumber,
+                        flowKey: "policyset",
+                        fields: recFields,
+                        createdAt: snapR.pCreated ?? "",
+                        linkedPolicyNumber: cp.policyNumber,
+                        isActive: cp.isActive,
+                      });
+                    }
+                  }
+                }
+              }
+            } catch { /* non-fatal */ }
+          }
+
+          // Also find linked accounting flow records for this policy
           const linkedRows = await db
             .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
             .from(policies)
