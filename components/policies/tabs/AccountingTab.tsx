@@ -616,13 +616,39 @@ function AccountingRecordView({
 }
 
 
+function deriveRecordType(flowKey: string): { label: string; borderClass: string; badgeClass: string; accentBorder: string } {
+  const fk = flowKey.toLowerCase();
+  if (fk === "endorsement") {
+    return {
+      label: "Endorsement",
+      borderClass: "border-amber-400/60 dark:border-amber-500/40",
+      badgeClass: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+      accentBorder: "border-amber-300 dark:border-amber-600/40",
+    };
+  }
+  if (fk === "policyset") {
+    return {
+      label: "Policy Premium",
+      borderClass: "border-sky-400/60 dark:border-sky-500/40",
+      badgeClass: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
+      accentBorder: "border-sky-300 dark:border-sky-600/40",
+    };
+  }
+  return {
+    label: "Premium Record",
+    borderClass: "border-neutral-300 dark:border-neutral-700",
+    badgeClass: "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300",
+    accentBorder: "border-neutral-200 dark:border-neutral-800",
+  };
+}
+
 function CollapsibleRecord({
   record,
   premiumContext,
   onPolicyClick,
   children,
 }: {
-  record: { recordId: number; recordNumber: string; linkedPolicyNumber?: string; isActive?: boolean };
+  record: { recordId: number; recordNumber: string; flowKey: string; linkedPolicyNumber?: string; isActive?: boolean };
   premiumContext?: PremiumContext;
   onPolicyClick?: (policyId: number) => void;
   children: React.ReactNode;
@@ -631,13 +657,14 @@ function CollapsibleRecord({
   const showPolicyBadge = !!record.linkedPolicyNumber && premiumContext !== "policy" && premiumContext !== "self";
   const canClick = !!onPolicyClick && premiumContext !== "policy" && premiumContext !== "self";
   const isActive = record.isActive !== false;
+  const rt = deriveRecordType(record.flowKey);
 
   const linkColor = isActive
     ? "text-green-600 hover:text-green-500 dark:text-green-400 dark:hover:text-green-300"
     : "text-neutral-400 hover:text-neutral-300 dark:text-neutral-500 dark:hover:text-neutral-400";
 
   return (
-    <div className="rounded-md border border-neutral-200 dark:border-neutral-800">
+    <div className={`rounded-md border-2 ${rt.borderClass}`}>
       <div className="flex items-center gap-2 px-3 py-2">
         <button
           type="button"
@@ -648,6 +675,9 @@ function CollapsibleRecord({
             ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
             : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-neutral-400" />}
         </button>
+        <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${rt.badgeClass}`}>
+          {rt.label}
+        </span>
         {canClick ? (
           <button
             type="button"
@@ -668,7 +698,7 @@ function CollapsibleRecord({
         )}
       </div>
       {open && (
-        <div className="border-t border-neutral-200 px-3 py-2 dark:border-neutral-800">
+        <div className={`border-t ${rt.accentBorder} px-3 py-2`}>
           {children}
         </div>
       )}
@@ -833,7 +863,6 @@ export function AccountingTab({
   }, [expectedTemplates]);
 
   const displayLines = React.useMemo(() => {
-    if (hasAccountingRecords) return [];
     const result: LineData[] = [];
     const hasOdHint = "od" in snapshotEntities;
     const hintForLine = (lineKey: string, lineLabel: string, idx: number): EntityHint => {
@@ -879,7 +908,37 @@ export function AccountingTab({
       if (hasPremiumData) result.push(line);
     }
     return result;
-  }, [expectedTemplates, lines, fields, snapshotEntities, hasAccountingRecords]);
+  }, [expectedTemplates, lines, fields, snapshotEntities]);
+
+  const mergedRecords = React.useMemo(() => {
+    if (!hasAccountingRecords) return [];
+    const result: AccountingRecord[] = [];
+    const accountingRecordIds = new Set(accountingRecords.map((r) => r.recordId));
+    if (context === "policy" && displayLines.length > 0 && !accountingRecordIds.has(policyId)) {
+      const lineFields: { key: string; label: string; value: unknown }[] = [];
+      for (const line of displayLines) {
+        for (const f of fields) {
+          if (lineFields.some((lf) => lf.key === f.key)) continue;
+          const v = line.values[f.key];
+          if (v !== null && v !== undefined && v !== "") {
+            lineFields.push({ key: f.key, label: f.label, value: v });
+          }
+        }
+      }
+      if (lineFields.length > 0) {
+        result.push({
+          recordId: policyId,
+          recordNumber: policyNumber ?? `#${policyId}`,
+          flowKey: "policyset",
+          fields: lineFields,
+          createdAt: "",
+          isActive: true,
+        });
+      }
+    }
+    result.push(...accountingRecords);
+    return result;
+  }, [hasAccountingRecords, accountingRecords, context, displayLines, policyId, policyNumber, fields]);
 
   async function handleSave(lineKey: string, lineLabel: string, values: Record<string, unknown>, insurerId: number | null, collabId: number | null) {
     const snap = editingInitialSnapshotRef.current;
@@ -947,11 +1006,13 @@ export function AccountingTab({
     );
   }
 
-  // Accounting flow records take precedence over old premium lines
-  if (hasAccountingRecords) {
+  if (mergedRecords.length > 0) {
+    const activeRecords = mergedRecords.filter((r) => r.isActive !== false);
+    const visibleRecords = activeRecords.length > 0 ? activeRecords : mergedRecords;
+
     return (
       <div className="space-y-3">
-        {accountingRecords.map((rec) => (
+        {visibleRecords.map((rec) => (
           <CollapsibleRecord key={rec.recordId} record={rec} premiumContext={context} onPolicyClick={openPolicyDrawer}>
             <AccountingRecordView
               record={rec}
@@ -967,13 +1028,13 @@ export function AccountingTab({
           </CollapsibleRecord>
         ))}
 
-        {accountingRecords.length > 1 && (() => {
+        {visibleRecords.length > 1 && (() => {
           const currency = "HKD";
           const currencyFields = fields.filter((f) => f.inputType === "currency" || f.inputType === "negative_currency");
           const sumField = (key: string) => {
             let total = 0;
             let found = false;
-            for (const rec of accountingRecords) {
+            for (const rec of visibleRecords) {
               const fld = rec.fields.find((f) => f.key === key);
               if (fld) {
                 const v = Number(fld.value);

@@ -107,6 +107,7 @@ export function PolicyDetailsDrawer({
     const fk = (detailFlowKey ?? "").toLowerCase();
     if (fk === "appaccounting") return null;
     if (fk === "policyset" || fk === "" || !detailFlowKey) return { label: "Premium", context: "policy" as const };
+    if (fk.includes("endorsement")) return { label: "Endorsement Premium", context: "self" as const };
     if (fk.includes("collaborator") || fk === "collaboratorset") return { label: "Premium Payable", context: "collaborator" as const };
     if (fk.includes("insurance") || fk === "insuranceset") return { label: "Insurer Premium", context: "insurer" as const };
     if (fk.includes("client")) return { label: "Client Premium", context: "client" as const };

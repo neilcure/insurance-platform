@@ -396,6 +396,15 @@ export async function POST(request: Request) {
 
         const linkedPolicyId = (json as any).linkedPolicyId;
         const endorsementChanges = Array.isArray((json as any).endorsementChanges) ? (json as any).endorsementChanges : undefined;
+
+        let linkedPolicyNumber: string | undefined;
+        if (linkedPolicyId) {
+          try {
+            const [lp] = await db.select({ policyNumber: policies.policyNumber }).from(policies).where(eq(policies.id, Number(linkedPolicyId))).limit(1);
+            if (lp) linkedPolicyNumber = lp.policyNumber;
+          } catch { /* best-effort */ }
+        }
+
         const snapshot = {
           ...(vehicle || {}),
           insuredSnapshot: (body as any).insured,
@@ -405,6 +414,7 @@ export async function POST(request: Request) {
           excessSection1: (policy as any)?.coverType === "comprehensive" ? (policy as any).excessSection1 : undefined,
           ...(flowKey ? { flowKey } : {}),
           ...(linkedPolicyId ? { linkedPolicyId: Number(linkedPolicyId) } : {}),
+          ...(linkedPolicyNumber ? { linkedPolicyNumber } : {}),
           ...(endorsementChanges ? { _endorsementChanges: endorsementChanges } : {}),
         } as Record<string, unknown>;
 
@@ -522,7 +532,7 @@ export async function POST(request: Request) {
         const acctFields = await loadAccountingFields();
         const fieldColumnMap = buildFieldColumnMap(acctFields);
 
-        const acctPkg = (packages as any)?.accounting;
+        const acctPkg = (packages as any)?.premiumRecord ?? (packages as any)?.accounting;
         const acctValues =
           acctPkg && typeof acctPkg === "object"
             ? ("values" in acctPkg ? (acctPkg as any).values : acctPkg)

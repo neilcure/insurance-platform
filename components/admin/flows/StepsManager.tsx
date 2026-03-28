@@ -30,7 +30,7 @@ type StepRow = {
     /** Label override when embedding (shown instead of embedded flow's default title). */
     embeddedFlowLabel?: string;
     /** Step-level visibility: hide entire step unless these cross-package conditions pass. */
-    showWhen?: { package: string; category?: string | string[] }[];
+    showWhen?: { package: string; category?: string | string[]; requiresSelectedRecord?: boolean }[];
     /** Per-category visibility: hide a category tab unless cross-package conditions pass.
      *  Key format: `${pkg}__${categoryValue}` */
     categoryShowWhen?: Record<string, { package: string; category: string | string[] }[]>;
@@ -198,11 +198,14 @@ export default function StepsManager({ flow }: { flow: string }) {
     const selectedPkgs = selectedPkgsRaw.filter((p) => packages.some((po) => po.value === p));
     const pkgCatsRaw = (form.meta?.packageCategories ?? {}) as Record<string, string[]>;
     const pkgCats = Object.fromEntries(Object.entries(pkgCatsRaw).filter(([k]) => selectedPkgs.includes(k)));
-    const pkgShowWhenRaw = (form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>;
+    const pkgShowWhenRaw = (form.meta?.packageShowWhen ?? {}) as Record<string, (ShowWhenRule & { field?: string; fieldValues?: string[] })[]>;
     const pkgShowWhen = Object.fromEntries(
       Object.entries(pkgShowWhenRaw)
         .filter(([k]) => selectedPkgs.includes(k))
-        .map(([k, rules]) => [k, rules.filter((r) => r.package && (Array.isArray(r.category) ? r.category.length > 0 : !!r.category))]),
+        .map(([k, rules]) => [k, rules.filter((r) => {
+          if (r.field && Array.isArray(r.fieldValues) && r.fieldValues.length > 0) return true;
+          return r.package && (Array.isArray(r.category) ? r.category.length > 0 : !!r.category);
+        })]),
     );
     const wizardStepNum = Number(form.meta?.wizardStep);
     const wizardStep = Number.isFinite(wizardStepNum) && wizardStepNum > 0 ? wizardStepNum : undefined;
@@ -219,7 +222,9 @@ export default function StepsManager({ flow }: { flow: string }) {
     );
     const embeddedFlowLabel = typeof form.meta?.embeddedFlowLabel === "string" ? form.meta.embeddedFlowLabel.trim() : undefined;
     const stepShowWhen = (Array.isArray(form.meta?.showWhen) ? form.meta!.showWhen : [])
-      .filter((r): r is { package: string; category?: string | string[] } => !!r.package);
+      .filter((r): r is { package: string; category?: string | string[]; requiresSelectedRecord?: boolean } =>
+        !!r.package || !!(r as { requiresSelectedRecord?: boolean }).requiresSelectedRecord,
+      );
     const catShowWhenRaw = (form.meta?.categoryShowWhen ?? {}) as Record<string, { package: string; category: string | string[] }[]>;
     const categoryShowWhen = Object.fromEntries(
       Object.entries(catShowWhenRaw)
@@ -287,7 +292,10 @@ export default function StepsManager({ flow }: { flow: string }) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error("Update failed");
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => ({}));
+          throw new Error((errJson as { error?: string }).error ?? "Update failed");
+        }
         toast.success("Updated");
       } else {
         const res = await fetch(`/api/admin/form-options`, {
@@ -295,7 +303,10 @@ export default function StepsManager({ flow }: { flow: string }) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ groupKey, ...payload }),
         });
-        if (!res.ok) throw new Error("Create failed");
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => ({}));
+          throw new Error((errJson as { error?: string }).error ?? "Create failed");
+        }
         toast.success("Created");
       }
       // Enforce single final step per flow if isFinal is set
@@ -377,8 +388,9 @@ export default function StepsManager({ flow }: { flow: string }) {
                     <span
                       className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
                       title={
-                        (r.meta!.showWhen as { package: string; category?: string | string[] }[])
+                        (r.meta!.showWhen as { package: string; category?: string | string[]; requiresSelectedRecord?: boolean }[])
                           .map((rule) => {
+                            if (rule.requiresSelectedRecord) return "Requires selected record";
                             const pkgLabel = packages.find((p) => p.value === rule.package)?.label ?? rule.package;
                             const cats = Array.isArray(rule.category) ? rule.category : rule.category ? [rule.category] : [];
                             const catLabels = cats.map((c) => (categoriesByPkg[rule.package] ?? []).find((o) => o.value === c)?.label ?? c);
@@ -387,8 +399,9 @@ export default function StepsManager({ flow }: { flow: string }) {
                           .join(" AND ")
                       }
                     >
-                      When: {(r.meta!.showWhen as { package: string; category?: string | string[] }[])
+                      When: {(r.meta!.showWhen as { package: string; category?: string | string[]; requiresSelectedRecord?: boolean }[])
                         .map((rule) => {
+                          if (rule.requiresSelectedRecord) return "record selected";
                           const pkgLabel = packages.find((p) => p.value === rule.package)?.label ?? rule.package;
                           const cats = Array.isArray(rule.category) ? rule.category : rule.category ? [rule.category] : [];
                           const catLabels = cats.map((c) => (categoriesByPkg[rule.package] ?? []).find((o) => o.value === c)?.label ?? c);
@@ -825,9 +838,11 @@ export default function StepsManager({ flow }: { flow: string }) {
                         return (
                       <div>
                         <Label className="text-xs">Show only when (cross-package condition)</Label>
-                        <p className="text-[10px] text-neutral-500 mb-1">Only show this package when another package&apos;s category matches. Leave empty to always show.</p>
+                        <p className="text-[10px] text-neutral-500 mb-1">Only show this package when another package&apos;s category or field value matches. Leave empty to always show.</p>
                         {showWhenRules.map((rule, rIdx) => {
                           const ruleCats = categoriesByPkg[rule.package] ?? [];
+                          const ruleAny = rule as ShowWhenRule & { field?: string; fieldValues?: string[] };
+                          const isFieldMode = !!ruleAny.field;
                           return (
                             <div key={rIdx} className="mb-1 flex items-start gap-2 rounded border border-neutral-200 p-2 dark:border-neutral-700">
                               <div className="flex-1 space-y-1">
@@ -865,7 +880,61 @@ export default function StepsManager({ flow }: { flow: string }) {
                                     ))}
                                   </select>
                                 </div>
-                                {rule.package && ruleCats.length > 0 ? (
+                                <div className="flex items-center gap-2 ml-14">
+                                  <label className="inline-flex items-center gap-1 text-[10px] text-neutral-500 dark:text-neutral-400">
+                                    <input
+                                      type="checkbox"
+                                      checked={isFieldMode}
+                                      onChange={(e) => {
+                                        const map = { ...((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>) };
+                                        const arr = [...(map[pkg] ?? [])];
+                                        if (e.target.checked) {
+                                          arr[rIdx] = { ...arr[rIdx], category: [], field: "", fieldValues: [] } as any;
+                                        } else {
+                                          const { field: _f, fieldValues: _fv, ...rest } = arr[rIdx] as any;
+                                          arr[rIdx] = rest;
+                                        }
+                                        map[pkg] = arr;
+                                        setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageShowWhen: map } as StepRow["meta"] }));
+                                      }}
+                                    />
+                                    Match by field value (instead of category)
+                                  </label>
+                                </div>
+                                {isFieldMode ? (
+                                  <div className="space-y-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="w-14 shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">Field</span>
+                                      <Input
+                                        className="h-7 flex-1 text-xs"
+                                        placeholder="field key (e.g. coverType)"
+                                        value={ruleAny.field ?? ""}
+                                        onChange={(e) => {
+                                          const map = { ...((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>) };
+                                          const arr = [...(map[pkg] ?? [])];
+                                          arr[rIdx] = { ...arr[rIdx], field: e.target.value } as any;
+                                          map[pkg] = arr;
+                                          setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageShowWhen: map } as StepRow["meta"] }));
+                                        }}
+                                      />
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="w-14 shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">Values</span>
+                                      <Input
+                                        className="h-7 flex-1 text-xs"
+                                        placeholder="comma-separated values (e.g. tpo_with_od,comprehensive)"
+                                        value={(ruleAny.fieldValues ?? []).join(", ")}
+                                        onChange={(e) => {
+                                          const map = { ...((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>) };
+                                          const arr = [...(map[pkg] ?? [])];
+                                          arr[rIdx] = { ...arr[rIdx], fieldValues: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } as any;
+                                          map[pkg] = arr;
+                                          setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageShowWhen: map } as StepRow["meta"] }));
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                ) : rule.package && ruleCats.length > 0 ? (
                                   <div className="flex items-start gap-2">
                                     <span className="w-14 shrink-0 pt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">Category</span>
                                     <div className="flex flex-wrap gap-2">
@@ -938,6 +1007,34 @@ export default function StepsManager({ flow }: { flow: string }) {
                   Hide this entire wizard step unless the selected categories match. Leave empty to always show.
                 </p>
               </div>
+              <label className="inline-flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={
+                    Array.isArray(form.meta?.showWhen) &&
+                    (form.meta!.showWhen as { requiresSelectedRecord?: boolean }[]).some(
+                      (r) => r.requiresSelectedRecord,
+                    )
+                  }
+                  onChange={(e) => {
+                    const existing = Array.isArray(form.meta?.showWhen)
+                      ? (form.meta!.showWhen as { package: string; category?: string | string[]; requiresSelectedRecord?: boolean }[])
+                      : [];
+                    let next: typeof existing;
+                    if (e.target.checked) {
+                      const already = existing.some((r) => r.requiresSelectedRecord);
+                      next = already ? existing : [...existing, { package: "", requiresSelectedRecord: true }];
+                    } else {
+                      next = existing.filter((r) => !r.requiresSelectedRecord);
+                    }
+                    setForm((f) => ({
+                      ...f,
+                      meta: { ...(f.meta ?? {}), showWhen: next.length > 0 ? next : undefined } as StepRow["meta"],
+                    }));
+                  }}
+                />
+                Requires selected record (only show after an existing policy/record is chosen)
+              </label>
               {(() => {
                 const rules = Array.isArray(form.meta?.showWhen)
                   ? (form.meta!.showWhen as { package: string; category?: string | string[] }[])

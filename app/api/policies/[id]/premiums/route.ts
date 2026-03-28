@@ -735,7 +735,7 @@ export async function GET(request: Request, ctx: Ctx) {
     };
 
     const extractRecordFields = (
-      lr: { pId: number; pNum: string; pCreated: string; cExtra: unknown },
+      lr: { pId: number; pNum: string; pCreated: string; pActive?: boolean; cExtra: unknown },
     ): AccountingRecord | null => {
       const extra = (lr.cExtra ?? {}) as Record<string, unknown>;
       const fk = String(extra.flowKey ?? "");
@@ -765,12 +765,12 @@ export async function GET(request: Request, ctx: Ctx) {
       }
 
       if (recFields.length === 0) return null;
-      return { recordId: lr.pId, recordNumber: lr.pNum, flowKey: fk, fields: recFields, createdAt: lr.pCreated };
+      return { recordId: lr.pId, recordNumber: lr.pNum, flowKey: fk, fields: recFields, createdAt: lr.pCreated, isActive: lr.pActive };
     };
 
     try {
       if (context === "policy") {
-        // Default: find accounting records that reference this policy's number
+        // Find accounting records that reference this policy by ID or number
         const [policyInfo] = await db
           .select({ policyNumber: policies.policyNumber })
           .from(policies)
@@ -780,21 +780,33 @@ export async function GET(request: Request, ctx: Ctx) {
         if (policyInfo?.policyNumber) {
           const pn = policyInfo.policyNumber;
           const linkedRows = await db
-            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
+            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, pActive: policies.isActive, cExtra: cars.extraAttributes })
             .from(policies)
             .leftJoin(cars, eq(cars.policyId, policies.id))
             .where(and(
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') IS NOT NULL`,
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != ''`,
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'policyset'`,
-              sql`(${cars.extraAttributes})::text LIKE ${'%' + pn + '%'}`,
+              sql`(
+                (${cars.extraAttributes})::text LIKE ${'%' + pn + '%'}
+                OR (((${cars.extraAttributes})::jsonb ->> 'linkedPolicyId')::int = ${policyId})
+              )`,
             ))
             .orderBy(desc(policies.createdAt))
             .limit(50);
 
+          const seen = new Set<number>();
           for (const lr of linkedRows) {
+            if (seen.has(lr.pId)) continue;
+            seen.add(lr.pId);
             const rec = extractRecordFields(lr);
-            if (rec) accountingRecords.push(rec);
+            if (rec) {
+              const extra = (lr.cExtra ?? {}) as Record<string, unknown>;
+              if (!rec.linkedPolicyNumber) {
+                rec.linkedPolicyNumber = (extra.linkedPolicyNumber as string) ?? pn;
+              }
+              accountingRecords.push(rec);
+            }
           }
         }
       } else if (context === "collaborator" || context === "insurer") {
@@ -803,7 +815,7 @@ export async function GET(request: Request, ctx: Ctx) {
         if (entityName) {
           const escapedName = entityName.replace(/[%_]/g, "\\$&");
           const linkedRows = await db
-            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
+            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, pActive: policies.isActive, cExtra: cars.extraAttributes })
             .from(policies)
             .leftJoin(cars, eq(cars.policyId, policies.id))
             .where(and(
@@ -839,7 +851,7 @@ export async function GET(request: Request, ctx: Ctx) {
                 }
                 if (linkedPolNum) break;
               }
-              rec.linkedPolicyNumber = linkedPolNum;
+              rec.linkedPolicyNumber = linkedPolNum ?? (extra.linkedPolicyNumber as string) ?? undefined;
               accountingRecords.push(rec);
             }
           }
@@ -965,22 +977,27 @@ export async function GET(request: Request, ctx: Ctx) {
 
           // Also find linked accounting flow records for this policy
           const linkedRows = await db
-            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
+            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, pActive: policies.isActive, cExtra: cars.extraAttributes })
             .from(policies)
             .leftJoin(cars, eq(cars.policyId, policies.id))
             .where(and(
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') IS NOT NULL`,
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != ''`,
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'policyset'`,
-              sql`(${cars.extraAttributes})::text LIKE ${'%' + cp.policyNumber + '%'}`,
+              sql`(
+                (${cars.extraAttributes})::text LIKE ${'%' + cp.policyNumber + '%'}
+                OR (((${cars.extraAttributes})::jsonb ->> 'linkedPolicyId')::int = ${cp.policyId})
+              )`,
             ))
             .orderBy(desc(policies.createdAt))
             .limit(20);
 
           for (const lr of linkedRows) {
+            if (accountingRecords.some((r) => r.recordId === lr.pId)) continue;
             const rec = extractRecordFields(lr);
             if (rec) {
-              rec.linkedPolicyNumber = cp.policyNumber;
+              const extra = (lr.cExtra ?? {}) as Record<string, unknown>;
+              rec.linkedPolicyNumber = (extra.linkedPolicyNumber as string) ?? cp.policyNumber;
               accountingRecords.push(rec);
             }
           }
@@ -990,22 +1007,27 @@ export async function GET(request: Request, ctx: Ctx) {
         const agentPolicies = await findAgentPolicies(policyId);
         for (const ap of agentPolicies) {
           const linkedRows = await db
-            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, cExtra: cars.extraAttributes })
+            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, pActive: policies.isActive, cExtra: cars.extraAttributes })
             .from(policies)
             .leftJoin(cars, eq(cars.policyId, policies.id))
             .where(and(
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') IS NOT NULL`,
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != ''`,
               sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'policyset'`,
-              sql`(${cars.extraAttributes})::text LIKE ${'%' + ap.policyNumber + '%'}`,
+              sql`(
+                (${cars.extraAttributes})::text LIKE ${'%' + ap.policyNumber + '%'}
+                OR (((${cars.extraAttributes})::jsonb ->> 'linkedPolicyId')::int = ${ap.policyId})
+              )`,
             ))
             .orderBy(desc(policies.createdAt))
             .limit(20);
 
           for (const lr of linkedRows) {
+            if (accountingRecords.some((r) => r.recordId === lr.pId)) continue;
             const rec = extractRecordFields(lr);
             if (rec) {
-              rec.linkedPolicyNumber = ap.policyNumber;
+              const extra = (lr.cExtra ?? {}) as Record<string, unknown>;
+              rec.linkedPolicyNumber = (extra.linkedPolicyNumber as string) ?? ap.policyNumber;
               accountingRecords.push(rec);
             }
           }

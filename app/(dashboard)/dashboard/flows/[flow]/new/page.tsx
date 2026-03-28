@@ -58,6 +58,7 @@ type StepRow = {
       category?: string | string[];
       field?: string;
       fieldValues?: string[];
+      requiresSelectedRecord?: boolean;
     }[];
     isFinal?: boolean;
     wizardStep?: number;
@@ -325,6 +326,9 @@ export default function FlowNewPage() {
   // Address Tool state
   const [addressFieldMap, setAddressFieldMap] = React.useState<AddressFieldMap>({});
   const [areaOptions, setAreaOptions] = React.useState<{ label?: string; value?: string }[]>([]);
+
+  // Track selected record's package keys for non-embedded endorsement flow
+  const selectedRecordPkgsRef = React.useRef<Set<string> | null>(null);
 
   // Auto-scroll state for endorsement workflow
   const pendingScrollGroupRef = React.useRef<string | null>(null);
@@ -853,6 +857,8 @@ export default function FlowNewPage() {
       const extra = (detail?.extraAttributes ?? {}) as Record<string, unknown>;
       fillFormFromRecord(form, extra);
       loadedSnapshotRef.current = JSON.stringify(form.getValues());
+      const pkgsSnapshot = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
+      selectedRecordPkgsRef.current = new Set(Object.keys(pkgsSnapshot));
       setSelectedRecordId(detail.recordId ?? detail.policyId ?? policyId);
       const stepGroup = (() => {
         const sorted2 = [...steps].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
@@ -1040,10 +1046,14 @@ export default function FlowNewPage() {
         category?: string | string[];
         field?: string;
         fieldValues?: string[];
+        requiresSelectedRecord?: boolean;
       }[],
     ): boolean => {
       if (!rules || rules.length === 0) return true;
       return rules.every((rule) => {
+        if (rule.requiresSelectedRecord) {
+          return !!selectedRecordId;
+        }
         if (rule.field && rule.fieldValues) {
           const val = String(wizardFormValues[rule.field] ?? "");
           return rule.fieldValues.includes(val);
@@ -1058,7 +1068,7 @@ export default function FlowNewPage() {
         return allowed.includes(current);
       });
     },
-    [wizardFormValues],
+    [wizardFormValues, selectedRecordId],
   );
 
   const sorted = React.useMemo(
@@ -1080,7 +1090,7 @@ export default function FlowNewPage() {
       let n = Number(s.meta?.wizardStep ?? 0);
       if (!Number.isFinite(n) || n <= 0) n = ++auto;
 
-      const rules = s.meta?.showWhen as { package: string; category?: string | string[] }[] | undefined;
+      const rules = s.meta?.showWhen as { package: string; category?: string | string[]; requiresSelectedRecord?: boolean }[] | undefined;
       const pass = evaluateStepShowWhen(rules);
 
       if (pass) {
@@ -1089,6 +1099,7 @@ export default function FlowNewPage() {
         if (!nums.includes(n)) nums.push(n);
       } else if (rules && rules.length > 0) {
         const reasons = rules.map((r) => {
+          if (r.requiresSelectedRecord) return "requires selected record";
           const pkgLabel = pkgOptions.find((p) => p.value === r.package)?.label ?? r.package;
           const cats = Array.isArray(r.category) ? r.category : r.category ? [r.category] : [];
           return `${pkgLabel} = ${cats.join(" or ")}`;
@@ -1524,6 +1535,8 @@ export default function FlowNewPage() {
       let resultPolicyId: number | null = null;
 
       // Determine if this is an endorsement-style flow (recordPickerFlow from another flow)
+      // Premium packages are always treated as own-flow so endorsements get separate premium records
+      const PREMIUM_PKG_KEYS = new Set(["premiumRecord", "accounting"]);
       let recordPickerFlowValue: string | null = null;
       const ownFlowPkgs = new Set<string>();
       const embeddedPkgs = new Set<string>();
@@ -1534,8 +1547,8 @@ export default function FlowNewPage() {
           const pkgs = Array.isArray(row.meta?.packages) ? (row.meta!.packages as string[]) : [];
           const isEmbedded = !!row.meta?._sourceFlow;
           for (const p of pkgs) {
-            if (isEmbedded) embeddedPkgs.add(p);
-            else ownFlowPkgs.add(p);
+            if (PREMIUM_PKG_KEYS.has(p) || !isEmbedded) ownFlowPkgs.add(p);
+            else embeddedPkgs.add(p);
           }
         }
       }
@@ -1547,7 +1560,8 @@ export default function FlowNewPage() {
 
       const effectiveRecordId = selectedRecordId;
 
-      const isEndorsement = !!recordPickerFlowValue && !!effectiveRecordId && embeddedPkgs.size > 0;
+      // Endorsement: cross-flow record picker + selected record (works with or without embedding)
+      const isEndorsement = !!recordPickerFlowValue && !!effectiveRecordId;
 
       console.log("[doSubmit endorsement debug]", {
         isEndorsement,
@@ -1556,17 +1570,34 @@ export default function FlowNewPage() {
         effectiveRecordId,
         ownFlowPkgs: [...ownFlowPkgs],
         embeddedPkgs: [...embeddedPkgs],
+        selectedRecordPkgs: selectedRecordPkgsRef.current ? [...selectedRecordPkgsRef.current] : null,
         allPackageKeys: Object.keys(packagesPayload),
         stepsWithSourceFlow: steps.filter((s) => !!s.meta?._sourceFlow).map((s) => ({ label: s.label, sourceFlow: s.meta?._sourceFlow, pkgs: s.meta?.packages })),
       });
 
       if (isEndorsement && effectiveRecordId) {
-        // Endorsement: POST order type record + PATCH original policy
+        // Endorsement: POST endorsement record + PATCH original policy with changes
         const orderTypePkgs: typeof packagesPayload = {};
         const policyPkgs: typeof packagesPayload = {};
-        for (const [pkg, data] of Object.entries(packagesPayload)) {
-          if (embeddedPkgs.has(pkg)) policyPkgs[pkg] = data;
-          else orderTypePkgs[pkg] = data;
+
+        if (embeddedPkgs.size > 0) {
+          // Embedded flow mode: use embedded vs own-flow split
+          for (const [pkg, data] of Object.entries(packagesPayload)) {
+            if (embeddedPkgs.has(pkg)) policyPkgs[pkg] = data;
+            else orderTypePkgs[pkg] = data;
+          }
+        } else {
+          // Non-embedded mode: use selected record's packages to determine policy vs endorsement
+          const recordPkgs = selectedRecordPkgsRef.current;
+          for (const [pkg, data] of Object.entries(packagesPayload)) {
+            if (PREMIUM_PKG_KEYS.has(pkg)) {
+              orderTypePkgs[pkg] = data;
+            } else if (recordPkgs?.has(pkg)) {
+              policyPkgs[pkg] = data;
+            } else {
+              orderTypePkgs[pkg] = data;
+            }
+          }
         }
 
         console.log("[doSubmit split]", {
@@ -1575,14 +1606,15 @@ export default function FlowNewPage() {
         });
 
         // Compute endorsement changes (old → new) for policy fields
+        const policyPkgKeys = new Set(Object.keys(policyPkgs));
         const endorsementChanges: { field: string; from: unknown; to: unknown }[] = [];
         if (loadedSnapshotRef.current) {
           const oldValues = JSON.parse(loadedSnapshotRef.current) as Record<string, unknown>;
           const currentValues = form.getValues() as Record<string, unknown>;
           for (const key of Object.keys(currentValues)) {
             if (key.startsWith("_") || key.endsWith("__category") || key.includes("___linked")) continue;
-            const isEmbeddedField = [...embeddedPkgs].some((p) => key.startsWith(`${p}__`));
-            if (!isEmbeddedField) continue;
+            const isPolicyField = [...policyPkgKeys].some((p) => key.startsWith(`${p}__`));
+            if (!isPolicyField) continue;
             const oldVal = oldValues[key];
             const newVal = currentValues[key];
             const isEmpty = (v: unknown) => v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
@@ -1709,7 +1741,6 @@ export default function FlowNewPage() {
     }
 
     // Endorsement-style flow: always POST new + PATCH original (no confirm dialog)
-    const hasEmbedded = steps.some((s) => !!s.meta?._sourceFlow);
     const hasCrossFlowPicker = (() => {
       for (const stepRows of Object.values(groups)) {
         for (const row of stepRows) {
@@ -1718,11 +1749,11 @@ export default function FlowNewPage() {
       }
       return !!selectedRecordFlowRef.current;
     })();
-    if (hasEmbedded && hasCrossFlowPicker && !selectedRecordId) {
+    if (hasCrossFlowPicker && !selectedRecordId) {
       toast.error("Please select an existing policy to endorse first.");
       return;
     }
-    if (selectedRecordId && hasEmbedded) {
+    if (selectedRecordId && hasCrossFlowPicker) {
       void doSubmit(false);
       return;
     }
@@ -1831,7 +1862,7 @@ export default function FlowNewPage() {
         : [];
       const pkgShowWhen = (row.meta?.packageShowWhen ?? {}) as Record<
         string,
-        { package: string; category: string | string[] }[]
+        { package: string; category: string | string[]; field?: string; fieldValues?: string[] }[]
       >;
       const catShowWhen = (row.meta?.categoryShowWhen ?? {}) as Record<string, unknown[]>;
       const isSelected = selectedRow ? row === selectedRow : row === currentGroup[0];
@@ -1846,6 +1877,11 @@ export default function FlowNewPage() {
           const rules = pkgShowWhen[p];
           if (rules && rules.length > 0) {
             const pass = rules.every((rule) => {
+              if (rule.field && rule.fieldValues) {
+                const fieldKey = rule.package ? `${rule.package}__${rule.field}` : rule.field;
+                const val = String(wizardFormValues[fieldKey] ?? "");
+                return rule.fieldValues.includes(val);
+              }
               const catKey = `${rule.package}__category`;
               const currentVal = String(wizardFormValues[catKey] ?? "");
               if (!currentVal) return false;
@@ -1920,6 +1956,7 @@ export default function FlowNewPage() {
                   className="underline text-xs"
                   onClick={() => {
                     setSelectedRecordId(null);
+                    selectedRecordPkgsRef.current = null;
                     setRecordPickerOpen(true);
                   }}
                 >
@@ -1930,6 +1967,7 @@ export default function FlowNewPage() {
                   className="underline text-xs text-red-600 dark:text-red-400"
                   onClick={() => {
                     setSelectedRecordId(null);
+                    selectedRecordPkgsRef.current = null;
                     const vals = form.getValues() as Record<string, unknown>;
                     for (const k of Object.keys(vals)) {
                       const lower = k.toLowerCase();
