@@ -17,7 +17,7 @@ import {
   Plus, Trash2, Save, Crosshair, Copy,
   FolderPlus, Pencil, Check, X,
   FileText, ImagePlus, Eye, EyeOff, Search, Loader2,
-  Type, Square,
+  Type, Square, Settings2,
 } from "lucide-react";
 import type {
   PdfTemplateRow, PdfTemplateMeta, PdfFieldMapping, PdfTemplateSection,
@@ -277,6 +277,52 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const [pendingImageLabel, setPendingImageLabel] = React.useState("");
   const [pendingImageUploading, setPendingImageUploading] = React.useState(false);
   const imageInputRef = React.useRef<HTMLInputElement>(null);
+
+  const [showSettings, setShowSettings] = React.useState(false);
+  const [settingsFlows, setSettingsFlows] = React.useState<string[]>(meta.flows ?? []);
+  const [settingsShowWhenStatus, setSettingsShowWhenStatus] = React.useState<string[]>(meta.showWhenStatus ?? []);
+  const [settingsInsurerIds, setSettingsInsurerIds] = React.useState<number[]>(meta.insurerPolicyIds ?? []);
+  const [settingsDesc, setSettingsDesc] = React.useState(meta.description ?? "");
+  const [settingsSaving, setSettingsSaving] = React.useState(false);
+
+  const [availableFlows, setAvailableFlows] = React.useState<{ label: string; value: string }[]>([]);
+  const [availableStatuses, setAvailableStatuses] = React.useState<{ label: string; value: string }[]>([]);
+  const [availableOrgs, setAvailableOrgs] = React.useState<{ id: number; name: string }[]>([]);
+
+  React.useEffect(() => {
+    if (!showSettings) return;
+    Promise.all([
+      fetch("/api/form-options?groupKey=flows", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).catch(() => []),
+      fetch("/api/form-options?groupKey=policy_statuses", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).catch(() => []),
+      fetch("/api/admin/organisations", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).catch(() => []),
+    ]).then(([flowsData, statusData, orgData]) => {
+      setAvailableFlows(Array.isArray(flowsData) ? flowsData.map((f: any) => ({ label: f.label, value: f.value })) : []);
+      setAvailableStatuses(Array.isArray(statusData) ? statusData.map((s: any) => ({ label: s.label, value: s.value })) : []);
+      setAvailableOrgs(Array.isArray(orgData) ? orgData : []);
+    });
+  }, [showSettings]);
+
+  async function handleSaveSettings() {
+    setSettingsSaving(true);
+    try {
+      const res = await fetch(`/api/pdf-templates/${template.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          flows: settingsFlows,
+          showWhenStatus: settingsShowWhenStatus,
+          insurerPolicyIds: settingsInsurerIds,
+          description: settingsDesc,
+        }),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      toast.success("Settings saved");
+      setShowSettings(false);
+    } catch {
+      toast.error("Failed to save settings");
+    }
+    setSettingsSaving(false);
+  }
 
   const savedRef = React.useRef({ fields: meta.fields ?? [], sections: meta.sections ?? [], images: meta.images ?? [], drawings: meta.drawings ?? [], pages: meta.pages ?? [] });
   const isDirty = JSON.stringify(fields) !== JSON.stringify(savedRef.current.fields)
@@ -1279,14 +1325,49 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
 
   return (
     <div className="space-y-3">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="ghost" onClick={onClose} className="gap-1">
+      {/* Toolbar row 1: navigation + name + settings/save */}
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="ghost" onClick={onClose} className="gap-1 shrink-0">
           <ChevronLeft className="h-3.5 w-3.5" /> Back
         </Button>
         <div className="flex-1 min-w-0">
-          <span className="text-sm font-medium truncate">{template.label}</span>
+          <span className="text-sm font-medium block truncate">{template.label}</span>
         </div>
+        {previewPolicyId ? (
+          <div className="flex items-center gap-1 shrink-0">
+            <Button size="sm" variant="secondary" onClick={() => resolvePreview(previewPolicyId)} className="gap-1.5" disabled={previewLoading}>
+              {previewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
+              <span className="hidden sm:inline text-xs font-mono">{previewPolicyNumber}</span>
+            </Button>
+            <Button size="sm" variant="ghost" onClick={unlinkPolicy} className="h-7 w-7 p-0" title="Unlink preview policy">
+              <EyeOff className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ) : (
+          <Button size="sm" variant="ghost" onClick={() => setShowPolicyPicker(true)} className="gap-1.5 shrink-0">
+            <Eye className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Preview Data</span>
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" onClick={() => setShowSettings(true)} className="gap-1.5 shrink-0" title="Template Settings">
+          <Settings2 className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Settings</span>
+        </Button>
+        <Button
+          size="sm"
+          variant={isDirty ? "default" : "outline"}
+          onClick={handleSave}
+          disabled={saving}
+          className="gap-1.5 shrink-0"
+        >
+          <Save className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">{saving ? "Saving..." : isDirty ? "Save *" : "Save"}</span>
+          {isDirty && <span className="sm:hidden w-1.5 h-1.5 rounded-full bg-white" />}
+        </Button>
+      </div>
+
+      {/* Toolbar row 2: editing actions */}
+      <div className="flex flex-wrap items-center gap-1.5">
         <Button size="sm" variant="outline" onClick={addFieldAtCenter} className="gap-1.5">
           <Plus className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Add Field</span>
@@ -1317,34 +1398,6 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
         <Button size="sm" variant="ghost" onClick={addBlankPage} className="gap-1.5">
           <FileText className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Blank Page</span>
-        </Button>
-        <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-700 hidden sm:block" />
-        {previewPolicyId ? (
-          <div className="flex items-center gap-1">
-            <Button size="sm" variant="secondary" onClick={() => resolvePreview(previewPolicyId)} className="gap-1.5" disabled={previewLoading}>
-              {previewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
-              <span className="hidden sm:inline text-xs font-mono">{previewPolicyNumber}</span>
-            </Button>
-            <Button size="sm" variant="ghost" onClick={unlinkPolicy} className="h-7 w-7 p-0" title="Unlink preview policy">
-              <EyeOff className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        ) : (
-          <Button size="sm" variant="ghost" onClick={() => setShowPolicyPicker(true)} className="gap-1.5">
-            <Eye className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Preview Data</span>
-          </Button>
-        )}
-        <Button
-          size="sm"
-          variant={isDirty ? "default" : "outline"}
-          onClick={handleSave}
-          disabled={saving}
-          className="gap-1.5"
-        >
-          <Save className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{saving ? "Saving..." : isDirty ? "Save *" : "Save"}</span>
-          {isDirty && <span className="sm:hidden w-1.5 h-1.5 rounded-full bg-white" />}
         </Button>
       </div>
 
@@ -2607,6 +2660,124 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
             </div>
           </div>
         </SlideDrawer>
+      )}
+
+      {/* Template Settings drawer */}
+      {showSettings && (
+      <SlideDrawer
+        open
+        onClose={() => setShowSettings(false)}
+        title="Template Settings"
+        side="right"
+        widthClass="w-[340px] sm:w-[400px]"
+      >
+        <div className="overflow-y-auto p-3 space-y-4 h-[calc(100%-49px)]">
+          <div>
+            <Label className="text-xs">Description</Label>
+            <Input
+              value={settingsDesc}
+              onChange={(e) => setSettingsDesc(e.target.value)}
+              className="mt-1 h-8 text-xs"
+              placeholder="Brief description of this template"
+            />
+          </div>
+
+          {/* Restrict to Flows */}
+          <div>
+            <Label className="text-xs">
+              Restrict to Flows <span className="text-neutral-400">(optional)</span>
+            </Label>
+            <div className="mt-1.5 space-y-1">
+              {availableFlows.length === 0 && (
+                <span className="text-[11px] text-neutral-400">No flows defined</span>
+              )}
+              {availableFlows.map((f) => (
+                <label key={f.value} className="flex items-center gap-2 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settingsFlows.includes(f.value)}
+                    onChange={(e) =>
+                      setSettingsFlows((prev) =>
+                        e.target.checked ? [...prev, f.value] : prev.filter((v) => v !== f.value),
+                      )
+                    }
+                    className="h-3.5 w-3.5"
+                  />
+                  {f.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Show When Status */}
+          {availableStatuses.length > 0 && (
+            <div>
+              <Label className="text-xs">
+                Show When Status <span className="text-neutral-400">(empty = always)</span>
+              </Label>
+              <div className="mt-1.5 space-y-1">
+                {availableStatuses.map((s) => (
+                  <label key={s.value} className="flex items-center gap-2 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={settingsShowWhenStatus.includes(s.value)}
+                      onChange={(e) =>
+                        setSettingsShowWhenStatus((prev) =>
+                          e.target.checked ? [...prev, s.value] : prev.filter((v) => v !== s.value),
+                        )
+                      }
+                      className="h-3.5 w-3.5"
+                    />
+                    {s.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Insurance Company */}
+          <div>
+            <Label className="text-xs">
+              Insurance Company <span className="text-neutral-400">(empty = all companies)</span>
+            </Label>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5 mb-1.5">
+              Restrict this template to policies linked to specific insurance companies.
+            </p>
+            <div className="space-y-1">
+              {availableOrgs.length === 0 && (
+                <span className="text-[11px] text-neutral-400">No insurance companies found</span>
+              )}
+              {availableOrgs.map((ins) => (
+                <label key={ins.id} className="flex items-center gap-2 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settingsInsurerIds.includes(ins.id)}
+                    onChange={(e) =>
+                      setSettingsInsurerIds((prev) =>
+                        e.target.checked ? [...prev, ins.id] : prev.filter((id) => id !== ins.id),
+                      )
+                    }
+                    className="h-3.5 w-3.5"
+                  />
+                  {ins.name}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3 pb-1">
+            <Button
+              size="sm"
+              className="w-full gap-1.5"
+              onClick={handleSaveSettings}
+              disabled={settingsSaving}
+            >
+              <Save className="h-3.5 w-3.5" />
+              {settingsSaving ? "Saving..." : "Save Settings"}
+            </Button>
+          </div>
+        </div>
+      </SlideDrawer>
       )}
     </div>
   );

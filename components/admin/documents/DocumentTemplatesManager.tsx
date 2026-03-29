@@ -105,6 +105,7 @@ export default function DocumentTemplatesManager() {
     { label: string; value: string }[]
   >([]);
   const [statusOptions, setStatusOptions] = React.useState<{ label: string; value: string }[]>([]);
+  const [availableInsurers, setAvailableInsurers] = React.useState<{ id: number; name: string }[]>([]);
   const [pkgFieldsCache, setPkgFieldsCache] = React.useState<Record<string, { key: string; label: string }[]>>({});
 
   const loadPkgFields = React.useCallback(async (pkg: string) => {
@@ -153,7 +154,7 @@ export default function DocumentTemplatesManager() {
   }
 
   async function loadLookups() {
-    const [pkgRes, flowRes, statusRes] = await Promise.all([
+    const [pkgRes, flowRes, statusRes, orgRes] = await Promise.all([
       fetch("/api/form-options?groupKey=packages", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
@@ -161,6 +162,9 @@ export default function DocumentTemplatesManager() {
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
       fetch("/api/form-options?groupKey=policy_statuses", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+      fetch("/api/admin/organisations", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
     ]);
@@ -178,6 +182,9 @@ export default function DocumentTemplatesManager() {
     );
     setStatusOptions(
       Array.isArray(statusRes) ? (statusRes as { label: string; value: string }[]).map((s) => ({ label: s.label, value: s.value })) : [],
+    );
+    setAvailableInsurers(
+      Array.isArray(orgRes) ? (orgRes as { id: number; name: string }[]) : [],
     );
   }
 
@@ -487,6 +494,38 @@ export default function DocumentTemplatesManager() {
                       }
                     />
                     {s.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Insurance Company restriction */}
+          {availableInsurers.length > 0 && (
+            <div className="grid gap-1">
+              <Label>
+                Insurance Company{" "}
+                <span className="text-xs text-neutral-400">(optional - empty = all companies)</span>
+              </Label>
+              <p className="text-xs text-neutral-400 mb-1">
+                Restrict this template to policies linked to specific insurance companies.
+              </p>
+              <div className="flex flex-wrap gap-3">
+                {availableInsurers.map((ins) => (
+                  <label key={ins.id} className="flex items-center gap-1.5 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={meta.insurerPolicyIds?.includes(ins.id) ?? false}
+                      onChange={(e) =>
+                        setMeta((m) => ({
+                          ...m,
+                          insurerPolicyIds: e.target.checked
+                            ? [...(m.insurerPolicyIds ?? []), ins.id]
+                            : (m.insurerPolicyIds ?? []).filter((id) => id !== ins.id),
+                        }))
+                      }
+                    />
+                    {ins.name}
                   </label>
                 ))}
               </div>

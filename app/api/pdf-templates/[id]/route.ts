@@ -98,6 +98,12 @@ export async function PATCH(
   if (Array.isArray(body.flows)) {
     newMeta.flows = body.flows;
   }
+  if (Array.isArray(body.showWhenStatus)) {
+    newMeta.showWhenStatus = body.showWhenStatus;
+  }
+  if (Array.isArray(body.insurerPolicyIds)) {
+    newMeta.insurerPolicyIds = body.insurerPolicyIds.map(Number).filter((n: number) => Number.isFinite(n) && n > 0);
+  }
   if (typeof body.description === "string") {
     newMeta.description = body.description;
   }

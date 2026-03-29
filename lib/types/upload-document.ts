@@ -10,6 +10,8 @@ export type UploadDocumentTypeMeta = {
   flows?: string[];
   /** Only show this upload requirement when policy status matches (empty = always) */
   showWhenStatus?: string[];
+  /** Restrict to policies linked to specific insurance company records (empty = all) */
+  insurerPolicyIds?: number[];
 };
 
 export type UploadDocumentTypeRow = {

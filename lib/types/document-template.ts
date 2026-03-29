@@ -21,6 +21,8 @@ export type DocumentTemplateMeta = {
   flows?: string[];
   /** Only show this document when policy status matches (empty = always) */
   showWhenStatus?: string[];
+  /** Restrict to specific insurance companies by their policy record IDs (empty = all) */
+  insurerPolicyIds?: number[];
   header: {
     title: string;
     subtitle?: string;

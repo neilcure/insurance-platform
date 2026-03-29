@@ -98,6 +98,8 @@ export type PdfTemplateMeta = {
   flows?: string[];
   /** Only show this template when policy status matches (empty = always) */
   showWhenStatus?: string[];
+  /** Restrict to specific insurance companies by their policy record IDs (empty = all) */
+  insurerPolicyIds?: number[];
   description?: string;
 };
 

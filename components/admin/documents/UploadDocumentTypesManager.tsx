@@ -57,6 +57,7 @@ export default function UploadDocumentTypesManager() {
 
   const [flows, setFlows] = React.useState<{ label: string; value: string }[]>([]);
   const [statusOptions, setStatusOptions] = React.useState<{ label: string; value: string }[]>([]);
+  const [availableInsurers, setAvailableInsurers] = React.useState<{ id: number; name: string }[]>([]);
 
   async function load() {
     setLoading(true);
@@ -85,6 +86,12 @@ export default function UploadDocumentTypesManager() {
       .then((r) => (r.ok ? r.json() : []))
       .then((r: { label: string; value: string }[]) =>
         setStatusOptions(Array.isArray(r) ? r.map((s) => ({ label: s.label, value: s.value })) : []),
+      )
+      .catch(() => {});
+    fetch("/api/admin/organisations", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: { id: number; name: string }[]) =>
+        setAvailableInsurers(Array.isArray(data) ? data : []),
       )
       .catch(() => {});
   }, []);
@@ -393,17 +400,48 @@ export default function UploadDocumentTypesManager() {
                     <label key={s.value} className="flex items-center gap-1.5 text-xs">
                       <input
                         type="checkbox"
-                        checked={(meta as any).showWhenStatus?.includes(s.value) ?? false}
+                        checked={meta.showWhenStatus?.includes(s.value) ?? false}
                         onChange={(e) =>
                           setMeta((m) => ({
                             ...m,
                             showWhenStatus: e.target.checked
-                              ? [...((m as any).showWhenStatus ?? []), s.value]
-                              : ((m as any).showWhenStatus ?? []).filter((v: string) => v !== s.value),
+                              ? [...(m.showWhenStatus ?? []), s.value]
+                              : (m.showWhenStatus ?? []).filter((v) => v !== s.value),
                           }))
                         }
                       />
                       {s.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {availableInsurers.length > 0 && (
+              <div className="grid gap-1">
+                <Label>
+                  Insurance Company{" "}
+                  <span className="text-xs text-neutral-400">(optional - empty = all companies)</span>
+                </Label>
+                <p className="text-xs text-neutral-400 mb-1">
+                  Restrict this upload requirement to policies linked to specific insurance companies.
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  {availableInsurers.map((ins) => (
+                    <label key={ins.id} className="flex items-center gap-1.5 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={meta.insurerPolicyIds?.includes(ins.id) ?? false}
+                        onChange={(e) =>
+                          setMeta((m) => ({
+                            ...m,
+                            insurerPolicyIds: e.target.checked
+                              ? [...(m.insurerPolicyIds ?? []), ins.id]
+                              : (m.insurerPolicyIds ?? []).filter((id) => id !== ins.id),
+                          }))
+                        }
+                      />
+                      {ins.name}
                     </label>
                   ))}
                 </div>

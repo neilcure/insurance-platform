@@ -32,10 +32,27 @@ export function UploadDocumentsTab({
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshKey, setRefreshKey] = React.useState(0);
+  const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
 
   React.useEffect(() => {
+    fetch(`/api/policies/${policyId}/linked-insurers`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { insurerPolicyIds: [] }))
+      .then((data: { insurerPolicyIds?: number[] }) => {
+        setPolicyInsurerIds(data.insurerPolicyIds ?? []);
+      })
+      .catch(() => setPolicyInsurerIds([]));
+  }, [policyId]);
+
+  React.useEffect(() => {
+    if (policyInsurerIds === null) return;
     let cancelled = false;
     setLoading(true);
+
+    const matchingIds = [...new Set([policyId, ...policyInsurerIds])];
+    const matchesInsurer = (tplInsurerIds: number[] | undefined) => {
+      if (!tplInsurerIds || tplInsurerIds.length === 0) return true;
+      return matchingIds.some((pid) => tplInsurerIds.includes(pid));
+    };
 
     Promise.all([
       fetch(`/api/form-options?groupKey=upload_document_types&_t=${Date.now()}`, { cache: "no-store" })
@@ -48,11 +65,16 @@ export function UploadDocumentsTab({
       if (cancelled) return;
 
       const applicable = types.filter((t) => {
-        const flows = t.meta?.flows;
-        if (flows && flows.length > 0) {
-          if (!flowKey || !flows.includes(flowKey)) return false;
+        const hasInsurerRestriction = t.meta?.insurerPolicyIds && t.meta.insurerPolicyIds.length > 0;
+        if (!hasInsurerRestriction) {
+          const flows = t.meta?.flows;
+          if (flows && flows.length > 0) {
+            if (!flowKey || !flows.includes(flowKey)) return false;
+          }
+        } else {
+          if (!matchesInsurer(t.meta?.insurerPolicyIds)) return false;
         }
-        const sws = (t.meta as any)?.showWhenStatus as string[] | undefined;
+        const sws = t.meta?.showWhenStatus;
         if (sws && sws.length > 0) {
           const status = currentStatus || "active";
           if (!sws.includes(status)) return false;
@@ -96,7 +118,7 @@ export function UploadDocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [policyId, flowKey, currentStatus, refreshKey]);
+  }, [policyId, flowKey, currentStatus, refreshKey, policyInsurerIds]);
 
   function refresh() {
     setRefreshKey((k) => k + 1);

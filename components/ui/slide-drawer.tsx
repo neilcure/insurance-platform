@@ -51,16 +51,16 @@ export function SlideDrawer({
   const translateVisible = "translate-x-0";
 
   return (
-    <div className={`fixed inset-0 ${zClass} ${passthrough ? "pointer-events-none" : ""}`}>
+    <div className={`fixed inset-0 ${zClass} ${!open || passthrough ? "pointer-events-none" : ""}`}>
       <div
-        className={`${passthrough ? "pointer-events-auto" : ""} absolute inset-0 bg-black transition-opacity duration-300 ${
+        className={`${open ? "pointer-events-auto" : ""} absolute inset-0 bg-black transition-opacity duration-300 ${
           open ? "opacity-60" : "opacity-0"
         }`}
         onClick={onClose}
         aria-label={`Close ${title}`}
       />
       <aside
-        className={`${passthrough ? "pointer-events-auto" : ""} absolute ${posClass} h-full ${width} bg-neutral-100 dark:bg-neutral-950/40 dark:backdrop-blur-xl border-neutral-200 dark:border-neutral-800 shadow-xl transform transition-transform duration-300 ease-out will-change-transform overflow-visible ${
+        className={`${open ? "pointer-events-auto" : ""} absolute ${posClass} h-full ${width} bg-neutral-100 dark:bg-neutral-950/40 dark:backdrop-blur-xl border-neutral-200 dark:border-neutral-800 shadow-xl transform transition-transform duration-300 ease-out will-change-transform overflow-visible ${
           open ? translateVisible : translateHidden
         }`}
       >

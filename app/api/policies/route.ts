@@ -367,6 +367,23 @@ export async function POST(request: Request) {
           }
           return "UNKNOWN";
         })();
+        const extractLinkedPolicyIds = (raw: unknown): number[] => {
+          const ids = new Set<number>();
+          const scan = (obj: unknown) => {
+            if (!obj || typeof obj !== "object") return;
+            for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+              if (k.endsWith("___linkedPolicyId")) {
+                const n = Number(v);
+                if (Number.isFinite(n) && n > 0) ids.add(n);
+              }
+              if (v && typeof v === "object" && !Array.isArray(v)) scan(v);
+            }
+          };
+          scan(raw);
+          return [...ids];
+        };
+        const entityLinkedPolicyIds = extractLinkedPolicyIds(packages);
+
         const cleanPackages = (raw: unknown): unknown => {
           if (!raw || typeof raw !== "object") return raw;
           const out: Record<string, unknown> = {};
@@ -416,6 +433,7 @@ export async function POST(request: Request) {
           ...(linkedPolicyId ? { linkedPolicyId: Number(linkedPolicyId) } : {}),
           ...(linkedPolicyNumber ? { linkedPolicyNumber } : {}),
           ...(endorsementChanges ? { _endorsementChanges: endorsementChanges } : {}),
+          ...(entityLinkedPolicyIds.length > 0 ? { entityLinkedPolicyIds } : {}),
         } as Record<string, unknown>;
 
         // Normalize vehicle primitives for DB column types

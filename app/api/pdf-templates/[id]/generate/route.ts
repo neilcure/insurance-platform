@@ -41,9 +41,9 @@ export async function POST(
   }
 
   const meta = tplRow.meta as unknown as PdfTemplateMeta | null;
-  if (!meta?.filePath || (!meta.fields?.length && !meta.images?.length)) {
+  if (!meta?.filePath) {
     return NextResponse.json(
-      { error: "Template has no PDF or field/image mappings" },
+      { error: "Template has no PDF file" },
       { status: 400 },
     );
   }

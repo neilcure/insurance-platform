@@ -2,8 +2,6 @@
 
 import * as React from "react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
 import { ChevronRight } from "lucide-react";
 import type { PolicyDetail } from "@/lib/types/policy";
 
@@ -90,7 +88,7 @@ export function WorkflowTab({
   const sections = [
     { id: "documents", label: "Documents", show: true },
     { id: "uploads", label: "Required Uploads", show: true },
-    { id: "actions", label: "Workflow Actions", show: !!isAdmin },
+    { id: "actions", label: "Additional Actions", show: !!isAdmin },
   ].filter((s) => s.show);
 
   return (
@@ -132,34 +130,6 @@ export function WorkflowTab({
           </div>
         )}
       </div>
-
-      {/* Status timeline */}
-      {history.length > 0 && (
-        <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-          <div className="mb-2 text-xs font-medium text-neutral-500 dark:text-neutral-400">History</div>
-          <div className="space-y-1.5">
-            {history.map((entry, idx) => {
-              const def = allKnownStatuses.get(entry.status);
-              return (
-                <div key={idx} className="flex items-start justify-between gap-2 text-xs">
-                  <div>
-                    <Badge variant="outline" className="text-[10px]">
-                      {def?.label ?? entry.status}
-                    </Badge>
-                    {entry.note && (
-                      <div className="mt-0.5 text-neutral-500 dark:text-neutral-400">{entry.note}</div>
-                    )}
-                  </div>
-                  <div className="shrink-0 text-right text-neutral-400 dark:text-neutral-500">
-                    <div>{new Date(entry.changedAt).toLocaleDateString()}</div>
-                    {entry.changedBy && <div>{entry.changedBy}</div>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       {/* Collapsible sections */}
       {sections.map((sec) => (
@@ -207,6 +177,34 @@ export function WorkflowTab({
           )}
         </div>
       ))}
+
+      {/* Status history */}
+      {history.length > 0 && (
+        <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+          <div className="mb-2 text-xs font-medium text-neutral-500 dark:text-neutral-400">History</div>
+          <div className="space-y-1.5">
+            {history.map((entry, idx) => {
+              const def = allKnownStatuses.get(entry.status);
+              return (
+                <div key={idx} className="flex items-start justify-between gap-2 text-xs">
+                  <div>
+                    <Badge variant="outline" className="text-[10px]">
+                      {def?.label ?? entry.status}
+                    </Badge>
+                    {entry.note && (
+                      <div className="mt-0.5 text-neutral-500 dark:text-neutral-400">{entry.note}</div>
+                    )}
+                  </div>
+                  <div className="shrink-0 text-right text-neutral-400 dark:text-neutral-500">
+                    <div>{new Date(entry.changedAt).toLocaleDateString()}</div>
+                    {entry.changedBy && <div>{entry.changedBy}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

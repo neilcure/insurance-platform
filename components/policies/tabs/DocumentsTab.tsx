@@ -558,7 +558,7 @@ function PdfMergeButton({
         <button
           type="button"
           onClick={handleGenerate}
-          disabled={generating || !meta?.fields?.length}
+          disabled={generating || (!meta?.fields?.length && !meta?.pages?.length)}
           className="flex min-w-0 flex-1 items-center gap-3 text-left transition-colors hover:opacity-80 disabled:opacity-50"
         >
           <Stamp className="h-5 w-5 shrink-0 text-emerald-500 dark:text-emerald-400" />
@@ -1143,11 +1143,30 @@ export function DocumentsTab({
     }
   }, [htmlEmailTo, htmlEmailSubject, htmlEmailHtml, htmlEmailPlain, detail.policyId, selected, tracking, handleTrackingAction]);
 
+  const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
+
   React.useEffect(() => {
+    fetch(`/api/policies/${detail.policyId}/linked-insurers`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { insurerPolicyIds: [] }))
+      .then((data: { insurerPolicyIds?: number[] }) => {
+        setPolicyInsurerIds(data.insurerPolicyIds ?? []);
+      })
+      .catch(() => setPolicyInsurerIds([]));
+  }, [detail.policyId]);
+
+  React.useEffect(() => {
+    if (policyInsurerIds === null) return;
     let cancelled = false;
     setLoading(true);
 
     const status = currentStatus || "active";
+
+    const matchingIds = [...new Set([detail.policyId, ...policyInsurerIds])];
+
+    const matchesInsurer = (tplInsurerIds: number[] | undefined) => {
+      if (!tplInsurerIds || tplInsurerIds.length === 0) return true;
+      return matchingIds.some((pid) => tplInsurerIds.includes(pid));
+    };
 
     const loadHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : []))
@@ -1155,9 +1174,14 @@ export function DocumentsTab({
         if (cancelled) return;
         const applicable = rows.filter((r) => {
           if (!r.meta) return false;
-          const flows = r.meta.flows;
-          if (flows && flows.length > 0) {
-            if (!flowKey || !flows.includes(flowKey)) return false;
+          const hasInsurerRestriction = r.meta.insurerPolicyIds && r.meta.insurerPolicyIds.length > 0;
+          if (!hasInsurerRestriction) {
+            const flows = r.meta.flows;
+            if (flows && flows.length > 0) {
+              if (!flowKey || !flows.includes(flowKey)) return false;
+            }
+          } else {
+            if (!matchesInsurer(r.meta.insurerPolicyIds)) return false;
           }
           const sws = r.meta.showWhenStatus;
           if (sws && sws.length > 0 && !sws.includes(status)) return false;
@@ -1173,10 +1197,16 @@ export function DocumentsTab({
         if (cancelled) return;
         const applicable = rows.filter((r) => {
           const meta = r.meta as unknown as PdfTemplateMeta | null;
-          if (!meta?.fields?.length) return false;
-          const flows = meta.flows;
-          if (flows && flows.length > 0) {
-            if (!flowKey || !flows.includes(flowKey)) return false;
+          if (!meta) return false;
+          if (!meta.fields?.length && !meta.pages?.length) return false;
+          const hasInsurerRestriction = meta.insurerPolicyIds && meta.insurerPolicyIds.length > 0;
+          if (!hasInsurerRestriction) {
+            const flows = meta.flows;
+            if (flows && flows.length > 0) {
+              if (!flowKey || !flows.includes(flowKey)) return false;
+            }
+          } else {
+            if (!matchesInsurer(meta.insurerPolicyIds)) return false;
           }
           const sws = meta.showWhenStatus;
           if (sws && sws.length > 0 && !sws.includes(status)) return false;
@@ -1191,7 +1221,7 @@ export function DocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [flowKey, currentStatus]);
+  }, [flowKey, currentStatus, policyInsurerIds, detail.policyId]);
 
   if (loading) {
     return (
