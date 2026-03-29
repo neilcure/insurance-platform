@@ -48,6 +48,8 @@ export default function StepsManager({ flow }: { flow: string }) {
   const [packages, setPackages] = React.useState<{ label: string; value: string }[]>([]);
   const [flows, setFlows] = React.useState<{ label: string; value: string }[]>([]);
   const [categoriesByPkg, setCategoriesByPkg] = React.useState<Record<string, { label: string; value: string }[]>>({});
+  const [fieldsByPkg, setFieldsByPkg] = React.useState<Record<string, { key: string; label: string; options?: { label: string; value: string }[] }[]>>({});
+  const [pkgMappingOpen, setPkgMappingOpen] = React.useState(false);
   const [form, setForm] = React.useState<Partial<StepRow>>({
     label: "",
     value: "",
@@ -152,6 +154,21 @@ export default function StepsManager({ flow }: { flow: string }) {
     }
     if (packages.length > 0) void loadAllCats();
   }, [packages]);
+  const ensureFieldsLoaded = React.useCallback(async (pkg: string) => {
+    if (fieldsByPkg[pkg]) return;
+    try {
+      const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as { value: string; label: string; meta?: { inputType?: string; options?: { label: string; value: string }[] } }[];
+      const list = (Array.isArray(data) ? data : []).map((f) => ({
+        key: f.value,
+        label: f.label,
+        options: Array.isArray(f.meta?.options) ? f.meta!.options : undefined,
+      }));
+      setFieldsByPkg((prev) => ({ ...prev, [pkg]: list }));
+    } catch { /* ignore */ }
+  }, [fieldsByPkg]);
+
   function startCreate() {
     editSnapshot.current = null;
     setEditing(null);
@@ -264,6 +281,71 @@ export default function StepsManager({ flow }: { flow: string }) {
     const newMap = { ...currentMap, [pkg]: next };
     setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageCategories: newMap } as StepRow["meta"] }));
   }
+
+  const pkgMappingData = React.useMemo(() => {
+    const selectedPkgs = Array.isArray(form.meta?.packages) ? (form.meta!.packages as string[]) : [];
+    const psw = (form.meta?.packageShowWhen ?? {}) as Record<string, (ShowWhenRule & { field?: string; fieldValues?: string[] })[]>;
+    const fieldRules = Object.entries(psw).filter(([, rules]) => rules.some((r) => r.field));
+    if (fieldRules.length === 0) return null;
+    const firstRule = fieldRules[0][1].find((r) => r.field);
+    if (!firstRule?.field || !firstRule.package) return null;
+    const srcPkg = firstRule.package;
+    const srcField = firstRule.field;
+    const allSameField = fieldRules.every(([, rules]) => rules.every((r) => !r.field || (r.field === srcField && r.package === srcPkg)));
+    if (!allSameField) return null;
+    const pkgFields = fieldsByPkg[srcPkg];
+    if (!pkgFields) return { needsLoad: srcPkg } as const;
+    const fieldDef = pkgFields.find((f) => f.key === srcField);
+    if (!fieldDef?.options || fieldDef.options.length === 0) return null;
+    const options = fieldDef.options;
+    const mapping: Record<string, string[]> = {};
+    for (const opt of options) mapping[opt.value] = [];
+    for (const [pkg, rules] of Object.entries(psw)) {
+      for (const r of rules) {
+        if (r.field === srcField && r.package === srcPkg && r.fieldValues) {
+          for (const v of r.fieldValues) { if (mapping[v]) mapping[v].push(pkg); }
+        }
+      }
+    }
+    return { srcPkg, srcField, fieldLabel: fieldDef.label, options, mapping, selectedPkgs };
+  }, [form.meta?.packages, form.meta?.packageShowWhen, fieldsByPkg]);
+
+  React.useEffect(() => {
+    if (pkgMappingData && "needsLoad" in pkgMappingData && pkgMappingData.needsLoad) void ensureFieldsLoaded(pkgMappingData.needsLoad);
+  }, [pkgMappingData, ensureFieldsLoaded]);
+
+  const handleMappingToggle = React.useCallback((optValue: string, pkg: string, checked: boolean) => {
+    setForm((prev) => {
+      const selectedPkgs = Array.isArray(prev.meta?.packages) ? (prev.meta!.packages as string[]) : [];
+      const psw = { ...((prev.meta?.packageShowWhen ?? {}) as Record<string, (ShowWhenRule & { field?: string; fieldValues?: string[] })[]>) };
+      if (!pkgMappingData || "needsLoad" in pkgMappingData) return prev;
+      const { srcField, srcPkg } = pkgMappingData;
+      let newPkgs = selectedPkgs;
+      if (checked && !selectedPkgs.includes(pkg)) newPkgs = [...selectedPkgs, pkg];
+      if (checked) {
+        if (!psw[pkg]) psw[pkg] = [];
+        const existing = psw[pkg].find((r) => (r as any).field === srcField && r.package === srcPkg) as (ShowWhenRule & { field?: string; fieldValues?: string[] }) | undefined;
+        if (existing) {
+          const fv = existing.fieldValues ?? [];
+          if (!fv.includes(optValue)) existing.fieldValues = [...fv, optValue];
+        } else {
+          (psw[pkg] as any[]).push({ field: srcField, package: srcPkg, fieldValues: [optValue] });
+        }
+      } else if (psw[pkg]) {
+        for (const r of psw[pkg]) {
+          const ra = r as ShowWhenRule & { field?: string; fieldValues?: string[] };
+          if (ra.field === srcField && ra.package === srcPkg && ra.fieldValues) {
+            ra.fieldValues = ra.fieldValues.filter((v) => v !== optValue);
+          }
+        }
+        psw[pkg] = psw[pkg].filter((r) => {
+          const ra = r as ShowWhenRule & { field?: string; fieldValues?: string[] };
+          return !ra.field || (ra.fieldValues && ra.fieldValues.length > 0);
+        });
+      }
+      return { ...prev, meta: { ...(prev.meta ?? {}), packages: newPkgs, packageShowWhen: psw } as StepRow["meta"] };
+    });
+  }, [pkgMappingData]);
 
   async function save() {
     try {
@@ -644,6 +726,21 @@ export default function StepsManager({ flow }: { flow: string }) {
                 {packages.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No packages found. Create packages first.</p> : null}
               </div>
             </div>
+            {/* Endorsement-type → Package mapping — opens in a separate dialog */}
+            {pkgMappingData && !("needsLoad" in pkgMappingData) && (() => {
+              const { fieldLabel, options, mapping } = pkgMappingData;
+              const mappedCount = Object.values(mapping).filter((pkgs) => pkgs.length > 0).length;
+              return (
+                <div className="flex items-center gap-3">
+                  <Button type="button" variant="outline" size="sm" onClick={() => setPkgMappingOpen(true)}>
+                    Configure Package Visibility by {fieldLabel}
+                  </Button>
+                  <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                    {mappedCount}/{options.length} options mapped
+                  </span>
+                </div>
+              );
+            })()}
             {/* Categories per selected package */}
             {Array.isArray(form.meta?.packages) && (form.meta!.packages as string[]).length > 0 ? (
               <div className="grid gap-3">
@@ -905,33 +1002,94 @@ export default function StepsManager({ flow }: { flow: string }) {
                                   <div className="space-y-1">
                                     <div className="flex items-center gap-2">
                                       <span className="w-14 shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">Field</span>
-                                      <Input
-                                        className="h-7 flex-1 text-xs"
-                                        placeholder="field key (e.g. coverType)"
-                                        value={ruleAny.field ?? ""}
-                                        onChange={(e) => {
-                                          const map = { ...((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>) };
-                                          const arr = [...(map[pkg] ?? [])];
-                                          arr[rIdx] = { ...arr[rIdx], field: e.target.value } as any;
-                                          map[pkg] = arr;
-                                          setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageShowWhen: map } as StepRow["meta"] }));
-                                        }}
-                                      />
+                                      {(() => {
+                                        const rulePkg = rule.package || "";
+                                        const pkgFields = fieldsByPkg[rulePkg];
+                                        if (!pkgFields && rulePkg) void ensureFieldsLoaded(rulePkg);
+                                        return pkgFields && pkgFields.length > 0 ? (
+                                          <select
+                                            className="h-7 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                                            value={ruleAny.field ?? ""}
+                                            onChange={(e) => {
+                                              const map = { ...((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>) };
+                                              const arr = [...(map[pkg] ?? [])];
+                                              arr[rIdx] = { ...arr[rIdx], field: e.target.value, fieldValues: [] } as any;
+                                              map[pkg] = arr;
+                                              setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageShowWhen: map } as StepRow["meta"] }));
+                                            }}
+                                          >
+                                            <option value="">— Select field —</option>
+                                            {pkgFields.map((pf) => (
+                                              <option key={pf.key} value={pf.key}>{pf.label} ({pf.key})</option>
+                                            ))}
+                                          </select>
+                                        ) : (
+                                          <Input
+                                            className="h-7 flex-1 text-xs"
+                                            placeholder="field key (e.g. coverType)"
+                                            value={ruleAny.field ?? ""}
+                                            onChange={(e) => {
+                                              const map = { ...((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>) };
+                                              const arr = [...(map[pkg] ?? [])];
+                                              arr[rIdx] = { ...arr[rIdx], field: e.target.value } as any;
+                                              map[pkg] = arr;
+                                              setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageShowWhen: map } as StepRow["meta"] }));
+                                            }}
+                                          />
+                                        );
+                                      })()}
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                      <span className="w-14 shrink-0 text-[11px] text-neutral-500 dark:text-neutral-400">Values</span>
-                                      <Input
-                                        className="h-7 flex-1 text-xs"
-                                        placeholder="comma-separated values (e.g. tpo_with_od,comprehensive)"
-                                        value={(ruleAny.fieldValues ?? []).join(", ")}
-                                        onChange={(e) => {
-                                          const map = { ...((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>) };
-                                          const arr = [...(map[pkg] ?? [])];
-                                          arr[rIdx] = { ...arr[rIdx], fieldValues: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } as any;
-                                          map[pkg] = arr;
-                                          setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageShowWhen: map } as StepRow["meta"] }));
-                                        }}
-                                      />
+                                    <div className="flex items-start gap-2">
+                                      <span className="w-14 shrink-0 pt-1 text-[11px] text-neutral-500 dark:text-neutral-400">Values</span>
+                                      {(() => {
+                                        const rulePkg = rule.package || "";
+                                        const pkgFields = fieldsByPkg[rulePkg] ?? [];
+                                        const selectedField = pkgFields.find((pf) => pf.key === ruleAny.field);
+                                        const fieldOptions = selectedField?.options ?? [];
+                                        const selectedVals = ruleAny.fieldValues ?? [];
+                                        if (fieldOptions.length > 0) {
+                                          return (
+                                            <div className="flex flex-wrap gap-x-3 gap-y-1">
+                                              {fieldOptions.map((opt) => {
+                                                const checked = selectedVals.includes(opt.value);
+                                                return (
+                                                  <label key={opt.value} className="inline-flex items-center gap-1 text-xs">
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={checked}
+                                                      onChange={() => {
+                                                        const map = { ...((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>) };
+                                                        const arr = [...(map[pkg] ?? [])];
+                                                        const updated = checked
+                                                          ? selectedVals.filter((v) => v !== opt.value)
+                                                          : [...selectedVals, opt.value];
+                                                        arr[rIdx] = { ...arr[rIdx], fieldValues: updated } as any;
+                                                        map[pkg] = arr;
+                                                        setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageShowWhen: map } as StepRow["meta"] }));
+                                                      }}
+                                                    />
+                                                    {opt.label}
+                                                  </label>
+                                                );
+                                              })}
+                                            </div>
+                                          );
+                                        }
+                                        return (
+                                          <Input
+                                            className="h-7 flex-1 text-xs"
+                                            placeholder="comma-separated values"
+                                            value={selectedVals.join(", ")}
+                                            onChange={(e) => {
+                                              const map = { ...((form.meta?.packageShowWhen ?? {}) as Record<string, ShowWhenRule[]>) };
+                                              const arr = [...(map[pkg] ?? [])];
+                                              arr[rIdx] = { ...arr[rIdx], fieldValues: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } as any;
+                                              map[pkg] = arr;
+                                              setForm((f) => ({ ...f, meta: { ...(f.meta ?? {}), packageShowWhen: map } as StepRow["meta"] }));
+                                            }}
+                                          />
+                                        );
+                                      })()}
                                     </div>
                                   </div>
                                 ) : rule.package && ruleCats.length > 0 ? (
@@ -1264,6 +1422,48 @@ export default function StepsManager({ flow }: { flow: string }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {/* Package-visibility mapping dialog — rendered as sibling, not nested */}
+      {pkgMappingData && !("needsLoad" in pkgMappingData) && (
+        <Dialog open={pkgMappingOpen} onOpenChange={setPkgMappingOpen}>
+          <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Package Visibility by {pkgMappingData.fieldLabel}</DialogTitle>
+            </DialogHeader>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400 -mt-2">
+              For each option, select which packages to display. Packages not yet in this step will be auto-added.
+            </p>
+            <div className="space-y-3 mt-2">
+              {pkgMappingData.options.map((opt) => {
+                const currentPkgs = pkgMappingData.mapping[opt.value] ?? [];
+                return (
+                  <div key={opt.value} className="rounded-md border border-neutral-200 dark:border-neutral-700 p-3">
+                    <div className="text-sm font-semibold text-neutral-800 dark:text-neutral-200 mb-2">{opt.label}</div>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                      {packages.filter((p) => p.value !== "ordertype" && p.value !== "premiumRecord").map((p) => {
+                        const isChecked = currentPkgs.includes(p.value);
+                        return (
+                          <label key={p.value} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/50 rounded px-1 py-0.5">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleMappingToggle(opt.value, p.value, !isChecked)}
+                              className="rounded"
+                            />
+                            <span className={isChecked ? "font-medium" : "text-neutral-500 dark:text-neutral-400"}>{p.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex justify-end mt-4">
+              <Button onClick={() => setPkgMappingOpen(false)}>Done</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
