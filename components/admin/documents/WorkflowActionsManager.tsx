@@ -31,6 +31,7 @@ const GROUP_KEY = "workflow_actions";
 
 const ACTION_TYPES: { value: WorkflowActionType; label: string; description: string }[] = [
   { value: "email", label: "Send Email", description: "Send an email notification about this record" },
+  { value: "send_document", label: "Send Document", description: "Generate a PDF document and optionally email it" },
   { value: "note", label: "Add Note", description: "Attach a text note to the record" },
   { value: "duplicate", label: "Duplicate", description: "Create a copy of the record" },
   { value: "export", label: "Export", description: "Download record data as a file" },
@@ -69,6 +70,8 @@ export default function WorkflowActionsManager() {
   const [meta, setMeta] = React.useState<WorkflowActionMeta>(defaultMeta());
 
   const [flows, setFlows] = React.useState<{ label: string; value: string }[]>([]);
+  const [statusOptions, setStatusOptions] = React.useState<{ label: string; value: string }[]>([]);
+  const [pdfTemplates, setPdfTemplates] = React.useState<{ id: number; label: string; value: string }[]>([]);
 
   async function load() {
     setLoading(true);
@@ -91,6 +94,18 @@ export default function WorkflowActionsManager() {
       .then((r) => (r.ok ? r.json() : []))
       .then((r: { label: string; value: string }[]) =>
         setFlows(r.map((f) => ({ label: f.label, value: f.value }))),
+      )
+      .catch(() => {});
+    fetch("/api/form-options?groupKey=policy_statuses", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((r: { label: string; value: string }[]) =>
+        setStatusOptions(Array.isArray(r) ? r.map((s) => ({ label: s.label, value: s.value })) : []),
+      )
+      .catch(() => {});
+    fetch("/api/form-options?groupKey=pdf_merge_templates", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((r: { id: number; label: string; value: string }[]) =>
+        setPdfTemplates(Array.isArray(r) ? r.map((t) => ({ id: t.id, label: t.label, value: t.value })) : []),
       )
       .catch(() => {});
   }, []);
@@ -395,13 +410,55 @@ export default function WorkflowActionsManager() {
             {meta.type === "status_change" && (
               <div className="grid gap-1">
                 <Label>Target Status</Label>
-                <Input
-                  value={meta.targetStatus ?? ""}
-                  onChange={(e) =>
-                    setMeta((m) => ({ ...m, targetStatus: e.target.value }))
-                  }
-                  placeholder="active"
-                />
+                {statusOptions.length > 0 ? (
+                  <select
+                    className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                    value={meta.targetStatus ?? ""}
+                    onChange={(e) => setMeta((m) => ({ ...m, targetStatus: e.target.value }))}
+                  >
+                    <option value="">-- Select --</option>
+                    {statusOptions.map((s) => (
+                      <option key={s.value} value={s.value}>{s.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <Input
+                    value={meta.targetStatus ?? ""}
+                    onChange={(e) => setMeta((m) => ({ ...m, targetStatus: e.target.value }))}
+                    placeholder="active"
+                  />
+                )}
+              </div>
+            )}
+
+            {meta.type === "send_document" && (
+              <div className="grid gap-1">
+                <Label>PDF Template</Label>
+                {pdfTemplates.length > 0 ? (
+                  <select
+                    className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                    value={String(meta.documentTemplateId ?? "")}
+                    onChange={(e) => {
+                      const id = Number(e.target.value);
+                      const tpl = pdfTemplates.find((t) => t.id === id);
+                      setMeta((m) => ({
+                        ...m,
+                        documentTemplateId: id || undefined,
+                        documentTemplateLabel: tpl?.label,
+                        requiresInput: true,
+                        inputLabel: "Recipient Email",
+                        inputPlaceholder: "user@example.com",
+                      }));
+                    }}
+                  >
+                    <option value="">-- Select Template --</option>
+                    {pdfTemplates.map((t) => (
+                      <option key={t.id} value={String(t.id)}>{t.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className="text-xs text-neutral-500">No PDF templates configured. Create them in PDF Mail Merge first.</p>
+                )}
               </div>
             )}
 
@@ -441,6 +498,35 @@ export default function WorkflowActionsManager() {
                         }
                       />
                       {f.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Show only when status matches */}
+            {statusOptions.length > 0 && (
+              <div className="grid gap-1">
+                <Label>
+                  Show When Status{" "}
+                  <span className="text-xs text-neutral-400">(optional - empty = always)</span>
+                </Label>
+                <div className="flex flex-wrap gap-2">
+                  {statusOptions.map((s) => (
+                    <label key={s.value} className="flex items-center gap-1.5 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={meta.showWhenStatus?.includes(s.value) ?? false}
+                        onChange={(e) =>
+                          setMeta((m) => ({
+                            ...m,
+                            showWhenStatus: e.target.checked
+                              ? [...(m.showWhenStatus ?? []), s.value]
+                              : (m.showWhenStatus ?? []).filter((v) => v !== s.value),
+                          }))
+                        }
+                      />
+                      {s.label}
                     </label>
                   ))}
                 </div>

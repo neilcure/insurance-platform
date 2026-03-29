@@ -9,7 +9,7 @@ export type TemplateSection = {
   id: string;
   title: string;
   /** Where to pull data from in the snapshot */
-  source: "insured" | "contactinfo" | "package" | "policy" | "agent" | "custom";
+  source: "insured" | "contactinfo" | "package" | "policy" | "agent" | "accounting" | "client" | "organisation" | "custom";
   /** Required when source is "package" */
   packageName?: string;
   fields: TemplateFieldMapping[];
@@ -19,6 +19,8 @@ export type DocumentTemplateMeta = {
   type: "quotation" | "invoice" | "receipt" | "certificate" | "letter" | "custom";
   /** Restrict to specific flows (empty = available for all flows) */
   flows?: string[];
+  /** Only show this document when policy status matches (empty = always) */
+  showWhenStatus?: string[];
   header: {
     title: string;
     subtitle?: string;

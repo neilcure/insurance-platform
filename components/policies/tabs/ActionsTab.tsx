@@ -9,6 +9,24 @@ import { getIcon } from "@/lib/icons";
 import type { WorkflowActionRow, WorkflowActionMeta } from "@/lib/types/workflow-action";
 import type { PolicyDetail } from "@/lib/types/policy";
 
+async function recordActionTimestamp(
+  policyId: number,
+  actionKey: string,
+  actionLabel: string,
+  meta: WorkflowActionMeta,
+) {
+  try {
+    await fetch(`/api/policies/${policyId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        note: `Action executed: ${actionLabel}${meta.targetStatus ? ` → ${meta.targetStatus}` : ""}`,
+        noteAction: "append",
+      }),
+    });
+  } catch { /* best-effort */ }
+}
+
 type ActionCardProps = {
   action: WorkflowActionRow;
   policyId: number;
@@ -36,6 +54,10 @@ function ActionCard({
     }
     setBusy(true);
     try {
+      const timestamp = new Date().toISOString();
+
+      await recordActionTimestamp(policyId, action.value, action.label, meta);
+
       switch (meta.type) {
         case "email": {
           const res = await fetch(`/api/policies/${policyId}/send`, {
@@ -92,6 +114,36 @@ function ActionCard({
           break;
         }
 
+        case "send_document": {
+          if (!meta.documentTemplateId) {
+            toast.error("No document template configured for this action");
+            break;
+          }
+          const genRes = await fetch(`/api/pdf-templates/${meta.documentTemplateId}/generate`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ policyId }),
+          });
+          if (!genRes.ok) throw new Error(await genRes.text());
+          if (inputVal.trim()) {
+            const sendRes = await fetch(`/api/pdf-templates/send-email`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                policyId,
+                templateId: meta.documentTemplateId,
+                email: inputVal.trim(),
+              }),
+            });
+            if (!sendRes.ok) throw new Error(await sendRes.text());
+            toast.success(`Document generated and sent to ${inputVal.trim()}`);
+          } else {
+            toast.success("Document generated successfully");
+          }
+          setInputVal("");
+          break;
+        }
+
         case "custom": {
           if (action.value === "reassign_agent") {
             const res = await fetch(`/api/policies/${policyId}/reassign`, {
@@ -110,6 +162,7 @@ function ActionCard({
                 policyId,
                 policyNumber,
                 input: inputVal.trim() || undefined,
+                timestamp,
               }),
             });
             if (!res.ok) throw new Error(await res.text());
@@ -144,6 +197,7 @@ function ActionCard({
               policyId,
               policyNumber,
               input: inputVal.trim() || undefined,
+              timestamp,
             }),
           });
           if (!res.ok) throw new Error(await res.text());
@@ -208,6 +262,7 @@ export function ActionsTab({
   detail,
   currentAgent,
   flowKey,
+  currentStatus,
   onActionComplete,
 }: {
   policyId: number;
@@ -215,6 +270,7 @@ export function ActionsTab({
   detail: PolicyDetail;
   currentAgent?: { id: number; name?: string | null; email?: string } | null;
   flowKey?: string;
+  currentStatus?: string;
   onActionComplete?: () => void;
 }) {
   const [actions, setActions] = React.useState<WorkflowActionRow[]>([]);
@@ -233,9 +289,10 @@ export function ActionsTab({
         const applicable = rows.filter((r) => {
           if (!r.meta) return false;
           const flows = r.meta.flows;
-          if (!flows || flows.length === 0) return true;
-          if (!flowKey) return false;
-          return flows.includes(flowKey);
+          if (flows && flows.length > 0) {
+            if (!flowKey || !flows.includes(flowKey)) return false;
+          }
+          return true;
         });
         setActions(applicable);
       })
@@ -248,6 +305,15 @@ export function ActionsTab({
     };
   }, [flowKey]);
 
+  const visibleActions = React.useMemo(() => {
+    return actions.filter((a) => {
+      const sws = a.meta?.showWhenStatus;
+      if (!sws || sws.length === 0) return true;
+      const status = currentStatus || "active";
+      return sws.includes(status);
+    });
+  }, [actions, currentStatus]);
+
   if (loading) {
     return (
       <div className="py-8 text-center text-xs text-neutral-500 dark:text-neutral-400">
@@ -256,15 +322,16 @@ export function ActionsTab({
     );
   }
 
-  if (actions.length === 0) {
+  if (visibleActions.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-neutral-300 p-6 text-center dark:border-neutral-700">
         <div className="text-sm font-medium text-neutral-600 dark:text-neutral-400">
-          No actions configured
+          {actions.length > 0 ? "No actions available for current status" : "No actions configured"}
         </div>
         <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-          Go to Admin &rarr; Policy Settings &rarr; Workflow Actions to add
-          actions.
+          {actions.length > 0
+            ? "Actions will appear when the record reaches the appropriate stage."
+            : "Go to Admin \u2192 Policy Settings \u2192 Workflow Actions to add actions."}
         </p>
       </div>
     );
@@ -272,7 +339,7 @@ export function ActionsTab({
 
   return (
     <div className="space-y-3">
-      {actions.map((action) => (
+      {visibleActions.map((action) => (
         <ActionCard
           key={action.id}
           action={action}

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
-import { policies } from "@/db/schema/insurance";
+import { cars, policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
 import { accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
 import { memberships, organisations } from "@/db/schema/core";
@@ -101,15 +101,11 @@ export async function POST(
         newStatus = "sent";
         break;
       case "confirm": {
-        // Require either admin confirm with note OR upload proof
         if (!confirmMethod) {
-          return NextResponse.json({ error: "Confirm method required (admin or upload)" }, { status: 400 });
+          confirmMethod = "admin";
         }
         if (confirmMethod === "upload" && !proofFile) {
           return NextResponse.json({ error: "Proof file required for upload confirmation" }, { status: 400 });
-        }
-        if (confirmMethod === "admin" && !confirmNote?.trim()) {
-          return NextResponse.json({ error: "Admin note required for admin confirmation" }, { status: 400 });
         }
         newStatus = "confirmed";
         break;
@@ -167,6 +163,19 @@ export async function POST(
       .set({ documentTracking: updatedMap })
       .where(eq(policies.id, policyId));
 
+    // Auto-advance policy status based on document tracking action
+    let autoStatusAdvanced: string | null = null;
+    try {
+      autoStatusAdvanced = await autoAdvancePolicyStatus(
+        policyId,
+        docType,
+        action,
+        (user as unknown as { name?: string; email?: string }).email || `user:${user.id}`,
+      );
+    } catch (err) {
+      console.error("Auto-advance status error (non-fatal):", err);
+    }
+
     // Auto-create accounting invoice when an invoice-type document is confirmed
     const invoiceKeys = ["invoice", "quotation", "receipt", "statement_invoice"];
     const isInvoiceType = invoiceKeys.some((k) => docType.includes(k));
@@ -179,11 +188,85 @@ export async function POST(
       }
     }
 
-    return NextResponse.json({ documentTracking: updatedMap });
+    return NextResponse.json({
+      documentTracking: updatedMap,
+      ...(autoStatusAdvanced ? { statusAdvanced: autoStatusAdvanced } : {}),
+    });
   } catch (err) {
     console.error("POST document-tracking error:", err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
+}
+
+const STATUS_ORDER = [
+  "quotation_prepared",
+  "quotation_sent",
+  "quotation_confirmed",
+  "invoice_prepared",
+  "invoice_sent",
+  "payment_confirmed",
+  "completed",
+] as const;
+
+const DOC_ACTION_TO_STATUS: Record<string, Record<string, string>> = {
+  quotation: { send: "quotation_sent", confirm: "quotation_confirmed" },
+  invoice:   { send: "invoice_sent" },
+};
+
+async function autoAdvancePolicyStatus(
+  policyId: number,
+  docType: string,
+  action: string,
+  changedBy: string,
+): Promise<string | null> {
+  if (action !== "send" && action !== "confirm") return null;
+
+  const docLower = docType.toLowerCase();
+  let targetStatus: string | null = null;
+
+  for (const [keyword, mapping] of Object.entries(DOC_ACTION_TO_STATUS)) {
+    if (docLower.includes(keyword) && mapping[action]) {
+      targetStatus = mapping[action];
+      break;
+    }
+  }
+
+  if (!targetStatus) return null;
+
+  const [carRow] = await db
+    .select({ id: cars.id, extraAttributes: cars.extraAttributes })
+    .from(cars)
+    .where(eq(cars.policyId, policyId))
+    .limit(1);
+  if (!carRow) return null;
+
+  const existing = (carRow.extraAttributes ?? {}) as Record<string, unknown>;
+  const currentStatus = (existing.status as string) ?? "active";
+
+  const currentIdx = STATUS_ORDER.indexOf(currentStatus as typeof STATUS_ORDER[number]);
+  const targetIdx = STATUS_ORDER.indexOf(targetStatus as typeof STATUS_ORDER[number]);
+
+  if (targetIdx >= 0 && currentIdx >= targetIdx) return null;
+
+  const historyArr = Array.isArray(existing.statusHistory)
+    ? [...(existing.statusHistory as unknown[])]
+    : [];
+  historyArr.push({
+    status: targetStatus,
+    changedAt: new Date().toISOString(),
+    changedBy,
+    note: `Auto: ${docType.replace(/_/g, " ")} ${action === "send" ? "sent" : "confirmed"}`,
+  });
+
+  const updated: Record<string, unknown> = {
+    ...existing,
+    status: targetStatus,
+    statusHistory: historyArr,
+    _lastEditedAt: new Date().toISOString(),
+  };
+
+  await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
+  return targetStatus;
 }
 
 async function autoCreateAccountingInvoice(policyId: number, docType: string, userId: number) {

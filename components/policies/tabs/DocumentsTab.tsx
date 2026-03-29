@@ -179,13 +179,27 @@ function DocumentPreview({
   template,
   detail,
   snapshot,
+  trackingEntry,
+  onConfirmDoc,
+  onOpenEmailDialog,
 }: {
   template: DocumentTemplateRow;
   detail: PolicyDetail;
   snapshot: SnapshotData;
+  trackingEntry?: DocumentStatusEntry;
+  onConfirmDoc?: (trackingKey: string) => void;
+  onOpenEmailDialog?: (subject: string, htmlContent: string, plainText: string) => void;
 }) {
   const meta = template.meta!;
   const printRef = React.useRef<HTMLDivElement>(null);
+
+  const printStyles = `
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 40px; color: #1a1a1a; max-width: 800px; margin: 0 auto; font-size: 13px; }
+    .border-b { border-bottom: 1px solid #f0f0f0; }
+    .border-b-2 { border-bottom: 2px solid #333; }
+    .border-t { border-top: 1px solid #ddd; }
+    @media print { body { padding: 20px; } }
+  `;
 
   function handlePrint() {
     if (!printRef.current) return;
@@ -197,58 +211,106 @@ function DocumentPreview({
     }
     win.document.write(`<!DOCTYPE html>
 <html><head><title>${meta.header.title}</title>
-<style>
-  body { font-family: system-ui, sans-serif; padding: 40px; color: #1a1a1a; max-width: 800px; margin: 0 auto; }
-  h1 { font-size: 22px; margin-bottom: 4px; }
-  h2 { font-size: 16px; color: #666; margin-top: 0; font-weight: normal; }
-  .meta { color: #666; font-size: 13px; margin-bottom: 24px; }
-  .section { margin-bottom: 20px; }
-  .section-title { font-size: 14px; font-weight: 600; border-bottom: 1px solid #e5e5e5; padding-bottom: 4px; margin-bottom: 8px; }
-  .field-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; }
-  .field-label { color: #666; }
-  .field-value { font-family: monospace; text-align: right; max-width: 60%; word-break: break-word; }
-  .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #e5e5e5; font-size: 12px; color: #888; }
-  .signature-line { margin-top: 60px; display: flex; justify-content: space-between; }
-  .signature-line div { width: 200px; border-top: 1px solid #333; padding-top: 4px; font-size: 12px; }
-  @media print { body { padding: 20px; } }
-</style></head><body>${content}</body></html>`);
+<style>${printStyles}</style></head><body>${content}</body></html>`);
     win.document.close();
-    setTimeout(() => {
-      win.print();
-    }, 300);
+    setTimeout(() => { win.print(); }, 300);
+  }
+
+  const dateStr = (() => {
+    const d = new Date(detail.createdAt);
+    return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()}`;
+  })();
+
+  function generatePlainText(): string {
+    const lines: string[] = [];
+    lines.push(meta.header.title);
+    if (meta.header.subtitle) lines.push(meta.header.subtitle);
+    lines.push("─".repeat(30));
+    if (meta.header.showPolicyNumber !== false) lines.push(`Ref: ${detail.policyNumber}`);
+    if (meta.header.showDate !== false) lines.push(`Date: ${dateStr}`);
+    lines.push("");
+
+    for (const section of meta.sections) {
+      const fields = section.fields
+        .map((f) => ({
+          ...f,
+          resolved: resolveFieldValue(snapshot, detail, section, f.key),
+        }))
+        .filter((f) => f.resolved !== "" && f.resolved !== null && f.resolved !== undefined);
+
+      if (fields.length === 0) continue;
+
+      lines.push(`▸ ${section.title}`);
+      const maxLabelLen = Math.max(...fields.map((f) => f.label.length));
+      for (const f of fields) {
+        const val = formatValue(f.resolved, f.format, f.currencyCode);
+        lines.push(`  ${f.label.padEnd(maxLabelLen)}  ${val}`);
+      }
+      lines.push("");
+    }
+
+    if (meta.footer?.text) {
+      lines.push("─".repeat(30));
+      lines.push(meta.footer.text);
+    }
+
+    return lines.join("\n");
+  }
+
+  function handleCopyText() {
+    const text = generatePlainText();
+    navigator.clipboard.writeText(text).then(
+      () => toast.success("Copied to clipboard"),
+      () => toast.error("Failed to copy"),
+    );
+  }
+
+  const trackingKey = toTrackingKey(template.label);
+
+  function handleWhatsApp() {
+    const insured = (detail.extraAttributes as Record<string, unknown> | undefined)?.insuredSnapshot as Record<string, unknown> | undefined;
+    const phone = String(insured?.contactPhone ?? insured?.phone ?? insured?.contactinfo__mobile ?? insured?.mobile ?? "").replace(/[^0-9+]/g, "");
+    const text = generatePlainText();
+    const url = phone
+      ? `https://wa.me/${phone.replace(/^\+/, "")}?text=${encodeURIComponent(text)}`
+      : `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, "_blank");
+  }
+
+  function handleEmail() {
+    if (!printRef.current) return;
+    const htmlContent = printRef.current.innerHTML;
+    const plainText = generatePlainText();
+    const subject = `${meta.header.title} - ${detail.policyNumber}`;
+    onOpenEmailDialog?.(subject, htmlContent, plainText);
   }
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="text-sm font-medium">{template.label}</div>
-        <Button size="sm" variant="outline" onClick={handlePrint} className="gap-1.5">
-          <Printer className="h-3.5 w-3.5" />
-          Print / PDF
-        </Button>
-      </div>
+      <div className="text-sm font-medium">{template.label}</div>
 
       <div
         ref={printRef}
-        className="rounded-md border border-neutral-200 bg-white p-4 text-neutral-900 dark:border-neutral-700"
+        className="rounded-md border border-neutral-200 bg-white p-3 sm:p-6 text-neutral-900 dark:border-neutral-700 max-w-[800px]"
+        style={{ fontFamily: "system-ui, -apple-system, sans-serif", color: "#1a1a1a" }}
       >
-        <h1>{meta.header.title}</h1>
-        {meta.header.subtitle && <h2>{meta.header.subtitle}</h2>}
-        <div className="meta">
-          {meta.header.showPolicyNumber !== false && (
-            <div>Ref: {detail.policyNumber}</div>
+        {/* Header */}
+        <div className="border-b-2 border-neutral-800 pb-2 sm:pb-3 mb-3 sm:mb-5">
+          <h1 className="text-base sm:text-2xl font-bold leading-tight m-0">{meta.header.title}</h1>
+          {meta.header.subtitle && (
+            <div className="text-xs sm:text-[15px] text-neutral-500 mt-0.5">{meta.header.subtitle}</div>
           )}
-          {meta.header.showDate !== false && (
-            <div>
-              Date:{" "}
-              {(() => {
-                const d = new Date(detail.createdAt);
-                return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()}`;
-              })()}
-            </div>
-          )}
+          <div className="flex justify-between mt-1 sm:mt-2 text-[11px] sm:text-[13px] text-neutral-500">
+            {meta.header.showPolicyNumber !== false && (
+              <span>Ref: <strong>{detail.policyNumber}</strong></span>
+            )}
+            {meta.header.showDate !== false && (
+              <span>Date: <strong>{dateStr}</strong></span>
+            )}
+          </div>
         </div>
 
+        {/* Sections */}
         {meta.sections.map((section) => {
           const fields = section.fields
             .map((f) => ({
@@ -265,30 +327,92 @@ function DocumentPreview({
           if (fields.length === 0) return null;
 
           return (
-            <div key={section.id} className="section">
-              <div className="section-title">{section.title}</div>
-              {fields.map((f) => (
-                <div key={f.key} className="field-row">
-                  <span className="field-label">{f.label}</span>
-                  <span className="field-value">
-                    {formatValue(f.resolved, f.format, f.currencyCode)}
-                  </span>
-                </div>
-              ))}
+            <div key={section.id} className="mb-3 sm:mb-5">
+              <div className="text-[11px] sm:text-sm font-bold text-neutral-700 uppercase tracking-wide border-b border-neutral-300 pb-1 mb-1.5 sm:mb-2">
+                {section.title}
+              </div>
+              <div>
+                {fields.map((f, idx) => (
+                  <div
+                    key={f.key}
+                    className={`flex flex-col sm:flex-row sm:justify-between sm:gap-3 print:flex-row print:justify-between py-1 sm:py-1.5 ${idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                  >
+                    <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium sm:w-[40%] sm:shrink-0">
+                      {f.label}
+                    </span>
+                    <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word sm:text-right">
+                      {formatValue(f.resolved, f.format, f.currencyCode)}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           );
         })}
 
+        {/* Footer */}
         {meta.footer?.text && (
-          <div className="footer">{meta.footer.text}</div>
+          <div className="mt-6 sm:mt-8 pt-2 sm:pt-3 border-t border-neutral-300 text-[10px] sm:text-xs text-neutral-400">
+            {meta.footer.text}
+          </div>
         )}
         {meta.footer?.showSignature && (
-          <div className="signature-line">
-            <div>Authorized Signature</div>
-            <div>Client Signature</div>
+          <div className="mt-10 sm:mt-16 flex justify-between">
+            <div className="w-36 sm:w-[200px] border-t border-neutral-800 pt-1 text-[10px] sm:text-xs">Authorized Signature</div>
+            <div className="w-36 sm:w-[200px] border-t border-neutral-800 pt-1 text-[10px] sm:text-xs">Client Signature</div>
           </div>
         )}
       </div>
+
+      {/* Action buttons — 3-stage: icon / text / icon+text, 2 per row */}
+      <div className="grid grid-cols-2 gap-2">
+        <Button size="sm" variant="outline" onClick={handleCopyText}>
+          <FileText className="h-4 w-4 sm:hidden lg:inline" />
+          <span className="hidden sm:inline">Copy Text</span>
+        </Button>
+        <Button size="sm" variant="outline" onClick={handleEmail}>
+          <Mail className="h-4 w-4 sm:hidden lg:inline" />
+          <span className="hidden sm:inline">Email</span>
+        </Button>
+        <Button size="sm" variant="outline" onClick={handleWhatsApp} className="text-green-600 hover:text-green-700 border-green-300 hover:border-green-400">
+          <MessageCircle className="h-4 w-4 sm:hidden lg:inline" />
+          <span className="hidden sm:inline">WhatsApp</span>
+        </Button>
+        <Button size="sm" variant="outline" onClick={handlePrint}>
+          <Printer className="h-4 w-4 sm:hidden lg:inline" />
+          <span className="hidden sm:inline">Print / PDF</span>
+        </Button>
+      </div>
+
+      {/* Tracking status */}
+      {trackingEntry && (
+        <div className="flex items-center justify-between rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
+          <div className="flex items-center gap-2">
+            {(() => {
+              const badge = trackingEntry.status ? STATUS_BADGE[trackingEntry.status] : null;
+              if (!badge) return null;
+              return (
+                <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium", badge.bg, badge.text)}>
+                  {trackingEntry.status === "confirmed" && <CheckCircle2 className="h-2.5 w-2.5" />}
+                  {trackingEntry.status === "sent" && <Send className="h-2.5 w-2.5" />}
+                  {badge.label}
+                </span>
+              );
+            })()}
+            {trackingEntry.sentAt && (
+              <span className="text-[10px] text-neutral-400">
+                {new Date(trackingEntry.sentAt).toLocaleDateString()}
+              </span>
+            )}
+          </div>
+          {trackingEntry.status === "sent" && onConfirmDoc && (
+            <Button size="sm" variant="outline" className="h-6 text-[10px] px-2" onClick={() => onConfirmDoc(trackingKey)}>
+              <CheckCircle2 className="h-3 w-3 mr-1" />
+              Confirm Received
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -598,7 +722,7 @@ function PdfMergeButton({
 
             {confirmMethod === "admin" && (
               <div>
-                <Label>Admin Note <span className="text-red-500">*</span></Label>
+                <Label>Admin Note (optional)</Label>
                 <textarea
                   value={confirmNote}
                   onChange={(e) => setConfirmNote(e.target.value)}
@@ -635,7 +759,6 @@ function PdfMergeButton({
             <Button
               disabled={
                 confirmSubmitting ||
-                (confirmMethod === "admin" && !confirmNote.trim()) ||
                 (confirmMethod === "upload" && !confirmFile)
               }
               onClick={async () => {
@@ -829,9 +952,13 @@ function SendEmailDialog({
 export function DocumentsTab({
   detail,
   flowKey,
+  currentStatus,
+  onStatusAutoAdvanced,
 }: {
   detail: PolicyDetail;
   flowKey?: string;
+  currentStatus?: string;
+  onStatusAutoAdvanced?: () => void;
 }) {
   const [templates, setTemplates] = React.useState<DocumentTemplateRow[]>([]);
   const [pdfTemplates, setPdfTemplates] = React.useState<PdfTemplateRow[]>([]);
@@ -878,12 +1005,16 @@ export function DocumentsTab({
       setTracking(data.documentTracking ?? {});
       const labels: Record<string, string> = { send: "marked as sent", confirm: "confirmed", reject: "rejected", reset: "reset" };
       toast.success(`${docType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())} ${labels[action]}`);
+      if (data.statusAdvanced) {
+        toast.info(`Status auto-advanced to: ${data.statusAdvanced.replace(/_/g, " ")}`);
+        onStatusAutoAdvanced?.();
+      }
     } catch (err: any) {
       toast.error(err.message || "Failed to update");
     } finally {
       setTrackingUpdating(false);
     }
-  }, [detail.policyId]);
+  }, [detail.policyId, onStatusAutoAdvanced]);
 
   const handleConfirmWithProof = React.useCallback(async (
     docType: string,
@@ -924,12 +1055,16 @@ export function DocumentsTab({
       const data = await res.json();
       setTracking(data.documentTracking ?? {});
       toast.success(`${docType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())} confirmed`);
+      if (data.statusAdvanced) {
+        toast.info(`Status auto-advanced to: ${data.statusAdvanced.replace(/_/g, " ")}`);
+        onStatusAutoAdvanced?.();
+      }
     } catch (err: any) {
       toast.error(err.message || "Failed to confirm");
     } finally {
       setTrackingUpdating(false);
     }
-  }, [detail.policyId]);
+  }, [detail.policyId, onStatusAutoAdvanced]);
 
   function handleEmailClick(tpl: PdfTemplateRow) {
     setEmailPreSelectedId(tpl.id);
@@ -948,9 +1083,71 @@ export function DocumentsTab({
     window.open(url, "_blank");
   }
 
+  const [htmlConfirmKey, setHtmlConfirmKey] = React.useState<string | null>(null);
+  const [htmlConfirmMethod, setHtmlConfirmMethod] = React.useState<"admin" | "upload">("admin");
+  const [htmlConfirmNote, setHtmlConfirmNote] = React.useState("");
+  const [htmlConfirmFile, setHtmlConfirmFile] = React.useState<File | null>(null);
+  const [htmlConfirmSubmitting, setHtmlConfirmSubmitting] = React.useState(false);
+
+  // HTML document email dialog state
+  const [htmlEmailOpen, setHtmlEmailOpen] = React.useState(false);
+  const [htmlEmailTo, setHtmlEmailTo] = React.useState("");
+  const [htmlEmailSubject, setHtmlEmailSubject] = React.useState("");
+  const [htmlEmailHtml, setHtmlEmailHtml] = React.useState("");
+  const [htmlEmailPlain, setHtmlEmailPlain] = React.useState("");
+  const [htmlEmailSending, setHtmlEmailSending] = React.useState(false);
+
+  const handleOpenHtmlEmail = React.useCallback((subject: string, htmlContent: string, plainText: string) => {
+    setHtmlEmailSubject(subject);
+    setHtmlEmailHtml(htmlContent);
+    setHtmlEmailPlain(plainText);
+    setHtmlEmailTo("");
+    setHtmlEmailOpen(true);
+  }, []);
+
+  const handleSendHtmlEmail = React.useCallback(async () => {
+    if (!htmlEmailTo.includes("@")) {
+      toast.error("Please enter a valid email address");
+      return;
+    }
+    setHtmlEmailSending(true);
+    try {
+      const res = await fetch(`/api/policies/${detail.policyId}/send-document`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: htmlEmailTo.trim(),
+          subject: htmlEmailSubject,
+          htmlContent: htmlEmailHtml,
+          plainText: htmlEmailPlain,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to send");
+      }
+      toast.success(`Email sent to ${htmlEmailTo}`);
+      setHtmlEmailOpen(false);
+
+      // Mark as sent in tracking
+      if (selected) {
+        const key = toTrackingKey(selected.label);
+        if (!tracking[key] || tracking[key]?.status !== "confirmed") {
+          await handleTrackingAction(key, "send", htmlEmailTo.trim());
+        }
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to send email");
+    } finally {
+      setHtmlEmailSending(false);
+    }
+  }, [htmlEmailTo, htmlEmailSubject, htmlEmailHtml, htmlEmailPlain, detail.policyId, selected, tracking, handleTrackingAction]);
+
   React.useEffect(() => {
     let cancelled = false;
     setLoading(true);
+
+    const status = currentStatus || "active";
 
     const loadHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : []))
@@ -959,9 +1156,12 @@ export function DocumentsTab({
         const applicable = rows.filter((r) => {
           if (!r.meta) return false;
           const flows = r.meta.flows;
-          if (!flows || flows.length === 0) return true;
-          if (!flowKey) return false;
-          return flows.includes(flowKey);
+          if (flows && flows.length > 0) {
+            if (!flowKey || !flows.includes(flowKey)) return false;
+          }
+          const sws = r.meta.showWhenStatus;
+          if (sws && sws.length > 0 && !sws.includes(status)) return false;
+          return true;
         });
         setTemplates(applicable);
       })
@@ -975,9 +1175,12 @@ export function DocumentsTab({
           const meta = r.meta as unknown as PdfTemplateMeta | null;
           if (!meta?.fields?.length) return false;
           const flows = meta.flows;
-          if (!flows || flows.length === 0) return true;
-          if (!flowKey) return false;
-          return flows.includes(flowKey);
+          if (flows && flows.length > 0) {
+            if (!flowKey || !flows.includes(flowKey)) return false;
+          }
+          const sws = meta.showWhenStatus;
+          if (sws && sws.length > 0 && !sws.includes(status)) return false;
+          return true;
         });
         setPdfTemplates(applicable);
       })
@@ -988,7 +1191,7 @@ export function DocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [flowKey]);
+  }, [flowKey, currentStatus]);
 
   if (loading) {
     return (
@@ -999,6 +1202,7 @@ export function DocumentsTab({
   }
 
   if (selected) {
+    const selKey = toTrackingKey(selected.label);
     return (
       <div className="space-y-3">
         <Button
@@ -1014,7 +1218,138 @@ export function DocumentsTab({
           template={selected}
           detail={detail}
           snapshot={snapshot}
+          trackingEntry={tracking[selKey]}
+          onConfirmDoc={(key) => {
+            setHtmlConfirmKey(key);
+            setHtmlConfirmMethod("admin");
+            setHtmlConfirmNote("");
+            setHtmlConfirmFile(null);
+          }}
+          onOpenEmailDialog={handleOpenHtmlEmail}
         />
+
+        {/* Confirm dialog for HTML documents */}
+        <Dialog open={!!htmlConfirmKey} onOpenChange={(open) => { if (!open) setHtmlConfirmKey(null); }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Confirm Document Received</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                How would you like to confirm this document?
+              </p>
+              <div className="flex gap-2">
+                <Button size="sm" variant={htmlConfirmMethod === "admin" ? "default" : "outline"} onClick={() => setHtmlConfirmMethod("admin")} className="flex-1">
+                  <ShieldCheck className="mr-1 h-4 w-4" />
+                  Admin Confirm
+                </Button>
+                <Button size="sm" variant={htmlConfirmMethod === "upload" ? "default" : "outline"} onClick={() => setHtmlConfirmMethod("upload")} className="flex-1">
+                  <Upload className="mr-1 h-4 w-4" />
+                  Upload Proof
+                </Button>
+              </div>
+              {htmlConfirmMethod === "admin" && (
+                <div>
+                  <Label>Admin Note (optional)</Label>
+                  <textarea
+                    value={htmlConfirmNote}
+                    onChange={(e) => setHtmlConfirmNote(e.target.value)}
+                    rows={3}
+                    placeholder="e.g. Client confirmed via phone call..."
+                    className="mt-1 w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  />
+                </div>
+              )}
+              {htmlConfirmMethod === "upload" && (
+                <div>
+                  <Label>Upload signed document <span className="text-red-500">*</span></Label>
+                  <Input type="file" onChange={(e) => setHtmlConfirmFile(e.target.files?.[0] || null)} className="mt-1" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" />
+                  <div className="mt-1">
+                    <Label>Note (optional)</Label>
+                    <Input value={htmlConfirmNote} onChange={(e) => setHtmlConfirmNote(e.target.value)} placeholder="Optional note..." className="mt-1" />
+                  </div>
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setHtmlConfirmKey(null)}>Cancel</Button>
+              <Button
+                disabled={
+                  htmlConfirmSubmitting ||
+                  (htmlConfirmMethod === "upload" && !htmlConfirmFile)
+                }
+                onClick={async () => {
+                  if (!htmlConfirmKey) return;
+                  setHtmlConfirmSubmitting(true);
+                  try {
+                    await handleConfirmWithProof(
+                      htmlConfirmKey,
+                      htmlConfirmMethod,
+                      htmlConfirmNote.trim() || undefined,
+                      htmlConfirmFile || undefined,
+                    );
+                    setHtmlConfirmKey(null);
+                  } finally {
+                    setHtmlConfirmSubmitting(false);
+                  }
+                }}
+              >
+                {htmlConfirmSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                <CheckCircle2 className="mr-1 h-4 w-4" />
+                Confirm
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Send Email dialog for HTML documents (uses Brevo) */}
+        <Dialog open={htmlEmailOpen} onOpenChange={setHtmlEmailOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Email Document</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div>
+                <Label htmlFor="html-email-to">Recipient Email</Label>
+                <Input
+                  id="html-email-to"
+                  type="email"
+                  placeholder="client@example.com"
+                  value={htmlEmailTo}
+                  onChange={(e) => setHtmlEmailTo(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label htmlFor="html-email-subject">Subject</Label>
+                <Input
+                  id="html-email-subject"
+                  value={htmlEmailSubject}
+                  onChange={(e) => setHtmlEmailSubject(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" size="sm" onClick={() => setHtmlEmailOpen(false)} disabled={htmlEmailSending}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={handleSendHtmlEmail} disabled={htmlEmailSending || !htmlEmailTo.trim()}>
+                {htmlEmailSending ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <Mail className="mr-1.5 h-3.5 w-3.5" />
+                    Send via Brevo
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     );
   }
@@ -1041,27 +1376,46 @@ export function DocumentsTab({
       {templates.length > 0 && (
         <>
           <div className="text-sm font-medium">Document Templates</div>
-          {templates.map((tpl) => (
-            <button
-              key={tpl.id}
-              type="button"
-              onClick={() => setSelected(tpl)}
-              className="flex w-full items-center gap-3 rounded-md border border-neutral-200 p-3 text-left transition-colors hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50"
-            >
-              <FileText className="h-5 w-5 shrink-0 text-neutral-400 dark:text-neutral-500" />
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium">{tpl.label}</div>
-                <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                  {tpl.meta?.type
-                    ? tpl.meta.type.charAt(0).toUpperCase() + tpl.meta.type.slice(1)
-                    : "Document"}
-                  {tpl.meta?.sections
-                    ? ` \u00b7 ${tpl.meta.sections.length} section${tpl.meta.sections.length !== 1 ? "s" : ""}`
-                    : ""}
+          {templates.map((tpl) => {
+            const tKey = toTrackingKey(tpl.label);
+            const tEntry = tracking[tKey];
+            const tBadge = tEntry?.status ? STATUS_BADGE[tEntry.status] : null;
+            return (
+              <button
+                key={tpl.id}
+                type="button"
+                onClick={() => setSelected(tpl)}
+                className={cn(
+                  "flex w-full items-center gap-3 rounded-md border p-3 text-left transition-colors",
+                  tEntry?.status === "confirmed"
+                    ? "border-green-200 bg-green-50/50 dark:border-green-900 dark:bg-green-950/20"
+                    : "border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50",
+                )}
+              >
+                <FileText className="h-5 w-5 shrink-0 text-neutral-400 dark:text-neutral-500" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium">{tpl.label}</span>
+                    {tBadge && (
+                      <span className={cn("inline-flex items-center gap-1 rounded-full px-1.5 py-0 text-[9px] font-medium", tBadge.bg, tBadge.text)}>
+                        {tEntry?.status === "confirmed" && <CheckCircle2 className="h-2.5 w-2.5" />}
+                        {tEntry?.status === "sent" && <Send className="h-2.5 w-2.5" />}
+                        {tBadge.label}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                    {tpl.meta?.type
+                      ? tpl.meta.type.charAt(0).toUpperCase() + tpl.meta.type.slice(1)
+                      : "Document"}
+                    {tpl.meta?.sections
+                      ? ` \u00b7 ${tpl.meta.sections.length} section${tpl.meta.sections.length !== 1 ? "s" : ""}`
+                      : ""}
+                  </div>
                 </div>
-              </div>
-            </button>
-          ))}
+              </button>
+            );
+          })}
         </>
       )}
 
@@ -1106,11 +1460,11 @@ export function DocumentsTab({
         policyNumber={detail.policyNumber}
         pdfTemplates={pdfTemplates}
         preSelectedId={emailPreSelectedId}
-        onSent={(labels, sentEmail) => {
+        onSent={async (labels, sentEmail) => {
           for (const label of labels) {
             const key = toTrackingKey(label);
             if (!tracking[key] || tracking[key]?.status !== "confirmed") {
-              handleTrackingAction(key, "send", sentEmail);
+              await handleTrackingAction(key, "send", sentEmail);
             }
           }
         }}

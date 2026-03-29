@@ -8,6 +8,8 @@ export type UploadDocumentTypeMeta = {
   required?: boolean;
   /** Restrict to specific flows (empty = all) */
   flows?: string[];
+  /** Only show this upload requirement when policy status matches (empty = always) */
+  showWhenStatus?: string[];
 };
 
 export type UploadDocumentTypeRow = {

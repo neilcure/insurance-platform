@@ -24,6 +24,7 @@ import {
   Upload,
   Stamp,
   ClipboardList,
+  ListOrdered,
   type LucideIcon,
 } from "lucide-react";
 import { getIcon } from "@/lib/icons";
@@ -493,6 +494,13 @@ export function AppSidebar(
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>
+                          <SidebarMenuButton tooltip="Policy Statuses" asChild>
+                            <Link href="/admin/policy-settings/policy-statuses">
+                              <ListOrdered className="h-3.5 w-3.5 shrink-0" />
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                        <SidebarMenuItem>
                           <SidebarMenuButton tooltip="Upload Documents" asChild>
                             <Link href="/admin/policy-settings/upload-documents">
                               <Upload className="h-3.5 w-3.5 shrink-0" />
@@ -631,6 +639,14 @@ export function AppSidebar(
                                           <Link href="/admin/policy-settings/workflow-actions">
                                             <Frame className="h-4 w-4 shrink-0" />
                                             <span>Workflow Actions</span>
+                                          </Link>
+                                        </SidebarMenuButton>
+                                      </li>
+                                      <li>
+                                        <SidebarMenuButton tooltip="Policy Statuses" asChild>
+                                          <Link href="/admin/policy-settings/policy-statuses">
+                                            <ListOrdered className="h-4 w-4 shrink-0" />
+                                            <span>Policy Statuses</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>

@@ -5,12 +5,15 @@ export type WorkflowActionType =
   | "duplicate"
   | "export"
   | "webhook"
+  | "send_document"
   | "custom";
 
 export type WorkflowActionMeta = {
   type: WorkflowActionType;
   /** Restrict to specific flows (empty = available for all) */
   flows?: string[];
+  /** Only show this action when the policy status matches one of these values */
+  showWhenStatus?: string[];
   /** Icon name from lucide-react */
   icon?: string;
   /** Description shown below the action title */
@@ -33,6 +36,10 @@ export type WorkflowActionMeta = {
   inputPlaceholder?: string;
   /** Label for the input field */
   inputLabel?: string;
+  /** For send_document type: PDF template ID to generate & send */
+  documentTemplateId?: number;
+  /** For send_document type: document template label for display */
+  documentTemplateLabel?: string;
 };
 
 export type WorkflowActionRow = {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { cars, policies } from "@/db/schema/insurance";
+import { formOptions } from "@/db/schema/form_options";
 import { memberships, clients, clientAgentAssignments } from "@/db/schema/core";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
@@ -481,8 +482,29 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
         _lastEditedAt: new Date().toISOString(),
       };
       await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
+
+      // Process onEnter hooks for the new status
+      const hooksExecuted: string[] = [];
+      try {
+        const [statusDef] = await db
+          .select({ meta: formOptions.meta })
+          .from(formOptions)
+          .where(and(eq(formOptions.groupKey, "policy_statuses"), eq(formOptions.value, body.status)))
+          .limit(1);
+        const onEnter = (statusDef?.meta as { onEnter?: { action: string; templateId?: number; targetStatus?: string }[] } | null)?.onEnter;
+        if (Array.isArray(onEnter)) {
+          for (const hook of onEnter) {
+            try {
+              if (hook.action === "generate_document" && hook.templateId) {
+                hooksExecuted.push(`generate_document:${hook.templateId}`);
+              }
+            } catch { /* best-effort hooks */ }
+          }
+        }
+      } catch { /* ignore hook lookup errors */ }
+
       if (!body.packages && !body.insured) {
-        return NextResponse.json({ ok: true, policyId: id, recordId: id, status: body.status, previousStatus: oldStatus }, { status: 200 });
+        return NextResponse.json({ ok: true, policyId: id, recordId: id, status: body.status, previousStatus: oldStatus, hooks: hooksExecuted }, { status: 200 });
       }
     }
 

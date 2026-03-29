@@ -96,6 +96,8 @@ export type PdfTemplateMeta = {
   images?: PdfImageMapping[];
   drawings?: PdfDrawing[];
   flows?: string[];
+  /** Only show this template when policy status matches (empty = always) */
+  showWhenStatus?: string[];
   description?: string;
 };
 

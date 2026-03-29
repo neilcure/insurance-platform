@@ -56,6 +56,7 @@ export default function UploadDocumentTypesManager() {
   const [meta, setMeta] = React.useState<UploadDocumentTypeMeta>(defaultMeta());
 
   const [flows, setFlows] = React.useState<{ label: string; value: string }[]>([]);
+  const [statusOptions, setStatusOptions] = React.useState<{ label: string; value: string }[]>([]);
 
   async function load() {
     setLoading(true);
@@ -78,6 +79,12 @@ export default function UploadDocumentTypesManager() {
       .then((r) => (r.ok ? r.json() : []))
       .then((r: { label: string; value: string }[]) =>
         setFlows(r.map((f) => ({ label: f.label, value: f.value }))),
+      )
+      .catch(() => {});
+    fetch("/api/form-options?groupKey=policy_statuses", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((r: { label: string; value: string }[]) =>
+        setStatusOptions(Array.isArray(r) ? r.map((s) => ({ label: s.label, value: s.value })) : []),
       )
       .catch(() => {});
   }, []);
@@ -369,6 +376,34 @@ export default function UploadDocumentTypesManager() {
                         }
                       />
                       {f.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {statusOptions.length > 0 && (
+              <div className="grid gap-1">
+                <Label>
+                  Show When Status{" "}
+                  <span className="text-xs text-neutral-400">(optional - empty = always)</span>
+                </Label>
+                <div className="flex flex-wrap gap-2">
+                  {statusOptions.map((s) => (
+                    <label key={s.value} className="flex items-center gap-1.5 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={(meta as any).showWhenStatus?.includes(s.value) ?? false}
+                        onChange={(e) =>
+                          setMeta((m) => ({
+                            ...m,
+                            showWhenStatus: e.target.checked
+                              ? [...((m as any).showWhenStatus ?? []), s.value]
+                              : ((m as any).showWhenStatus ?? []).filter((v: string) => v !== s.value),
+                          }))
+                        }
+                      />
+                      {s.label}
                     </label>
                   ))}
                 </div>

@@ -22,10 +22,12 @@ export function UploadDocumentsTab({
   policyId,
   flowKey,
   isAdmin,
+  currentStatus,
 }: {
   policyId: number;
   flowKey?: string;
   isAdmin: boolean;
+  currentStatus?: string;
 }) {
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -47,9 +49,15 @@ export function UploadDocumentsTab({
 
       const applicable = types.filter((t) => {
         const flows = t.meta?.flows;
-        if (!flows || flows.length === 0) return true;
-        if (!flowKey) return false;
-        return flows.includes(flowKey);
+        if (flows && flows.length > 0) {
+          if (!flowKey || !flows.includes(flowKey)) return false;
+        }
+        const sws = (t.meta as any)?.showWhenStatus as string[] | undefined;
+        if (sws && sws.length > 0) {
+          const status = currentStatus || "active";
+          if (!sws.includes(status)) return false;
+        }
+        return true;
       });
 
       const reqs: DocumentRequirement[] = applicable.map((t) => {
@@ -88,7 +96,7 @@ export function UploadDocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [policyId, flowKey, refreshKey]);
+  }, [policyId, flowKey, currentStatus, refreshKey]);
 
   function refresh() {
     setRefreshKey((k) => k + 1);

@@ -12,21 +12,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, CheckSquare, Square, ArrowLeft } from "lucide-react";
 import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
   TemplateSection,
   TemplateFieldMapping,
 } from "@/lib/types/document-template";
+import { FIELD_KEY_HINTS } from "@/lib/types/pdf-template";
 
 const GROUP_KEY = "document_templates";
 
@@ -40,12 +34,16 @@ const TEMPLATE_TYPES: { value: DocumentTemplateMeta["type"]; label: string }[] =
     { value: "custom", label: "Custom" },
   ];
 
-const SOURCE_OPTIONS: { value: TemplateSection["source"]; label: string }[] = [
+const SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "insured", label: "Insured Info" },
   { value: "contactinfo", label: "Contact Info" },
   { value: "package", label: "Package (custom)" },
   { value: "policy", label: "Policy Info" },
   { value: "agent", label: "Agent Info" },
+  { value: "accounting", label: "Accounting / Premium" },
+  { value: "client", label: "Client Info" },
+  { value: "organisation", label: "Organisation" },
+  { value: "custom", label: "Custom (manual)" },
 ];
 
 const FORMAT_OPTIONS: {
@@ -106,6 +104,35 @@ export default function DocumentTemplatesManager() {
   const [flows, setFlows] = React.useState<
     { label: string; value: string }[]
   >([]);
+  const [statusOptions, setStatusOptions] = React.useState<{ label: string; value: string }[]>([]);
+  const [pkgFieldsCache, setPkgFieldsCache] = React.useState<Record<string, { key: string; label: string }[]>>({});
+
+  const loadPkgFields = React.useCallback(async (pkg: string) => {
+    if (pkgFieldsCache[pkg]) return;
+    try {
+      const res = await fetch(`/api/admin/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}&all=true`, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as { label: string; value: string; isActive?: boolean }[];
+      setPkgFieldsCache((prev) => ({
+        ...prev,
+        [pkg]: Array.isArray(data)
+          ? data.filter((f) => f.isActive !== false).map((f) => ({ key: f.value, label: f.label }))
+          : [],
+      }));
+    } catch { /* ignore */ }
+  }, [pkgFieldsCache]);
+
+  function getFieldsForSource(source: string, packageName?: string): { key: string; label: string }[] {
+    if (source === "package" && packageName) {
+      return pkgFieldsCache[packageName] ?? [];
+    }
+    const hints = (FIELD_KEY_HINTS as Record<string, string[]>)[source];
+    if (!hints) return [];
+    return hints.map((k) => ({
+      key: k,
+      label: k.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()).trim(),
+    }));
+  }
 
   async function load() {
     setLoading(true);
@@ -126,11 +153,14 @@ export default function DocumentTemplatesManager() {
   }
 
   async function loadLookups() {
-    const [pkgRes, flowRes] = await Promise.all([
+    const [pkgRes, flowRes, statusRes] = await Promise.all([
       fetch("/api/form-options?groupKey=packages", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
       fetch("/api/form-options?groupKey=flows", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+      fetch("/api/form-options?groupKey=policy_statuses", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
     ]);
@@ -145,6 +175,9 @@ export default function DocumentTemplatesManager() {
         label: f.label,
         value: f.value,
       })),
+    );
+    setStatusOptions(
+      Array.isArray(statusRes) ? (statusRes as { label: string; value: string }[]).map((s) => ({ label: s.label, value: s.value })) : [],
     );
   }
 
@@ -321,6 +354,544 @@ export default function DocumentTemplatesManager() {
     }
   }
 
+  if (open) {
+    return (
+      <div className="space-y-6">
+        {/* Top bar */}
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2 text-sm text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back to Templates
+          </button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={save}>
+              {editing ? "Save" : "Create"}
+            </Button>
+          </div>
+        </div>
+
+        <h2 className="text-lg font-semibold">
+          {editing ? "Edit Template" : "Create Template"}
+        </h2>
+
+        <div className="grid gap-6">
+          {/* Basic info */}
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <div className="grid gap-1">
+              <Label>Template Name</Label>
+              <Input
+                value={formLabel}
+                onChange={(e) => setFormLabel(e.target.value)}
+                placeholder="Motor Quotation"
+              />
+            </div>
+            <div className="grid gap-1">
+              <Label>Key</Label>
+              <Input
+                value={formValue}
+                onChange={(e) => setFormValue(e.target.value)}
+                placeholder="motor_quotation"
+              />
+            </div>
+            <div className="grid gap-1">
+              <Label>Type</Label>
+              <select
+                className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                value={meta.type}
+                onChange={(e) =>
+                  setMeta((m) => ({
+                    ...m,
+                    type: e.target.value as DocumentTemplateMeta["type"],
+                  }))
+                }
+              >
+                {TEMPLATE_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="grid gap-1">
+              <Label>Sort Order</Label>
+              <Input
+                type="number"
+                value={String(formSort)}
+                onChange={(e) => setFormSort(Number(e.target.value))}
+              />
+            </div>
+          </div>
+
+          {/* Flow restriction */}
+          <div className="grid gap-1">
+            <Label>
+              Restrict to Flows{" "}
+              <span className="text-xs text-neutral-400">(optional)</span>
+            </Label>
+            <div className="flex flex-wrap gap-3">
+              {flows.map((f) => (
+                <label
+                  key={f.value}
+                  className="flex items-center gap-1.5 text-sm"
+                >
+                  <input
+                    type="checkbox"
+                    checked={meta.flows?.includes(f.value) ?? false}
+                    onChange={(e) =>
+                      setMeta((m) => ({
+                        ...m,
+                        flows: e.target.checked
+                          ? [...(m.flows ?? []), f.value]
+                          : (m.flows ?? []).filter((v) => v !== f.value),
+                      }))
+                    }
+                  />
+                  {f.label}
+                </label>
+              ))}
+              {flows.length === 0 && (
+                <span className="text-xs text-neutral-400">
+                  No flows defined
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Show When Status */}
+          {statusOptions.length > 0 && (
+            <div className="grid gap-1">
+              <Label>
+                Show When Status{" "}
+                <span className="text-xs text-neutral-400">(optional - empty = always)</span>
+              </Label>
+              <div className="flex flex-wrap gap-3">
+                {statusOptions.map((s) => (
+                  <label key={s.value} className="flex items-center gap-1.5 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={meta.showWhenStatus?.includes(s.value) ?? false}
+                      onChange={(e) =>
+                        setMeta((m) => ({
+                          ...m,
+                          showWhenStatus: e.target.checked
+                            ? [...(m.showWhenStatus ?? []), s.value]
+                            : (m.showWhenStatus ?? []).filter((v) => v !== s.value),
+                        }))
+                      }
+                    />
+                    {s.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Header */}
+          <fieldset className="rounded-md border border-neutral-200 p-4 dark:border-neutral-700">
+            <legend className="px-1 text-sm font-medium">Header</legend>
+            <div className="grid gap-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="grid gap-1">
+                  <Label>Title</Label>
+                  <Input
+                    value={meta.header.title}
+                    onChange={(e) =>
+                      setMeta((m) => ({
+                        ...m,
+                        header: { ...m.header, title: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <Label>Subtitle</Label>
+                  <Input
+                    value={meta.header.subtitle ?? ""}
+                    onChange={(e) =>
+                      setMeta((m) => ({
+                        ...m,
+                        header: { ...m.header, subtitle: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+              <div className="flex gap-6">
+                <label className="flex items-center gap-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={meta.header.showDate !== false}
+                    onChange={(e) =>
+                      setMeta((m) => ({
+                        ...m,
+                        header: { ...m.header, showDate: e.target.checked },
+                      }))
+                    }
+                  />
+                  Show Date
+                </label>
+                <label className="flex items-center gap-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={meta.header.showPolicyNumber !== false}
+                    onChange={(e) =>
+                      setMeta((m) => ({
+                        ...m,
+                        header: {
+                          ...m.header,
+                          showPolicyNumber: e.target.checked,
+                        },
+                      }))
+                    }
+                  />
+                  Show Policy #
+                </label>
+              </div>
+            </div>
+          </fieldset>
+
+          {/* Sections */}
+          <fieldset className="rounded-md border border-neutral-200 p-4 dark:border-neutral-700">
+            <legend className="px-1 text-sm font-medium">
+              Sections &amp; Fields
+            </legend>
+            <div className="mb-4 rounded-md bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-950/30 dark:text-blue-300">
+              <strong>Tip:</strong> Select ALL fields you might need — fields with no data are <strong>automatically hidden</strong> when the document is generated. 
+              For example, you can include <code className="rounded bg-blue-100 px-1 text-xs dark:bg-blue-900/50">make</code>, <code className="rounded bg-blue-100 px-1 text-xs dark:bg-blue-900/50">commake</code>, <code className="rounded bg-blue-100 px-1 text-xs dark:bg-blue-900/50">solomake</code> in one template — only the one with data will appear. No need for separate templates per vehicle type or insured type.
+            </div>
+
+            <div className="space-y-5">
+              {meta.sections.map((section, sIdx) => {
+                const availableFields = getFieldsForSource(section.source, section.packageName);
+                const needsLoad = section.source === "package" && section.packageName && !pkgFieldsCache[section.packageName];
+                if (needsLoad && section.packageName) void loadPkgFields(section.packageName);
+
+                const selectedKeys = new Set(section.fields.map((f) => f.key));
+                const allSelected = availableFields.length > 0 && availableFields.every((f) => selectedKeys.has(f.key));
+
+                const toggleField = (fieldDef: { key: string; label: string }, checked: boolean) => {
+                  if (checked) {
+                    setMeta((m) => ({
+                      ...m,
+                      sections: m.sections.map((s, i) =>
+                        i === sIdx
+                          ? { ...s, fields: [...s.fields, { key: fieldDef.key, label: fieldDef.label, format: "text" }] }
+                          : s,
+                      ),
+                    }));
+                  } else {
+                    removeField(sIdx, section.fields.findIndex((f) => f.key === fieldDef.key));
+                  }
+                };
+
+                const selectAll = () => {
+                  const existing = new Set(section.fields.map((f) => f.key));
+                  const toAdd = availableFields.filter((f) => !existing.has(f.key));
+                  setMeta((m) => ({
+                    ...m,
+                    sections: m.sections.map((s, i) =>
+                      i === sIdx
+                        ? { ...s, fields: [...s.fields, ...toAdd.map((f) => ({ key: f.key, label: f.label, format: "text" as const }))] }
+                        : s,
+                    ),
+                  }));
+                };
+
+                const deselectAll = () => {
+                  setMeta((m) => ({
+                    ...m,
+                    sections: m.sections.map((s, i) =>
+                      i === sIdx ? { ...s, fields: [] } : s,
+                    ),
+                  }));
+                };
+
+                return (
+                  <div
+                    key={section.id}
+                    className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-700"
+                  >
+                    <div className="mb-3 flex items-center gap-3">
+                      <Input
+                        className="h-9 flex-1 text-sm"
+                        placeholder="Section title"
+                        value={section.title}
+                        onChange={(e) =>
+                          updateSection(sIdx, { title: e.target.value })
+                        }
+                      />
+                      <select
+                        className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                        value={section.source}
+                        onChange={(e) => {
+                          updateSection(sIdx, {
+                            source: e.target.value as TemplateSection["source"],
+                            fields: [],
+                          });
+                        }}
+                      >
+                        {SOURCE_OPTIONS.map((s) => (
+                          <option key={s.value} value={s.value}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                      {section.source === "package" && (
+                        <select
+                          className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                          value={section.packageName ?? ""}
+                          onChange={(e) => {
+                            updateSection(sIdx, {
+                              packageName: e.target.value,
+                              fields: [],
+                            });
+                            if (e.target.value) void loadPkgFields(e.target.value);
+                          }}
+                        >
+                          <option value="">Pick package...</option>
+                          {packages.map((p) => (
+                            <option key={p.value} value={p.value}>
+                              {p.label}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => removeSection(sIdx)}
+                        className="h-9 w-9 shrink-0 text-red-500"
+                        aria-label="Remove section"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+
+                    {/* Field picker */}
+                    {availableFields.length > 0 ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={allSelected ? deselectAll : selectAll}
+                            className="flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+                          >
+                            {allSelected ? (
+                              <><Square className="h-4 w-4" /> Deselect All</>
+                            ) : (
+                              <><CheckSquare className="h-4 w-4" /> Select All</>
+                            )}
+                          </button>
+                          <span className="text-sm text-neutral-400">
+                            {selectedKeys.size}/{availableFields.length} selected
+                          </span>
+                        </div>
+                        {(() => {
+                          const groups: { label: string; fields: { key: string; label: string }[] }[] = [];
+                          const labelMap = new Map<string, { key: string; label: string }[]>();
+                          for (const fd of availableFields) {
+                            const norm = fd.label.toLowerCase().trim();
+                            if (!labelMap.has(norm)) {
+                              labelMap.set(norm, []);
+                              groups.push({ label: fd.label, fields: labelMap.get(norm)! });
+                            }
+                            labelMap.get(norm)!.push(fd);
+                          }
+                          return (
+                            <div className="grid grid-cols-2 gap-2 lg:grid-cols-3 xl:grid-cols-4">
+                              {groups.map((g) => {
+                                const isMulti = g.fields.length > 1;
+                                if (!isMulti) {
+                                  const fd = g.fields[0];
+                                  const isChecked = selectedKeys.has(fd.key);
+                                  return (
+                                    <label key={fd.key} className={`flex items-center gap-2 text-sm cursor-pointer rounded-md border px-3 py-2 transition-colors ${isChecked ? "border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-950/30" : "border-neutral-300 hover:border-neutral-400 hover:bg-neutral-50 dark:border-neutral-600 dark:hover:border-neutral-500 dark:hover:bg-neutral-800/50"}`}>
+                                      <input type="checkbox" checked={isChecked} onChange={(e) => toggleField(fd, e.target.checked)} className="h-4 w-4 shrink-0" />
+                                      <span className="min-w-0">
+                                        <span className={`block text-sm font-semibold leading-tight ${isChecked ? "text-blue-900 dark:text-blue-200" : "text-neutral-600 dark:text-neutral-400"}`}>{fd.label}</span>
+                                        <span className="block text-[10px] leading-tight text-neutral-400 font-mono">{fd.key}</span>
+                                      </span>
+                                    </label>
+                                  );
+                                }
+                                const anyChecked = g.fields.some((fd) => selectedKeys.has(fd.key));
+                                return (
+                                  <div key={g.label} className={`rounded-md border-2 p-2 transition-colors ${anyChecked ? "border-blue-400 bg-blue-50/50 dark:border-blue-500 dark:bg-blue-950/20" : "border-neutral-300 dark:border-neutral-600"}`}>
+                                    <div className="mb-1.5 text-xs font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">{g.label}</div>
+                                    <div className="space-y-1">
+                                      {g.fields.map((fd) => {
+                                        const isChecked = selectedKeys.has(fd.key);
+                                        return (
+                                          <label key={fd.key} className={`flex items-center gap-2 text-sm cursor-pointer rounded px-2 py-1 transition-colors ${isChecked ? "bg-blue-100 dark:bg-blue-900/40" : "hover:bg-neutral-100 dark:hover:bg-neutral-800/50"}`}>
+                                            <input type="checkbox" checked={isChecked} onChange={(e) => toggleField(fd, e.target.checked)} className="h-4 w-4 shrink-0" />
+                                            <span className={`text-sm font-mono ${isChecked ? "font-semibold text-blue-900 dark:text-blue-200" : "text-neutral-500 dark:text-neutral-400"}`}>{fd.key}</span>
+                                          </label>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Selected fields - editable labels */}
+                        {section.fields.length > 0 && (
+                          <div className="mt-3 rounded-md border border-neutral-200 dark:border-neutral-700">
+                            <div className="flex items-center gap-2 border-b border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-medium text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800/50 dark:text-neutral-400">
+                              <span className="w-40">Field Key</span>
+                              <span className="flex-1">Display Label (editable)</span>
+                              <span className="w-24">Format</span>
+                              <span className="w-8" />
+                            </div>
+                            {section.fields.map((field, fIdx) => (
+                              <div key={field.key} className="flex items-center gap-2 border-b border-neutral-100 px-3 py-1 last:border-b-0 dark:border-neutral-800">
+                                <span className="w-40 shrink-0 text-xs font-mono text-neutral-400">{field.key}</span>
+                                <Input
+                                  className="h-7 flex-1 text-sm"
+                                  value={field.label}
+                                  onChange={(e) => updateField(sIdx, fIdx, { label: e.target.value })}
+                                />
+                                <select
+                                  className="h-7 w-24 shrink-0 rounded border border-neutral-300 bg-white px-1 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                                  value={field.format ?? "text"}
+                                  onChange={(e) =>
+                                    updateField(sIdx, fIdx, {
+                                      format: e.target.value as TemplateFieldMapping["format"],
+                                    })
+                                  }
+                                >
+                                  {FORMAT_OPTIONS.map((fo) => (
+                                    <option key={fo.value} value={fo.value}>{fo.label}</option>
+                                  ))}
+                                </select>
+                                <Button
+                                  size="iconCompact"
+                                  variant="ghost"
+                                  onClick={() => removeField(sIdx, fIdx)}
+                                  className="h-6 w-6 shrink-0 text-red-500"
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : section.source === "package" && !section.packageName ? (
+                      <p className="text-sm text-neutral-400 py-2">Select a package first</p>
+                    ) : needsLoad ? (
+                      <p className="text-sm text-neutral-400 py-2">Loading fields...</p>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="text-sm text-neutral-400">No predefined fields. Add manually:</p>
+                        {section.fields.map((field, fIdx) => (
+                          <div key={fIdx} className="flex items-center gap-2">
+                            <Input
+                              className="h-8 flex-1 text-sm"
+                              placeholder="Field key"
+                              value={field.key}
+                              onChange={(e) => updateField(sIdx, fIdx, { key: e.target.value })}
+                            />
+                            <Input
+                              className="h-8 flex-1 text-sm"
+                              placeholder="Display label"
+                              value={field.label}
+                              onChange={(e) => updateField(sIdx, fIdx, { label: e.target.value })}
+                            />
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              onClick={() => removeField(sIdx, fIdx)}
+                              className="h-8 w-8 shrink-0 text-red-500"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ))}
+                        <Button size="sm" variant="ghost" className="gap-1" onClick={() => addField(sIdx)}>
+                          <Plus className="h-4 w-4" /> Add Field
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-4 gap-1"
+              onClick={() =>
+                setMeta((m) => ({
+                  ...m,
+                  sections: [...m.sections, newSection()],
+                }))
+              }
+            >
+              <Plus className="h-4 w-4" /> Add Section
+            </Button>
+          </fieldset>
+
+          {/* Footer */}
+          <fieldset className="rounded-md border border-neutral-200 p-4 dark:border-neutral-700">
+            <legend className="px-1 text-sm font-medium">Footer</legend>
+            <div className="grid gap-3">
+              <div className="grid gap-1">
+                <Label>Footer Text</Label>
+                <Input
+                  value={meta.footer?.text ?? ""}
+                  onChange={(e) =>
+                    setMeta((m) => ({
+                      ...m,
+                      footer: { ...m.footer, text: e.target.value },
+                    }))
+                  }
+                  placeholder="Terms and conditions apply..."
+                />
+              </div>
+              <label className="flex items-center gap-1.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={meta.footer?.showSignature ?? false}
+                  onChange={(e) =>
+                    setMeta((m) => ({
+                      ...m,
+                      footer: {
+                        ...m.footer,
+                        showSignature: e.target.checked,
+                      },
+                    }))
+                  }
+                />
+                Show Signature Lines
+              </label>
+            </div>
+          </fieldset>
+        </div>
+
+        {/* Bottom save bar */}
+        <div className="flex items-center justify-end gap-2 border-t border-neutral-200 pt-4 dark:border-neutral-700">
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button onClick={save}>
+            {editing ? "Save" : "Create"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -409,366 +980,6 @@ export default function DocumentTemplatesManager() {
           </TableBody>
         </Table>
       </div>
-
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>
-              {editing ? "Edit Template" : "Create Template"}
-            </DialogTitle>
-          </DialogHeader>
-
-          <div className="grid gap-4">
-            {/* Basic info */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1">
-                <Label>Template Name</Label>
-                <Input
-                  value={formLabel}
-                  onChange={(e) => setFormLabel(e.target.value)}
-                  placeholder="Motor Quotation"
-                />
-              </div>
-              <div className="grid gap-1">
-                <Label>Key</Label>
-                <Input
-                  value={formValue}
-                  onChange={(e) => setFormValue(e.target.value)}
-                  placeholder="motor_quotation"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1">
-                <Label>Type</Label>
-                <select
-                  className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                  value={meta.type}
-                  onChange={(e) =>
-                    setMeta((m) => ({
-                      ...m,
-                      type: e.target.value as DocumentTemplateMeta["type"],
-                    }))
-                  }
-                >
-                  {TEMPLATE_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="grid gap-1">
-                <Label>Sort Order</Label>
-                <Input
-                  type="number"
-                  value={String(formSort)}
-                  onChange={(e) => setFormSort(Number(e.target.value))}
-                />
-              </div>
-            </div>
-
-            {/* Flow restriction */}
-            <div className="grid gap-1">
-              <Label>
-                Restrict to Flows{" "}
-                <span className="text-xs text-neutral-400">(optional)</span>
-              </Label>
-              <div className="flex flex-wrap gap-2">
-                {flows.map((f) => (
-                  <label
-                    key={f.value}
-                    className="flex items-center gap-1.5 text-xs"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={meta.flows?.includes(f.value) ?? false}
-                      onChange={(e) =>
-                        setMeta((m) => ({
-                          ...m,
-                          flows: e.target.checked
-                            ? [...(m.flows ?? []), f.value]
-                            : (m.flows ?? []).filter((v) => v !== f.value),
-                        }))
-                      }
-                    />
-                    {f.label}
-                  </label>
-                ))}
-                {flows.length === 0 && (
-                  <span className="text-xs text-neutral-400">
-                    No flows defined
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Header */}
-            <fieldset className="rounded-md border border-neutral-200 p-3 dark:border-neutral-700">
-              <legend className="px-1 text-sm font-medium">Header</legend>
-              <div className="grid gap-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-1">
-                    <Label>Title</Label>
-                    <Input
-                      value={meta.header.title}
-                      onChange={(e) =>
-                        setMeta((m) => ({
-                          ...m,
-                          header: { ...m.header, title: e.target.value },
-                        }))
-                      }
-                    />
-                  </div>
-                  <div className="grid gap-1">
-                    <Label>Subtitle</Label>
-                    <Input
-                      value={meta.header.subtitle ?? ""}
-                      onChange={(e) =>
-                        setMeta((m) => ({
-                          ...m,
-                          header: { ...m.header, subtitle: e.target.value },
-                        }))
-                      }
-                    />
-                  </div>
-                </div>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-1.5 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={meta.header.showDate !== false}
-                      onChange={(e) =>
-                        setMeta((m) => ({
-                          ...m,
-                          header: { ...m.header, showDate: e.target.checked },
-                        }))
-                      }
-                    />
-                    Show Date
-                  </label>
-                  <label className="flex items-center gap-1.5 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={meta.header.showPolicyNumber !== false}
-                      onChange={(e) =>
-                        setMeta((m) => ({
-                          ...m,
-                          header: {
-                            ...m.header,
-                            showPolicyNumber: e.target.checked,
-                          },
-                        }))
-                      }
-                    />
-                    Show Policy #
-                  </label>
-                </div>
-              </div>
-            </fieldset>
-
-            {/* Sections */}
-            <fieldset className="rounded-md border border-neutral-200 p-3 dark:border-neutral-700">
-              <legend className="px-1 text-sm font-medium">
-                Sections &amp; Fields
-              </legend>
-              <p className="mb-3 text-[11px] text-neutral-500 dark:text-neutral-400">
-                Each section pulls data from a specific source in the policy
-                snapshot. Add fields with the exact key names used in your
-                packages.
-              </p>
-
-              <div className="space-y-4">
-                {meta.sections.map((section, sIdx) => (
-                  <div
-                    key={section.id}
-                    className="rounded border border-neutral-200 p-2 dark:border-neutral-700"
-                  >
-                    <div className="mb-2 flex items-center gap-2">
-                      <Input
-                        className="h-7 flex-1 text-xs"
-                        placeholder="Section title"
-                        value={section.title}
-                        onChange={(e) =>
-                          updateSection(sIdx, { title: e.target.value })
-                        }
-                      />
-                      <select
-                        className="h-7 rounded border border-neutral-300 bg-white px-1 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                        value={section.source}
-                        onChange={(e) =>
-                          updateSection(sIdx, {
-                            source: e.target
-                              .value as TemplateSection["source"],
-                          })
-                        }
-                      >
-                        {SOURCE_OPTIONS.map((s) => (
-                          <option key={s.value} value={s.value}>
-                            {s.label}
-                          </option>
-                        ))}
-                      </select>
-                      {section.source === "package" && (
-                        <select
-                          className="h-7 rounded border border-neutral-300 bg-white px-1 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                          value={section.packageName ?? ""}
-                          onChange={(e) =>
-                            updateSection(sIdx, {
-                              packageName: e.target.value,
-                            })
-                          }
-                        >
-                          <option value="">Pick package...</option>
-                          {packages.map((p) => (
-                            <option key={p.value} value={p.value}>
-                              {p.label}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                      <Button
-                        size="iconCompact"
-                        variant="ghost"
-                        onClick={() => removeSection(sIdx)}
-                        className="h-6 w-6 shrink-0 text-red-500"
-                        aria-label="Remove section"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-
-                    {/* Fields */}
-                    <div className="space-y-1">
-                      {section.fields.map((field, fIdx) => (
-                        <div
-                          key={fIdx}
-                          className="flex items-center gap-1"
-                        >
-                          <Input
-                            className="h-6 flex-1 text-[11px]"
-                            placeholder="Field key (e.g. companyName)"
-                            value={field.key}
-                            onChange={(e) =>
-                              updateField(sIdx, fIdx, {
-                                key: e.target.value,
-                              })
-                            }
-                          />
-                          <Input
-                            className="h-6 flex-1 text-[11px]"
-                            placeholder="Display label"
-                            value={field.label}
-                            onChange={(e) =>
-                              updateField(sIdx, fIdx, {
-                                label: e.target.value,
-                              })
-                            }
-                          />
-                          <select
-                            className="h-6 rounded border border-neutral-300 bg-white px-1 text-[11px] dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                            value={field.format ?? "text"}
-                            onChange={(e) =>
-                              updateField(sIdx, fIdx, {
-                                format:
-                                  e.target.value as TemplateFieldMapping["format"],
-                              })
-                            }
-                          >
-                            {FORMAT_OPTIONS.map((f) => (
-                              <option key={f.value} value={f.value}>
-                                {f.label}
-                              </option>
-                            ))}
-                          </select>
-                          <Button
-                            size="iconCompact"
-                            variant="ghost"
-                            onClick={() => removeField(sIdx, fIdx)}
-                            className="h-5 w-5 shrink-0 text-red-500"
-                            aria-label="Remove field"
-                          >
-                            <Trash2 className="h-2.5 w-2.5" />
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="mt-1 h-6 gap-1 text-[11px]"
-                      onClick={() => addField(sIdx)}
-                    >
-                      <Plus className="h-3 w-3" /> Add Field
-                    </Button>
-                  </div>
-                ))}
-              </div>
-
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-3 gap-1"
-                onClick={() =>
-                  setMeta((m) => ({
-                    ...m,
-                    sections: [...m.sections, newSection()],
-                  }))
-                }
-              >
-                <Plus className="h-3 w-3" /> Add Section
-              </Button>
-            </fieldset>
-
-            {/* Footer */}
-            <fieldset className="rounded-md border border-neutral-200 p-3 dark:border-neutral-700">
-              <legend className="px-1 text-sm font-medium">Footer</legend>
-              <div className="grid gap-2">
-                <div className="grid gap-1">
-                  <Label>Footer Text</Label>
-                  <Input
-                    value={meta.footer?.text ?? ""}
-                    onChange={(e) =>
-                      setMeta((m) => ({
-                        ...m,
-                        footer: { ...m.footer, text: e.target.value },
-                      }))
-                    }
-                    placeholder="Terms and conditions apply..."
-                  />
-                </div>
-                <label className="flex items-center gap-1.5 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={meta.footer?.showSignature ?? false}
-                    onChange={(e) =>
-                      setMeta((m) => ({
-                        ...m,
-                        footer: {
-                          ...m.footer,
-                          showSignature: e.target.checked,
-                        },
-                      }))
-                    }
-                  />
-                  Show Signature Lines
-                </label>
-              </div>
-            </fieldset>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={save}>
-              {editing ? "Save" : "Create"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
