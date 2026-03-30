@@ -79,7 +79,45 @@ export function WorkflowTab({
   const currentDef = allKnownStatuses.get(curStatus);
   const history = statusHistory ?? [];
 
+  const { insuredType, hasNcb } = React.useMemo(() => {
+    const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
+    const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
+    const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
+
+    const rawType = String(
+      insured.insuredType ?? insured.insured__category ?? insured.category ?? "",
+    ).trim().toLowerCase();
+    const iType = rawType === "personal" || rawType === "company" ? rawType : undefined;
+
+    const ncbPattern = /^(ncb|ncd|ncbpercent|ncdpercent|no.?claim.?(bonus|discount))/i;
+    let foundNcb = false;
+    const scanForNcb = (obj: Record<string, unknown>) => {
+      for (const [k, v] of Object.entries(obj)) {
+        if (ncbPattern.test(k) && v != null && v !== "" && v !== 0 && v !== "0") {
+          foundNcb = true;
+          return;
+        }
+      }
+    };
+    for (const [, pkgVal] of Object.entries(pkgs)) {
+      if (pkgVal && typeof pkgVal === "object") {
+        const pkg = pkgVal as Record<string, unknown>;
+        if (pkg.values && typeof pkg.values === "object") {
+          scanForNcb(pkg.values as Record<string, unknown>);
+        } else {
+          scanForNcb(pkg);
+        }
+        if (foundNcb) break;
+      }
+    }
+
+    return { insuredType: iType, hasNcb: foundNcb };
+  }, [detail.extraAttributes]);
+
   const [showOverride, setShowOverride] = React.useState(false);
+  const [uploadSummary, setUploadSummary] = React.useState<{
+    total: number; verified: number; pending: number; outstanding: number; rejected: number;
+  } | null>(null);
 
   const toggleSection = (id: string) => {
     setExpandedSection((prev) => (prev === id ? null : id));
@@ -93,28 +131,25 @@ export function WorkflowTab({
 
   return (
     <div className="space-y-3">
-      {/* Current status + inline manual override */}
-      <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-        <div className="flex items-center justify-between">
-          <div className="text-xs text-neutral-500 dark:text-neutral-400">Current Status</div>
-          <div className="flex items-center gap-2">
+      {/* Current status */}
+      <div className="rounded-md border border-neutral-200 dark:border-neutral-800 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => { if (isAdmin) setShowOverride((v) => !v); }}
+          className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
+        >
+          <span>Current Status</span>
+          <span className="flex items-center gap-2">
             <Badge variant={currentDef?.color ? "custom" : "secondary"} className={currentDef?.color ?? ""}>
               {currentDef?.label ?? curStatus}
             </Badge>
             {isAdmin && (
-              <button
-                type="button"
-                onClick={() => setShowOverride((v) => !v)}
-                className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
-                title="Manual override"
-              >
-                ✎
-              </button>
+              <ChevronRight className={`h-4 w-4 shrink-0 text-neutral-400 transition-transform ${showOverride ? "rotate-90" : ""}`} />
             )}
-          </div>
-        </div>
+          </span>
+        </button>
         {showOverride && isAdmin && (
-          <div className="mt-2 border-t border-neutral-200 pt-2 dark:border-neutral-700">
+          <div className="border-t border-neutral-200 p-3 dark:border-neutral-800">
             <React.Suspense fallback={<div className="py-2 text-center text-xs text-neutral-400">Loading...</div>}>
               <StatusTab
                 policyId={detail.policyId}
@@ -139,10 +174,58 @@ export function WorkflowTab({
             onClick={() => toggleSection(sec.id)}
             className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
           >
-            {sec.label}
-            <ChevronRight className={`h-4 w-4 text-neutral-400 transition-transform ${expandedSection === sec.id ? "rotate-90" : ""}`} />
+            <span>{sec.label}</span>
+            <span className="flex items-center gap-1.5">
+              {sec.id === "uploads" && uploadSummary && uploadSummary.total > 0 && (() => {
+                const allDone = uploadSummary.verified === uploadSummary.total;
+                return (
+                  <>
+                    <Badge
+                      variant="custom"
+                      className={allDone
+                        ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                        : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                      }
+                    >
+                      {uploadSummary.verified}/{uploadSummary.total}
+                    </Badge>
+                    {uploadSummary.outstanding > 0 && (
+                      <Badge variant="custom" className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
+                        {uploadSummary.outstanding} outstanding
+                      </Badge>
+                    )}
+                    {uploadSummary.pending > 0 && (
+                      <Badge variant="custom" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                        {uploadSummary.pending} pending
+                      </Badge>
+                    )}
+                    {uploadSummary.rejected > 0 && (
+                      <Badge variant="custom" className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                        {uploadSummary.rejected} rejected
+                      </Badge>
+                    )}
+                  </>
+                );
+              })()}
+              <ChevronRight className={`h-4 w-4 shrink-0 text-neutral-400 transition-transform ${expandedSection === sec.id ? "rotate-90" : ""}`} />
+            </span>
           </button>
-          {expandedSection === sec.id && (
+          {sec.id === "uploads" && (
+            <div className={expandedSection === sec.id ? "border-t border-neutral-200 p-3 dark:border-neutral-800" : "hidden"}>
+              <React.Suspense fallback={<div className="py-4 text-center text-xs text-neutral-400">Loading...</div>}>
+                <UploadDocumentsTab
+                  policyId={detail.policyId}
+                  flowKey={flowKey}
+                  isAdmin={isAdmin ?? false}
+                  currentStatus={curStatus}
+                  insuredType={insuredType}
+                  hasNcb={hasNcb}
+                  onSummaryChange={setUploadSummary}
+                />
+              </React.Suspense>
+            </div>
+          )}
+          {sec.id !== "uploads" && expandedSection === sec.id && (
             <div className="border-t border-neutral-200 p-3 dark:border-neutral-800">
               <React.Suspense fallback={<div className="py-4 text-center text-xs text-neutral-400">Loading...</div>}>
                 {sec.id === "documents" && (
@@ -151,14 +234,6 @@ export function WorkflowTab({
                     flowKey={flowKey}
                     currentStatus={curStatus}
                     onStatusAutoAdvanced={onRefresh}
-                  />
-                )}
-                {sec.id === "uploads" && (
-                  <UploadDocumentsTab
-                    policyId={detail.policyId}
-                    flowKey={flowKey}
-                    isAdmin={isAdmin ?? false}
-                    currentStatus={curStatus}
                   />
                 )}
                 {sec.id === "actions" && (

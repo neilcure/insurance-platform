@@ -18,21 +18,36 @@ function computeDisplayStatus(uploads: PolicyDocumentRow[]): DocumentStatus {
   return "outstanding";
 }
 
+export type UploadSummary = {
+  total: number;
+  verified: number;
+  pending: number;
+  outstanding: number;
+  rejected: number;
+};
+
 export function UploadDocumentsTab({
   policyId,
   flowKey,
   isAdmin,
   currentStatus,
+  insuredType,
+  hasNcb,
+  onSummaryChange,
 }: {
   policyId: number;
   flowKey?: string;
   isAdmin: boolean;
   currentStatus?: string;
+  insuredType?: string;
+  hasNcb?: boolean;
+  onSummaryChange?: (summary: UploadSummary) => void;
 }) {
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshKey, setRefreshKey] = React.useState(0);
   const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
+  const [totalConfigured, setTotalConfigured] = React.useState(0);
 
   React.useEffect(() => {
     fetch(`/api/policies/${policyId}/linked-insurers`, { cache: "no-store" })
@@ -61,8 +76,15 @@ export function UploadDocumentsTab({
       fetch(`/api/policies/${policyId}/documents?_t=${Date.now()}`, { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
-    ]).then(([types, uploads]: [UploadDocumentTypeRow[], PolicyDocumentRow[]]) => {
+      fetch(`/api/form-options?groupKey=policy_statuses&_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+    ]).then(([types, uploads, statuses]: [UploadDocumentTypeRow[], PolicyDocumentRow[], { value: string; sortOrder: number }[]]) => {
       if (cancelled) return;
+      setTotalConfigured(types.length);
+
+      const statusOrder = new Map<string, number>();
+      for (const s of statuses) statusOrder.set(s.value, s.sortOrder ?? 0);
 
       const applicable = types.filter((t) => {
         const hasInsurerRestriction = t.meta?.insurerPolicyIds && t.meta.insurerPolicyIds.length > 0;
@@ -74,11 +96,27 @@ export function UploadDocumentsTab({
         } else {
           if (!matchesInsurer(t.meta?.insurerPolicyIds)) return false;
         }
+
         const sws = t.meta?.showWhenStatus;
         if (sws && sws.length > 0) {
           const status = currentStatus || "active";
-          if (!sws.includes(status)) return false;
+          const hasUploadsForType = uploads.some((u) => u.documentTypeKey === t.value);
+          if (!hasUploadsForType) {
+            const curOrder = statusOrder.get(status);
+            const earliestOrder = Math.min(...sws.map((s) => statusOrder.get(s) ?? Infinity));
+            if (curOrder != null && earliestOrder !== Infinity) {
+              if (curOrder < earliestOrder) return false;
+            } else {
+              if (!sws.includes(status)) return false;
+            }
+          }
         }
+
+        const its = t.meta?.insuredTypes;
+        if (its && its.length > 0 && insuredType) {
+          if (!its.includes(insuredType)) return false;
+        }
+        if (t.meta?.requireNcb && !hasNcb) return false;
         return true;
       });
 
@@ -118,7 +156,22 @@ export function UploadDocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [policyId, flowKey, currentStatus, refreshKey, policyInsurerIds]);
+  }, [policyId, flowKey, currentStatus, refreshKey, policyInsurerIds, insuredType, hasNcb]);
+
+  const summaryRef = React.useRef(onSummaryChange);
+  summaryRef.current = onSummaryChange;
+
+  React.useEffect(() => {
+    if (loading) return;
+    const s: UploadSummary = {
+      total: requirements.length,
+      verified: requirements.filter((r) => r.displayStatus === "verified").length,
+      pending: requirements.filter((r) => r.displayStatus === "uploaded").length,
+      outstanding: requirements.filter((r) => r.displayStatus === "outstanding").length,
+      rejected: requirements.filter((r) => r.displayStatus === "rejected").length,
+    };
+    summaryRef.current?.(s);
+  }, [requirements, loading]);
 
   function refresh() {
     setRefreshKey((k) => k + 1);
@@ -139,43 +192,29 @@ export function UploadDocumentsTab({
         <div className="text-sm font-medium text-neutral-600 dark:text-neutral-400">
           No upload requirements
         </div>
-        <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-          Go to Admin &rarr; Policy Settings &rarr; Upload Documents to configure
-          document types that need to be collected.
-        </p>
+        {totalConfigured === 0 ? (
+          <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+            Go to Admin &rarr; Policy Settings &rarr; Upload Documents to configure
+            document types that need to be collected.
+          </p>
+        ) : isAdmin && (
+          <div className="mt-2 space-y-1 text-[11px] text-neutral-400 dark:text-neutral-500">
+            <p>{totalConfigured} document type{totalConfigured !== 1 ? "s" : ""} configured but none match this policy.</p>
+            <p>
+              Policy context: flow=<span className="font-mono">{flowKey ?? "(none)"}</span>,
+              status=<span className="font-mono">{currentStatus ?? "active"}</span>,
+              insured=<span className="font-mono">{insuredType ?? "(unknown)"}</span>
+              {hasNcb && ", NCB=yes"}
+            </p>
+            <p>Check Flows, Status, Insured Type, and Insurance Company filters in Admin &rarr; Upload Documents.</p>
+          </div>
+        )}
       </div>
     );
   }
 
-  const verified = requirements.filter((r) => r.displayStatus === "verified").length;
-  const total = requirements.length;
-  const pending = requirements.filter((r) => r.displayStatus === "uploaded").length;
-  const outstanding = requirements.filter((r) => r.displayStatus === "outstanding").length;
-  const rejected = requirements.filter((r) => r.displayStatus === "rejected").length;
-
   return (
     <div className="space-y-3">
-      {/* Summary bar */}
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="font-medium">{verified}/{total} verified</span>
-        {pending > 0 && (
-          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
-            {pending} pending
-          </span>
-        )}
-        {outstanding > 0 && (
-          <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
-            {outstanding} outstanding
-          </span>
-        )}
-        {rejected > 0 && (
-          <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-600 dark:bg-red-900/40 dark:text-red-400">
-            {rejected} rejected
-          </span>
-        )}
-      </div>
-
-      {/* Document cards */}
       {requirements.map((req) => (
         <DocumentUploadCard
           key={req.typeKey}

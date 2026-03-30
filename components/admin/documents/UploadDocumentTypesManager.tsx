@@ -58,6 +58,7 @@ export default function UploadDocumentTypesManager() {
   const [flows, setFlows] = React.useState<{ label: string; value: string }[]>([]);
   const [statusOptions, setStatusOptions] = React.useState<{ label: string; value: string }[]>([]);
   const [availableInsurers, setAvailableInsurers] = React.useState<{ id: number; name: string }[]>([]);
+  const [insuredCategories, setInsuredCategories] = React.useState<{ label: string; value: string }[]>([]);
 
   async function load() {
     setLoading(true);
@@ -92,6 +93,12 @@ export default function UploadDocumentTypesManager() {
       .then((r) => (r.ok ? r.json() : []))
       .then((data: { id: number; name: string }[]) =>
         setAvailableInsurers(Array.isArray(data) ? data : []),
+      )
+      .catch(() => {});
+    fetch("/api/form-options?groupKey=insured_category", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((r: { label: string; value: string }[]) =>
+        setInsuredCategories(Array.isArray(r) ? r.map((c) => ({ label: c.label, value: c.value })) : []),
       )
       .catch(() => {});
   }, []);
@@ -230,6 +237,18 @@ export default function UploadDocumentTypesManager() {
                       {r.meta.description}
                     </div>
                   )}
+                  <div className="flex flex-wrap gap-1 mt-0.5">
+                    {r.meta?.insuredTypes && r.meta.insuredTypes.length > 0 && (
+                      <span className="inline-block rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                        {r.meta.insuredTypes.join(", ")}
+                      </span>
+                    )}
+                    {r.meta?.requireNcb && (
+                      <span className="inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
+                        NCB required
+                      </span>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell className="hidden sm:table-cell text-xs">
                   {r.meta?.required ? (
@@ -392,9 +411,13 @@ export default function UploadDocumentTypesManager() {
             {statusOptions.length > 0 && (
               <div className="grid gap-1">
                 <Label>
-                  Show When Status{" "}
+                  Show From Status{" "}
                   <span className="text-xs text-neutral-400">(optional - empty = always)</span>
                 </Label>
+                <p className="text-xs text-neutral-400 mb-1">
+                  Visible once the policy reaches the earliest checked status and stays visible for all later statuses.
+                  Already-uploaded documents remain visible regardless.
+                </p>
                 <div className="flex flex-wrap gap-2">
                   {statusOptions.map((s) => (
                     <label key={s.value} className="flex items-center gap-1.5 text-xs">
@@ -447,6 +470,46 @@ export default function UploadDocumentTypesManager() {
                 </div>
               </div>
             )}
+
+            {insuredCategories.length > 0 && (
+              <div className="grid gap-1">
+                <Label>
+                  Insured Type{" "}
+                  <span className="text-xs text-neutral-400">(optional - empty = all types)</span>
+                </Label>
+                <p className="text-xs text-neutral-400 mb-1">
+                  Only show this upload requirement for policies with the selected insured type.
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  {insuredCategories.map((cat) => (
+                    <label key={cat.value} className="flex items-center gap-1.5 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={meta.insuredTypes?.includes(cat.value) ?? false}
+                        onChange={(e) =>
+                          setMeta((m) => ({
+                            ...m,
+                            insuredTypes: e.target.checked
+                              ? [...(m.insuredTypes ?? []), cat.value]
+                              : (m.insuredTypes ?? []).filter((v) => v !== cat.value),
+                          }))
+                        }
+                      />
+                      {cat.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={meta.requireNcb ?? false}
+                onChange={(e) => setMeta((m) => ({ ...m, requireNcb: e.target.checked }))}
+              />
+              Only when policy has NCB (No Claims Bonus)
+            </label>
           </div>
 
           <DialogFooter>

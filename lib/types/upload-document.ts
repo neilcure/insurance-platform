@@ -12,6 +12,10 @@ export type UploadDocumentTypeMeta = {
   showWhenStatus?: string[];
   /** Restrict to policies linked to specific insurance company records (empty = all) */
   insurerPolicyIds?: number[];
+  /** Restrict to specific insured types: "personal", "company" (empty = all) */
+  insuredTypes?: string[];
+  /** Only show when policy has NCB (No Claims Bonus) */
+  requireNcb?: boolean;
 };
 
 export type UploadDocumentTypeRow = {
