@@ -54,7 +54,9 @@ export const PAYMENT_METHOD_OPTIONS = [
   { value: "bank_transfer", label: "Bank Transfer" },
   { value: "cheque", label: "Cheque" },
   { value: "cash", label: "Cash" },
+  { value: "e_transfer", label: "E-Transfer" },
   { value: "fps", label: "FPS" },
+  { value: "online_payment", label: "Online Payment" },
   { value: "other", label: "Other" },
 ] as const;
 

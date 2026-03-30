@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
-import { accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
+import { accountingInvoices, accountingInvoiceItems, accountingPayments } from "@/db/schema/accounting";
 import { memberships, organisations } from "@/db/schema/core";
 import { policyPremiums } from "@/db/schema/premiums";
 import { and, desc, eq, sql, inArray } from "drizzle-orm";
@@ -87,6 +87,26 @@ export async function GET(request: Request) {
           totalNetPremiumCents: net,
         };
       });
+    }
+
+    const includePayments = url.searchParams.get("includePayments") === "1";
+    if (includePayments && rows.length > 0) {
+      const invoiceIds = rows.map((r: any) => r.id as number);
+      const payments = await db
+        .select()
+        .from(accountingPayments)
+        .where(sql`${accountingPayments.invoiceId} = ANY(${invoiceIds})`);
+
+      const paymentsByInvoice = new Map<number, (typeof payments)[number][]>();
+      for (const p of payments) {
+        const arr = paymentsByInvoice.get(p.invoiceId) ?? [];
+        arr.push(p);
+        paymentsByInvoice.set(p.invoiceId, arr);
+      }
+      rows = rows.map((r: any) => ({
+        ...r,
+        payments: paymentsByInvoice.get(r.id) ?? [],
+      }));
     }
 
     return NextResponse.json(rows, { status: 200 });

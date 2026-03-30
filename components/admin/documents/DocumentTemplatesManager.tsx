@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
-import { Plus, Trash2, CheckSquare, Square, ArrowLeft } from "lucide-react";
+import { Plus, Trash2, CheckSquare, Square, ArrowLeft, Copy } from "lucide-react";
 import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
@@ -208,6 +208,35 @@ export default function DocumentTemplatesManager() {
     setFormValue(row.value);
     setFormSort(row.sortOrder);
     setMeta(row.meta ?? defaultMeta());
+    setOpen(true);
+  }
+
+  function startCopy(row: DocumentTemplateRow) {
+    const existingKeys = new Set(rows.map((r) => r.value));
+    let copyKey = `${row.value}_copy`;
+    let counter = 2;
+    while (existingKeys.has(copyKey)) {
+      copyKey = `${row.value}_copy${counter}`;
+      counter++;
+    }
+
+    const sourceMeta = row.meta ?? defaultMeta();
+    const copiedMeta: DocumentTemplateMeta = {
+      ...sourceMeta,
+      sections: sourceMeta.sections.map((s) => ({
+        ...s,
+        id: crypto.randomUUID(),
+        fields: s.fields.map((f) => ({ ...f })),
+      })),
+      header: { ...sourceMeta.header },
+      footer: sourceMeta.footer ? { ...sourceMeta.footer } : undefined,
+    };
+
+    setEditing(null);
+    setFormLabel(`${row.label} (Copy)`);
+    setFormValue(copyKey);
+    setFormSort(row.sortOrder + 1);
+    setMeta(copiedMeta);
     setOpen(true);
   }
 
@@ -987,6 +1016,15 @@ export default function DocumentTemplatesManager() {
                       onClick={() => startEdit(r)}
                     >
                       Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => startCopy(r)}
+                      title="Duplicate this template"
+                    >
+                      <Copy className="h-3.5 w-3.5 mr-1" />
+                      Copy
                     </Button>
                     <Button
                       size="sm"

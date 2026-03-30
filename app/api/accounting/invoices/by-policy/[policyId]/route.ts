@@ -32,13 +32,7 @@ export async function GET(
       .orderBy(desc(accountingInvoices.createdAt));
 
     const payments = await db
-      .select({
-        id: accountingPayments.id,
-        invoiceId: accountingPayments.invoiceId,
-        amountCents: accountingPayments.amountCents,
-        status: accountingPayments.status,
-        paymentDate: accountingPayments.paymentDate,
-      })
+      .select()
       .from(accountingPayments)
       .where(sql`${accountingPayments.invoiceId} = ANY(${invoiceIds})`);
 

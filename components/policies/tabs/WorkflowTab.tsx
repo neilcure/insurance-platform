@@ -17,6 +17,9 @@ const DocumentsTab = React.lazy(() =>
 const UploadDocumentsTab = React.lazy(() =>
   import("@/components/policies/tabs/UploadDocumentsTab").then((m) => ({ default: m.UploadDocumentsTab })),
 );
+const PaymentSection = React.lazy(() =>
+  import("@/components/policies/tabs/PaymentSection").then((m) => ({ default: m.PaymentSection })),
+);
 
 type StatusOption = { value: string; label: string; color: string };
 
@@ -118,6 +121,10 @@ export function WorkflowTab({
   const [uploadSummary, setUploadSummary] = React.useState<{
     total: number; verified: number; pending: number; outstanding: number; rejected: number;
   } | null>(null);
+  const [paymentSummary, setPaymentSummary] = React.useState<{
+    totalOwed: number; totalPaid: number; totalPending: number; remaining: number;
+    currency: string; invoiceCount: number; hasSubmitted: boolean;
+  } | null>(null);
 
   const toggleSection = (id: string) => {
     setExpandedSection((prev) => (prev === id ? null : id));
@@ -126,6 +133,7 @@ export function WorkflowTab({
   const sections = [
     { id: "documents", label: "Documents", show: true },
     { id: "uploads", label: "Required Uploads", show: true },
+    { id: "payments", label: "Payments", show: true },
     { id: "actions", label: "Additional Actions", show: !!isAdmin },
   ].filter((s) => s.show);
 
@@ -207,6 +215,29 @@ export function WorkflowTab({
                   </>
                 );
               })()}
+              {sec.id === "payments" && paymentSummary && paymentSummary.invoiceCount > 0 && (() => {
+                const fullyPaid = paymentSummary.remaining <= 0;
+                const fmtCur = (cents: number) =>
+                  new Intl.NumberFormat("en-HK", { style: "currency", currency: paymentSummary.currency, minimumFractionDigits: 0 }).format(cents / 100);
+                return (
+                  <>
+                    <Badge
+                      variant="custom"
+                      className={fullyPaid
+                        ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                        : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+                      }
+                    >
+                      {fmtCur(paymentSummary.totalPaid)} / {fmtCur(paymentSummary.totalOwed)}
+                    </Badge>
+                    {paymentSummary.hasSubmitted && (
+                      <Badge variant="custom" className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                        pending review
+                      </Badge>
+                    )}
+                  </>
+                );
+              })()}
               <ChevronRight className={`h-4 w-4 shrink-0 text-neutral-400 transition-transform ${expandedSection === sec.id ? "rotate-90" : ""}`} />
             </span>
           </button>
@@ -225,7 +256,18 @@ export function WorkflowTab({
               </React.Suspense>
             </div>
           )}
-          {sec.id !== "uploads" && expandedSection === sec.id && (
+          {sec.id === "payments" && (
+            <div className={expandedSection === sec.id ? "border-t border-neutral-200 p-3 dark:border-neutral-800" : "hidden"}>
+              <React.Suspense fallback={<div className="py-4 text-center text-xs text-neutral-400">Loading...</div>}>
+                <PaymentSection
+                  policyId={detail.policyId}
+                  isAdmin={isAdmin ?? false}
+                  onSummaryChange={setPaymentSummary}
+                />
+              </React.Suspense>
+            </div>
+          )}
+          {sec.id !== "uploads" && sec.id !== "payments" && expandedSection === sec.id && (
             <div className="border-t border-neutral-200 p-3 dark:border-neutral-800">
               <React.Suspense fallback={<div className="py-4 text-center text-xs text-neutral-400">Loading...</div>}>
                 {sec.id === "documents" && (

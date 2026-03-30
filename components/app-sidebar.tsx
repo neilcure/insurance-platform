@@ -93,6 +93,7 @@ let pkgOpenCache: Record<string, boolean> | null = null;
 
 const BASE_DASHBOARD_ITEMS: { title: string; url: string; icon: LucideIcon }[] = [
   { title: "Agents", url: "/dashboard/agents", icon: UserPlus },
+  { title: "Accounting", url: "/dashboard/accounting", icon: ClipboardList },
   { title: "Membership", url: "/dashboard/membership", icon: IdCard },
   { title: "Account", url: "/dashboard/account", icon: User },
 ];

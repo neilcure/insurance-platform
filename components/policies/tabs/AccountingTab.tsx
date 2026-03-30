@@ -14,6 +14,9 @@ import dynamic from "next/dynamic";
 const PolicyDetailsDrawer = dynamic(
   () => import("@/components/policies/PolicyDetailsDrawer").then((m) => m.PolicyDetailsDrawer),
 );
+const PaymentSection = React.lazy(() =>
+  import("@/components/policies/tabs/PaymentSection").then((m) => ({ default: m.PaymentSection })),
+);
 
 type FieldDef = {
   key: string;
@@ -706,6 +709,67 @@ function CollapsibleRecord({
   );
 }
 
+// --- Payment Status Card (renders PaymentSection inside a premium-style card) ---
+function PaymentStatusCard({ policyId, canEdit }: { policyId: number; canEdit: boolean }) {
+  const [open, setOpen] = React.useState(false);
+  const [summary, setSummary] = React.useState<{
+    totalOwed: number; totalPaid: number; totalPending: number;
+    remaining: number; currency: string; invoiceCount: number; hasSubmitted: boolean;
+  } | null>(null);
+
+  if (summary && summary.invoiceCount === 0) return null;
+
+  const fmtCur = (cents: number, cur = "HKD") =>
+    new Intl.NumberFormat("en-HK", { style: "currency", currency: cur, minimumFractionDigits: 2 }).format(cents / 100);
+
+  return (
+    <div className="rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
+      >
+        <span className="flex items-center gap-1.5">
+          <span>Payment Status</span>
+          {summary && summary.invoiceCount > 0 && (
+            <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+              summary.remaining <= 0
+                ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+            }`}>
+              {summary.remaining <= 0 ? "Fully Paid" : `${fmtCur(summary.remaining, summary.currency)} outstanding`}
+            </span>
+          )}
+          {summary?.hasSubmitted && (
+            <span className="inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+              pending review
+            </span>
+          )}
+        </span>
+        <span className="flex items-center gap-1.5">
+          {summary && summary.invoiceCount > 0 && (
+            <span className="text-[11px] font-normal text-neutral-500">
+              {fmtCur(summary.totalPaid, summary.currency)} / {fmtCur(summary.totalOwed, summary.currency)}
+            </span>
+          )}
+          {open ? (
+            <ChevronDown className="h-3.5 w-3.5 text-neutral-400" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-neutral-400" />
+          )}
+        </span>
+      </button>
+      <div className={open ? "border-t border-neutral-200 dark:border-neutral-700 p-3" : "hidden"}>
+        <PaymentSection
+          policyId={policyId}
+          isAdmin={canEdit}
+          onSummaryChange={setSummary}
+        />
+      </div>
+    </div>
+  );
+}
+
 // --- Main AccountingTab ---
 export function AccountingTab({
   policyId,
@@ -1071,6 +1135,12 @@ export function AccountingTab({
           onSave={saveRecordEdit}
         />
 
+        {(context === "policy" || context === "self") && (
+          <React.Suspense fallback={<div className="py-2 text-center text-xs text-neutral-400">Loading payment info...</div>}>
+            <PaymentStatusCard policyId={policyId} canEdit={canEdit} />
+          </React.Suspense>
+        )}
+
         <PolicyDetailsDrawer
           policyId={drawerPolicyId}
           open={drawerPolicyId !== null}
@@ -1201,6 +1271,12 @@ export function AccountingTab({
           </div>
         );
       })()}
+
+      {(context === "policy" || context === "self") && (
+        <React.Suspense fallback={<div className="py-2 text-center text-xs text-neutral-400">Loading payment info...</div>}>
+          <PaymentStatusCard policyId={policyId} canEdit={canEdit} />
+        </React.Suspense>
+      )}
     </div>
   );
 }
