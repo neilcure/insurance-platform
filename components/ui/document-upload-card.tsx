@@ -20,11 +20,13 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
+import { Label } from "@/components/ui/label";
 import type {
   DocumentStatus,
   PolicyDocumentRow,
   UploadDocumentTypeMeta,
 } from "@/lib/types/upload-document";
+import { PAYMENT_METHOD_OPTIONS, type PaymentMethod } from "@/lib/types/accounting";
 import {
   Dialog,
   DialogContent,
@@ -242,27 +244,65 @@ export function DocumentUploadCard({
   const [lightboxIndex, setLightboxIndex] = React.useState<number | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
+  const needsPayment = meta?.requirePaymentDetails === true;
+  const [paymentMethod, setPaymentMethod] = React.useState<PaymentMethod>("bank_transfer");
+  const [paymentAmount, setPaymentAmount] = React.useState("");
+  const [paymentDate, setPaymentDate] = React.useState(() => new Date().toISOString().split("T")[0]);
+  const [paymentRef, setPaymentRef] = React.useState("");
+  const [pendingFile, setPendingFile] = React.useState<File | null>(null);
+
   const statusCfg = STATUS_CONFIG[displayStatus];
   const StatusIcon = statusCfg.icon;
 
   const acceptAttr = meta?.acceptedTypes?.join(",") ?? undefined;
   const canUpload = displayStatus === "outstanding" || displayStatus === "rejected";
 
-  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  function resetPaymentForm() {
+    setPaymentMethod("bank_transfer");
+    setPaymentAmount("");
+    setPaymentDate(new Date().toISOString().split("T")[0]);
+    setPaymentRef("");
+    setPendingFile(null);
+  }
+
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const maxBytes = (meta?.maxSizeMB ?? 10) * 1024 * 1024;
     if (file.size > maxBytes) {
       toast.error(`File exceeds ${meta?.maxSizeMB ?? 10}MB limit`);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
 
+    if (needsPayment) {
+      setPendingFile(file);
+    } else {
+      void doUpload(file);
+    }
+  }
+
+  async function doUpload(file: File) {
     setUploading(true);
     try {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("documentTypeKey", typeKey);
+
+      if (needsPayment) {
+        const cents = Math.round(Number(paymentAmount) * 100);
+        if (!cents || cents <= 0) {
+          toast.error("Please enter a valid payment amount");
+          setUploading(false);
+          return;
+        }
+        fd.append("paymentMethod", paymentMethod);
+        fd.append("paymentAmountCents", String(cents));
+        fd.append("paymentDate", paymentDate || "");
+        fd.append("paymentRef", paymentRef.trim());
+      }
+
       const res = await fetch(`/api/policies/${policyId}/documents`, {
         method: "POST",
         body: fd,
@@ -271,7 +311,8 @@ export function DocumentUploadCard({
         const err = await res.json().catch(() => ({ error: "Upload failed" }));
         throw new Error(err.error || "Upload failed");
       }
-      toast.success("Document uploaded");
+      toast.success(needsPayment ? "Payment record uploaded" : "Document uploaded");
+      resetPaymentForm();
       onRefresh();
     } catch (err: unknown) {
       toast.error((err as { message?: string })?.message ?? "Upload failed");
@@ -279,6 +320,10 @@ export function DocumentUploadCard({
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  }
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    handleFileSelect(e);
   }
 
   async function handleVerify(docId: number) {
@@ -474,9 +519,9 @@ export function DocumentUploadCard({
           </div>
         )}
 
-        {/* Upload button */}
+        {/* Upload button + payment details form */}
         {(canUpload || (displayStatus === "uploaded" && isAdmin)) && (
-          <div className="flex items-center gap-2">
+          <div className="space-y-2">
             <input
               ref={fileInputRef}
               type="file"
@@ -484,22 +529,95 @@ export function DocumentUploadCard({
               onChange={handleUpload}
               className="hidden"
             />
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-1.5"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-            >
-              {uploading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Upload className="h-3.5 w-3.5" />
-              )}
-              {displayStatus === "rejected" ? "Re-upload" : "Upload"}
-            </Button>
-            {meta?.required && displayStatus === "outstanding" && (
-              <span className="text-[10px] text-red-500 dark:text-red-400">Required</span>
+
+            {needsPayment && pendingFile ? (
+              <div className="rounded-md border border-neutral-200 bg-neutral-50 p-2.5 dark:border-neutral-700 dark:bg-neutral-800/30 space-y-2">
+                <div className="flex items-center gap-1.5 text-xs">
+                  <FileText className="h-3.5 w-3.5 text-neutral-400" />
+                  <span className="font-medium truncate">{pendingFile.name}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-[10px]">Payment Method</Label>
+                    <select
+                      className="mt-0.5 w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+                      value={paymentMethod}
+                      onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                    >
+                      {PAYMENT_METHOD_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <Label className="text-[10px]">Amount (HKD)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      placeholder="0.00"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                      className="mt-0.5 h-7 text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-[10px]">Date</Label>
+                    <Input
+                      type="date"
+                      value={paymentDate}
+                      onChange={(e) => setPaymentDate(e.target.value)}
+                      className="mt-0.5 h-7 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-[10px]">{paymentMethod === "cheque" ? "Cheque No." : "Reference"}</Label>
+                    <Input
+                      type="text"
+                      placeholder={paymentMethod === "cheque" ? "Cheque number" : "Reference"}
+                      value={paymentRef}
+                      onChange={(e) => setPaymentRef(e.target.value)}
+                      className="mt-0.5 h-7 text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 pt-0.5">
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs"
+                    disabled={uploading || !paymentAmount || Number(paymentAmount) <= 0}
+                    onClick={() => void doUpload(pendingFile)}
+                  >
+                    {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                    <span>{uploading ? "Uploading..." : "Submit Payment"}</span>
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={resetPaymentForm}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                >
+                  {uploading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="h-3.5 w-3.5" />
+                  )}
+                  {displayStatus === "rejected" ? "Re-upload" : "Upload"}
+                </Button>
+                {meta?.required && displayStatus === "outstanding" && (
+                  <span className="text-[10px] text-red-500 dark:text-red-400">Required</span>
+                )}
+              </div>
             )}
           </div>
         )}

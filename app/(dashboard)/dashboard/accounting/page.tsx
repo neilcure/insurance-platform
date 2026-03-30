@@ -122,20 +122,18 @@ function StatCard({
   iconColor: string;
 }) {
   return (
-    <Card>
-      <CardContent className="pt-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <div className="text-sm text-neutral-500 dark:text-neutral-400">{title}</div>
-            <div className="mt-1 text-2xl font-bold">{value}</div>
-            {subtitle && (
-              <div className="mt-0.5 text-xs text-neutral-400">{subtitle}</div>
-            )}
-          </div>
-          <div className={`rounded-lg p-2 ${iconColor}`}>
-            <Icon className="h-5 w-5" />
+    <Card className="overflow-hidden">
+      <CardContent className="p-3">
+        <div className="flex items-center justify-between gap-1.5">
+          <div className="text-xs text-neutral-500 dark:text-neutral-400">{title}</div>
+          <div className={`shrink-0 rounded-md p-1.5 ${iconColor}`}>
+            <Icon className="h-3.5 w-3.5" />
           </div>
         </div>
+        <div className="mt-1.5 text-lg font-bold">{value}</div>
+        {subtitle && (
+          <div className="text-[11px] text-neutral-400">{subtitle}</div>
+        )}
       </CardContent>
     </Card>
   );
@@ -390,7 +388,7 @@ export default function AccountingPage() {
                         )}
                       </span>
                       <span className="flex items-center gap-2 shrink-0">
-                        <span className="text-xs text-neutral-500">
+                        <span className="text-xs font-medium text-neutral-300 dark:text-neutral-300">
                           {formatCurrency(inv.paidAmountCents, inv.currency)} / {formatCurrency(inv.totalAmountCents, inv.currency)}
                         </span>
                         {isExpanded ? (

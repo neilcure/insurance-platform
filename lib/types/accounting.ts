@@ -177,6 +177,8 @@ export type PaymentScheduleRow = {
   id: number;
   organisationId: number;
   entityPolicyId: number | null;
+  agentId: number | null;
+  clientId: number | null;
   entityType: EntityType;
   entityName: string | null;
   frequency: ScheduleFrequency;
@@ -184,6 +186,9 @@ export type PaymentScheduleRow = {
   currency: string;
   isActive: boolean;
   notes: string | null;
+  lastGeneratedAt: string | null;
+  lastPeriodStart: string | null;
+  lastPeriodEnd: string | null;
   createdBy: number | null;
   createdAt: string;
   updatedAt: string;

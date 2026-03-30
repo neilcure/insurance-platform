@@ -248,6 +248,11 @@ export default function UploadDocumentTypesManager() {
                         NCB required
                       </span>
                     )}
+                    {r.meta?.requirePaymentDetails && (
+                      <span className="inline-block rounded bg-green-50 px-1.5 py-0.5 text-[10px] text-green-600 dark:bg-green-900/30 dark:text-green-400">
+                        Payment details
+                      </span>
+                    )}
                   </div>
                 </TableCell>
                 <TableCell className="hidden sm:table-cell text-xs">
@@ -509,6 +514,15 @@ export default function UploadDocumentTypesManager() {
                 onChange={(e) => setMeta((m) => ({ ...m, requireNcb: e.target.checked }))}
               />
               Only when policy has NCB (No Claims Bonus)
+            </label>
+
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={meta.requirePaymentDetails ?? false}
+                onChange={(e) => setMeta((m) => ({ ...m, requirePaymentDetails: e.target.checked }))}
+              />
+              Require payment details (method, amount, reference) on upload
             </label>
           </div>
 

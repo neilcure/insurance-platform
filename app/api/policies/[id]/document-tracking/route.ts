@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { cars, policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
-import { accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
-import { memberships, organisations } from "@/db/schema/core";
+import { accountingInvoices, accountingInvoiceItems, accountingPaymentSchedules } from "@/db/schema/accounting";
+import { memberships, organisations, clients, users } from "@/db/schema/core";
 import { and, eq, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
-import { loadAccountingFields, type AccountingFieldDef } from "@/lib/accounting-fields";
+import { loadAccountingFields } from "@/lib/accounting-fields";
 import type { DocumentStatusMap, DocumentStatusEntry, DocLifecycleStatus } from "@/lib/types/accounting";
 
 export const dynamic = "force-dynamic";
@@ -182,7 +182,7 @@ export async function POST(
 
     if (action === "confirm" && isInvoiceType) {
       try {
-        await autoCreateAccountingInvoice(policyId, docType, Number(user.id));
+        await autoCreateAccountingInvoices(policyId, docType, Number(user.id));
       } catch (err) {
         console.error("Auto-create accounting invoice error (non-fatal):", err);
       }
@@ -269,15 +269,7 @@ async function autoAdvancePolicyStatus(
   return targetStatus;
 }
 
-async function autoCreateAccountingInvoice(policyId: number, docType: string, userId: number) {
-  // Skip if an invoice already exists for this policy to avoid duplicates
-  const existing = await db
-    .select({ id: accountingInvoiceItems.id })
-    .from(accountingInvoiceItems)
-    .where(eq(accountingInvoiceItems.policyId, policyId))
-    .limit(1);
-  if (existing.length > 0) return;
-
+async function autoCreateAccountingInvoices(policyId: number, docType: string, userId: number) {
   const premiums = await db
     .select()
     .from(policyPremiums)
@@ -315,23 +307,26 @@ async function autoCreateAccountingInvoice(policyId: number, docType: string, us
   if (!organisationId) return;
 
   const isReceipt = docType.includes("receipt");
-  const direction = "receivable";
-  const premiumType = "client_premium";
-  const entityType = "client";
-
   const accountingFields = await loadAccountingFields();
 
-  function resolvePremiumAmount(p: typeof premiums[number]): number {
+  function resolvePremiumAmount(
+    p: typeof premiums[number],
+    role: "client" | "agent",
+  ): number {
     const row = p as Record<string, unknown>;
-    let clientVal = 0;
+    let matched = 0;
     for (const f of accountingFields) {
       if (!f.premiumColumn) continue;
-      if (f.label.toLowerCase().includes("client")) {
-        clientVal = (row[f.premiumColumn] as number) ?? 0;
+      const label = f.label.toLowerCase();
+      if (label.includes(role)) {
+        matched = (row[f.premiumColumn] as number) ?? 0;
         break;
       }
     }
-    return clientVal || (p.grossPremiumCents ?? 0);
+    if (role === "client") {
+      return matched || (p.grossPremiumCents ?? 0);
+    }
+    return matched;
   }
 
   function computeGain(p: typeof premiums[number]): number {
@@ -373,65 +368,159 @@ async function autoCreateAccountingInvoice(policyId: number, docType: string, us
     return `${prefix}-${year}-${String(count).padStart(4, "0")}`;
   }
 
-  if (isTpoWithOd) {
-    // TPO + Own Vehicle Damage: create one invoice per line with suffixed policy number
-    const pricedPremiums = premiums.filter((p) => resolvePremiumAmount(p) > 0);
-    for (let i = 0; i < pricedPremiums.length; i++) {
-      const p = pricedPremiums[i];
-      const suffix = String.fromCharCode(97 + i); // a, b, c …
-      const suffixedPolicyNo = `${policy.policyNumber}(${suffix})`;
-      const amt = resolvePremiumAmount(p);
-      const invoiceNumber = await nextInvoiceNumber();
+  async function hasExistingInvoice(entityType: "client" | "agent", premiumType: "client_premium" | "agent_premium") {
+    const existing = await db
+      .select({ id: accountingInvoices.id })
+      .from(accountingInvoices)
+      .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
+      .where(
+        and(
+          eq(accountingInvoiceItems.policyId, policyId),
+          eq(accountingInvoices.entityType, entityType),
+          eq(accountingInvoices.premiumType, premiumType),
+          sql`${accountingInvoices.status} <> 'cancelled'`,
+        ),
+      )
+      .limit(1);
 
-      await db.transaction(async (tx) => {
-        const [invoice] = await tx
-          .insert(accountingInvoices)
-          .values({
-            organisationId,
-            invoiceNumber,
-            invoiceType: "individual",
-            direction,
-            premiumType,
-            entityPolicyId: policyId,
-            entityType,
-            entityName: null,
-            totalAmountCents: amt,
-            paidAmountCents: 0,
-            currency: p.currency ?? "HKD",
-            invoiceDate: new Date().toISOString().split("T")[0],
-            status: isReceipt ? "paid" : "pending",
-            notes: `Policy ${suffixedPolicyNo} – ${p.lineLabel || p.lineKey}`,
-            createdBy: userId,
-          })
-          .returning();
+    return existing.length > 0;
+  }
 
-        await tx.insert(accountingInvoiceItems).values({
-          invoiceId: invoice.id,
-          policyId,
-          policyPremiumId: p.id,
-          lineKey: p.lineKey,
-          amountCents: amt,
-          gainCents: computeGain(p),
-          description: `${p.lineLabel || p.lineKey} [${suffixedPolicyNo}]`,
-        });
-      });
+  async function hasActiveSchedule(entityType: "client" | "agent") {
+    if (entityType === "client" && policy.clientId) {
+      const rows = await db
+        .select({ id: accountingPaymentSchedules.id })
+        .from(accountingPaymentSchedules)
+        .where(
+          and(
+            eq(accountingPaymentSchedules.organisationId, organisationId),
+            eq(accountingPaymentSchedules.entityType, "client"),
+            eq(accountingPaymentSchedules.clientId, policy.clientId),
+            eq(accountingPaymentSchedules.isActive, true),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
     }
-  } else {
-    // Single invoice covering all premium lines
-    let totalAmountCents = 0;
-    const items: Array<{ policyId: number; policyPremiumId: number; lineKey: string; amountCents: number; gainCents: number; description: string }> = [];
 
-    for (const p of premiums) {
-      const amt = resolvePremiumAmount(p);
-      if (amt <= 0) continue;
-      totalAmountCents += amt;
+    if (entityType === "agent" && policy.agentId) {
+      const rows = await db
+        .select({ id: accountingPaymentSchedules.id })
+        .from(accountingPaymentSchedules)
+        .where(
+          and(
+            eq(accountingPaymentSchedules.organisationId, organisationId),
+            eq(accountingPaymentSchedules.entityType, "agent"),
+            eq(accountingPaymentSchedules.agentId, policy.agentId),
+            eq(accountingPaymentSchedules.isActive, true),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
+    }
+
+    return false;
+  }
+
+  async function resolveEntityName(entityType: "client" | "agent") {
+    if (entityType === "client" && policy.clientId) {
+      const [client] = await db
+        .select({ displayName: clients.displayName })
+        .from(clients)
+        .where(eq(clients.id, policy.clientId))
+        .limit(1);
+      return client?.displayName ?? null;
+    }
+
+    if (entityType === "agent" && policy.agentId) {
+      const [agent] = await db
+        .select({ name: users.name, email: users.email })
+        .from(users)
+        .where(eq(users.id, policy.agentId))
+        .limit(1);
+      return agent?.name || agent?.email || null;
+    }
+
+    return null;
+  }
+
+  async function createEntityInvoice(
+    entityType: "client" | "agent",
+    premiumType: "client_premium" | "agent_premium",
+  ) {
+    if (await hasExistingInvoice(entityType, premiumType)) return;
+    if (await hasActiveSchedule(entityType)) return;
+
+    const pricedPremiums = premiums.filter((premium) => resolvePremiumAmount(premium, entityType) > 0);
+    if (pricedPremiums.length === 0) return;
+
+    const entityName = await resolveEntityName(entityType);
+
+    if (isTpoWithOd) {
+      for (let i = 0; i < pricedPremiums.length; i++) {
+        const premium = pricedPremiums[i];
+        const suffix = String.fromCharCode(97 + i);
+        const suffixedPolicyNo = `${policy.policyNumber}(${suffix})`;
+        const amountCents = resolvePremiumAmount(premium, entityType);
+        const invoiceNumber = await nextInvoiceNumber();
+
+        await db.transaction(async (tx) => {
+          const [invoice] = await tx
+            .insert(accountingInvoices)
+            .values({
+              organisationId,
+              invoiceNumber,
+              invoiceType: "individual",
+              direction: "receivable",
+              premiumType,
+              entityPolicyId: policyId,
+              entityType,
+              entityName,
+              totalAmountCents: amountCents,
+              paidAmountCents: 0,
+              currency: premium.currency ?? "HKD",
+              invoiceDate: new Date().toISOString().split("T")[0],
+              status: isReceipt ? "paid" : "pending",
+              notes: `Policy ${suffixedPolicyNo} – ${premium.lineLabel || premium.lineKey}`,
+              createdBy: userId,
+            })
+            .returning();
+
+          await tx.insert(accountingInvoiceItems).values({
+            invoiceId: invoice.id,
+            policyId,
+            policyPremiumId: premium.id,
+            lineKey: premium.lineKey,
+            amountCents,
+            gainCents: computeGain(premium),
+            description: `${premium.lineLabel || premium.lineKey} [${suffixedPolicyNo}]`,
+          });
+        });
+      }
+
+      return;
+    }
+
+    let totalAmountCents = 0;
+    const items: Array<{
+      policyId: number;
+      policyPremiumId: number;
+      lineKey: string;
+      amountCents: number;
+      gainCents: number;
+      description: string;
+    }> = [];
+
+    for (const premium of pricedPremiums) {
+      const amountCents = resolvePremiumAmount(premium, entityType);
+      totalAmountCents += amountCents;
       items.push({
         policyId,
-        policyPremiumId: p.id,
-        lineKey: p.lineKey,
-        amountCents: amt,
-        gainCents: computeGain(p),
-        description: p.lineLabel || p.lineKey,
+        policyPremiumId: premium.id,
+        lineKey: premium.lineKey,
+        amountCents,
+        gainCents: computeGain(premium),
+        description: premium.lineLabel || premium.lineKey,
       });
     }
 
@@ -444,11 +533,11 @@ async function autoCreateAccountingInvoice(policyId: number, docType: string, us
           organisationId,
           invoiceNumber,
           invoiceType: "individual",
-          direction,
+          direction: "receivable",
           premiumType,
           entityPolicyId: policyId,
           entityType,
-          entityName: null,
+          entityName,
           totalAmountCents,
           paidAmountCents: 0,
           currency: premiums[0]?.currency ?? "HKD",
@@ -459,19 +548,22 @@ async function autoCreateAccountingInvoice(policyId: number, docType: string, us
         })
         .returning();
 
-      if (items.length > 0) {
-        await tx.insert(accountingInvoiceItems).values(
-          items.map((item) => ({
-            invoiceId: invoice.id,
-            policyId: item.policyId,
-            policyPremiumId: item.policyPremiumId,
-            lineKey: item.lineKey,
-            amountCents: item.amountCents,
-            gainCents: item.gainCents,
-            description: item.description,
-          })),
-        );
-      }
+      await tx.insert(accountingInvoiceItems).values(
+        items.map((item) => ({
+          invoiceId: invoice.id,
+          policyId: item.policyId,
+          policyPremiumId: item.policyPremiumId,
+          lineKey: item.lineKey,
+          amountCents: item.amountCents,
+          gainCents: item.gainCents,
+          description: item.description,
+        })),
+      );
     });
+  }
+
+  await createEntityInvoice("client", "client_premium");
+  if (policy.agentId) {
+    await createEntityInvoice("agent", "agent_premium");
   }
 }

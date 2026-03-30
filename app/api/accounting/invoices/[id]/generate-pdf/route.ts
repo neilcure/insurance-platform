@@ -28,15 +28,16 @@ function inferDocType(templateLabel: string): DocTypeKey | null {
 
 function checkDocumentRules(
   docType: DocTypeKey | null,
-  invoice: { direction: string; documentStatus: unknown },
+  invoice: Record<string, unknown>,
   hasVerifiedPayment: boolean,
 ): string | null {
   if (!docType) return null;
 
+  const direction = typeof invoice.direction === "string" ? invoice.direction : "";
   const docStatus = (invoice.documentStatus as DocumentStatusMap | null) ?? {};
 
   if (docType === "invoice") {
-    if (invoice.direction === "receivable") {
+    if (direction === "receivable") {
       const quotation = docStatus.quotation;
       if (quotation && quotation.status !== "confirmed") {
         return "Cannot generate invoice: quotation must be confirmed first";

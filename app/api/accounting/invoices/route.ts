@@ -95,7 +95,7 @@ export async function GET(request: Request) {
       const payments = await db
         .select()
         .from(accountingPayments)
-        .where(sql`${accountingPayments.invoiceId} = ANY(${invoiceIds})`);
+        .where(inArray(accountingPayments.invoiceId, invoiceIds));
 
       const paymentsByInvoice = new Map<number, (typeof payments)[number][]>();
       for (const p of payments) {

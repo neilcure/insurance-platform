@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
-import { Plus, Trash2, CheckSquare, Square, ArrowLeft, Copy } from "lucide-react";
+import { Plus, Trash2, CheckSquare, Square, ArrowLeft, Copy, Pencil, EyeOff, Eye } from "lucide-react";
 import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
@@ -368,6 +368,7 @@ export default function DocumentTemplatesManager() {
   }
 
   const [seeding, setSeeding] = React.useState(false);
+  const [copyDropdownOpen, setCopyDropdownOpen] = React.useState(false);
 
   async function seedExamples() {
     setSeeding(true);
@@ -977,8 +978,42 @@ export default function DocumentTemplatesManager() {
               {seeding ? "Loading..." : "Load Examples"}
             </Button>
           )}
+          {rows.length > 0 && (
+            <div className="relative">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCopyDropdownOpen((v) => !v)}
+              >
+                <Copy className="h-4 w-4 sm:hidden lg:inline" />
+                <span className="hidden sm:inline">Copy Template</span>
+              </Button>
+              {copyDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setCopyDropdownOpen(false)} />
+                  <div className="absolute right-0 top-full z-50 mt-1 min-w-[220px] rounded-md border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+                    {rows.map((r) => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => {
+                          setCopyDropdownOpen(false);
+                          startCopy(r);
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                      >
+                        <span className="min-w-0 truncate font-medium">{r.label}</span>
+                        <span className="shrink-0 text-xs text-neutral-400 font-mono">{r.meta?.type ?? ""}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <Button size="sm" onClick={startCreate}>
-            Create Template
+            <Plus className="h-4 w-4 sm:hidden lg:inline" />
+            <span className="hidden sm:inline">Create Template</span>
           </Button>
         </div>
       </div>
@@ -1015,30 +1050,33 @@ export default function DocumentTemplatesManager() {
                       variant="secondary"
                       onClick={() => startEdit(r)}
                     >
-                      Edit
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => startCopy(r)}
-                      title="Duplicate this template"
-                    >
-                      <Copy className="h-3.5 w-3.5 mr-1" />
-                      Copy
+                      <Pencil className="h-4 w-4 sm:hidden lg:inline" />
+                      <span className="hidden sm:inline">Edit</span>
                     </Button>
                     <Button
                       size="sm"
                       variant={r.isActive ? "outline" : "default"}
                       onClick={() => toggleActive(r)}
                     >
-                      {r.isActive ? "Disable" : "Enable"}
+                      {r.isActive ? (
+                        <>
+                          <EyeOff className="h-4 w-4 sm:hidden lg:inline" />
+                          <span className="hidden sm:inline">Disable</span>
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="h-4 w-4 sm:hidden lg:inline" />
+                          <span className="hidden sm:inline">Enable</span>
+                        </>
+                      )}
                     </Button>
                     <Button
                       size="sm"
                       variant="destructive"
                       onClick={() => remove(r)}
                     >
-                      Delete
+                      <Trash2 className="h-4 w-4 sm:hidden lg:inline" />
+                      <span className="hidden sm:inline">Delete</span>
                     </Button>
                   </div>
                 </TableCell>

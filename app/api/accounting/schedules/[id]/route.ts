@@ -4,6 +4,8 @@ import { accountingPaymentSchedules, accountingInvoices } from "@/db/schema/acco
 import { eq, desc } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 
+type ScheduleUpdateInput = Partial<typeof accountingPaymentSchedules.$inferInsert>;
+
 export const dynamic = "force-dynamic";
 
 export async function GET(
@@ -47,6 +49,9 @@ export async function PATCH(
     const body = await request.json();
 
     const allowedFields: Record<string, boolean> = {
+      entityPolicyId: true,
+      agentId: true,
+      clientId: true,
       entityName: true,
       frequency: true,
       billingDay: true,
@@ -55,14 +60,50 @@ export async function PATCH(
       notes: true,
     };
 
-    const updates: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+    const updates: ScheduleUpdateInput = { updatedAt: new Date().toISOString() };
     for (const [key, value] of Object.entries(body)) {
-      if (allowedFields[key]) updates[key] = value;
+      if (!allowedFields[key]) continue;
+
+      if (key === "entityPolicyId") {
+        updates.entityPolicyId = value === null || value === undefined || value === "" ? null : Number(value);
+        continue;
+      }
+      if (key === "agentId") {
+        updates.agentId = value === null || value === undefined || value === "" ? null : Number(value);
+        continue;
+      }
+      if (key === "clientId") {
+        updates.clientId = value === null || value === undefined || value === "" ? null : Number(value);
+        continue;
+      }
+      if (key === "billingDay") {
+        updates.billingDay = value === null || value === undefined || value === "" ? null : Number(value);
+        continue;
+      }
+      if (key === "entityName") {
+        updates.entityName = value as string | null;
+        continue;
+      }
+      if (key === "frequency") {
+        updates.frequency = value as string;
+        continue;
+      }
+      if (key === "currency") {
+        updates.currency = value as string;
+        continue;
+      }
+      if (key === "isActive") {
+        updates.isActive = Boolean(value);
+        continue;
+      }
+      if (key === "notes") {
+        updates.notes = value as string | null;
+      }
     }
 
     const [updated] = await db
       .update(accountingPaymentSchedules)
-      .set(updates as any)
+      .set(updates)
       .where(eq(accountingPaymentSchedules.id, Number(id)))
       .returning();
 

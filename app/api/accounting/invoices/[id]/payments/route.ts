@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { accountingPayments, accountingInvoices } from "@/db/schema/accounting";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
+import { syncInvoicePaymentStatus } from "@/lib/accounting-invoices";
 
 export const dynamic = "force-dynamic";
 
@@ -57,7 +58,7 @@ export async function POST(
       .returning();
 
     if (!isReceivable) {
-      await updateInvoicePaidAmount(invoiceId);
+      await syncInvoicePaymentStatus(invoiceId);
     }
 
     return NextResponse.json(payment, { status: 201 });
@@ -67,37 +68,3 @@ export async function POST(
   }
 }
 
-async function updateInvoicePaidAmount(invoiceId: number) {
-  const result = await db
-    .select({
-      total: sql<number>`coalesce(sum(${accountingPayments.amountCents}), 0)::int`,
-    })
-    .from(accountingPayments)
-    .where(eq(accountingPayments.invoiceId, invoiceId));
-
-  const paidTotal = result[0]?.total ?? 0;
-
-  const [invoice] = await db
-    .select({ totalAmountCents: accountingInvoices.totalAmountCents })
-    .from(accountingInvoices)
-    .where(eq(accountingInvoices.id, invoiceId))
-    .limit(1);
-
-  let newStatus: string;
-  if (paidTotal >= (invoice?.totalAmountCents ?? 0)) {
-    newStatus = "paid";
-  } else if (paidTotal > 0) {
-    newStatus = "partial";
-  } else {
-    newStatus = "pending";
-  }
-
-  await db
-    .update(accountingInvoices)
-    .set({
-      paidAmountCents: paidTotal,
-      status: newStatus,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(accountingInvoices.id, invoiceId));
-}

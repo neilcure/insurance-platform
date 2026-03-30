@@ -46,6 +46,8 @@ export async function POST(request: Request) {
 
     const {
       entityPolicyId,
+      agentId,
+      clientId,
       entityType,
       entityName,
       frequency = "monthly",
@@ -56,6 +58,15 @@ export async function POST(request: Request) {
 
     if (!entityType) {
       return NextResponse.json({ error: "entityType is required" }, { status: 400 });
+    }
+    if (entityType === "agent" && !agentId && !entityPolicyId) {
+      return NextResponse.json({ error: "agentId is required for agent schedules" }, { status: 400 });
+    }
+    if (entityType === "client" && !clientId && !entityPolicyId) {
+      return NextResponse.json({ error: "clientId is required for client schedules" }, { status: 400 });
+    }
+    if (entityType === "collaborator" && !entityPolicyId) {
+      return NextResponse.json({ error: "entityPolicyId is required for collaborator schedules" }, { status: 400 });
     }
 
     let organisationId: number;
@@ -78,6 +89,8 @@ export async function POST(request: Request) {
       .values({
         organisationId,
         entityPolicyId: entityPolicyId ? Number(entityPolicyId) : null,
+        agentId: agentId ? Number(agentId) : null,
+        clientId: clientId ? Number(clientId) : null,
         entityType,
         entityName: entityName || null,
         frequency,

@@ -16,6 +16,8 @@ export type UploadDocumentTypeMeta = {
   insuredTypes?: string[];
   /** Only show when policy has NCB (No Claims Bonus) */
   requireNcb?: boolean;
+  /** Show payment detail fields (method, amount, reference) on upload — creates an accounting_payments record */
+  requirePaymentDetails?: boolean;
 };
 
 export type UploadDocumentTypeRow = {

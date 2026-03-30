@@ -3,11 +3,13 @@ import { db } from "@/db/client";
 import { policyDocuments } from "@/db/schema/documents";
 import { policies } from "@/db/schema/insurance";
 import { users, memberships } from "@/db/schema/core";
-import { and, eq, sql } from "drizzle-orm";
+import { accountingPayments, accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
+import { and, eq, sql, desc, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { validateFile, saveFile } from "@/lib/storage";
 import { appendPolicyAudit } from "@/lib/audit";
+import { syncInvoicePaymentStatus } from "@/lib/accounting-invoices";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -18,10 +20,11 @@ async function canAccessPolicy(userId: number, userType: string, policyId: numbe
   const polCols = await getPolicyColumns();
   if (userType === "agent") {
     if (!polCols.hasAgentId) return false;
-    const result = await db.execute(sql`
-      SELECT 1 FROM "policies" WHERE id = ${policyId} AND agent_id = ${userId} LIMIT 1
-    `);
-    const rows = Array.isArray(result) ? result : (result as any)?.rows ?? [];
+    const rows = await db
+      .select({ id: policies.id })
+      .from(policies)
+      .where(and(eq(policies.id, policyId), eq(policies.agentId, userId)))
+      .limit(1);
     return rows.length > 0;
   }
 
@@ -154,6 +157,54 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     if (isAdmin) {
       const { checkAndAutoComplete } = await import("@/lib/reminder-sender");
       await checkAndAutoComplete(policyId, documentTypeKey.trim());
+    }
+
+    const paymentAmountCents = Number(formData.get("paymentAmountCents") || 0);
+    const paymentMethod = formData.get("paymentMethod") as string | null;
+    if (paymentAmountCents > 0 && paymentMethod) {
+      const paymentDate = (formData.get("paymentDate") as string) || null;
+      const paymentRefNum = (formData.get("paymentRef") as string) || null;
+
+      try {
+        const invoiceItemRows = await db
+          .select({ invoiceId: accountingInvoiceItems.invoiceId })
+          .from(accountingInvoiceItems)
+          .where(eq(accountingInvoiceItems.policyId, policyId));
+
+        const invoiceIds = [...new Set(invoiceItemRows.map((r) => r.invoiceId))];
+
+        if (invoiceIds.length > 0) {
+          const [invoice] = await db
+            .select()
+            .from(accountingInvoices)
+            .where(and(
+              eq(accountingInvoices.direction, "receivable"),
+              inArray(accountingInvoices.id, invoiceIds),
+            ))
+            .orderBy(desc(accountingInvoices.createdAt))
+            .limit(1);
+
+          if (invoice) {
+            await db.insert(accountingPayments).values({
+              invoiceId: invoice.id,
+              amountCents: paymentAmountCents,
+              currency: invoice.currency,
+              paymentDate: paymentDate || null,
+              paymentMethod,
+              referenceNumber: paymentRefNum || null,
+              status: isAdmin ? "verified" : "submitted",
+              submittedBy: Number(user.id),
+              ...(isAdmin ? { verifiedBy: Number(user.id), verifiedAt: new Date().toISOString() } : {}),
+            });
+
+            if (isAdmin) {
+              await syncInvoicePaymentStatus(invoice.id);
+            }
+          }
+        }
+      } catch (payErr) {
+        console.error("Payment record creation failed (non-fatal):", payErr);
+      }
     }
 
     return NextResponse.json(row, { status: 201 });

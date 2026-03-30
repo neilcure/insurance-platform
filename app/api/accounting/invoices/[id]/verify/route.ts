@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { accountingPayments, accountingInvoices } from "@/db/schema/accounting";
 import { users } from "@/db/schema/core";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { sendPaymentStatusEmail } from "@/lib/accounting-notifications";
 import { getBaseUrlFromRequestUrl } from "@/lib/email";
+import { syncInvoicePaymentStatus } from "@/lib/accounting-invoices";
 
 export const dynamic = "force-dynamic";
 
@@ -60,27 +61,10 @@ export async function POST(
         })
         .where(eq(accountingPayments.id, Number(paymentId)));
 
-      const totalVerified = await db
-        .select({
-          total: sql<number>`coalesce(sum(${accountingPayments.amountCents}), 0)::int`,
-        })
-        .from(accountingPayments)
-        .where(eq(accountingPayments.invoiceId, invoiceId));
-
-      const paidTotal = totalVerified[0]?.total ?? 0;
-      const [invoice] = await db
-        .select({ totalAmountCents: accountingInvoices.totalAmountCents })
-        .from(accountingInvoices)
-        .where(eq(accountingInvoices.id, invoiceId))
-        .limit(1);
-
-      const newStatus = paidTotal >= (invoice?.totalAmountCents ?? 0) ? "paid" : paidTotal > 0 ? "partial" : "pending";
-
+      await syncInvoicePaymentStatus(invoiceId);
       await db
         .update(accountingInvoices)
         .set({
-          paidAmountCents: paidTotal,
-          status: newStatus,
           verifiedBy: Number(user.id),
           verifiedAt: now,
           updatedAt: now,

@@ -1,11 +1,13 @@
-import { integer, jsonb, pgTable, serial, text, timestamp, varchar, boolean, index, date } from "drizzle-orm/pg-core";
+import { integer, jsonb, pgTable, serial, text, timestamp, varchar, boolean, index, date, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { policies } from "./insurance";
-import { users, organisations } from "./core";
+import { users, organisations, clients } from "./core";
 
 export const accountingPaymentSchedules = pgTable("accounting_payment_schedules", {
   id: serial("id").primaryKey(),
   organisationId: integer("organisation_id").notNull().references(() => organisations.id, { onDelete: "cascade" }),
   entityPolicyId: integer("entity_policy_id").references(() => policies.id, { onDelete: "set null" }),
+  agentId: integer("agent_id").references(() => users.id, { onDelete: "set null" }),
+  clientId: integer("client_id").references(() => clients.id, { onDelete: "set null" }),
   entityType: varchar("entity_type", { length: 20 }).notNull(), // 'collaborator', 'agent', 'client'
   entityName: varchar("entity_name", { length: 256 }),
   frequency: varchar("frequency", { length: 20 }).notNull().default("monthly"), // weekly, monthly
@@ -13,10 +15,17 @@ export const accountingPaymentSchedules = pgTable("accounting_payment_schedules"
   currency: varchar("currency", { length: 8 }).notNull().default("HKD"),
   isActive: boolean("is_active").notNull().default(true),
   notes: text("notes"),
+  lastGeneratedAt: timestamp("last_generated_at", { mode: "string" }),
+  lastPeriodStart: date("last_period_start"),
+  lastPeriodEnd: date("last_period_end"),
   createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { mode: "string" }).defaultNow().notNull(),
-});
+}, (t) => ({
+  activeIdx: index("accounting_payment_schedules_active_idx").on(t.organisationId, t.isActive),
+  agentIdx: index("accounting_payment_schedules_agent_idx").on(t.agentId),
+  clientIdx: index("accounting_payment_schedules_client_idx").on(t.clientId),
+}));
 
 export const accountingInvoices = pgTable("accounting_invoices", {
   id: serial("id").primaryKey(),
@@ -29,7 +38,7 @@ export const accountingInvoices = pgTable("accounting_invoices", {
   entityType: varchar("entity_type", { length: 20 }).notNull(), // 'collaborator', 'agent', 'client'
   entityName: varchar("entity_name", { length: 256 }),
   scheduleId: integer("schedule_id").references(() => accountingPaymentSchedules.id, { onDelete: "set null" }),
-  parentInvoiceId: integer("parent_invoice_id").references((): any => accountingInvoices.id, { onDelete: "set null" }),
+  parentInvoiceId: integer("parent_invoice_id").references((): AnyPgColumn => accountingInvoices.id, { onDelete: "set null" }),
   totalAmountCents: integer("total_amount_cents").notNull().default(0),
   paidAmountCents: integer("paid_amount_cents").notNull().default(0),
   currency: varchar("currency", { length: 8 }).notNull().default("HKD"),
