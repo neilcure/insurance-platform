@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { accountingInvoices, accountingInvoiceItems, accountingPayments } from "@/db/schema/accounting";
-import { memberships, organisations } from "@/db/schema/core";
+import { memberships, organisations, clients, users } from "@/db/schema/core";
+import { policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
 import { and, desc, eq, sql, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
@@ -87,6 +88,94 @@ export async function GET(request: Request) {
           totalNetPremiumCents: net,
         };
       });
+    }
+
+    // Enrich with policy details (policyNumber, clientName, agentName, documentNumbers)
+    if (rows.length > 0) {
+      const invoiceIds = rows.map((r: any) => r.id as number);
+
+      // Get policy IDs linked through invoice items
+      const itemRows = await db
+        .select({
+          invoiceId: accountingInvoiceItems.invoiceId,
+          policyId: accountingInvoiceItems.policyId,
+        })
+        .from(accountingInvoiceItems)
+        .where(inArray(accountingInvoiceItems.invoiceId, invoiceIds));
+
+      const policyIdSet = new Set(itemRows.map((r) => r.policyId));
+      // Also include entityPolicyId if set
+      for (const r of rows as any[]) {
+        if (r.entityPolicyId) policyIdSet.add(r.entityPolicyId);
+      }
+      const allPolicyIds = Array.from(policyIdSet);
+
+      if (allPolicyIds.length > 0) {
+        const policyRows = await db
+          .select({
+            id: policies.id,
+            policyNumber: policies.policyNumber,
+            clientId: policies.clientId,
+            agentId: policies.agentId,
+            documentTracking: policies.documentTracking,
+          })
+          .from(policies)
+          .where(inArray(policies.id, allPolicyIds));
+
+        // Get client names
+        const clientIds = policyRows.map((p) => p.clientId).filter((id): id is number => id !== null);
+        const clientMap = new Map<number, string>();
+        if (clientIds.length > 0) {
+          const clientRows = await db
+            .select({ id: clients.id, displayName: clients.displayName })
+            .from(clients)
+            .where(inArray(clients.id, clientIds));
+          for (const c of clientRows) clientMap.set(c.id, c.displayName);
+        }
+
+        // Get agent names
+        const agentIds = policyRows.map((p) => p.agentId).filter((id): id is number => id !== null);
+        const agentMap = new Map<number, string>();
+        if (agentIds.length > 0) {
+          const agentRows = await db
+            .select({ id: users.id, name: users.name, email: users.email })
+            .from(users)
+            .where(inArray(users.id, agentIds));
+          for (const a of agentRows) agentMap.set(a.id, a.name || a.email || "");
+        }
+
+        const policyMap = new Map(policyRows.map((p) => [p.id, p]));
+
+        // Map invoiceId → policyId (use first linked policy, or entityPolicyId)
+        const invoicePolicyMap = new Map<number, number>();
+        for (const item of itemRows) {
+          if (!invoicePolicyMap.has(item.invoiceId)) {
+            invoicePolicyMap.set(item.invoiceId, item.policyId);
+          }
+        }
+
+        rows = (rows as any[]).map((r) => {
+          const policyId = invoicePolicyMap.get(r.id) ?? r.entityPolicyId;
+          const policy = policyId ? policyMap.get(policyId) : undefined;
+          const tracking = (policy?.documentTracking ?? {}) as Record<string, { documentNumber?: string }>;
+
+          // Extract document numbers from tracking
+          const docNumbers: Record<string, string> = {};
+          for (const [key, entry] of Object.entries(tracking)) {
+            if (entry?.documentNumber) {
+              docNumbers[key] = entry.documentNumber;
+            }
+          }
+
+          return {
+            ...r,
+            policyNumber: policy?.policyNumber ?? null,
+            clientName: policy?.clientId ? (clientMap.get(policy.clientId) ?? null) : null,
+            agentName: policy?.agentId ? (agentMap.get(policy.agentId) ?? null) : null,
+            documentNumbers: Object.keys(docNumbers).length > 0 ? docNumbers : null,
+          };
+        });
+      }
     }
 
     const includePayments = url.searchParams.get("includePayments") === "1";

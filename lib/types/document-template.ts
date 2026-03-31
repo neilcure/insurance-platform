@@ -12,6 +12,8 @@ export type TemplateSection = {
   source: "insured" | "contactinfo" | "package" | "policy" | "agent" | "accounting" | "client" | "organisation" | "custom";
   /** Required when source is "package" */
   packageName?: string;
+  /** Which audience sees this section: "all" (default), "client", or "agent" */
+  audience?: "all" | "client" | "agent";
   fields: TemplateFieldMapping[];
 };
 
@@ -23,6 +25,12 @@ export type DocumentTemplateMeta = {
   showWhenStatus?: string[];
   /** Restrict to specific insurance companies by their policy record IDs (empty = all) */
   insurerPolicyIds?: number[];
+  /** Whether this document requires client confirmation after sending (default: true for quotation, false for others) */
+  requiresConfirmation?: boolean;
+  /** Prefix for auto-generated document numbers (e.g. "QUO", "INV", "REC") */
+  documentPrefix?: string;
+  /** Mark as agent template — auto-appends (A) to document numbers */
+  isAgentTemplate?: boolean;
   header: {
     title: string;
     subtitle?: string;

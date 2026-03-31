@@ -562,6 +562,60 @@ export default function DocumentTemplatesManager() {
             </div>
           )}
 
+          {/* Document Prefix & Number */}
+          <div className="grid gap-1">
+            <Label>
+              Document Number Prefix{" "}
+              <span className="text-xs text-neutral-400">(e.g. QUO, INV, REC)</span>
+            </Label>
+            <Input
+              value={meta.documentPrefix ?? ""}
+              onChange={(e) => setMeta((m) => ({ ...m, documentPrefix: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "") }))}
+              placeholder="e.g. QUO"
+              className="w-40"
+              maxLength={10}
+            />
+            <p className="text-xs text-neutral-400">
+              When set, a unique document number (e.g. QUO-2026-3847) is automatically assigned when the document is first sent.
+            </p>
+          </div>
+
+          {/* Agent Template */}
+          <div className="grid gap-1">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={meta.isAgentTemplate ?? false}
+                onChange={(e) =>
+                  setMeta((m) => ({ ...m, isAgentTemplate: e.target.checked }))
+                }
+              />
+              <span className="font-medium">Agent Template</span>
+            </label>
+            <p className="text-xs text-neutral-400 ml-6">
+              Mark this as an agent copy. Document numbers will automatically have <strong>(A)</strong> appended (e.g. INV-2026-3847(A)).
+              Use this for agent-facing versions with agent-specific premium fields (Agent Premium, Agent Commission, etc.).
+            </p>
+          </div>
+
+          {/* Requires Confirmation */}
+          <div className="grid gap-1">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={meta.requiresConfirmation !== undefined ? meta.requiresConfirmation : meta.type === "quotation"}
+                onChange={(e) =>
+                  setMeta((m) => ({ ...m, requiresConfirmation: e.target.checked }))
+                }
+              />
+              <span className="font-medium">Requires Confirmation</span>
+            </label>
+            <p className="text-xs text-neutral-400 ml-6">
+              When enabled, a &ldquo;Confirm Received&rdquo; button appears after the document is sent.
+              Typically used for quotations that need client acceptance. Invoices and receipts usually don&apos;t need this.
+            </p>
+          </div>
+
           {/* Header */}
           <fieldset className="rounded-md border border-neutral-200 p-4 dark:border-neutral-700">
             <legend className="px-1 text-sm font-medium">Header</legend>
@@ -682,10 +736,16 @@ export default function DocumentTemplatesManager() {
                   }));
                 };
 
+                const audienceColor = section.audience === "client"
+                  ? "border-blue-300 dark:border-blue-700"
+                  : section.audience === "agent"
+                    ? "border-amber-300 dark:border-amber-700"
+                    : "border-neutral-200 dark:border-neutral-700";
+
                 return (
                   <div
                     key={section.id}
-                    className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-700"
+                    className={`rounded-lg border p-4 ${audienceColor}`}
                   >
                     <div className="mb-3 flex items-center gap-3">
                       <Input
@@ -711,6 +771,20 @@ export default function DocumentTemplatesManager() {
                             {s.label}
                           </option>
                         ))}
+                      </select>
+                      <select
+                        className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                        value={section.audience ?? "all"}
+                        onChange={(e) =>
+                          updateSection(sIdx, {
+                            audience: e.target.value as TemplateSection["audience"],
+                          })
+                        }
+                        title="Audience"
+                      >
+                        <option value="all">All</option>
+                        <option value="client">Client Only</option>
+                        <option value="agent">Agent Only</option>
                       </select>
                       {section.source === "package" && (
                         <select
@@ -1032,7 +1106,14 @@ export default function DocumentTemplatesManager() {
             {rows.map((r) => (
               <TableRow key={r.id} className={r.isActive ? "" : "opacity-50"}>
                 <TableCell>
-                  <div className="font-medium">{r.label}</div>
+                  <div className="font-medium">
+                    {r.label}
+                    {r.meta?.isAgentTemplate && (
+                      <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                        AGENT
+                      </span>
+                    )}
+                  </div>
                   <div className="text-xs text-neutral-500 dark:text-neutral-400 font-mono">
                     {r.value}
                   </div>

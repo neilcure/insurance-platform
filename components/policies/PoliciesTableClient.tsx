@@ -723,9 +723,18 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
       const pkgsSnap = (snap.packagesSnapshot ?? {}) as Record<string, unknown>;
       const insuredAlsoInPkgs = isInsuredPkg && editPkg in pkgsSnap;
 
+      const initial = editInitialSnapshotRef.current;
+      const changedOnly: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(editValues)) {
+        const oldVal = initial[key];
+        if (JSON.stringify(val ?? null) !== JSON.stringify(oldVal ?? null)) {
+          changedOnly[key] = val;
+        }
+      }
+
       if (isInsuredPkg) {
         const insured = { ...((snap.insuredSnapshot ?? {}) as Record<string, unknown>) };
-        for (const [key, val] of Object.entries(editValues)) {
+        for (const [key, val] of Object.entries(changedOnly)) {
           const prefixed2 = `${editPkg}__${key}`;
           const prefixed1 = `${editPkg}_${key}`;
           let found = false;
@@ -743,7 +752,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
             ? { ...((existingPkg as { values?: Record<string, unknown> }).values ?? {}) }
             : { ...existingPkg };
           const remapped: Record<string, unknown> = { ...oldValues };
-          for (const [key, val] of Object.entries(editValues)) {
+          for (const [key, val] of Object.entries(changedOnly)) {
             const prefixed2 = `${editPkg}__${key}`;
             const prefixed1 = `${editPkg}_${key}`;
             if (key in remapped) {
@@ -784,7 +793,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
           : { ...existingPkg };
 
         const remapped: Record<string, unknown> = { ...oldValues };
-        for (const [key, val] of Object.entries(editValues)) {
+        for (const [key, val] of Object.entries(changedOnly)) {
           const prefixed2 = `${editPkg}__${key}`;
           const prefixed1 = `${editPkg}_${key}`;
           if (key in remapped) {

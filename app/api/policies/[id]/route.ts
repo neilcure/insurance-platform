@@ -6,6 +6,8 @@ import { memberships, clients, clientAgentAssignments } from "@/db/schema/core";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
+import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
+import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -503,6 +505,20 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
         }
       } catch { /* ignore hook lookup errors */ }
 
+      // Auto-create invoices when status transitions to an invoice-related state.
+      // This ensures the Payments section populates as part of the normal workflow.
+      const invoiceTriggerStatuses = [
+        "invoice_prepared", "invoice_sent", "pending_payment",
+        "payment_received", "confirmed", "bound", "active",
+      ];
+      const normalizedStatus = body.status.toLowerCase().replace(/[\s-]+/g, "_");
+      if (invoiceTriggerStatuses.some((s) => normalizedStatus.includes(s))) {
+        try {
+          await syncPremiumSnapshotToTable(id, Number(user.id));
+          await autoCreateAccountingInvoices(id, `status_change:${body.status}`, Number(user.id));
+        } catch { /* non-fatal */ }
+      }
+
       if (!body.packages && !body.insured) {
         return NextResponse.json({ ok: true, policyId: id, recordId: id, status: body.status, previousStatus: oldStatus, hooks: hooksExecuted }, { status: 200 });
       }
@@ -580,6 +596,10 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
     }
 
     const changes: { key: string; from: unknown; to: unknown }[] = [];
+    const normalizeForCompare = (v: unknown): string => {
+      if (v === null || v === undefined || v === "") return JSON.stringify(null);
+      return JSON.stringify(v);
+    };
     const flattenPkg = (pkgs: Record<string, unknown>): Record<string, unknown> => {
       const flat: Record<string, unknown> = {};
       for (const [pkg, data] of Object.entries(pkgs)) {
@@ -595,8 +615,9 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
     const allKeys = new Set([...Object.keys(oldFlat), ...Object.keys(newFlat)]);
     for (const k of allKeys) {
       const ov = oldFlat[k], nv = newFlat[k];
-      const os = JSON.stringify(ov ?? null), ns = JSON.stringify(nv ?? null);
-      if (os !== ns) changes.push({ key: k, from: ov ?? null, to: nv ?? null });
+      if (normalizeForCompare(ov) !== normalizeForCompare(nv)) {
+        changes.push({ key: k, from: ov ?? null, to: nv ?? null });
+      }
     }
     if (body.insured) {
       const oldInsured = (existing.insuredSnapshot ?? {}) as Record<string, unknown>;
@@ -604,8 +625,9 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       const insuredKeys = new Set([...Object.keys(oldInsured), ...Object.keys(newInsured)]);
       for (const k of insuredKeys) {
         const ov = oldInsured[k], nv = newInsured[k];
-        const os = JSON.stringify(ov ?? null), ns = JSON.stringify(nv ?? null);
-        if (os !== ns) changes.push({ key: k, from: ov ?? null, to: nv ?? null });
+        if (normalizeForCompare(ov) !== normalizeForCompare(nv)) {
+          changes.push({ key: k, from: ov ?? null, to: nv ?? null });
+        }
       }
     }
 
@@ -668,6 +690,12 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       .update(cars)
       .set({ extraAttributes: updated })
       .where(eq(cars.id, carRow.id));
+
+    // Sync premiumRecord snapshot values to the policy_premiums table
+    // so the accounting system always has up-to-date premium data.
+    try {
+      await syncPremiumSnapshotToTable(id, Number(user.id));
+    } catch { /* non-fatal: premium sync failure should not block save */ }
 
     return NextResponse.json({ ok: true, policyId: id, recordId: id }, { status: 200 });
   } catch (err) {

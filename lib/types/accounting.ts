@@ -66,6 +66,7 @@ export type DocLifecycleStatus = "generated" | "sent" | "confirmed" | "rejected"
 
 export type DocumentStatusEntry = {
   status: DocLifecycleStatus;
+  documentNumber?: string;
   generatedAt?: string;
   sentAt?: string;
   sentTo?: string;

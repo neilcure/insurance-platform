@@ -2,7 +2,7 @@ import { db } from "@/db/client";
 import { policies, cars } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
 import { users, clients, organisations } from "@/db/schema/core";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, inArray } from "drizzle-orm";
 import type { MergeContext, AccountingLineContext } from "./resolve-data";
 import { loadAccountingFields, buildColumnFieldMap, getColumnType } from "@/lib/accounting-fields";
 
@@ -135,7 +135,7 @@ export async function buildMergeContext(policyId: number): Promise<{
       const collabMap = new Map<number, Record<string, unknown>>();
 
       if (lineOrgIds.length) {
-        const orgRows = await db.select().from(organisations).where(sql`"id" = ANY(${lineOrgIds})`);
+        const orgRows = await db.select().from(organisations).where(inArray(organisations.id, lineOrgIds));
         for (const o of orgRows) orgMap.set(o.id, o as unknown as Record<string, unknown>);
       }
       if (lineCollabIds.length) {
@@ -143,7 +143,7 @@ export async function buildMergeContext(policyId: number): Promise<{
           .select({ policyId: policies.id, carExtra: cars.extraAttributes })
           .from(policies)
           .leftJoin(cars, eq(cars.policyId, policies.id))
-          .where(sql`"policies"."id" = ANY(${lineCollabIds})`);
+          .where(inArray(policies.id, lineCollabIds));
         for (const c of collabRows) {
           const pkgs = ((c.carExtra as Record<string, unknown>)?.packagesSnapshot ?? {}) as Record<string, unknown>;
           let name = "";

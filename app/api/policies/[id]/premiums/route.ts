@@ -4,7 +4,7 @@ import { policyPremiums } from "@/db/schema/premiums";
 import { policies, cars } from "@/db/schema/insurance";
 import { memberships, organisations, clients } from "@/db/schema/core";
 import { formOptions } from "@/db/schema/form_options";
-import { and, eq, desc } from "drizzle-orm";
+import { and, eq, desc, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { appendPolicyAudit } from "@/lib/audit";
@@ -536,7 +536,7 @@ async function lookupEntityNamesById(
       .select({ policyId: policies.id, carExtra: cars.extraAttributes })
       .from(policies)
       .leftJoin(cars, eq(cars.policyId, policies.id))
-      .where(sql`"policies"."id" = ANY(${allIds})`);
+      .where(inArray(policies.id, allIds));
     for (const r of entityRows) {
       const name = extractEntityName(r.carExtra as Record<string, unknown> | null) || `#${r.policyId}`;
       if (insurerIds.includes(r.policyId)) insurers.set(r.policyId, name);
@@ -548,7 +548,7 @@ async function lookupEntityNamesById(
   if (missingInsurerIds.length > 0) {
     try {
       const orgRows = await db.select({ id: organisations.id, name: organisations.name })
-        .from(organisations).where(sql`"id" = ANY(${missingInsurerIds})`);
+        .from(organisations).where(inArray(organisations.id, missingInsurerIds));
       for (const o of orgRows) insurers.set(o.id, o.name);
     } catch { /* ignore */ }
   }

@@ -15,6 +15,12 @@ import {
   Check,
   X,
   RefreshCw,
+  Settings2,
+  GripVertical,
+  Eye,
+  EyeOff,
+  User,
+  Briefcase,
 } from "lucide-react";
 import {
   PAYMENT_METHOD_OPTIONS,
@@ -23,6 +29,12 @@ import {
   type PaymentStatus,
   type InvoiceStatus,
 } from "@/lib/types/accounting";
+
+type DisplayColumn = {
+  key: string;
+  label: string;
+  enabled: boolean;
+};
 
 type Stats = {
   pendingVerification: number;
@@ -64,8 +76,13 @@ type InvoiceRow = {
   status: InvoiceStatus;
   invoiceDate: string | null;
   dueDate: string | null;
+  notes: string | null;
   createdAt: string;
   payments: PaymentRow[];
+  policyNumber: string | null;
+  clientName: string | null;
+  agentName: string | null;
+  documentNumbers: Record<string, string> | null;
 };
 
 function formatCurrency(cents: number, currency = "HKD"): string {
@@ -148,6 +165,46 @@ export default function AccountingPage() {
   const [verifyingId, setVerifyingId] = React.useState<number | null>(null);
   const [statusFilter, setStatusFilter] = React.useState<string>("all");
   const [refreshKey, setRefreshKey] = React.useState(0);
+  const [showSettings, setShowSettings] = React.useState(false);
+  const [displayColumns, setDisplayColumns] = React.useState<DisplayColumn[]>([]);
+  const [savingCols, setSavingCols] = React.useState(false);
+
+  // Load display column settings
+  React.useEffect(() => {
+    fetch("/api/admin/accounting-display")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data?.columns) setDisplayColumns(data.columns); })
+      .catch(() => {});
+  }, []);
+
+  const isColEnabled = React.useCallback(
+    (key: string) => {
+      const col = displayColumns.find((c) => c.key === key);
+      return col ? col.enabled : true;
+    },
+    [displayColumns],
+  );
+
+  const saveColumns = async (cols: DisplayColumn[]) => {
+    setSavingCols(true);
+    try {
+      await fetch("/api/admin/accounting-display", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ columns: cols }),
+      });
+      setDisplayColumns(cols);
+    } catch { /* silent */ }
+    setSavingCols(false);
+  };
+
+  const toggleColumn = (key: string) => {
+    const updated = displayColumns.map((c) =>
+      c.key === key ? { ...c, enabled: !c.enabled } : c,
+    );
+    setDisplayColumns(updated);
+    void saveColumns(updated);
+  };
 
   React.useEffect(() => {
     fetch(`/api/accounting/stats?_t=${Date.now()}`, { cache: "no-store" })
@@ -213,19 +270,73 @@ export default function AccountingPage() {
     return result;
   }, [invoices]);
 
+  // Extract specific doc numbers from the documentNumbers map
+  function getDocNumber(inv: InvoiceRow, prefix: string): string | null {
+    if (!inv.documentNumbers) return null;
+    for (const [, num] of Object.entries(inv.documentNumbers)) {
+      if (typeof num === "string" && num.toUpperCase().startsWith(prefix.toUpperCase())) return num;
+    }
+    return null;
+  }
+
   return (
     <main className="mx-auto max-w-6xl space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Accounting</h1>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setRefreshKey((k) => k + 1)}
-        >
-          <RefreshCw className="h-4 w-4 mr-1" />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowSettings(!showSettings)}
+          >
+            <Settings2 className="h-4 w-4 mr-1" />
+            Display
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRefreshKey((k) => k + 1)}
+          >
+            <RefreshCw className="h-4 w-4 mr-1" />
+            Refresh
+          </Button>
+        </div>
       </div>
+
+      {/* Display column settings panel */}
+      {showSettings && displayColumns.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Settings2 className="h-4 w-4" />
+              Invoice Display Settings
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-xs text-neutral-500 mb-3">
+              Choose which fields appear on each invoice card. Changes save automatically.
+            </p>
+            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-4">
+              {displayColumns.map((col) => (
+                <button
+                  key={col.key}
+                  type="button"
+                  onClick={() => toggleColumn(col.key)}
+                  className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
+                    col.enabled
+                      ? "border-blue-300 bg-blue-50 text-blue-800 dark:border-blue-700 dark:bg-blue-950/30 dark:text-blue-300"
+                      : "border-neutral-200 text-neutral-400 dark:border-neutral-700 dark:text-neutral-500"
+                  }`}
+                >
+                  {col.enabled ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                  {col.label}
+                </button>
+              ))}
+            </div>
+            {savingCols && <p className="mt-2 text-[10px] text-neutral-400">Saving...</p>}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Stats cards */}
       {loading ? (
@@ -305,7 +416,8 @@ export default function AccountingPage() {
                     </div>
                     <div className="text-xs text-neutral-400">
                       Invoice: {inv.invoiceNumber}
-                      {inv.entityName && <> &middot; {inv.entityName}</>}
+                      {inv.clientName && <> &middot; {inv.clientName}</>}
+                      {inv.policyNumber && <> &middot; {inv.policyNumber}</>}
                       {p.paymentDate && <> &middot; {new Date(p.paymentDate).toLocaleDateString()}</>}
                     </div>
                     {p.notes && <div className="text-xs text-neutral-400 italic">{p.notes}</div>}
@@ -370,59 +482,163 @@ export default function AccountingPage() {
               {filtered.map((inv) => {
                 const isExpanded = expandedInvoice === inv.id;
                 const remaining = inv.totalAmountCents - inv.paidAmountCents;
+                const quotationNo = getDocNumber(inv, "QUO") || getDocNumber(inv, "HIDIQUO");
+                const receiptNo = getDocNumber(inv, "REC");
+
                 return (
                   <div key={inv.id} className="rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">
+                    {/* Collapsed header */}
                     <button
                       type="button"
                       onClick={() => setExpandedInvoice(isExpanded ? null : inv.id)}
-                      className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
+                      className="w-full text-left px-3.5 py-2.5 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
                     >
-                      <span className="flex items-center gap-2 min-w-0">
-                        <FileText className="h-4 w-4 shrink-0 text-neutral-400" />
-                        <span className="font-medium truncate">{inv.invoiceNumber}</span>
-                        <Badge variant="custom" className={invoiceStatusClass(inv.status)}>
-                          {INVOICE_STATUS_LABELS[inv.status] ?? inv.status}
-                        </Badge>
-                        {inv.entityName && (
-                          <span className="text-xs text-neutral-400 truncate">{inv.entityName}</span>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <FileText className="h-4 w-4 shrink-0 text-neutral-400" />
+                          {isColEnabled("invoiceNumber") && (
+                            <span className="font-semibold text-sm truncate">{inv.invoiceNumber}</span>
+                          )}
+                          <Badge variant="custom" className={invoiceStatusClass(inv.status)}>
+                            {INVOICE_STATUS_LABELS[inv.status] ?? inv.status}
+                          </Badge>
+                          {isColEnabled("direction") && (
+                            <Badge variant="custom" className={
+                              inv.direction === "receivable"
+                                ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                                : "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                            }>
+                              {inv.direction === "receivable" ? "Receivable" : "Payable"}
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-xs font-medium">
+                            <span className="text-neutral-400">{formatCurrency(inv.paidAmountCents, inv.currency)}</span>
+                            <span className="text-neutral-300 mx-0.5">/</span>
+                            <span className="font-semibold">{formatCurrency(inv.totalAmountCents, inv.currency)}</span>
+                          </span>
+                          {isExpanded ? (
+                            <ChevronUp className="h-4 w-4 text-neutral-400" />
+                          ) : (
+                            <ChevronDown className="h-4 w-4 text-neutral-400" />
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Subtitle row with key info */}
+                      <div className="flex items-center gap-x-3 gap-y-0.5 mt-1 flex-wrap text-xs text-neutral-500 dark:text-neutral-400">
+                        {isColEnabled("clientName") && inv.clientName && (
+                          <span className="flex items-center gap-1">
+                            <User className="h-3 w-3" />
+                            {inv.clientName}
+                          </span>
                         )}
-                      </span>
-                      <span className="flex items-center gap-2 shrink-0">
-                        <span className="text-xs font-medium text-neutral-300 dark:text-neutral-300">
-                          {formatCurrency(inv.paidAmountCents, inv.currency)} / {formatCurrency(inv.totalAmountCents, inv.currency)}
-                        </span>
-                        {isExpanded ? (
-                          <ChevronUp className="h-4 w-4 text-neutral-400" />
-                        ) : (
-                          <ChevronDown className="h-4 w-4 text-neutral-400" />
+                        {isColEnabled("policyNumber") && inv.policyNumber && (
+                          <span className="font-mono text-[11px] text-neutral-400">{inv.policyNumber}</span>
                         )}
-                      </span>
+                        {isColEnabled("agentName") && inv.agentName && (
+                          <span className="flex items-center gap-1">
+                            <Briefcase className="h-3 w-3" />
+                            {inv.agentName}
+                          </span>
+                        )}
+                        {isColEnabled("notes") && inv.notes && (
+                          <span className="italic truncate max-w-[200px]">{inv.notes}</span>
+                        )}
+                        {isColEnabled("quotationNo") && quotationNo && (
+                          <span className="text-[10px] font-mono bg-neutral-100 dark:bg-neutral-800 rounded px-1 py-0.5">{quotationNo}</span>
+                        )}
+                        {isColEnabled("receiptNo") && receiptNo && (
+                          <span className="text-[10px] font-mono bg-green-100 dark:bg-green-900/30 rounded px-1 py-0.5 text-green-700 dark:text-green-400">{receiptNo}</span>
+                        )}
+                      </div>
                     </button>
 
+                    {/* Expanded details */}
                     {isExpanded && (
-                      <div className="border-t border-neutral-200 dark:border-neutral-700 px-3 py-3 space-y-3">
+                      <div className="border-t border-neutral-200 dark:border-neutral-700 px-3.5 py-3 space-y-3">
                         <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
-                          <div>
-                            <div className="text-neutral-400">Type</div>
-                            <div className="font-medium">{inv.invoiceType}</div>
-                          </div>
-                          <div>
-                            <div className="text-neutral-400">Direction</div>
-                            <div className="font-medium">{inv.direction}</div>
-                          </div>
-                          <div>
-                            <div className="text-neutral-400">Remaining</div>
-                            <div className={`font-medium ${remaining > 0 ? "text-orange-600" : "text-green-600"}`}>
-                              {formatCurrency(remaining, inv.currency)}
+                          {isColEnabled("entityType") && (
+                            <div>
+                              <div className="text-neutral-400">Entity Type</div>
+                              <div className="font-medium capitalize">{inv.entityType}</div>
                             </div>
-                          </div>
-                          <div>
-                            <div className="text-neutral-400">Date</div>
-                            <div className="font-medium">
-                              {inv.invoiceDate ? new Date(inv.invoiceDate).toLocaleDateString() : "—"}
+                          )}
+                          {isColEnabled("premiumType") && (
+                            <div>
+                              <div className="text-neutral-400">Premium Type</div>
+                              <div className="font-medium">{inv.premiumType.replace(/_/g, " ")}</div>
                             </div>
-                          </div>
+                          )}
+                          {isColEnabled("remaining") && (
+                            <div>
+                              <div className="text-neutral-400">Remaining</div>
+                              <div className={`font-medium ${remaining > 0 ? "text-orange-600" : "text-green-600"}`}>
+                                {formatCurrency(remaining, inv.currency)}
+                              </div>
+                            </div>
+                          )}
+                          {isColEnabled("invoiceDate") && (
+                            <div>
+                              <div className="text-neutral-400">Invoice Date</div>
+                              <div className="font-medium">
+                                {inv.invoiceDate ? new Date(inv.invoiceDate).toLocaleDateString() : "—"}
+                              </div>
+                            </div>
+                          )}
+                          {isColEnabled("dueDate") && (
+                            <div>
+                              <div className="text-neutral-400">Due Date</div>
+                              <div className="font-medium">
+                                {inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : "—"}
+                              </div>
+                            </div>
+                          )}
+                          {isColEnabled("policyNumber") && inv.policyNumber && (
+                            <div>
+                              <div className="text-neutral-400">Policy No.</div>
+                              <div className="font-medium font-mono">{inv.policyNumber}</div>
+                            </div>
+                          )}
+                          {isColEnabled("clientName") && inv.clientName && (
+                            <div>
+                              <div className="text-neutral-400">Client</div>
+                              <div className="font-medium">{inv.clientName}</div>
+                            </div>
+                          )}
+                          {isColEnabled("agentName") && inv.agentName && (
+                            <div>
+                              <div className="text-neutral-400">Agent</div>
+                              <div className="font-medium">{inv.agentName}</div>
+                            </div>
+                          )}
                         </div>
+
+                        {/* Document numbers */}
+                        {inv.documentNumbers && Object.keys(inv.documentNumbers).length > 0 && (
+                          <div>
+                            <div className="text-xs font-medium text-neutral-500 mb-1">Document Numbers</div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {Object.entries(inv.documentNumbers).map(([key, num]) => (
+                                <span
+                                  key={key}
+                                  className="inline-flex items-center gap-1 rounded bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 text-[11px] font-mono"
+                                >
+                                  <span className="text-neutral-400 capitalize">{key.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2")}:</span>
+                                  <span className="font-medium">{num}</span>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Notes */}
+                        {inv.notes && (
+                          <div className="text-xs text-neutral-500 italic bg-neutral-50 dark:bg-neutral-800/30 rounded-md px-2.5 py-1.5">
+                            {inv.notes}
+                          </div>
+                        )}
 
                         {inv.payments && inv.payments.length > 0 && (
                           <div className="space-y-1.5">

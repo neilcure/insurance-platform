@@ -69,6 +69,7 @@ export type PaymentSummary = {
   currency: string;
   invoiceCount: number;
   hasSubmitted: boolean;
+  invoiceNumbers: string[];
 };
 
 function formatCurrency(cents: number, currency = "HKD"): string {
@@ -124,6 +125,7 @@ export function PaymentSection({
   onSummaryChange?: (summary: PaymentSummary) => void;
 }) {
   const [invoices, setInvoices] = React.useState<InvoiceWithPayments[]>([]);
+  const [payables, setPayables] = React.useState<InvoiceWithPayments[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [expandedInvoice, setExpandedInvoice] = React.useState<number | null>(null);
@@ -155,7 +157,9 @@ export function PaymentSection({
       .then((data: InvoiceWithPayments[]) => {
         if (cancelled) return;
         const receivable = data.filter((inv) => inv.direction === "receivable");
+        const payableInvs = data.filter((inv) => inv.direction === "payable");
         setInvoices(receivable);
+        setPayables(payableInvs);
 
         const totalOwed = receivable.reduce((sum, inv) => sum + inv.totalAmountCents, 0);
         const verifiedPaid = receivable.reduce((sum, inv) => {
@@ -183,6 +187,7 @@ export function PaymentSection({
           currency,
           invoiceCount: receivable.length,
           hasSubmitted,
+          invoiceNumbers: receivable.map((inv) => inv.invoiceNumber),
         };
         summaryRef.current?.(summary);
         setLoading(false);
@@ -295,25 +300,28 @@ export function PaymentSection({
             <button
               type="button"
               onClick={() => setExpandedInvoice(isExpanded ? null : inv.id)}
-              className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
+              className="w-full px-3 py-2.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
             >
-              <span className="flex items-center gap-2 min-w-0">
-                <FileText className="h-4 w-4 shrink-0 text-neutral-400" />
-                <span className="font-medium truncate">{inv.invoiceNumber}</span>
-                <Badge variant="custom" className={invoiceStatusClass(inv.status)}>
-                  {INVOICE_STATUS_LABELS[inv.status] ?? inv.status}
-                </Badge>
-              </span>
-              <span className="flex items-center gap-2 shrink-0">
-                <span className="text-xs text-neutral-500">
-                  {formatCurrency(inv.paidAmountCents, inv.currency)} / {formatCurrency(inv.totalAmountCents, inv.currency)}
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-2 min-w-0">
+                  <FileText className="h-4 w-4 shrink-0 text-neutral-400" />
+                  <span className="text-sm font-medium">{inv.invoiceNumber}</span>
                 </span>
-                {isExpanded ? (
-                  <ChevronUp className="h-4 w-4 text-neutral-400" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 text-neutral-400" />
-                )}
-              </span>
+                <span className="flex items-center gap-1.5 shrink-0">
+                  <Badge variant="custom" className={invoiceStatusClass(inv.status)}>
+                    {INVOICE_STATUS_LABELS[inv.status] ?? inv.status}
+                  </Badge>
+                  {isExpanded ? (
+                    <ChevronUp className="h-4 w-4 text-neutral-400" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4 text-neutral-400" />
+                  )}
+                </span>
+              </div>
+              <div className="mt-0.5 pl-6 text-xs text-neutral-500 dark:text-neutral-400">
+                {formatCurrency(inv.paidAmountCents, inv.currency)} / {formatCurrency(inv.totalAmountCents, inv.currency)}
+                {inv.notes && <> &middot; {inv.notes}</>}
+              </div>
             </button>
 
             {isExpanded && (
@@ -524,6 +532,73 @@ export function PaymentSection({
           </div>
         );
       })}
+
+      {/* Agent Commission Payables */}
+      {payables.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-2 flex items-center gap-2">
+            <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+              Agent Commission
+            </span>
+            <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
+          </div>
+          {payables.map((inv) => {
+            const isExpanded = expandedInvoice === inv.id;
+            return (
+              <div key={inv.id} className="rounded-md border border-amber-200 dark:border-amber-800 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setExpandedInvoice(isExpanded ? null : inv.id)}
+                  className="w-full px-3 py-2.5 text-left hover:bg-amber-50/50 dark:hover:bg-amber-950/20 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-2 min-w-0">
+                      <FileText className="h-4 w-4 shrink-0 text-amber-500" />
+                      <span className="text-sm font-medium">{inv.invoiceNumber}</span>
+                    </span>
+                    <span className="flex items-center gap-1.5 shrink-0">
+                      <Badge variant="custom" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                        Payable
+                      </Badge>
+                      {isExpanded ? (
+                        <ChevronUp className="h-4 w-4 text-neutral-400" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4 text-neutral-400" />
+                      )}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 pl-6 text-xs text-neutral-500 dark:text-neutral-400">
+                    {formatCurrency(inv.totalAmountCents, inv.currency)} to {inv.entityName || "Agent"}
+                    {inv.notes && <> &middot; {inv.notes}</>}
+                  </div>
+                </button>
+                {isExpanded && (
+                  <div className="border-t border-amber-200 dark:border-amber-700 px-3 py-3 space-y-2">
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="rounded-md bg-amber-50 dark:bg-amber-900/20 p-2">
+                        <div className="text-amber-600 dark:text-amber-400">Commission Amount</div>
+                        <div className="font-semibold text-amber-800 dark:text-amber-200">
+                          {formatCurrency(inv.totalAmountCents, inv.currency)}
+                        </div>
+                      </div>
+                      <div className="rounded-md bg-neutral-50 dark:bg-neutral-800/50 p-2">
+                        <div className="text-neutral-500 dark:text-neutral-400">Status</div>
+                        <div className="font-semibold">
+                          {inv.paidAmountCents >= inv.totalAmountCents ? "Settled" : "Outstanding"}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                      Client Premium − Agent Premium = Commission payable to agent when client pays directly.
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

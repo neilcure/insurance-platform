@@ -24,6 +24,8 @@ import { Label } from "@/components/ui/label";
 import type {
   DocumentStatus,
   PolicyDocumentRow,
+  PolicyPaymentRecord,
+  PremiumBreakdown,
   UploadDocumentTypeMeta,
 } from "@/lib/types/upload-document";
 import { PAYMENT_METHOD_OPTIONS, type PaymentMethod } from "@/lib/types/accounting";
@@ -221,10 +223,22 @@ type DocumentUploadCardProps = {
   meta: UploadDocumentTypeMeta | null;
   displayStatus: DocumentStatus;
   uploads: PolicyDocumentRow[];
+  payments?: PolicyPaymentRecord[];
+  premiumBreakdown?: PremiumBreakdown;
   policyId: number;
   isAdmin: boolean;
   onRefresh: () => void;
 };
+
+function formatPaymentMethod(m: string | null): string {
+  if (!m) return "";
+  const opt = PAYMENT_METHOD_OPTIONS.find((o) => o.value === m);
+  return opt?.label ?? m.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatCurrency(cents: number): string {
+  return new Intl.NumberFormat("en-HK", { style: "currency", currency: "HKD", minimumFractionDigits: 2 }).format(cents / 100);
+}
 
 export function DocumentUploadCard({
   typeKey,
@@ -232,6 +246,8 @@ export function DocumentUploadCard({
   meta,
   displayStatus,
   uploads,
+  payments,
+  premiumBreakdown,
   policyId,
   isAdmin,
   onRefresh,
@@ -245,6 +261,9 @@ export function DocumentUploadCard({
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const needsPayment = meta?.requirePaymentDetails === true;
+  const hasAgent = needsPayment && premiumBreakdown && premiumBreakdown.agentPremiumCents > 0;
+  const [paymentPayer, setPaymentPayer] = React.useState<"client" | "agent" | null>(hasAgent ? null : "client");
+  const [paymentType, setPaymentType] = React.useState<"full" | "partial">("full");
   const [paymentMethod, setPaymentMethod] = React.useState<PaymentMethod>("bank_transfer");
   const [paymentAmount, setPaymentAmount] = React.useState("");
   const [paymentDate, setPaymentDate] = React.useState(() => new Date().toISOString().split("T")[0]);
@@ -258,12 +277,35 @@ export function DocumentUploadCard({
   const canUpload = displayStatus === "outstanding" || displayStatus === "rejected";
 
   function resetPaymentForm() {
+    setPaymentPayer(hasAgent ? null : "client");
+    setPaymentType("full");
     setPaymentMethod("bank_transfer");
     setPaymentAmount("");
     setPaymentDate(new Date().toISOString().split("T")[0]);
     setPaymentRef("");
     setPendingFile(null);
   }
+
+  React.useEffect(() => {
+    if (needsPayment && !hasAgent && premiumBreakdown && !paymentAmount) {
+      setPaymentAmount((premiumBreakdown.clientPremiumCents / 100).toFixed(2));
+    }
+  }, [needsPayment, hasAgent, premiumBreakdown]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fullAmount = React.useMemo(() => {
+    if (!premiumBreakdown) return 0;
+    if (paymentPayer === "agent") return premiumBreakdown.agentPremiumCents;
+    return premiumBreakdown.clientPremiumCents;
+  }, [premiumBreakdown, paymentPayer]);
+
+  const alreadyPaid = React.useMemo(() => {
+    if (!payments) return 0;
+    return payments
+      .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
+      .reduce((sum, p) => sum + p.amountCents, 0);
+  }, [payments]);
+
+  const remainingAmount = Math.max(fullAmount - alreadyPaid, 0);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -283,7 +325,7 @@ export function DocumentUploadCard({
     }
   }
 
-  async function doUpload(file: File) {
+  async function doUpload(file: File, overrideAmountStr?: string) {
     setUploading(true);
     try {
       const fd = new FormData();
@@ -291,7 +333,8 @@ export function DocumentUploadCard({
       fd.append("documentTypeKey", typeKey);
 
       if (needsPayment) {
-        const cents = Math.round(Number(paymentAmount) * 100);
+        const amtStr = overrideAmountStr || paymentAmount;
+        const cents = Math.round(Number(amtStr) * 100);
         if (!cents || cents <= 0) {
           toast.error("Please enter a valid payment amount");
           setUploading(false);
@@ -519,23 +562,181 @@ export function DocumentUploadCard({
           </div>
         )}
 
-        {/* Upload button + payment details form */}
-        {(canUpload || (displayStatus === "uploaded" && isAdmin)) && (
-          <div className="space-y-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={acceptAttr}
-              onChange={handleUpload}
-              className="hidden"
-            />
-
-            {needsPayment && pendingFile ? (
-              <div className="rounded-md border border-neutral-200 bg-neutral-50 p-2.5 dark:border-neutral-700 dark:bg-neutral-800/30 space-y-2">
-                <div className="flex items-center gap-1.5 text-xs">
-                  <FileText className="h-3.5 w-3.5 text-neutral-400" />
-                  <span className="font-medium truncate">{pendingFile.name}</span>
+        {/* Payment records summary — only show when this type has uploads */}
+        {needsPayment && uploads.length > 0 && payments && payments.length > 0 && (
+          <div className="mb-2 rounded-md border border-emerald-200 bg-emerald-50/50 p-2.5 dark:border-emerald-800 dark:bg-emerald-950/20">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1.5">
+              Payment Records
+            </div>
+            <div className="space-y-1">
+              {payments.map((p, i) => (
+                <div key={i} className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-medium text-emerald-800 dark:text-emerald-300">
+                      {formatCurrency(p.amountCents)}
+                    </span>
+                    {p.paymentMethod && (
+                      <span className="text-neutral-500 dark:text-neutral-400">
+                        {formatPaymentMethod(p.paymentMethod)}
+                      </span>
+                    )}
+                    {p.referenceNumber && (
+                      <span className="text-neutral-400 dark:text-neutral-500 truncate max-w-[100px]" title={p.referenceNumber}>
+                        Ref: {p.referenceNumber}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {p.paymentDate && (
+                      <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                        {p.paymentDate}
+                      </span>
+                    )}
+                    <Badge
+                      variant="outline"
+                      className={`border-0 text-[9px] ${
+                        p.status === "verified"
+                          ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+                          : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                      }`}
+                    >
+                      {p.status === "verified" ? "Verified" : "Pending"}
+                    </Badge>
+                  </div>
                 </div>
+              ))}
+            </div>
+            <div className="mt-1.5 pt-1.5 border-t border-emerald-200 dark:border-emerald-800 flex items-center justify-between text-xs">
+              <span className="font-semibold text-emerald-800 dark:text-emerald-300">Total</span>
+              <span className="font-bold text-emerald-800 dark:text-emerald-300">
+                {formatCurrency(payments.reduce((sum, p) => sum + p.amountCents, 0))}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Payment form (shown upfront) + Upload */}
+        {(canUpload || (displayStatus === "uploaded" && isAdmin)) && needsPayment && premiumBreakdown ? (
+          <div className="space-y-2.5">
+            <input ref={fileInputRef} type="file" accept={acceptAttr} onChange={handleUpload} className="hidden" />
+
+            {/* Step 1: Payer selection (when agent exists) */}
+            {hasAgent && (
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1.5">
+                  Who is making this payment?
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentPayer("client");
+                      setPaymentType("full");
+                      setPaymentAmount((premiumBreakdown.clientPremiumCents / 100).toFixed(2));
+                    }}
+                    className={`rounded-md border-2 p-2 text-left transition-colors ${
+                      paymentPayer === "client"
+                        ? "border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-950/40"
+                        : "border-neutral-200 hover:border-blue-300 dark:border-neutral-700 dark:hover:border-blue-700"
+                    }`}
+                  >
+                    <div className="text-[10px] font-semibold text-blue-800 dark:text-blue-300">Client</div>
+                    <div className="text-sm font-bold text-blue-900 dark:text-blue-200">
+                      {formatCurrency(premiumBreakdown.clientPremiumCents)}
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentPayer("agent");
+                      setPaymentType("full");
+                      setPaymentAmount((premiumBreakdown.agentPremiumCents / 100).toFixed(2));
+                    }}
+                    className={`rounded-md border-2 p-2 text-left transition-colors ${
+                      paymentPayer === "agent"
+                        ? "border-amber-500 bg-amber-50 dark:border-amber-400 dark:bg-amber-950/40"
+                        : "border-neutral-200 hover:border-amber-300 dark:border-neutral-700 dark:hover:border-amber-700"
+                    }`}
+                  >
+                    <div className="text-[10px] font-semibold text-amber-800 dark:text-amber-300">
+                      {premiumBreakdown.agentName || "Agent"}
+                    </div>
+                    <div className="text-sm font-bold text-amber-900 dark:text-amber-200">
+                      {formatCurrency(premiumBreakdown.agentPremiumCents)}
+                    </div>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 2: Full / Partial + details (show when payer selected) */}
+            {paymentPayer && (
+              <>
+                {/* Full / Partial toggle */}
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">
+                    Payment Type
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPaymentType("full");
+                        setPaymentAmount((remainingAmount / 100).toFixed(2));
+                      }}
+                      className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${
+                        paymentType === "full"
+                          ? "border-green-500 bg-green-50 text-green-800 dark:border-green-400 dark:bg-green-950/40 dark:text-green-300"
+                          : "border-neutral-200 text-neutral-600 hover:border-green-300 dark:border-neutral-700 dark:text-neutral-400"
+                      }`}
+                    >
+                      Full Payment — {formatCurrency(remainingAmount)}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPaymentType("partial");
+                        setPaymentAmount("");
+                      }}
+                      className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${
+                        paymentType === "partial"
+                          ? "border-blue-500 bg-blue-50 text-blue-800 dark:border-blue-400 dark:bg-blue-950/40 dark:text-blue-300"
+                          : "border-neutral-200 text-neutral-600 hover:border-blue-300 dark:border-neutral-700 dark:text-neutral-400"
+                      }`}
+                    >
+                      Partial Payment
+                    </button>
+                  </div>
+                  {alreadyPaid > 0 && (
+                    <div className="mt-1 text-[10px] text-neutral-400 dark:text-neutral-500">
+                      Already paid: {formatCurrency(alreadyPaid)} · Remaining: {formatCurrency(remainingAmount)}
+                    </div>
+                  )}
+                </div>
+
+                {/* Amount (editable for partial, read-only display for full) */}
+                {paymentType === "partial" && (
+                  <div>
+                    <Label className="text-[10px]">Amount (HKD)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      max={(remainingAmount / 100).toFixed(2)}
+                      placeholder="0.00"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                      className="mt-0.5 h-7 text-xs"
+                    />
+                    {paymentAmount && Number(paymentAmount) > 0 && (
+                      <div className="mt-0.5 text-[10px] text-neutral-400">
+                        After this: {formatCurrency(remainingAmount - Math.round(Number(paymentAmount) * 100))} remaining
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Method, Date, Reference */}
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <Label className="text-[10px]">Payment Method</Label>
@@ -550,20 +751,6 @@ export function DocumentUploadCard({
                     </select>
                   </div>
                   <div>
-                    <Label className="text-[10px]">Amount (HKD)</Label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0.01"
-                      placeholder="0.00"
-                      value={paymentAmount}
-                      onChange={(e) => setPaymentAmount(e.target.value)}
-                      className="mt-0.5 h-7 text-xs"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
                     <Label className="text-[10px]">Date</Label>
                     <Input
                       type="date"
@@ -572,23 +759,52 @@ export function DocumentUploadCard({
                       className="mt-0.5 h-7 text-xs"
                     />
                   </div>
-                  <div>
-                    <Label className="text-[10px]">{paymentMethod === "cheque" ? "Cheque No." : "Reference"}</Label>
-                    <Input
-                      type="text"
-                      placeholder={paymentMethod === "cheque" ? "Cheque number" : "Reference"}
-                      value={paymentRef}
-                      onChange={(e) => setPaymentRef(e.target.value)}
-                      className="mt-0.5 h-7 text-xs"
-                    />
-                  </div>
                 </div>
+                <div>
+                  <Label className="text-[10px]">{paymentMethod === "cheque" ? "Cheque No." : "Reference"}</Label>
+                  <Input
+                    type="text"
+                    placeholder={paymentMethod === "cheque" ? "Cheque number" : "Reference"}
+                    value={paymentRef}
+                    onChange={(e) => setPaymentRef(e.target.value)}
+                    className="mt-0.5 h-7 text-xs"
+                  />
+                </div>
+
+                {/* Step 3: Upload proof + submit */}
+                {pendingFile ? (
+                  <div className="flex items-center gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-700 dark:bg-neutral-800/30">
+                    <FileText className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+                    <span className="text-xs font-medium truncate flex-1">{pendingFile.name}</span>
+                    <button type="button" onClick={() => setPendingFile(null)} className="text-neutral-400 hover:text-red-500">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                    Attach Payment Proof
+                  </Button>
+                )}
+
                 <div className="flex items-center gap-2 pt-0.5">
                   <Button
                     size="sm"
-                    className="h-7 text-xs"
-                    disabled={uploading || !paymentAmount || Number(paymentAmount) <= 0}
-                    onClick={() => void doUpload(pendingFile)}
+                    className="h-7 text-xs flex-1"
+                    disabled={
+                      uploading
+                      || !pendingFile
+                      || (paymentType === "full" ? remainingAmount <= 0 : !paymentAmount || Number(paymentAmount) <= 0)
+                    }
+                    onClick={() => {
+                      const amt = paymentType === "full" ? (remainingAmount / 100).toFixed(2) : paymentAmount;
+                      void doUpload(pendingFile!, amt);
+                    }}
                   >
                     {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                     <span>{uploading ? "Uploading..." : "Submit Payment"}</span>
@@ -597,30 +813,33 @@ export function DocumentUploadCard({
                     Cancel
                   </Button>
                 </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-1.5"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading}
-                >
-                  {uploading ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Upload className="h-3.5 w-3.5" />
-                  )}
-                  {displayStatus === "rejected" ? "Re-upload" : "Upload"}
-                </Button>
-                {meta?.required && displayStatus === "outstanding" && (
-                  <span className="text-[10px] text-red-500 dark:text-red-400">Required</span>
-                )}
-              </div>
+              </>
             )}
           </div>
-        )}
+        ) : (canUpload || (displayStatus === "uploaded" && isAdmin)) ? (
+          <div className="space-y-2">
+            <input ref={fileInputRef} type="file" accept={acceptAttr} onChange={handleUpload} className="hidden" />
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+              >
+                {uploading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Upload className="h-3.5 w-3.5" />
+                )}
+                {displayStatus === "rejected" ? "Re-upload" : "Upload"}
+              </Button>
+              {meta?.required && displayStatus === "outstanding" && (
+                <span className="text-[10px] text-red-500 dark:text-red-400">Required</span>
+              )}
+            </div>
+          </div>
+        ) : null}
 
         {/* Reminder scheduler for outstanding/rejected docs */}
         {isAdmin && (displayStatus === "outstanding" || displayStatus === "rejected" || displayStatus === "uploaded") && (

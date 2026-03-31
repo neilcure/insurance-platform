@@ -124,6 +124,7 @@ export function WorkflowTab({
   const [paymentSummary, setPaymentSummary] = React.useState<{
     totalOwed: number; totalPaid: number; totalPending: number; remaining: number;
     currency: string; invoiceCount: number; hasSubmitted: boolean;
+    invoiceNumbers: string[];
   } | null>(null);
 
   const toggleSection = (id: string) => {
@@ -180,66 +181,73 @@ export function WorkflowTab({
           <button
             type="button"
             onClick={() => toggleSection(sec.id)}
-            className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
+            className="w-full px-3 py-2.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
           >
-            <span>{sec.label}</span>
-            <span className="flex items-center gap-1.5">
-              {sec.id === "uploads" && uploadSummary && uploadSummary.total > 0 && (() => {
-                const allDone = uploadSummary.verified === uploadSummary.total;
-                return (
-                  <>
-                    <Badge
-                      variant="custom"
-                      className={allDone
-                        ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
-                        : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
-                      }
-                    >
-                      {uploadSummary.verified}/{uploadSummary.total}
-                    </Badge>
-                    {uploadSummary.outstanding > 0 && (
-                      <Badge variant="custom" className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
-                        {uploadSummary.outstanding} outstanding
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">{sec.label}</span>
+              <span className="flex items-center gap-1.5">
+                {sec.id === "uploads" && uploadSummary && uploadSummary.total > 0 && (() => {
+                  const allDone = uploadSummary.verified === uploadSummary.total;
+                  return (
+                    <>
+                      <Badge
+                        variant="custom"
+                        className={allDone
+                          ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                          : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                        }
+                      >
+                        {uploadSummary.verified}/{uploadSummary.total}
                       </Badge>
-                    )}
-                    {uploadSummary.pending > 0 && (
-                      <Badge variant="custom" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
-                        {uploadSummary.pending} pending
+                      {uploadSummary.outstanding > 0 && (
+                        <Badge variant="custom" className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
+                          {uploadSummary.outstanding} outstanding
+                        </Badge>
+                      )}
+                      {uploadSummary.pending > 0 && (
+                        <Badge variant="custom" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                          {uploadSummary.pending} pending
+                        </Badge>
+                      )}
+                      {uploadSummary.rejected > 0 && (
+                        <Badge variant="custom" className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                          {uploadSummary.rejected} rejected
+                        </Badge>
+                      )}
+                    </>
+                  );
+                })()}
+                {sec.id === "payments" && paymentSummary && paymentSummary.invoiceCount > 0 && (() => {
+                  const fullyPaid = paymentSummary.remaining <= 0;
+                  const fmtCur = (cents: number) =>
+                    new Intl.NumberFormat("en-HK", { style: "currency", currency: paymentSummary.currency, minimumFractionDigits: 0 }).format(cents / 100);
+                  return (
+                    <>
+                      <Badge
+                        variant="custom"
+                        className={fullyPaid
+                          ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                          : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+                        }
+                      >
+                        {fmtCur(paymentSummary.totalPaid)} / {fmtCur(paymentSummary.totalOwed)}
                       </Badge>
-                    )}
-                    {uploadSummary.rejected > 0 && (
-                      <Badge variant="custom" className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
-                        {uploadSummary.rejected} rejected
-                      </Badge>
-                    )}
-                  </>
-                );
-              })()}
-              {sec.id === "payments" && paymentSummary && paymentSummary.invoiceCount > 0 && (() => {
-                const fullyPaid = paymentSummary.remaining <= 0;
-                const fmtCur = (cents: number) =>
-                  new Intl.NumberFormat("en-HK", { style: "currency", currency: paymentSummary.currency, minimumFractionDigits: 0 }).format(cents / 100);
-                return (
-                  <>
-                    <Badge
-                      variant="custom"
-                      className={fullyPaid
-                        ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
-                        : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
-                      }
-                    >
-                      {fmtCur(paymentSummary.totalPaid)} / {fmtCur(paymentSummary.totalOwed)}
-                    </Badge>
-                    {paymentSummary.hasSubmitted && (
-                      <Badge variant="custom" className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-                        pending review
-                      </Badge>
-                    )}
-                  </>
-                );
-              })()}
-              <ChevronRight className={`h-4 w-4 shrink-0 text-neutral-400 transition-transform ${expandedSection === sec.id ? "rotate-90" : ""}`} />
-            </span>
+                      {paymentSummary.hasSubmitted && (
+                        <Badge variant="custom" className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                          pending review
+                        </Badge>
+                      )}
+                    </>
+                  );
+                })()}
+                <ChevronRight className={`h-4 w-4 shrink-0 text-neutral-400 transition-transform ${expandedSection === sec.id ? "rotate-90" : ""}`} />
+              </span>
+            </div>
+            {sec.id === "payments" && paymentSummary && paymentSummary.invoiceNumbers.length > 0 && (
+              <div className="mt-0.5 text-[10px] text-neutral-400 dark:text-neutral-500 font-mono">
+                {paymentSummary.invoiceNumbers.join(" · ")}
+              </div>
+            )}
           </button>
           {sec.id === "uploads" && (
             <div className={expandedSection === sec.id ? "border-t border-neutral-200 p-3 dark:border-neutral-800" : "hidden"}>

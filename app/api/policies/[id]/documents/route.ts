@@ -10,6 +10,7 @@ import { getPolicyColumns } from "@/lib/db/column-check";
 import { validateFile, saveFile } from "@/lib/storage";
 import { appendPolicyAudit } from "@/lib/audit";
 import { syncInvoicePaymentStatus } from "@/lib/accounting-invoices";
+import { createAgentCommissionPayable } from "@/lib/agent-commission";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -86,7 +87,30 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       .where(eq(policyDocuments.policyId, policyId))
       .orderBy(policyDocuments.createdAt);
 
-    return NextResponse.json(rows, {
+    // Enrich payment-type uploads with their accounting_payments data
+    const invoiceItemRows = await db
+      .select({ invoiceId: accountingInvoiceItems.invoiceId })
+      .from(accountingInvoiceItems)
+      .where(eq(accountingInvoiceItems.policyId, policyId));
+    const invoiceIds = [...new Set(invoiceItemRows.map((r) => r.invoiceId))];
+
+    let paymentsByInvoice: { amountCents: number; paymentMethod: string | null; paymentDate: string | null; referenceNumber: string | null; status: string; createdAt: string }[] = [];
+    if (invoiceIds.length > 0) {
+      paymentsByInvoice = await db
+        .select({
+          amountCents: accountingPayments.amountCents,
+          paymentMethod: accountingPayments.paymentMethod,
+          paymentDate: accountingPayments.paymentDate,
+          referenceNumber: accountingPayments.referenceNumber,
+          status: accountingPayments.status,
+          createdAt: accountingPayments.createdAt,
+        })
+        .from(accountingPayments)
+        .where(inArray(accountingPayments.invoiceId, invoiceIds))
+        .orderBy(desc(accountingPayments.createdAt));
+    }
+
+    return NextResponse.json({ documents: rows, payments: paymentsByInvoice }, {
       status: 200,
       headers: { "Cache-Control": "no-store, max-age=0" },
     });
@@ -199,6 +223,13 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
 
             if (isAdmin) {
               await syncInvoicePaymentStatus(invoice.id);
+            }
+
+            // Auto-create agent commission payable when client pays
+            try {
+              await createAgentCommissionPayable(policyId, Number(user.id));
+            } catch (commErr) {
+              console.error("Agent commission creation failed (non-fatal):", commErr);
             }
           }
         }

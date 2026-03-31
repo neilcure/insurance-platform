@@ -52,10 +52,27 @@ export type PolicyDocumentRow = {
   verifiedByEmail?: string;
 };
 
+export type PolicyPaymentRecord = {
+  amountCents: number;
+  paymentMethod: string | null;
+  paymentDate: string | null;
+  referenceNumber: string | null;
+  status: string;
+  createdAt: string;
+};
+
+export type PremiumBreakdown = {
+  clientPremiumCents: number;
+  agentPremiumCents: number;
+  agentName?: string;
+};
+
 export type DocumentRequirement = {
   typeKey: string;
   label: string;
   meta: UploadDocumentTypeMeta | null;
   displayStatus: DocumentStatus;
   uploads: PolicyDocumentRow[];
+  payments?: PolicyPaymentRecord[];
+  premiumBreakdown?: PremiumBreakdown;
 };

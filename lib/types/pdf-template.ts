@@ -54,6 +54,8 @@ export type PdfFieldMapping = {
   dateFormat?: string;
   prefix?: string;
   suffix?: string;
+  /** Which audience sees this field: "all" (default), "client", or "agent" */
+  audience?: "all" | "client" | "agent";
 };
 
 export type PdfPageInfo = {
@@ -100,6 +102,12 @@ export type PdfTemplateMeta = {
   showWhenStatus?: string[];
   /** Restrict to specific insurance companies by their policy record IDs (empty = all) */
   insurerPolicyIds?: number[];
+  /** Whether this document requires client confirmation after sending (default: true) */
+  requiresConfirmation?: boolean;
+  /** Prefix for auto-generated document numbers (e.g. "QUO", "INV", "REC") */
+  documentPrefix?: string;
+  /** Mark as agent template — auto-appends (A) to document numbers */
+  isAgentTemplate?: boolean;
   description?: string;
 };
 

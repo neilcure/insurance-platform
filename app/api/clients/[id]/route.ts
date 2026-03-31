@@ -234,10 +234,11 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
 					continue;
 				}
 
-				const equal =
-					(typeof prev === "object" || typeof v === "object")
-						? JSON.stringify(prev) === JSON.stringify(v)
-						: prev === v;
+				const norm = (x: unknown): string => {
+					if (x === null || x === undefined || x === "") return "";
+					return typeof x === "object" ? JSON.stringify(x) : String(x);
+				};
+				const equal = norm(prev) === norm(v);
 				if (!equal) {
 					changes.push({ key: storeKey, from: prev, to: v });
 				}

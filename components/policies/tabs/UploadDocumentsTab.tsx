@@ -6,6 +6,8 @@ import { DocumentUploadCard } from "@/components/ui/document-upload-card";
 import type {
   DocumentStatus,
   PolicyDocumentRow,
+  PolicyPaymentRecord,
+  PremiumBreakdown,
   UploadDocumentTypeRow,
   DocumentRequirement,
 } from "@/lib/types/upload-document";
@@ -74,12 +76,17 @@ export function UploadDocumentsTab({
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
       fetch(`/api/policies/${policyId}/documents?_t=${Date.now()}`, { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : []))
-        .catch(() => []),
+        .then((r) => (r.ok ? r.json() : { documents: [], payments: [] }))
+        .catch(() => ({ documents: [], payments: [] })),
       fetch(`/api/form-options?groupKey=policy_statuses&_t=${Date.now()}`, { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
-    ]).then(([types, uploads, statuses]: [UploadDocumentTypeRow[], PolicyDocumentRow[], { value: string; sortOrder: number }[]]) => {
+      fetch(`/api/policies/${policyId}/premium-summary?_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+    ]).then(([types, docsData, statuses, premiumData]: [UploadDocumentTypeRow[], { documents: PolicyDocumentRow[]; payments: PolicyPaymentRecord[] } | PolicyDocumentRow[], { value: string; sortOrder: number }[], PremiumBreakdown | null]) => {
+      const uploads: PolicyDocumentRow[] = Array.isArray(docsData) ? docsData : docsData.documents;
+      const policyPayments: PolicyPaymentRecord[] = Array.isArray(docsData) ? [] : (docsData.payments ?? []);
       if (cancelled) return;
       setTotalConfigured(types.length);
 
@@ -128,6 +135,7 @@ export function UploadDocumentsTab({
           meta: t.meta,
           displayStatus: computeDisplayStatus(typeUploads),
           uploads: typeUploads,
+          ...(t.meta?.requirePaymentDetails ? { payments: policyPayments, premiumBreakdown: premiumData ?? undefined } : {}),
         };
       });
 
@@ -223,6 +231,8 @@ export function UploadDocumentsTab({
           meta={req.meta}
           displayStatus={req.displayStatus}
           uploads={req.uploads}
+          payments={req.payments}
+          premiumBreakdown={req.premiumBreakdown}
           policyId={policyId}
           isAdmin={isAdmin}
           onRefresh={refresh}

@@ -175,11 +175,17 @@ function formatValue(
   return s;
 }
 
+function needsConfirmation(meta: DocumentTemplateMeta): boolean {
+  if (meta.requiresConfirmation !== undefined) return meta.requiresConfirmation;
+  return meta.type === "quotation";
+}
+
 function DocumentPreview({
   template,
   detail,
   snapshot,
   trackingEntry,
+  audience,
   onConfirmDoc,
   onOpenEmailDialog,
 }: {
@@ -187,11 +193,21 @@ function DocumentPreview({
   detail: PolicyDetail;
   snapshot: SnapshotData;
   trackingEntry?: DocumentStatusEntry;
+  audience?: "client" | "agent";
   onConfirmDoc?: (trackingKey: string) => void;
   onOpenEmailDialog?: (subject: string, htmlContent: string, plainText: string) => void;
 }) {
   const meta = template.meta!;
   const printRef = React.useRef<HTMLDivElement>(null);
+
+  const hasAudienceSections = meta.sections.some(
+    (s) => s.audience === "client" || s.audience === "agent",
+  );
+  const viewAudience = audience ?? "client";
+
+  const filteredSections = hasAudienceSections
+    ? meta.sections.filter((s) => !s.audience || s.audience === "all" || s.audience === viewAudience)
+    : meta.sections;
 
   const printStyles = `
     body { font-family: system-ui, -apple-system, sans-serif; padding: 40px; color: #1a1a1a; max-width: 800px; margin: 0 auto; font-size: 13px; }
@@ -225,12 +241,13 @@ function DocumentPreview({
     const lines: string[] = [];
     lines.push(meta.header.title);
     if (meta.header.subtitle) lines.push(meta.header.subtitle);
+    if (trackingEntry?.documentNumber) lines.push(`Doc No: ${trackingEntry.documentNumber}`);
     lines.push("─".repeat(30));
     if (meta.header.showPolicyNumber !== false) lines.push(`Ref: ${detail.policyNumber}`);
     if (meta.header.showDate !== false) lines.push(`Date: ${dateStr}`);
     lines.push("");
 
-    for (const section of meta.sections) {
+    for (const section of filteredSections) {
       const fields = section.fields
         .map((f) => ({
           ...f,
@@ -265,7 +282,9 @@ function DocumentPreview({
     );
   }
 
-  const trackingKey = toTrackingKey(template.label);
+  const trackingKey = hasAudienceSections && viewAudience === "agent"
+    ? toTrackingKey(template.label) + "_agent"
+    : toTrackingKey(template.label);
 
   function handleWhatsApp() {
     const insured = (detail.extraAttributes as Record<string, unknown> | undefined)?.insuredSnapshot as Record<string, unknown> | undefined;
@@ -287,7 +306,19 @@ function DocumentPreview({
 
   return (
     <div className="space-y-3">
-      <div className="text-sm font-medium">{template.label}</div>
+      <div className="flex items-center gap-2">
+        <div className="text-sm font-medium">{template.label}</div>
+        {hasAudienceSections && (
+          <span className={cn(
+            "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold",
+            viewAudience === "agent"
+              ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+              : "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+          )}>
+            {viewAudience === "agent" ? "Agent Copy" : "Client Copy"}
+          </span>
+        )}
+      </div>
 
       <div
         ref={printRef}
@@ -296,10 +327,20 @@ function DocumentPreview({
       >
         {/* Header */}
         <div className="border-b-2 border-neutral-800 pb-2 sm:pb-3 mb-3 sm:mb-5">
-          <h1 className="text-base sm:text-2xl font-bold leading-tight m-0">{meta.header.title}</h1>
-          {meta.header.subtitle && (
-            <div className="text-xs sm:text-[15px] text-neutral-500 mt-0.5">{meta.header.subtitle}</div>
-          )}
+          <div className="flex items-start justify-between">
+            <div>
+              <h1 className="text-base sm:text-2xl font-bold leading-tight m-0">{meta.header.title}</h1>
+              {meta.header.subtitle && (
+                <div className="text-xs sm:text-[15px] text-neutral-500 mt-0.5">{meta.header.subtitle}</div>
+              )}
+            </div>
+            {trackingEntry?.documentNumber && (
+              <div className="text-right shrink-0 ml-4">
+                <div className="text-[10px] sm:text-xs text-neutral-400 uppercase tracking-wider">Doc No.</div>
+                <div className="text-sm sm:text-lg font-bold text-neutral-800">{trackingEntry.documentNumber}</div>
+              </div>
+            )}
+          </div>
           <div className="flex justify-between mt-1 sm:mt-2 text-[11px] sm:text-[13px] text-neutral-500">
             {meta.header.showPolicyNumber !== false && (
               <span>Ref: <strong>{detail.policyNumber}</strong></span>
@@ -311,7 +352,7 @@ function DocumentPreview({
         </div>
 
         {/* Sections */}
-        {meta.sections.map((section) => {
+        {filteredSections.map((section) => {
           const fields = section.fields
             .map((f) => ({
               ...f,
@@ -405,7 +446,7 @@ function DocumentPreview({
               </span>
             )}
           </div>
-          {trackingEntry.status === "sent" && onConfirmDoc && (
+          {trackingEntry.status === "sent" && onConfirmDoc && needsConfirmation(meta) && (
             <Button size="sm" variant="outline" className="h-6 text-[10px] px-2" onClick={() => onConfirmDoc(trackingKey)}>
               <CheckCircle2 className="h-3 w-3 mr-1" />
               Confirm Received
@@ -446,7 +487,7 @@ function PdfMergeButton({
   updating: boolean;
   onEmailClick: (tpl: PdfTemplateRow) => void;
   onWhatsAppClick: (tpl: PdfTemplateRow) => void;
-  onTrackingAction: (key: string, action: "send" | "confirm" | "reject" | "reset", extra?: string) => void;
+  onTrackingAction: (key: string, action: "send" | "confirm" | "reject" | "reset" | "prepare", extra?: string, documentPrefix?: string, documentSuffix?: string) => void;
   onConfirmWithProof: (key: string, method: "admin" | "upload", note?: string, file?: File) => Promise<void>;
 }) {
   const [generating, setGenerating] = React.useState(false);
@@ -475,10 +516,12 @@ function PdfMergeButton({
   async function handleGenerate() {
     setGenerating(true);
     try {
+      const generateBody: Record<string, unknown> = { policyId };
+      if (meta?.isAgentTemplate) generateBody.audience = "agent";
       const res = await fetch(`/api/pdf-templates/${tpl.id}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ policyId }),
+        body: JSON.stringify(generateBody),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -495,6 +538,9 @@ function PdfMergeButton({
   }
 
   const isDone = status === "confirmed";
+  const pdfRequiresConfirm = meta?.requiresConfirmation !== undefined
+    ? meta.requiresConfirmation
+    : true;
 
   const actions: Array<{
     label: string;
@@ -508,7 +554,7 @@ function PdfMergeButton({
       icon: <Send className="h-3.5 w-3.5" />,
       onClick: () => {
         const sentTo = prompt("Sent to (email, optional):");
-        onTrackingAction(trackingKey, "send", sentTo || undefined);
+        onTrackingAction(trackingKey, "send", sentTo || undefined, meta?.documentPrefix || undefined, meta?.isAgentTemplate ? "(A)" : undefined);
         setActionsOpen(false);
       },
       show: !status || status === "rejected",
@@ -517,7 +563,7 @@ function PdfMergeButton({
       label: "Confirm",
       icon: <CheckCircle2 className="h-3.5 w-3.5" />,
       onClick: () => { setConfirmOpen(true); setActionsOpen(false); },
-      show: !status || status === "sent",
+      show: pdfRequiresConfirm && (!status || status === "sent"),
     },
     {
       label: "Reject",
@@ -528,7 +574,7 @@ function PdfMergeButton({
         setActionsOpen(false);
       },
       variant: "destructive" as const,
-      show: status === "sent",
+      show: pdfRequiresConfirm && status === "sent",
     },
     {
       label: "Reset",
@@ -651,8 +697,13 @@ function PdfMergeButton({
       </div>
 
       {/* Tracking detail */}
+      {entry?.documentNumber && (
+        <div className="mt-1 pl-8 text-[10px] font-medium text-neutral-500 dark:text-neutral-400">
+          Doc No: {entry.documentNumber}
+        </div>
+      )}
       {entry?.sentTo && (
-        <div className="mt-1 pl-8 text-[10px] text-neutral-400">
+        <div className="mt-0.5 pl-8 text-[10px] text-neutral-400">
           Sent to: {entry.sentTo}
           {entry.sentAt && ` \u00b7 ${new Date(entry.sentAt).toLocaleDateString()}`}
         </div>
@@ -796,6 +847,7 @@ function SendEmailDialog({
   policyNumber,
   pdfTemplates,
   preSelectedId,
+  defaultEmail,
   onSent,
 }: {
   open: boolean;
@@ -804,6 +856,7 @@ function SendEmailDialog({
   policyNumber: string;
   pdfTemplates: PdfTemplateRow[];
   preSelectedId?: number;
+  defaultEmail?: string;
   onSent?: (sentTemplateLabels: string[], email: string) => void;
 }) {
   const [email, setEmail] = React.useState("");
@@ -814,6 +867,7 @@ function SendEmailDialog({
 
   React.useEffect(() => {
     if (open) {
+      setEmail(defaultEmail ?? "");
       setSubject(`Policy ${policyNumber} - Documents`);
       if (preSelectedId) {
         setSelectedIds(new Set([preSelectedId]));
@@ -964,6 +1018,7 @@ export function DocumentsTab({
   const [pdfTemplates, setPdfTemplates] = React.useState<PdfTemplateRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [selected, setSelected] = React.useState<DocumentTemplateRow | null>(null);
+  const [selectedAudience, setSelectedAudience] = React.useState<"client" | "agent">("client");
   const [emailDialogOpen, setEmailDialogOpen] = React.useState(false);
   const [emailPreSelectedId, setEmailPreSelectedId] = React.useState<number | undefined>();
 
@@ -983,14 +1038,18 @@ export function DocumentsTab({
 
   const handleTrackingAction = React.useCallback(async (
     docType: string,
-    action: "send" | "confirm" | "reject" | "reset",
+    action: "send" | "confirm" | "reject" | "reset" | "prepare",
     extra?: string,
+    documentPrefix?: string,
+    documentSuffix?: string,
   ) => {
     setTrackingUpdating(true);
     try {
       const body: Record<string, string> = { docType, action };
       if (action === "send" && extra) body.sentTo = extra;
       if (action === "reject" && extra) body.rejectionNote = extra;
+      if ((action === "send" || action === "prepare") && documentPrefix) body.documentPrefix = documentPrefix;
+      if ((action === "send" || action === "prepare") && documentSuffix) body.documentSuffix = documentSuffix;
 
       const res = await fetch(`/api/policies/${detail.policyId}/document-tracking`, {
         method: "POST",
@@ -1003,14 +1062,18 @@ export function DocumentsTab({
       }
       const data = await res.json();
       setTracking(data.documentTracking ?? {});
-      const labels: Record<string, string> = { send: "marked as sent", confirm: "confirmed", reject: "rejected", reset: "reset" };
-      toast.success(`${docType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())} ${labels[action]}`);
+      const labels: Record<string, string> = { send: "marked as sent", confirm: "confirmed", reject: "rejected", reset: "reset", prepare: "prepared" };
+      if (action !== "prepare") {
+        toast.success(`${docType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())} ${labels[action]}`);
+      }
       if (data.statusAdvanced) {
         toast.info(`Status auto-advanced to: ${data.statusAdvanced.replace(/_/g, " ")}`);
         onStatusAutoAdvanced?.();
       }
     } catch (err: any) {
-      toast.error(err.message || "Failed to update");
+      if (action !== "prepare") {
+        toast.error(err.message || "Failed to update");
+      }
     } finally {
       setTrackingUpdating(false);
     }
@@ -1101,9 +1164,17 @@ export function DocumentsTab({
     setHtmlEmailSubject(subject);
     setHtmlEmailHtml(htmlContent);
     setHtmlEmailPlain(plainText);
-    setHtmlEmailTo("");
+
+    const insured = (detail.extraAttributes as Record<string, unknown> | undefined)?.insuredSnapshot as Record<string, unknown> | undefined;
+    if (selectedAudience === "agent" && detail.agent?.email) {
+      setHtmlEmailTo(detail.agent.email);
+    } else {
+      const clientEmail = String(insured?.email ?? insured?.contactinfo__email ?? "");
+      setHtmlEmailTo(clientEmail);
+    }
+
     setHtmlEmailOpen(true);
-  }, []);
+  }, [detail.extraAttributes, detail.agent, selectedAudience]);
 
   const handleSendHtmlEmail = React.useCallback(async () => {
     if (!htmlEmailTo.includes("@")) {
@@ -1131,9 +1202,15 @@ export function DocumentsTab({
 
       // Mark as sent in tracking
       if (selected) {
-        const key = toTrackingKey(selected.label);
-        if (!tracking[key] || tracking[key]?.status !== "confirmed") {
-          await handleTrackingAction(key, "send", htmlEmailTo.trim());
+        const hasAudienceSections = selected.meta?.sections?.some(
+          (s) => s.audience === "client" || s.audience === "agent",
+        );
+        const isAgent = hasAudienceSections ? selectedAudience === "agent" : !!selected.meta?.isAgentTemplate;
+        const trackKey = isAgent && hasAudienceSections
+          ? toTrackingKey(selected.label) + "_agent"
+          : toTrackingKey(selected.label);
+        if (!tracking[trackKey] || tracking[trackKey]?.status !== "confirmed") {
+          await handleTrackingAction(trackKey, "send", htmlEmailTo.trim(), selected.meta?.documentPrefix || undefined, isAgent ? "(A)" : undefined);
         }
       }
     } catch (err: any) {
@@ -1168,60 +1245,138 @@ export function DocumentsTab({
       return matchingIds.some((pid) => tplInsurerIds.includes(pid));
     };
 
-    const loadHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
+    // "showWhenStatus" means "show FROM the earliest listed status onwards".
+    // We load the ordered status list to compare positions.
+    const loadStatusOrder = fetch(`/api/form-options?groupKey=policy_statuses&_t=${Date.now()}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : []))
-      .then((rows: DocumentTemplateRow[]) => {
-        if (cancelled) return;
-        const applicable = rows.filter((r) => {
-          if (!r.meta) return false;
-          const hasInsurerRestriction = r.meta.insurerPolicyIds && r.meta.insurerPolicyIds.length > 0;
-          if (!hasInsurerRestriction) {
-            const flows = r.meta.flows;
-            if (flows && flows.length > 0) {
-              if (!flowKey || !flows.includes(flowKey)) return false;
-            }
-          } else {
-            if (!matchesInsurer(r.meta.insurerPolicyIds)) return false;
-          }
-          const sws = r.meta.showWhenStatus;
-          if (sws && sws.length > 0 && !sws.includes(status)) return false;
-          return true;
-        });
-        setTemplates(applicable);
-      })
-      .catch(() => {});
+      .then((rows: { value: string; sortOrder?: number }[]) =>
+        rows.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)).map((r) => r.value),
+      )
+      .catch(() => [] as string[]);
 
-    const loadPdf = fetch(`/api/form-options?groupKey=pdf_merge_templates&_t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows: PdfTemplateRow[]) => {
-        if (cancelled) return;
-        const applicable = rows.filter((r) => {
-          const meta = r.meta as unknown as PdfTemplateMeta | null;
-          if (!meta) return false;
-          if (!meta.fields?.length && !meta.pages?.length) return false;
-          const hasInsurerRestriction = meta.insurerPolicyIds && meta.insurerPolicyIds.length > 0;
-          if (!hasInsurerRestriction) {
-            const flows = meta.flows;
-            if (flows && flows.length > 0) {
-              if (!flowKey || !flows.includes(flowKey)) return false;
-            }
-          } else {
-            if (!matchesInsurer(meta.insurerPolicyIds)) return false;
-          }
-          const sws = meta.showWhenStatus;
-          if (sws && sws.length > 0 && !sws.includes(status)) return false;
-          return true;
-        });
-        setPdfTemplates(applicable);
-      })
-      .catch(() => {});
+    const matchesStatus = (sws: string[] | undefined, statusOrder: string[]) => {
+      if (!sws || sws.length === 0) return true;
+      const currentIdx = statusOrder.indexOf(status);
+      // Find the earliest status in the template's showWhenStatus list
+      const earliestIdx = Math.min(
+        ...sws.map((s) => statusOrder.indexOf(s)).filter((i) => i >= 0),
+      );
+      if (currentIdx < 0 || earliestIdx === Infinity) {
+        // Fallback to exact match if status not found in the ordered list
+        return sws.includes(status);
+      }
+      // Show if current status is at or past the earliest trigger status
+      return currentIdx >= earliestIdx;
+    };
 
-    Promise.all([loadHtml, loadPdf]).finally(() => {
-      if (!cancelled) setLoading(false);
+    loadStatusOrder.then((statusOrder) => {
+      const loadHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((rows: DocumentTemplateRow[]) => {
+          if (cancelled) return;
+          const applicable = rows.filter((r) => {
+            if (!r.meta) return false;
+            const hasInsurerRestriction = r.meta.insurerPolicyIds && r.meta.insurerPolicyIds.length > 0;
+            if (!hasInsurerRestriction) {
+              const flows = r.meta.flows;
+              if (flows && flows.length > 0) {
+                if (!flowKey || !flows.includes(flowKey)) return false;
+              }
+            } else {
+              if (!matchesInsurer(r.meta.insurerPolicyIds)) return false;
+            }
+            if (!matchesStatus(r.meta.showWhenStatus, statusOrder)) return false;
+            return true;
+          });
+          setTemplates(applicable);
+        })
+        .catch(() => {});
+
+      const loadPdf = fetch(`/api/form-options?groupKey=pdf_merge_templates&_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((rows: PdfTemplateRow[]) => {
+          if (cancelled) return;
+          const applicable = rows.filter((r) => {
+            const meta = r.meta as unknown as PdfTemplateMeta | null;
+            if (!meta) return false;
+            if (!meta.fields?.length && !meta.pages?.length) return false;
+            const hasInsurerRestriction = meta.insurerPolicyIds && meta.insurerPolicyIds.length > 0;
+            if (!hasInsurerRestriction) {
+              const flows = meta.flows;
+              if (flows && flows.length > 0) {
+                if (!flowKey || !flows.includes(flowKey)) return false;
+              }
+            } else {
+              if (!matchesInsurer(meta.insurerPolicyIds)) return false;
+            }
+            if (!matchesStatus(meta.showWhenStatus, statusOrder)) return false;
+            return true;
+          });
+          setPdfTemplates(applicable);
+        })
+        .catch(() => {});
+
+      Promise.all([loadHtml, loadPdf]).finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     });
 
     return () => { cancelled = true; };
   }, [flowKey, currentStatus, policyInsurerIds, detail.policyId]);
+
+  // Auto-prepare: assign document numbers when templates become visible
+  const [autoPrepared, setAutoPrepared] = React.useState<Set<string>>(new Set());
+  React.useEffect(() => {
+    if (loading || templates.length === 0) return;
+
+    const hasAgent = !!detail.agent;
+    const hasAudienceTpls = templates.some((t) =>
+      t.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent"),
+    );
+    const showBoth = hasAgent && hasAudienceTpls;
+
+    const toProcess: { key: string; prefix: string; suffix?: string }[] = [];
+
+    for (const tpl of templates) {
+      const prefix = tpl.meta?.documentPrefix;
+      if (!prefix) continue;
+
+      const baseKey = toTrackingKey(tpl.label);
+      if (!tracking[baseKey]?.documentNumber && !autoPrepared.has(baseKey)) {
+        toProcess.push({ key: baseKey, prefix });
+      }
+      if (showBoth) {
+        const agentKey = baseKey + "_agent";
+        if (!tracking[agentKey]?.documentNumber && !autoPrepared.has(agentKey)) {
+          toProcess.push({ key: agentKey, prefix, suffix: "(A)" });
+        }
+      }
+    }
+
+    for (const tpl of pdfTemplates) {
+      const meta = tpl.meta as unknown as { documentPrefix?: string; isAgentTemplate?: boolean } | null;
+      const prefix = meta?.documentPrefix;
+      if (!prefix) continue;
+      const key = toTrackingKey(tpl.label);
+      if (!tracking[key]?.documentNumber && !autoPrepared.has(key)) {
+        toProcess.push({ key, prefix, suffix: meta?.isAgentTemplate ? "(A)" : undefined });
+      }
+    }
+
+    if (toProcess.length === 0) return;
+
+    setAutoPrepared((prev) => {
+      const next = new Set(prev);
+      toProcess.forEach((p) => next.add(p.key));
+      return next;
+    });
+
+    (async () => {
+      for (const { key, prefix, suffix } of toProcess) {
+        await handleTrackingAction(key, "prepare", undefined, prefix, suffix);
+      }
+    })();
+  }, [loading, templates, pdfTemplates, tracking, detail.agent, autoPrepared, handleTrackingAction]);
 
   if (loading) {
     return (
@@ -1232,7 +1387,12 @@ export function DocumentsTab({
   }
 
   if (selected) {
-    const selKey = toTrackingKey(selected.label);
+    const selHasAudienceSections = selected.meta?.sections?.some(
+      (s) => s.audience === "client" || s.audience === "agent",
+    );
+    const selKey = selHasAudienceSections && selectedAudience === "agent"
+      ? toTrackingKey(selected.label) + "_agent"
+      : toTrackingKey(selected.label);
     return (
       <div className="space-y-3">
         <Button
@@ -1249,6 +1409,7 @@ export function DocumentsTab({
           detail={detail}
           snapshot={snapshot}
           trackingEntry={tracking[selKey]}
+          audience={selectedAudience}
           onConfirmDoc={(key) => {
             setHtmlConfirmKey(key);
             setHtmlConfirmMethod("admin");
@@ -1336,15 +1497,31 @@ export function DocumentsTab({
         <Dialog open={htmlEmailOpen} onOpenChange={setHtmlEmailOpen}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Email Document</DialogTitle>
+              <DialogTitle>
+                <span className="flex items-center gap-2">
+                  Email Document
+                  {selected?.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent") && (
+                    <span className={cn(
+                      "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold",
+                      selectedAudience === "agent"
+                        ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+                        : "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+                    )}>
+                      {selectedAudience === "agent" ? "Agent Copy" : "Client Copy"}
+                    </span>
+                  )}
+                </span>
+              </DialogTitle>
             </DialogHeader>
             <div className="space-y-3">
               <div>
-                <Label htmlFor="html-email-to">Recipient Email</Label>
+                <Label htmlFor="html-email-to">
+                  {selectedAudience === "agent" ? "Agent Email" : "Recipient Email"}
+                </Label>
                 <Input
                   id="html-email-to"
                   type="email"
-                  placeholder="client@example.com"
+                  placeholder={selectedAudience === "agent" ? "agent@example.com" : "client@example.com"}
                   value={htmlEmailTo}
                   onChange={(e) => setHtmlEmailTo(e.target.value)}
                   className="mt-1"
@@ -1401,57 +1578,97 @@ export function DocumentsTab({
     );
   }
 
+  const policyHasAgent = !!detail.agent;
+  const anyTemplateHasAudience = templates.some((tpl) =>
+    tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent"),
+  );
+  const showGrouped = policyHasAgent && anyTemplateHasAudience;
+
+  function renderTemplateButton(tpl: DocumentTemplateRow, aud: "client" | "agent", showBadge: boolean) {
+    const isAgent = aud === "agent";
+    const tKey = isAgent ? toTrackingKey(tpl.label) + "_agent" : toTrackingKey(tpl.label);
+    const tEntry = tracking[tKey];
+    const tBadge = tEntry?.status ? STATUS_BADGE[tEntry.status] : null;
+
+    return (
+      <button
+        key={`${tpl.id}_${aud}`}
+        type="button"
+        onClick={() => { setSelected(tpl); setSelectedAudience(aud); }}
+        className={cn(
+          "flex w-full items-center gap-3 rounded-md p-2.5 text-left transition-colors",
+          tEntry?.status === "confirmed"
+            ? "bg-green-50/70 dark:bg-green-950/20"
+            : "hover:bg-neutral-50 dark:hover:bg-neutral-800/50",
+        )}
+      >
+        <FileText className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium">{tpl.label}</span>
+            {tBadge && (
+              <span className={cn("inline-flex items-center gap-1 rounded-full px-1.5 py-0 text-[9px] font-medium", tBadge.bg, tBadge.text)}>
+                {tEntry?.status === "confirmed" && <CheckCircle2 className="h-2.5 w-2.5" />}
+                {tEntry?.status === "sent" && <Send className="h-2.5 w-2.5" />}
+                {tBadge.label}
+              </span>
+            )}
+          </div>
+          {tEntry?.documentNumber ? (
+            <div className="text-[11px] font-mono text-neutral-500 dark:text-neutral-400">
+              {tEntry.documentNumber}
+            </div>
+          ) : (
+            <div className="text-[11px] text-neutral-400 dark:text-neutral-500">
+              {tpl.meta?.type
+                ? tpl.meta.type.charAt(0).toUpperCase() + tpl.meta.type.slice(1)
+                : "Document"}
+            </div>
+          )}
+        </div>
+      </button>
+    );
+  }
+
   return (
-    <div className="space-y-2">
-      {templates.length > 0 && (
+    <div className="space-y-3">
+      {templates.length > 0 && showGrouped ? (
+        <>
+          {/* Client Documents Group */}
+          <div className="rounded-lg border-2 border-blue-200 dark:border-blue-800 overflow-hidden">
+            <div className="flex items-center gap-2 bg-blue-50 px-3 py-2 dark:bg-blue-950/30">
+              <FileText className="h-4 w-4 text-blue-500" />
+              <span className="text-xs font-semibold text-blue-700 dark:text-blue-300 uppercase tracking-wide">Client Documents</span>
+            </div>
+            <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
+              {templates.map((tpl) => renderTemplateButton(tpl, "client", false))}
+            </div>
+          </div>
+
+          {/* Agent Documents Group */}
+          <div className="rounded-lg border-2 border-amber-200 dark:border-amber-800 overflow-hidden">
+            <div className="flex items-center gap-2 bg-amber-50 px-3 py-2 dark:bg-amber-950/30">
+              <FileText className="h-4 w-4 text-amber-500" />
+              <span className="text-xs font-semibold text-amber-700 dark:text-amber-300 uppercase tracking-wide">Agent Documents</span>
+              {detail.agent?.name && (
+                <span className="text-[10px] text-amber-500 dark:text-amber-400">({detail.agent.name})</span>
+              )}
+            </div>
+            <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
+              {templates.map((tpl) => renderTemplateButton(tpl, "agent", false))}
+            </div>
+          </div>
+        </>
+      ) : templates.length > 0 ? (
         <>
           <div className="text-sm font-medium">Document Templates</div>
-          {templates.map((tpl) => {
-            const tKey = toTrackingKey(tpl.label);
-            const tEntry = tracking[tKey];
-            const tBadge = tEntry?.status ? STATUS_BADGE[tEntry.status] : null;
-            return (
-              <button
-                key={tpl.id}
-                type="button"
-                onClick={() => setSelected(tpl)}
-                className={cn(
-                  "flex w-full items-center gap-3 rounded-md border p-3 text-left transition-colors",
-                  tEntry?.status === "confirmed"
-                    ? "border-green-200 bg-green-50/50 dark:border-green-900 dark:bg-green-950/20"
-                    : "border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800/50",
-                )}
-              >
-                <FileText className="h-5 w-5 shrink-0 text-neutral-400 dark:text-neutral-500" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium">{tpl.label}</span>
-                    {tBadge && (
-                      <span className={cn("inline-flex items-center gap-1 rounded-full px-1.5 py-0 text-[9px] font-medium", tBadge.bg, tBadge.text)}>
-                        {tEntry?.status === "confirmed" && <CheckCircle2 className="h-2.5 w-2.5" />}
-                        {tEntry?.status === "sent" && <Send className="h-2.5 w-2.5" />}
-                        {tBadge.label}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                    {tpl.meta?.type
-                      ? tpl.meta.type.charAt(0).toUpperCase() + tpl.meta.type.slice(1)
-                      : "Document"}
-                    {tpl.meta?.sections
-                      ? ` \u00b7 ${tpl.meta.sections.length} section${tpl.meta.sections.length !== 1 ? "s" : ""}`
-                      : ""}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
+          {templates.map((tpl) => renderTemplateButton(tpl, "client", false))}
         </>
-      )}
+      ) : null}
 
       {pdfTemplates.length > 0 && (
         <>
-          {templates.length > 0 && <div className="border-t border-neutral-200 dark:border-neutral-800 mt-3 pt-3" />}
+          {templates.length > 0 && <div className="border-t border-neutral-200 dark:border-neutral-800 pt-1" />}
           {pdfTemplates.map((tpl) => {
             const key = toTrackingKey(tpl.label);
             return (
@@ -1490,11 +1707,22 @@ export function DocumentsTab({
         policyNumber={detail.policyNumber}
         pdfTemplates={pdfTemplates}
         preSelectedId={emailPreSelectedId}
+        defaultEmail={(() => {
+          if (emailPreSelectedId) {
+            const tpl = pdfTemplates.find((t) => t.id === emailPreSelectedId);
+            const m = tpl?.meta as unknown as { isAgentTemplate?: boolean } | null;
+            if (m?.isAgentTemplate && detail.agent?.email) return detail.agent.email;
+          }
+          const ins = (detail.extraAttributes as Record<string, unknown> | undefined)?.insuredSnapshot as Record<string, unknown> | undefined;
+          return String(ins?.email ?? ins?.contactinfo__email ?? "");
+        })()}
         onSent={async (labels, sentEmail) => {
           for (const label of labels) {
             const key = toTrackingKey(label);
             if (!tracking[key] || tracking[key]?.status !== "confirmed") {
-              await handleTrackingAction(key, "send", sentEmail);
+              const matchingTpl = pdfTemplates.find((t) => t.label === label);
+              const tplMeta = matchingTpl?.meta as unknown as { documentPrefix?: string; isAgentTemplate?: boolean } | null;
+              await handleTrackingAction(key, "send", sentEmail, tplMeta?.documentPrefix || undefined, tplMeta?.isAgentTemplate ? "(A)" : undefined);
             }
           }
         }}

@@ -4,6 +4,7 @@ import { accountingPayments, accountingInvoices } from "@/db/schema/accounting";
 import { eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { syncInvoicePaymentStatus } from "@/lib/accounting-invoices";
+import { createAgentCommissionPayable } from "@/lib/agent-commission";
 
 export const dynamic = "force-dynamic";
 
@@ -59,6 +60,15 @@ export async function POST(
 
     if (!isReceivable) {
       await syncInvoicePaymentStatus(invoiceId);
+    }
+
+    // Auto-create agent commission payable when payment is recorded on a receivable
+    if (isReceivable && invoice.entityPolicyId) {
+      try {
+        await createAgentCommissionPayable(invoice.entityPolicyId, Number(user.id));
+      } catch (err) {
+        console.error("Agent commission creation failed (non-fatal):", err);
+      }
     }
 
     return NextResponse.json(payment, { status: 201 });

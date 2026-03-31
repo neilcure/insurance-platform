@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { accountingInvoices, accountingInvoiceItems, accountingPayments } from "@/db/schema/accounting";
-import { eq, sql, desc } from "drizzle-orm";
+import { eq, inArray, desc } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 
 export const dynamic = "force-dynamic";
@@ -28,13 +28,13 @@ export async function GET(
     const invoices = await db
       .select()
       .from(accountingInvoices)
-      .where(sql`${accountingInvoices.id} = ANY(${invoiceIds})`)
+      .where(inArray(accountingInvoices.id, invoiceIds))
       .orderBy(desc(accountingInvoices.createdAt));
 
     const payments = await db
       .select()
       .from(accountingPayments)
-      .where(sql`${accountingPayments.invoiceId} = ANY(${invoiceIds})`);
+      .where(inArray(accountingPayments.invoiceId, invoiceIds));
 
     const paymentsByInvoice = new Map<number, typeof payments>();
     for (const p of payments) {

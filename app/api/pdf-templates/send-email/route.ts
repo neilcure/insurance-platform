@@ -22,6 +22,7 @@ export async function POST(request: Request) {
   const email = String(body.email ?? "").trim();
   const subject = String(body.subject ?? "").trim();
   const message = String(body.message ?? "").trim();
+  const audience: string | undefined = body.audience;
 
   if (!policyId) {
     return NextResponse.json({ error: "policyId is required" }, { status: 400 });
@@ -75,7 +76,10 @@ export async function POST(request: Request) {
     try {
       const templateBytes = await readPdfTemplate(meta.filePath);
       const templateImages: PdfImageMapping[] = meta.images ?? [];
-      const filledPdf = await generateFilledPdf(templateBytes, meta.fields, mergeCtx, {
+      const filteredFields = audience
+        ? meta.fields.filter((f) => !f.audience || f.audience === "all" || f.audience === audience)
+        : meta.fields;
+      const filledPdf = await generateFilledPdf(templateBytes, filteredFields, mergeCtx, {
         pages: meta.pages,
         images: templateImages,
         drawings: meta.drawings,
