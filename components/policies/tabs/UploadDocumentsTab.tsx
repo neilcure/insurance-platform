@@ -36,6 +36,7 @@ export function UploadDocumentsTab({
   insuredType,
   hasNcb,
   onSummaryChange,
+  onPaymentRecorded,
 }: {
   policyId: number;
   flowKey?: string;
@@ -44,6 +45,7 @@ export function UploadDocumentsTab({
   insuredType?: string;
   hasNcb?: boolean;
   onSummaryChange?: (summary: UploadSummary) => void;
+  onPaymentRecorded?: () => void;
 }) {
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -183,6 +185,7 @@ export function UploadDocumentsTab({
 
   function refresh() {
     setRefreshKey((k) => k + 1);
+    onPaymentRecorded?.();
   }
 
   if (loading) {

@@ -119,10 +119,12 @@ export function PaymentSection({
   policyId,
   isAdmin,
   onSummaryChange,
+  externalRefreshKey,
 }: {
   policyId: number;
   isAdmin: boolean;
   onSummaryChange?: (summary: PaymentSummary) => void;
+  externalRefreshKey?: number;
 }) {
   const [invoices, setInvoices] = React.useState<InvoiceWithPayments[]>([]);
   const [payables, setPayables] = React.useState<InvoiceWithPayments[]>([]);
@@ -199,7 +201,7 @@ export function PaymentSection({
       });
 
     return () => { cancelled = true; };
-  }, [policyId, refreshKey]);
+  }, [policyId, refreshKey, externalRefreshKey]);
 
   const resetForm = () => {
     setPaymentMethod("bank_transfer");
@@ -318,9 +320,9 @@ export function PaymentSection({
                   )}
                 </span>
               </div>
-              <div className="mt-0.5 pl-6 text-xs text-neutral-500 dark:text-neutral-400">
-                {formatCurrency(inv.paidAmountCents, inv.currency)} / {formatCurrency(inv.totalAmountCents, inv.currency)}
-                {inv.notes && <> &middot; {inv.notes}</>}
+              <div className="mt-0.5 pl-6 text-xs text-neutral-500 dark:text-neutral-400 wrap-break-word">
+                <span className="whitespace-nowrap">{formatCurrency(inv.paidAmountCents, inv.currency)} / {formatCurrency(inv.totalAmountCents, inv.currency)}</span>
+                {inv.notes && <span className="block sm:inline"> <span className="hidden sm:inline">&middot; </span>{inv.notes}</span>}
               </div>
             </button>
 
@@ -366,9 +368,14 @@ export function PaymentSection({
                               {PAYMENT_STATUS_LABELS[p.status] ?? p.status}
                             </Badge>
                           </div>
-                          <div className="text-neutral-500 dark:text-neutral-400">
-                            {methodLabel(p.paymentMethod)}
-                            {p.referenceNumber && <> &middot; Ref: {p.referenceNumber}</>}
+                          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0 text-neutral-500 dark:text-neutral-400">
+                            <span>{methodLabel(p.paymentMethod)}</span>
+                            {p.referenceNumber && (
+                              <>
+                                <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
+                                <span className="truncate max-w-[100px]">Ref: {p.referenceNumber}</span>
+                              </>
+                            )}
                           </div>
                           {p.paymentDate && (
                             <div className="text-neutral-400">
@@ -568,9 +575,9 @@ export function PaymentSection({
                       )}
                     </span>
                   </div>
-                  <div className="mt-0.5 pl-6 text-xs text-neutral-500 dark:text-neutral-400">
-                    {formatCurrency(inv.totalAmountCents, inv.currency)} to {inv.entityName || "Agent"}
-                    {inv.notes && <> &middot; {inv.notes}</>}
+                  <div className="mt-0.5 pl-6 text-xs text-neutral-500 dark:text-neutral-400 wrap-break-word">
+                    <span className="whitespace-nowrap">{formatCurrency(inv.totalAmountCents, inv.currency)} to {inv.entityName || "Agent"}</span>
+                    {inv.notes && <span className="block sm:inline"> <span className="hidden sm:inline">&middot; </span>{inv.notes}</span>}
                   </div>
                 </button>
                 {isExpanded && (

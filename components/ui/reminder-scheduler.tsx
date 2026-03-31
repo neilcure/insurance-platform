@@ -302,15 +302,16 @@ export function ReminderScheduler({
           );
         })}
 
-        {/* Add reminder button */}
+        {/* Add reminder button — three-stage responsive: icon / text / icon+text */}
         <Button
           size="sm"
           variant="ghost"
-          className="h-7 gap-1.5 px-2 text-[11px] text-blue-600 hover:text-blue-700 dark:text-blue-400"
+          className="h-6 gap-1 px-1.5 sm:px-2 text-[11px] text-blue-600 hover:text-blue-700 dark:text-blue-400"
           onClick={openCreate}
+          title={activeReminders.length > 0 ? "Add another reminder" : "Set up reminder"}
         >
-          <Bell className="h-3 w-3" />
-          {activeReminders.length > 0 ? "Add another reminder" : "Set up reminder"}
+          <Bell className="h-3.5 w-3.5 sm:hidden lg:inline" />
+          <span className="hidden sm:inline">{activeReminders.length > 0 ? "Add reminder" : "Reminder"}</span>
         </Button>
       </div>
 

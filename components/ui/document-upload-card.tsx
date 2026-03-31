@@ -20,6 +20,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
+import Image from "next/image";
 import { Label } from "@/components/ui/label";
 import type {
   DocumentStatus,
@@ -82,11 +83,6 @@ function formatDate(iso: string): string {
   return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function isPreviewable(mimeType: string | null): boolean {
-  if (!mimeType) return false;
-  return mimeType.startsWith("image/") || mimeType === "application/pdf";
-}
-
 function Lightbox({
   docs,
   policyId,
@@ -99,12 +95,6 @@ function Lightbox({
   onClose: () => void;
 }) {
   const [index, setIndex] = React.useState(initialIndex);
-  const doc = docs[index];
-  if (!doc) return null;
-
-  const fileUrl = `/api/policies/${policyId}/documents/${doc.id}/file`;
-  const isImage = doc.mimeType?.startsWith("image/") ?? false;
-  const isPdf = doc.mimeType === "application/pdf";
   const canPrev = index > 0;
   const canNext = index < docs.length - 1;
 
@@ -117,6 +107,13 @@ function Lightbox({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [canPrev, canNext, onClose]);
+
+  const doc = docs[index];
+  if (!doc) return null;
+
+  const fileUrl = `/api/policies/${policyId}/documents/${doc.id}/file`;
+  const isImage = doc.mimeType?.startsWith("image/") ?? false;
+  const isPdf = doc.mimeType === "application/pdf";
 
   return (
     <div
@@ -186,10 +183,15 @@ function Lightbox({
       {/* Content */}
       <div className="mt-14 mb-4 flex max-h-[calc(100vh-120px)] max-w-[calc(100vw-80px)] items-center justify-center">
         {isImage ? (
-          <img
+          <Image
             src={fileUrl}
             alt={doc.fileName}
+            width={0}
+            height={0}
+            sizes="100vw"
+            unoptimized
             className="max-h-[calc(100vh-120px)] max-w-full rounded-lg object-contain shadow-2xl"
+            style={{ width: "auto", height: "auto" }}
           />
         ) : isPdf ? (
           <iframe
@@ -432,23 +434,27 @@ export function DocumentUploadCard({
 
   return (
     <>
-      <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <FileText className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" />
-            <div>
-              <div className="text-sm font-medium">{label}</div>
-              {meta?.description && (
-                <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                  {meta.description}
-                </div>
-              )}
-            </div>
+      <div className="rounded-md border border-neutral-200 p-2.5 dark:border-neutral-800 space-y-1.5">
+        <input ref={fileInputRef} type="file" accept={acceptAttr} onChange={handleUpload} className="hidden" />
+        {/* Row 1: document name */}
+        <div className="flex items-center gap-1.5">
+          <FileText className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" />
+          <span className="text-sm font-medium">{label}</span>
+        </div>
+        {meta?.description && (
+          <div className="text-[11px] text-neutral-500 dark:text-neutral-400 pl-[22px]">
+            {meta.description}
           </div>
-          <Badge variant="outline" className={`shrink-0 gap-1 border-0 ${statusCfg.className}`}>
+        )}
+        {/* Row 2: status badge + required */}
+        <div className="flex items-center gap-1.5 pl-[22px]">
+          <Badge variant="outline" className={`gap-1 border-0 text-[10px] ${statusCfg.className}`}>
             <StatusIcon className="h-3 w-3" />
             {statusCfg.label}
           </Badge>
+          {meta?.required && displayStatus === "outstanding" && (
+            <span className="text-[10px] text-red-500 dark:text-red-400">Required</span>
+          )}
         </div>
 
         {/* Uploaded files list */}
@@ -496,13 +502,13 @@ export function DocumentUploadCard({
                     </div>
                   )}
                   {docStatus === "verified" && doc.verifiedByEmail && (
-                    <div className="mt-1 pl-5 text-[10px] text-green-600 dark:text-green-400">
+                    <div className="mt-1 pl-5 text-[10px] text-green-600 dark:text-green-400 wrap-break-word">
                       Verified by {doc.verifiedByEmail}{doc.verifiedAt && ` \u00b7 ${formatDate(doc.verifiedAt)}`}
                     </div>
                   )}
 
                   {/* Action buttons */}
-                  <div className="flex items-center gap-1 pl-5 mt-1.5 pt-1 border-t border-neutral-100 dark:border-neutral-800">
+                  <div className="flex flex-wrap items-center gap-1 pl-5 mt-1.5 pt-1 border-t border-neutral-100 dark:border-neutral-800">
                     <Button
                       size="sm"
                       variant="ghost"
@@ -568,33 +574,16 @@ export function DocumentUploadCard({
             <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1.5">
               Payment Records
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1.5">
               {payments.map((p, i) => (
-                <div key={i} className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2 min-w-0">
+                <div key={i} className="text-xs space-y-0.5">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="font-medium text-emerald-800 dark:text-emerald-300">
                       {formatCurrency(p.amountCents)}
                     </span>
-                    {p.paymentMethod && (
-                      <span className="text-neutral-500 dark:text-neutral-400">
-                        {formatPaymentMethod(p.paymentMethod)}
-                      </span>
-                    )}
-                    {p.referenceNumber && (
-                      <span className="text-neutral-400 dark:text-neutral-500 truncate max-w-[100px]" title={p.referenceNumber}>
-                        Ref: {p.referenceNumber}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {p.paymentDate && (
-                      <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                        {p.paymentDate}
-                      </span>
-                    )}
                     <Badge
                       variant="outline"
-                      className={`border-0 text-[9px] ${
+                      className={`shrink-0 border-0 text-[9px] ${
                         p.status === "verified"
                           ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
                           : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
@@ -602,6 +591,23 @@ export function DocumentUploadCard({
                     >
                       {p.status === "verified" ? "Verified" : "Pending"}
                     </Badge>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
+                    {p.paymentMethod && (
+                      <span>{formatPaymentMethod(p.paymentMethod)}</span>
+                    )}
+                    {p.paymentDate && (
+                      <>
+                        <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
+                        <span>{p.paymentDate}</span>
+                      </>
+                    )}
+                    {p.referenceNumber && (
+                      <>
+                        <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
+                        <span className="truncate max-w-[120px]" title={p.referenceNumber}>Ref: {p.referenceNumber}</span>
+                      </>
+                    )}
                   </div>
                 </div>
               ))}
@@ -618,8 +624,6 @@ export function DocumentUploadCard({
         {/* Payment form (shown upfront) + Upload */}
         {(canUpload || (displayStatus === "uploaded" && isAdmin)) && needsPayment && premiumBreakdown ? (
           <div className="space-y-2.5">
-            <input ref={fileInputRef} type="file" accept={acceptAttr} onChange={handleUpload} className="hidden" />
-
             {/* Step 1: Payer selection (when agent exists) */}
             {hasAgent && (
               <div>
@@ -677,20 +681,21 @@ export function DocumentUploadCard({
                   <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">
                     Payment Type
                   </div>
-                  <div className="flex gap-1.5">
+                  <div className="grid grid-cols-2 gap-1.5">
                     <button
                       type="button"
                       onClick={() => {
                         setPaymentType("full");
                         setPaymentAmount((remainingAmount / 100).toFixed(2));
                       }}
-                      className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${
+                      className={`rounded-md border px-2 py-1.5 text-xs font-medium transition-colors text-left ${
                         paymentType === "full"
                           ? "border-green-500 bg-green-50 text-green-800 dark:border-green-400 dark:bg-green-950/40 dark:text-green-300"
                           : "border-neutral-200 text-neutral-600 hover:border-green-300 dark:border-neutral-700 dark:text-neutral-400"
                       }`}
                     >
-                      Full Payment — {formatCurrency(remainingAmount)}
+                      <div>Full Payment</div>
+                      <div className="text-[10px] font-bold mt-0.5">{formatCurrency(remainingAmount)}</div>
                     </button>
                     <button
                       type="button"
@@ -698,13 +703,14 @@ export function DocumentUploadCard({
                         setPaymentType("partial");
                         setPaymentAmount("");
                       }}
-                      className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${
+                      className={`rounded-md border px-2 py-1.5 text-xs font-medium transition-colors text-left ${
                         paymentType === "partial"
                           ? "border-blue-500 bg-blue-50 text-blue-800 dark:border-blue-400 dark:bg-blue-950/40 dark:text-blue-300"
                           : "border-neutral-200 text-neutral-600 hover:border-blue-300 dark:border-neutral-700 dark:text-neutral-400"
                       }`}
                     >
-                      Partial Payment
+                      <div>Partial Payment</div>
+                      <div className="text-[10px] mt-0.5">Enter amount</div>
                     </button>
                   </div>
                   {alreadyPaid > 0 && (
@@ -816,42 +822,44 @@ export function DocumentUploadCard({
               </>
             )}
           </div>
-        ) : (canUpload || (displayStatus === "uploaded" && isAdmin)) ? (
-          <div className="space-y-2">
-            <input ref={fileInputRef} type="file" accept={acceptAttr} onChange={handleUpload} className="hidden" />
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-              >
-                {uploading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Upload className="h-3.5 w-3.5" />
-                )}
-                {displayStatus === "rejected" ? "Re-upload" : "Upload"}
-              </Button>
-              {meta?.required && displayStatus === "outstanding" && (
-                <span className="text-[10px] text-red-500 dark:text-red-400">Required</span>
-              )}
-            </div>
-          </div>
         ) : null}
 
-        {/* Reminder scheduler for outstanding/rejected docs */}
-        {isAdmin && (displayStatus === "outstanding" || displayStatus === "rejected" || displayStatus === "uploaded") && (
-          <div className="mt-2 border-t border-neutral-100 pt-2 dark:border-neutral-800">
-            <ReminderScheduler
-              policyId={policyId}
-              documentTypeKey={typeKey}
-              documentLabel={label}
-              isAdmin={isAdmin}
-            />
-          </div>
-        )}
+        {/* Actions row: upload + reminder */}
+        {(() => {
+          const st = displayStatus as string;
+          const showUpload = (canUpload || (st === "uploaded" && isAdmin)) && (!needsPayment || !premiumBreakdown);
+          const showReminder = isAdmin && (st === "outstanding" || st === "rejected" || st === "uploaded");
+          if (!showUpload && !showReminder) return null;
+          return (
+            <div className="flex items-center justify-end gap-1.5 pt-1">
+              {showUpload && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1 h-6 text-[11px] px-1.5 sm:px-2"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  title={st === "rejected" ? "Re-upload" : "Upload"}
+                >
+                  {uploading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="h-3.5 w-3.5 sm:hidden lg:inline" />
+                  )}
+                  <span className="hidden sm:inline">{st === "rejected" ? "Re-upload" : "Upload"}</span>
+                </Button>
+              )}
+              {showReminder && (
+                <ReminderScheduler
+                  policyId={policyId}
+                  documentTypeKey={typeKey}
+                  documentLabel={label}
+                  isAdmin={isAdmin}
+                />
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Lightbox preview — rendered via portal to escape drawer stacking context */}

@@ -16,7 +16,6 @@ import {
   X,
   RefreshCw,
   Settings2,
-  GripVertical,
   Eye,
   EyeOff,
   User,
@@ -400,49 +399,65 @@ export default function AccountingPage() {
               {pendingPayments.map(({ invoice: inv, payment: p }) => (
                 <div
                   key={p.id}
-                  className="flex items-center justify-between gap-3 rounded-md border border-neutral-200 dark:border-neutral-700 p-3"
+                  className="rounded-md border border-neutral-200 dark:border-neutral-700 p-3 space-y-1.5"
                 >
-                  <div className="min-w-0 space-y-0.5">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="font-medium">{formatCurrency(p.amountCents, p.currency)}</span>
-                      <span className="text-neutral-400">&middot;</span>
-                      <span className="text-neutral-500">{methodLabel(p.paymentMethod)}</span>
-                      {p.referenceNumber && (
-                        <>
-                          <span className="text-neutral-400">&middot;</span>
-                          <span className="text-neutral-500">Ref: {p.referenceNumber}</span>
-                        </>
-                      )}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="text-sm font-medium">{formatCurrency(p.amountCents, p.currency)}</div>
+                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-neutral-500">
+                        <span>{methodLabel(p.paymentMethod)}</span>
+                        {p.referenceNumber && (
+                          <>
+                            <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
+                            <span className="truncate max-w-[120px]">Ref: {p.referenceNumber}</span>
+                          </>
+                        )}
+                        {p.paymentDate && (
+                          <>
+                            <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
+                            <span>{new Date(p.paymentDate).toLocaleDateString()}</span>
+                          </>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-neutral-400">
+                        <span>{inv.invoiceNumber}</span>
+                        {inv.clientName && (
+                          <>
+                            <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
+                            <span>{inv.clientName}</span>
+                          </>
+                        )}
+                        {inv.policyNumber && (
+                          <>
+                            <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
+                            <span className="font-mono">{inv.policyNumber}</span>
+                          </>
+                        )}
+                      </div>
+                      {p.notes && <div className="text-[11px] text-neutral-400 italic wrap-break-word">{p.notes}</div>}
                     </div>
-                    <div className="text-xs text-neutral-400">
-                      Invoice: {inv.invoiceNumber}
-                      {inv.clientName && <> &middot; {inv.clientName}</>}
-                      {inv.policyNumber && <> &middot; {inv.policyNumber}</>}
-                      {p.paymentDate && <> &middot; {new Date(p.paymentDate).toLocaleDateString()}</>}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-green-600 hover:bg-green-50 hover:text-green-700"
+                        disabled={verifyingId === p.id}
+                        onClick={() => handleVerify(inv.id, p.id, "verify")}
+                      >
+                        <Check className="h-3.5 w-3.5 mr-0.5" />
+                        Verify
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-red-600 hover:bg-red-50 hover:text-red-700"
+                        disabled={verifyingId === p.id}
+                        onClick={() => handleVerify(inv.id, p.id, "reject")}
+                      >
+                        <X className="h-3.5 w-3.5 mr-0.5" />
+                        Reject
+                      </Button>
                     </div>
-                    {p.notes && <div className="text-xs text-neutral-400 italic">{p.notes}</div>}
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-8 px-3 text-green-600 hover:bg-green-50 hover:text-green-700"
-                      disabled={verifyingId === p.id}
-                      onClick={() => handleVerify(inv.id, p.id, "verify")}
-                    >
-                      <Check className="h-4 w-4 mr-1" />
-                      Verify
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-8 px-3 text-red-600 hover:bg-red-50 hover:text-red-700"
-                      disabled={verifyingId === p.id}
-                      onClick={() => handleVerify(inv.id, p.id, "reject")}
-                    >
-                      <X className="h-4 w-4 mr-1" />
-                      Reject
-                    </Button>
                   </div>
                 </div>
               ))}
@@ -493,27 +508,27 @@ export default function AccountingPage() {
                       onClick={() => setExpandedInvoice(isExpanded ? null : inv.id)}
                       className="w-full text-left px-3.5 py-2.5 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5 min-w-0 flex-1">
                           <FileText className="h-4 w-4 shrink-0 text-neutral-400" />
                           {isColEnabled("invoiceNumber") && (
-                            <span className="font-semibold text-sm truncate">{inv.invoiceNumber}</span>
+                            <span className="font-semibold text-sm">{inv.invoiceNumber}</span>
                           )}
-                          <Badge variant="custom" className={invoiceStatusClass(inv.status)}>
+                          <Badge variant="custom" className={`shrink-0 ${invoiceStatusClass(inv.status)}`}>
                             {INVOICE_STATUS_LABELS[inv.status] ?? inv.status}
                           </Badge>
                           {isColEnabled("direction") && (
-                            <Badge variant="custom" className={
+                            <Badge variant="custom" className={`shrink-0 ${
                               inv.direction === "receivable"
                                 ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
                                 : "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-                            }>
+                            }`}>
                               {inv.direction === "receivable" ? "Receivable" : "Payable"}
                             </Badge>
                           )}
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className="text-xs font-medium">
+                        <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
+                          <span className="text-[11px] font-medium whitespace-nowrap">
                             <span className="text-neutral-400">{formatCurrency(inv.paidAmountCents, inv.currency)}</span>
                             <span className="text-neutral-300 mx-0.5">/</span>
                             <span className="font-semibold">{formatCurrency(inv.totalAmountCents, inv.currency)}</span>

@@ -126,6 +126,7 @@ export function WorkflowTab({
     currency: string; invoiceCount: number; hasSubmitted: boolean;
     invoiceNumbers: string[];
   } | null>(null);
+  const [paymentRefreshKey, setPaymentRefreshKey] = React.useState(0);
 
   const toggleSection = (id: string) => {
     setExpandedSection((prev) => (prev === id ? null : id));
@@ -133,7 +134,7 @@ export function WorkflowTab({
 
   const sections = [
     { id: "documents", label: "Documents", show: true },
-    { id: "uploads", label: "Required Uploads", show: true },
+    { id: "uploads", label: "Task Requirements", show: true },
     { id: "payments", label: "Payments", show: true },
     { id: "actions", label: "Additional Actions", show: !!isAdmin },
   ].filter((s) => s.show);
@@ -183,34 +184,34 @@ export function WorkflowTab({
             onClick={() => toggleSection(sec.id)}
             className="w-full px-3 py-2.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
           >
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">{sec.label}</span>
-              <span className="flex items-center gap-1.5">
+            <div className="flex items-start justify-between gap-1.5">
+              <span className="text-sm font-medium shrink-0">{sec.label}</span>
+              <span className="flex flex-wrap items-center justify-end gap-1">
                 {sec.id === "uploads" && uploadSummary && uploadSummary.total > 0 && (() => {
                   const allDone = uploadSummary.verified === uploadSummary.total;
                   return (
                     <>
                       <Badge
                         variant="custom"
-                        className={allDone
+                        className={`text-[10px] ${allDone
                           ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
                           : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
-                        }
+                        }`}
                       >
                         {uploadSummary.verified}/{uploadSummary.total}
                       </Badge>
                       {uploadSummary.outstanding > 0 && (
-                        <Badge variant="custom" className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
+                        <Badge variant="custom" className="text-[10px] bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
                           {uploadSummary.outstanding} outstanding
                         </Badge>
                       )}
                       {uploadSummary.pending > 0 && (
-                        <Badge variant="custom" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                        <Badge variant="custom" className="text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
                           {uploadSummary.pending} pending
                         </Badge>
                       )}
                       {uploadSummary.rejected > 0 && (
-                        <Badge variant="custom" className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                        <Badge variant="custom" className="text-[10px] bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
                           {uploadSummary.rejected} rejected
                         </Badge>
                       )}
@@ -225,15 +226,15 @@ export function WorkflowTab({
                     <>
                       <Badge
                         variant="custom"
-                        className={fullyPaid
+                        className={`text-[10px] ${fullyPaid
                           ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
                           : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
-                        }
+                        }`}
                       >
                         {fmtCur(paymentSummary.totalPaid)} / {fmtCur(paymentSummary.totalOwed)}
                       </Badge>
                       {paymentSummary.hasSubmitted && (
-                        <Badge variant="custom" className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                        <Badge variant="custom" className="text-[10px] bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
                           pending review
                         </Badge>
                       )}
@@ -260,6 +261,7 @@ export function WorkflowTab({
                   insuredType={insuredType}
                   hasNcb={hasNcb}
                   onSummaryChange={setUploadSummary}
+                  onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
                 />
               </React.Suspense>
             </div>
@@ -271,6 +273,7 @@ export function WorkflowTab({
                   policyId={detail.policyId}
                   isAdmin={isAdmin ?? false}
                   onSummaryChange={setPaymentSummary}
+                  externalRefreshKey={paymentRefreshKey}
                 />
               </React.Suspense>
             </div>
