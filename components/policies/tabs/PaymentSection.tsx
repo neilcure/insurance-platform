@@ -120,11 +120,13 @@ export function PaymentSection({
   isAdmin,
   onSummaryChange,
   externalRefreshKey,
+  endorsementPolicyIds,
 }: {
   policyId: number;
   isAdmin: boolean;
   onSummaryChange?: (summary: PaymentSummary) => void;
   externalRefreshKey?: number;
+  endorsementPolicyIds?: number[];
 }) {
   const [invoices, setInvoices] = React.useState<InvoiceWithPayments[]>([]);
   const [payables, setPayables] = React.useState<InvoiceWithPayments[]>([]);
@@ -151,13 +153,18 @@ export function PaymentSection({
     setLoading(true);
     setError(null);
 
-    fetch(`/api/accounting/invoices/by-policy/${policyId}?_t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => {
-        if (!r.ok) throw new Error("Failed to fetch invoices");
-        return r.json();
-      })
-      .then((data: InvoiceWithPayments[]) => {
+    const allIds = [policyId, ...(endorsementPolicyIds ?? [])];
+    const fetches = allIds.map((id) =>
+      fetch(`/api/accounting/invoices/by-policy/${id}?_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((data: InvoiceWithPayments[]) => data)
+        .catch(() => [] as InvoiceWithPayments[]),
+    );
+
+    Promise.all(fetches)
+      .then((results) => {
         if (cancelled) return;
+        const data = results.flat();
         const receivable = data.filter((inv) => inv.direction === "receivable");
         const payableInvs = data.filter((inv) => inv.direction === "payable");
         setInvoices(receivable);
@@ -201,7 +208,8 @@ export function PaymentSection({
       });
 
     return () => { cancelled = true; };
-  }, [policyId, refreshKey, externalRefreshKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [policyId, refreshKey, externalRefreshKey, endorsementPolicyIds?.join(",")]);
 
   const resetForm = () => {
     setPaymentMethod("bank_transfer");
@@ -424,6 +432,14 @@ export function PaymentSection({
                         )}
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* Fully paid indicator */}
+                {remaining <= 0 && inv.payments.length > 0 && (
+                  <div className="flex items-center gap-2 rounded-md bg-green-50 dark:bg-green-900/20 px-3 py-2 text-xs font-medium text-green-700 dark:text-green-300">
+                    <Check className="h-4 w-4" />
+                    Fully Paid
                   </div>
                 )}
 

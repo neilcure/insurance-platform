@@ -37,6 +37,7 @@ export function UploadDocumentsTab({
   hasNcb,
   onSummaryChange,
   onPaymentRecorded,
+  filter = "all",
 }: {
   policyId: number;
   flowKey?: string;
@@ -46,6 +47,7 @@ export function UploadDocumentsTab({
   hasNcb?: boolean;
   onSummaryChange?: (summary: UploadSummary) => void;
   onPaymentRecorded?: () => void;
+  filter?: "all" | "documents" | "payments";
 }) {
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -160,13 +162,18 @@ export function UploadDocumentsTab({
         });
       }
 
-      setRequirements(reqs);
+      const filtered = filter === "all"
+        ? reqs
+        : filter === "payments"
+          ? reqs.filter((r) => r.meta?.requirePaymentDetails)
+          : reqs.filter((r) => !r.meta?.requirePaymentDetails);
+      setRequirements(filtered);
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
 
     return () => { cancelled = true; };
-  }, [policyId, flowKey, currentStatus, refreshKey, policyInsurerIds, insuredType, hasNcb]);
+  }, [policyId, flowKey, currentStatus, refreshKey, policyInsurerIds, insuredType, hasNcb, filter]);
 
   const summaryRef = React.useRef(onSummaryChange);
   summaryRef.current = onSummaryChange;
@@ -189,6 +196,7 @@ export function UploadDocumentsTab({
   }
 
   if (loading) {
+    if (filter === "payments") return null;
     return (
       <div className="py-8 text-center text-xs text-neutral-500 dark:text-neutral-400">
         Loading documents...
@@ -197,6 +205,7 @@ export function UploadDocumentsTab({
   }
 
   if (requirements.length === 0) {
+    if (filter === "payments") return null;
     return (
       <div className="rounded-md border border-dashed border-neutral-300 p-6 text-center dark:border-neutral-700">
         <Upload className="mx-auto mb-2 h-8 w-8 text-neutral-400 dark:text-neutral-500" />

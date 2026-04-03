@@ -15,6 +15,10 @@ function displayToCents(val: unknown): number | null {
  * policy_premiums table. This ensures the accounting system always has
  * up-to-date premium data regardless of whether the user saved via
  * the Package Edit form or the Premium tab.
+ *
+ * For endorsement policies (those with linkedPolicyId), it scans ALL
+ * packages in the snapshot rather than only premiumRecord, because
+ * endorsements may inherit the parent's premiumRecord with incorrect data.
  */
 export async function syncPremiumSnapshotToTable(
   policyId: number,
@@ -30,13 +34,7 @@ export async function syncPremiumSnapshotToTable(
 
   const extra = (carRow.extra ?? {}) as Record<string, unknown>;
   const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
-  const premPkg = (pkgs.premiumRecord ?? pkgs.accounting) as Record<string, unknown> | undefined;
-  if (!premPkg || typeof premPkg !== "object") return;
-
-  const snapVals = ("values" in premPkg
-    ? (premPkg as { values?: Record<string, unknown> }).values
-    : premPkg) as Record<string, unknown> | undefined;
-  if (!snapVals || typeof snapVals !== "object") return;
+  const isEndorsement = !!extra.linkedPolicyId;
 
   const stripPfx = (k: string) => {
     const idx = k.indexOf("__");
@@ -44,9 +42,98 @@ export async function syncPremiumSnapshotToTable(
   };
 
   const snapMap = new Map<string, unknown>();
-  for (const [k, v] of Object.entries(snapVals)) {
-    if (v === undefined || v === null || v === "") continue;
-    snapMap.set(stripPfx(k), v);
+
+  if (isEndorsement) {
+    // For endorsements, scan ALL packages for premium field values.
+    // The premiumRecord package may contain the parent's data (copied at
+    // endorsement creation time), so we prefer premium fields from
+    // non-premiumRecord packages and validate against the parent.
+    const otherPkgValues = new Map<string, unknown>();
+    let hasPremiumFieldsOutsidePremiumRecord = false;
+
+    for (const [pkgName, pkgData] of Object.entries(pkgs)) {
+      if (!pkgData || typeof pkgData !== "object") continue;
+      if (pkgName === "premiumRecord" || pkgName === "accounting") continue;
+      const vals = ("values" in (pkgData as Record<string, unknown>)
+        ? (pkgData as { values?: Record<string, unknown> }).values
+        : pkgData) as Record<string, unknown> | undefined;
+      if (!vals || typeof vals !== "object") continue;
+      for (const [k, v] of Object.entries(vals)) {
+        if (v === undefined || v === null || v === "") continue;
+        const stripped = stripPfx(k);
+        otherPkgValues.set(stripped, v);
+        const lower = stripped.toLowerCase();
+        if (lower.includes("premium") || lower.includes("gross") ||
+            lower.includes("commission") || lower === "currency") {
+          hasPremiumFieldsOutsidePremiumRecord = true;
+        }
+      }
+    }
+
+    if (hasPremiumFieldsOutsidePremiumRecord) {
+      for (const [k, v] of otherPkgValues) snapMap.set(k, v);
+    } else {
+      // Only premiumRecord has premium data. Check if it's the parent's
+      // copied data by comparing with the parent's policy_premiums.
+      const premPkg = (pkgs.premiumRecord ?? pkgs.accounting) as Record<string, unknown> | undefined;
+      if (premPkg && typeof premPkg === "object") {
+        const vals = ("values" in premPkg
+          ? (premPkg as { values?: Record<string, unknown> }).values
+          : premPkg) as Record<string, unknown> | undefined;
+        if (vals && typeof vals === "object") {
+          // Extract endorsement premiumRecord gross value
+          let endorseGross = 0;
+          for (const [k, v] of Object.entries(vals)) {
+            const stripped = stripPfx(k).toLowerCase();
+            if (stripped.includes("gpremium") || stripped.includes("grosspremium") || stripped === "gross_premium") {
+              endorseGross = Number(v) || 0;
+            }
+          }
+
+          // Compare with parent's gross premium
+          let parentGross = 0;
+          const linkedId = Number(extra.linkedPolicyId);
+          if (Number.isFinite(linkedId) && linkedId > 0) {
+            try {
+              const [parentPrem] = await db
+                .select({ gross: policyPremiums.grossPremiumCents })
+                .from(policyPremiums)
+                .where(and(eq(policyPremiums.policyId, linkedId), eq(policyPremiums.lineKey, "main")))
+                .limit(1);
+              if (parentPrem?.gross) {
+                parentGross = parentPrem.gross / 100;
+              }
+            } catch { /* ignore */ }
+          }
+
+          // If endorsement premiumRecord matches parent's gross, it's copied data — skip sync
+          if (endorseGross > 0 && parentGross > 0 && Math.abs(endorseGross - parentGross) < 0.01) {
+            return;
+          }
+
+          for (const [k, v] of Object.entries(vals)) {
+            if (v === undefined || v === null || v === "") continue;
+            snapMap.set(stripPfx(k), v);
+          }
+        }
+      }
+      for (const [k, v] of otherPkgValues) {
+        if (!snapMap.has(k)) snapMap.set(k, v);
+      }
+    }
+  } else {
+    const premPkg = (pkgs.premiumRecord ?? pkgs.accounting) as Record<string, unknown> | undefined;
+    if (!premPkg || typeof premPkg !== "object") return;
+
+    const snapVals = ("values" in premPkg
+      ? (premPkg as { values?: Record<string, unknown> }).values
+      : premPkg) as Record<string, unknown> | undefined;
+    if (!snapVals || typeof snapVals !== "object") return;
+
+    for (const [k, v] of Object.entries(snapVals)) {
+      if (v === undefined || v === null || v === "") continue;
+      snapMap.set(stripPfx(k), v);
+    }
   }
 
   if (snapMap.size === 0) return;

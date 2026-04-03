@@ -18,7 +18,7 @@ export type TemplateSection = {
 };
 
 export type DocumentTemplateMeta = {
-  type: "quotation" | "invoice" | "receipt" | "certificate" | "letter" | "custom";
+  type: "quotation" | "invoice" | "receipt" | "certificate" | "letter" | "credit_note" | "debit_note" | "endorsement" | "custom";
   /** Restrict to specific flows (empty = available for all flows) */
   flows?: string[];
   /** Only show this document when policy status matches (empty = always) */
@@ -29,6 +29,8 @@ export type DocumentTemplateMeta = {
   requiresConfirmation?: boolean;
   /** Prefix for auto-generated document numbers (e.g. "QUO", "INV", "REC") */
   documentPrefix?: string;
+  /** Group name for shared document numbering — templates in the same group share one random code */
+  documentSetGroup?: string;
   /** Mark as agent template — auto-appends (A) to document numbers */
   isAgentTemplate?: boolean;
   header: {

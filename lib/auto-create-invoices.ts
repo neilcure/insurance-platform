@@ -7,6 +7,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
 import { generateDocumentNumber } from "@/lib/document-number";
+import { resolvePremiumByRole } from "@/lib/resolve-policy-agent";
 
 export async function autoCreateAccountingInvoices(policyId: number, docType: string, userId: number) {
   try {
@@ -52,44 +53,13 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
   const isReceipt = docType.includes("receipt");
   const accountingFields = await loadAccountingFields();
 
-  function resolveRawPremium(
-    p: typeof premiums[number],
-    role: "client" | "agent" | "net",
-  ): number {
-    const row = p as Record<string, unknown>;
-    for (const f of accountingFields) {
-      if (!f.premiumColumn) continue;
-      const label = f.label.toLowerCase();
-      if (label.includes(role)) {
-        return (row[f.premiumColumn] as number) ?? 0;
-      }
-    }
-    if (role === "client") return p.grossPremiumCents ?? 0;
-    return 0;
-  }
-
   function computeGain(p: typeof premiums[number]): number {
-    const client = resolveRawPremium(p, "client");
-    const net = resolveRawPremium(p, "net");
-    const agent = resolveRawPremium(p, "agent");
+    const row = p as Record<string, unknown>;
+    const client = resolvePremiumByRole(row, "client", accountingFields);
+    const net = resolvePremiumByRole(row, "net", accountingFields);
+    const agent = resolvePremiumByRole(row, "agent", accountingFields);
     return agent > 0 ? agent - net : client - net;
   }
-
-  // Check if a receivable invoice already exists for this policy
-  const existingInvoice = await db
-    .select({ id: accountingInvoices.id })
-    .from(accountingInvoices)
-    .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
-    .where(
-      and(
-        eq(accountingInvoiceItems.policyId, policyId),
-        eq(accountingInvoices.direction, "receivable"),
-        sql`${accountingInvoices.status} <> 'cancelled'`,
-      ),
-    )
-    .limit(1);
-
-  if (existingInvoice.length > 0) return;
 
   // Check if there's an active payment schedule for the client
   if (policy.clientId) {
@@ -108,10 +78,7 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     if (scheduleRows.length > 0) return;
   }
 
-  // Total receivable = Client Premium
-  // This is the total amount the company expects to receive for this policy.
-  // Payment can come from client, agent, or both.
-  const clientPremiumPremiums = premiums.filter((p) => resolveRawPremium(p, "client") > 0);
+  const clientPremiumPremiums = premiums.filter((p) => resolvePremiumByRole(p as Record<string, unknown>, "client", accountingFields) > 0);
   if (clientPremiumPremiums.length === 0) return;
 
   let clientName: string | null = null;
@@ -149,10 +116,27 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
       const premium = clientPremiumPremiums[i];
       const suffix = String.fromCharCode(97 + i);
       const suffixedPolicyNo = `${policy.policyNumber}(${suffix})`;
-      const amountCents = resolveRawPremium(premium, "client");
+      const amountCents = resolvePremiumByRole(premium as Record<string, unknown>, "client", accountingFields);
       const invoiceNumber = await generateDocumentNumber("AR");
 
       await db.transaction(async (tx) => {
+        // Advisory lock scoped to transaction prevents concurrent creation
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${policyId})`);
+
+        const [existing] = await tx
+          .select({ id: accountingInvoices.id })
+          .from(accountingInvoices)
+          .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
+          .where(
+            and(
+              eq(accountingInvoiceItems.policyId, policyId),
+              eq(accountingInvoices.direction, "receivable"),
+              sql`${accountingInvoices.status} <> 'cancelled'`,
+            ),
+          )
+          .limit(1);
+        if (existing) return;
+
         const [invoice] = await tx
           .insert(accountingInvoices)
           .values({
@@ -200,7 +184,7 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
   }> = [];
 
   for (const premium of clientPremiumPremiums) {
-    const amountCents = resolveRawPremium(premium, "client");
+    const amountCents = resolvePremiumByRole(premium as Record<string, unknown>, "client", accountingFields);
     totalAmountCents += amountCents;
     items.push({
       policyId,
@@ -215,6 +199,23 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
   const invoiceNumber = await generateDocumentNumber("AR");
 
   await db.transaction(async (tx) => {
+    // Advisory lock scoped to transaction prevents concurrent creation
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${policyId})`);
+
+    const [existing] = await tx
+      .select({ id: accountingInvoices.id })
+      .from(accountingInvoices)
+      .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
+      .where(
+        and(
+          eq(accountingInvoiceItems.policyId, policyId),
+          eq(accountingInvoices.direction, "receivable"),
+          sql`${accountingInvoices.status} <> 'cancelled'`,
+        ),
+      )
+      .limit(1);
+    if (existing) return;
+
     const [invoice] = await tx
       .insert(accountingInvoices)
       .values({

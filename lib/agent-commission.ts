@@ -2,10 +2,10 @@ import { db } from "@/db/client";
 import { policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
 import { accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
-import { users } from "@/db/schema/core";
 import { and, eq, sql } from "drizzle-orm";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { generateDocumentNumber } from "@/lib/document-number";
+import { resolvePolicyAgent, resolvePremiumByRole } from "@/lib/resolve-policy-agent";
 
 /**
  * When a client pays the Client Premium directly, the agent earns a commission
@@ -13,7 +13,7 @@ import { generateDocumentNumber } from "@/lib/document-number";
  * to the agent for that commission amount.
  *
  * Only creates if:
- *  - Policy has an agent
+ *  - Policy has an agent (or parent policy has an agent for endorsements)
  *  - Client Premium > Agent Premium (commission > 0)
  *  - No existing agent commission payable for this policy
  */
@@ -24,7 +24,6 @@ export async function createAgentCommissionPayable(
   const [policy] = await db
     .select({
       id: policies.id,
-      agentId: policies.agentId,
       policyNumber: policies.policyNumber,
       organisationId: policies.organisationId,
     })
@@ -32,46 +31,32 @@ export async function createAgentCommissionPayable(
     .where(eq(policies.id, policyId))
     .limit(1);
 
-  if (!policy?.agentId || !policy.organisationId) return;
+  if (!policy || !policy.organisationId) return;
 
-  // Check if commission payable already exists
-  const existing = await db
-    .select({ id: accountingInvoices.id })
-    .from(accountingInvoices)
-    .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
-    .where(
-      and(
-        eq(accountingInvoiceItems.policyId, policyId),
-        eq(accountingInvoices.direction, "payable"),
-        eq(accountingInvoices.entityType, "agent"),
-        eq(accountingInvoices.premiumType, "agent_premium"),
-        sql`${accountingInvoices.status} <> 'cancelled'`,
-      ),
-    )
-    .limit(1);
+  const { agentId, agentName } = await resolvePolicyAgent(policyId);
+  if (!agentId) return;
+
+  const [existing, premiums, accountingFields] = await Promise.all([
+    db
+      .select({ id: accountingInvoices.id })
+      .from(accountingInvoices)
+      .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
+      .where(
+        and(
+          eq(accountingInvoiceItems.policyId, policyId),
+          eq(accountingInvoices.direction, "payable"),
+          eq(accountingInvoices.entityType, "agent"),
+          eq(accountingInvoices.premiumType, "agent_premium"),
+          sql`${accountingInvoices.status} <> 'cancelled'`,
+        ),
+      )
+      .limit(1),
+    db.select().from(policyPremiums).where(eq(policyPremiums.policyId, policyId)),
+    loadAccountingFields(),
+  ]);
 
   if (existing.length > 0) return;
-
-  const premiums = await db
-    .select()
-    .from(policyPremiums)
-    .where(eq(policyPremiums.policyId, policyId));
-
   if (premiums.length === 0) return;
-
-  const accountingFields = await loadAccountingFields();
-
-  function resolveRaw(p: typeof premiums[number], role: "client" | "agent"): number {
-    const row = p as Record<string, unknown>;
-    for (const f of accountingFields) {
-      if (!f.premiumColumn) continue;
-      if (f.label.toLowerCase().includes(role)) {
-        return (row[f.premiumColumn] as number) ?? 0;
-      }
-    }
-    if (role === "client") return p.grossPremiumCents ?? 0;
-    return 0;
-  }
 
   let totalCommissionCents = 0;
   const items: Array<{
@@ -82,8 +67,9 @@ export async function createAgentCommissionPayable(
   }> = [];
 
   for (const p of premiums) {
-    const clientAmt = resolveRaw(p, "client");
-    const agentAmt = resolveRaw(p, "agent");
+    const row = p as Record<string, unknown>;
+    const clientAmt = resolvePremiumByRole(row, "client", accountingFields);
+    const agentAmt = resolvePremiumByRole(row, "agent", accountingFields);
     const commission = clientAmt - agentAmt;
     if (commission > 0) {
       totalCommissionCents += commission;
@@ -98,13 +84,6 @@ export async function createAgentCommissionPayable(
 
   if (totalCommissionCents <= 0 || items.length === 0) return;
 
-  const [agent] = await db
-    .select({ name: users.name, email: users.email })
-    .from(users)
-    .where(eq(users.id, policy.agentId))
-    .limit(1);
-
-  const agentName = agent?.name || agent?.email || null;
   const invoiceNumber = await generateDocumentNumber("AP");
 
   await db.transaction(async (tx) => {
@@ -118,7 +97,7 @@ export async function createAgentCommissionPayable(
         premiumType: "agent_premium",
         entityPolicyId: policyId,
         entityType: "agent",
-        entityName: agentName,
+        entityName: agentName ?? null,
         totalAmountCents: totalCommissionCents,
         paidAmountCents: 0,
         currency: premiums[0]?.currency ?? "HKD",

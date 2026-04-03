@@ -346,6 +346,7 @@ export function DocumentUploadCard({
         fd.append("paymentAmountCents", String(cents));
         fd.append("paymentDate", paymentDate || "");
         fd.append("paymentRef", paymentRef.trim());
+        if (paymentPayer) fd.append("paymentPayer", paymentPayer);
       }
 
       const res = await fetch(`/api/policies/${policyId}/documents`, {

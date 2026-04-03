@@ -4,8 +4,8 @@ import { cars, policies } from "@/db/schema/insurance";
 import { and, eq, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
-import { generateDocumentNumber } from "@/lib/document-number";
-import type { DocumentStatusMap, DocumentStatusEntry, DocLifecycleStatus } from "@/lib/types/accounting";
+import { generateDocumentNumber, generateDocumentNumberWithCode, extractSetCodeFromDocNumber } from "@/lib/document-number";
+import type { DocumentStatusMap, DocumentStatusEntry, DocLifecycleStatus, DocumentTrackingData } from "@/lib/types/accounting";
 
 export const dynamic = "force-dynamic";
 
@@ -52,6 +52,8 @@ export async function POST(
     let confirmNote: string | undefined;
     let documentPrefix: string | undefined;
     let documentSuffix: string | undefined;
+    let documentSetGroup: string | undefined;
+    let groupSiblingKeys: string[] | undefined;
     let proofFile: File | null = null;
 
     const contentType = request.headers.get("content-type") ?? "";
@@ -65,6 +67,9 @@ export async function POST(
       confirmNote = (formData.get("confirmNote") as string) || undefined;
       documentPrefix = (formData.get("documentPrefix") as string) || undefined;
       documentSuffix = (formData.get("documentSuffix") as string) || undefined;
+      documentSetGroup = (formData.get("documentSetGroup") as string) || undefined;
+      const siblingKeysRaw = formData.get("groupSiblingKeys") as string;
+      if (siblingKeysRaw) try { groupSiblingKeys = JSON.parse(siblingKeysRaw); } catch { /* ignore */ }
       const file = formData.get("proofFile");
       if (file instanceof File && file.size > 0) proofFile = file;
     } else {
@@ -77,6 +82,8 @@ export async function POST(
       confirmNote = body.confirmNote;
       documentPrefix = body.documentPrefix;
       documentSuffix = body.documentSuffix;
+      documentSetGroup = body.documentSetGroup;
+      groupSiblingKeys = body.groupSiblingKeys;
     }
 
     if (!docType || typeof docType !== "string") {
@@ -93,7 +100,7 @@ export async function POST(
       return NextResponse.json({ error: "Policy not found" }, { status: 404 });
     }
 
-    const existing: DocumentStatusMap = (policy.documentTracking as DocumentStatusMap | null) ?? {};
+    const existing: DocumentTrackingData = (policy.documentTracking as DocumentTrackingData | null) ?? {};
     const entry: DocumentStatusEntry = existing[docType] ?? ({} as DocumentStatusEntry);
     const now = new Date().toISOString();
     const userName = (user as unknown as { name?: string; email?: string }).name || (user as unknown as { email?: string }).email || `User #${user.id}`;
@@ -126,7 +133,23 @@ export async function POST(
         }
         let prepDocNumber: string | undefined;
         try {
-          prepDocNumber = await generateDocumentNumber(documentPrefix, documentSuffix);
+          if (documentSetGroup) {
+            const setInfo = resolveSetCode(existing, documentSetGroup, groupSiblingKeys);
+            if (setInfo) {
+              prepDocNumber = await generateDocumentNumberWithCode(documentPrefix, setInfo.code, setInfo.year, documentSuffix);
+              if (!existing._setCodes) existing._setCodes = {};
+              existing._setCodes[documentSetGroup] = setInfo;
+            } else {
+              prepDocNumber = await generateDocumentNumber(documentPrefix, documentSuffix);
+              const extracted = extractSetCodeFromDocNumber(prepDocNumber);
+              if (extracted) {
+                if (!existing._setCodes) existing._setCodes = {};
+                existing._setCodes[documentSetGroup] = extracted;
+              }
+            }
+          } else {
+            prepDocNumber = await generateDocumentNumber(documentPrefix, documentSuffix);
+          }
         } catch (err) {
           console.error("Document number generation error:", err);
           return NextResponse.json({ error: "Failed to generate document number" }, { status: 500 });
@@ -168,7 +191,23 @@ export async function POST(
     let docNumber = entry.documentNumber;
     if (action === "send" && !docNumber && documentPrefix) {
       try {
-        docNumber = await generateDocumentNumber(documentPrefix, documentSuffix);
+        if (documentSetGroup) {
+          const setInfo = resolveSetCode(existing, documentSetGroup, groupSiblingKeys);
+          if (setInfo) {
+            docNumber = await generateDocumentNumberWithCode(documentPrefix, setInfo.code, setInfo.year, documentSuffix);
+            if (!existing._setCodes) existing._setCodes = {};
+            existing._setCodes[documentSetGroup] = setInfo;
+          } else {
+            docNumber = await generateDocumentNumber(documentPrefix, documentSuffix);
+            const extracted = extractSetCodeFromDocNumber(docNumber);
+            if (extracted) {
+              if (!existing._setCodes) existing._setCodes = {};
+              existing._setCodes[documentSetGroup] = extracted;
+            }
+          }
+        } else {
+          docNumber = await generateDocumentNumber(documentPrefix, documentSuffix);
+        }
       } catch (err) {
         console.error("Document number generation error (non-fatal):", err);
       }
@@ -233,6 +272,36 @@ export async function POST(
     console.error("POST document-tracking error:", err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
+}
+
+/**
+ * Resolves the shared set code for a given group from the tracking data.
+ * Priority: _setCodes[group] → legacy _setCode/_setYear → scan existing entries.
+ * The scan fallback handles existing policies created before groups were introduced.
+ */
+function resolveSetCode(
+  tracking: DocumentTrackingData,
+  group: string,
+  siblingKeys?: string[],
+): { code: string; year: number } | null {
+  const stored = tracking._setCodes?.[group];
+  if (stored) return stored;
+  // Legacy migration: old tracking data may have `_setCode` / `_setYear`
+  const legacy = tracking as Record<string, unknown>;
+  if (typeof legacy._setCode === "string" && typeof legacy._setYear === "number") {
+    return { code: legacy._setCode, year: legacy._setYear };
+  }
+  // Scan sibling tracking entries (same group) for an existing document number
+  if (siblingKeys?.length) {
+    for (const key of siblingKeys) {
+      const e = tracking[key];
+      if (e?.documentNumber) {
+        const extracted = extractSetCodeFromDocNumber(e.documentNumber);
+        if (extracted) return extracted;
+      }
+    }
+  }
+  return null;
 }
 
 const STATUS_ORDER = [

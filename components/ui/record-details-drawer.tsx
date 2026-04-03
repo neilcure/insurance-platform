@@ -11,7 +11,15 @@ import {
   DrawerTabStrip,
   type DrawerTab,
 } from "@/components/ui/drawer-tabs";
-import { Loader2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { ChevronRight, Loader2 } from "lucide-react";
+
+type StatusHistoryEntry = {
+  status: string;
+  changedAt: string;
+  changedBy?: string;
+  note?: string;
+};
 
 export type RecordDetailsDrawerProps = {
   open: boolean;
@@ -32,6 +40,10 @@ export type RecordDetailsDrawerProps = {
   functionTabs?: Omit<DrawerTab, "permanent">[];
   /** Custom log panel content — replaces the default AuditLogPanel when provided */
   logContent?: React.ReactNode;
+  /** Status history entries shown at the top of the Log drawer */
+  statusHistory?: StatusHistoryEntry[];
+  /** Map status value → display label for status history badges */
+  statusLabels?: Record<string, string>;
   /** Z-index class for stacked/nested drawers */
   zClass?: string;
   /** When true, backdrop doesn't block pointer events behind it */
@@ -40,6 +52,47 @@ export type RecordDetailsDrawerProps = {
   side?: "left" | "right";
   children: React.ReactNode;
 };
+
+function StatusHistoryCollapsible({ entries, statusLabels }: { entries: StatusHistoryEntry[]; statusLabels?: Record<string, string> }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <div className="rounded-md border border-neutral-200 dark:border-neutral-800 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
+      >
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-neutral-600 dark:text-neutral-300">Status History</span>
+          <div className="flex items-center gap-1.5">
+            <Badge variant="outline" className="text-[10px]">{entries.length}</Badge>
+            <ChevronRight className={`h-3.5 w-3.5 text-neutral-400 transition-transform ${open ? "rotate-90" : ""}`} />
+          </div>
+        </div>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 space-y-1.5">
+          {entries.map((entry, idx) => (
+            <div key={idx} className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <Badge variant="outline" className="text-[10px] whitespace-normal wrap-break-word max-w-full">
+                  {statusLabels?.[entry.status] ?? entry.status.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
+                </Badge>
+                {entry.note && (
+                  <div className="mt-0.5 text-neutral-500 dark:text-neutral-400 wrap-break-word">{entry.note}</div>
+                )}
+              </div>
+              <div className="shrink-0 text-right text-neutral-400 dark:text-neutral-500">
+                <div>{new Date(entry.changedAt).toLocaleDateString()}</div>
+                {entry.changedBy && <div className="truncate max-w-[120px]">{entry.changedBy}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function RecordDetailsDrawer({
   open,
@@ -53,6 +106,8 @@ export function RecordDetailsDrawer({
   auditProps,
   functionTabs,
   logContent,
+  statusHistory,
+  statusLabels,
   zClass,
   passthrough,
   side,
@@ -179,7 +234,10 @@ export function RecordDetailsDrawer({
           zClass={zClass ? "z-[70]" : "z-60"}
           passthrough
         >
-          <div className="p-3 text-xs">
+          <div className="p-3 text-xs space-y-4">
+            {statusHistory && statusHistory.length > 0 && (
+              <StatusHistoryCollapsible entries={statusHistory} statusLabels={statusLabels} />
+            )}
             {logContent ? (
               logContent
             ) : !extraAttributes ? (

@@ -710,7 +710,7 @@ function CollapsibleRecord({
 }
 
 // --- Payment Status Card (renders PaymentSection inside a premium-style card) ---
-function PaymentStatusCard({ policyId, canEdit }: { policyId: number; canEdit: boolean }) {
+function PaymentStatusCard({ policyId, canEdit, endorsementPolicyIds }: { policyId: number; canEdit: boolean; endorsementPolicyIds?: number[] }) {
   const [open, setOpen] = React.useState(false);
   const [summary, setSummary] = React.useState<{
     totalOwed: number; totalPaid: number; totalPending: number;
@@ -764,6 +764,7 @@ function PaymentStatusCard({ policyId, canEdit }: { policyId: number; canEdit: b
           policyId={policyId}
           isAdmin={canEdit}
           onSummaryChange={setSummary}
+          endorsementPolicyIds={endorsementPolicyIds}
         />
       </div>
     </div>
@@ -890,30 +891,49 @@ export function AccountingTab({
     }
   }
 
-  const load = React.useCallback(async () => {
+  const abortRef = React.useRef<AbortController | null>(null);
+
+  const load = React.useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/policies/${policyId}/premiums?context=${encodeURIComponent(context)}`, { cache: "no-store" });
+      const res = await fetch(`/api/policies/${policyId}/premiums?context=${encodeURIComponent(context)}`, { cache: "no-store", signal });
+      if (signal?.aborted) return;
       if (!res.ok) throw new Error("Failed to load");
       const json = await res.json();
+      if (signal?.aborted) return;
       setFields(json.fields ?? []);
       setLines(json.lines ?? []);
       setAccountingRecords(json.accountingRecords ?? []);
       setCoverTypeOptions(json.coverTypeOptions ?? []);
       setSnapshotEntities(json.snapshotEntities ?? {});
       setAgentName(json.agentName ?? null);
-    } catch {
+    } catch (err) {
+      if ((err as { name?: string })?.name === "AbortError") return;
       setFields([]);
       setLines([]);
       setAccountingRecords([]);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [policyId, context]);
 
-  React.useEffect(() => { void load(); }, [load]);
+  React.useEffect(() => {
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    void load(ac.signal);
+    return () => ac.abort();
+  }, [load]);
 
   const hasAccountingRecords = accountingRecords.length > 0;
+
+  const endorsementPolicyIds = React.useMemo(() => {
+    if (context !== "policy") return undefined;
+    const ids = accountingRecords
+      .filter((r) => r.flowKey.toLowerCase() === "endorsement" && r.recordId !== policyId)
+      .map((r) => r.recordId);
+    return ids.length > 0 ? ids : undefined;
+  }, [accountingRecords, context, policyId]);
 
   const expectedTemplates = React.useMemo(
     () => resolveTemplates(coverTypeOptions, policyExtra),
@@ -1137,7 +1157,7 @@ export function AccountingTab({
 
         {(context === "policy" || context === "self") && (
           <React.Suspense fallback={<div className="py-2 text-center text-xs text-neutral-400">Loading payment info...</div>}>
-            <PaymentStatusCard policyId={policyId} canEdit={canEdit} />
+            <PaymentStatusCard policyId={policyId} canEdit={canEdit} endorsementPolicyIds={endorsementPolicyIds} />
           </React.Suspense>
         )}
 
@@ -1274,7 +1294,7 @@ export function AccountingTab({
 
       {(context === "policy" || context === "self") && (
         <React.Suspense fallback={<div className="py-2 text-center text-xs text-neutral-400">Loading payment info...</div>}>
-          <PaymentStatusCard policyId={policyId} canEdit={canEdit} />
+          <PaymentStatusCard policyId={policyId} canEdit={canEdit} endorsementPolicyIds={endorsementPolicyIds} />
         </React.Suspense>
       )}
     </div>

@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { policyDocuments } from "@/db/schema/documents";
-import { eq } from "drizzle-orm";
+import { accountingPayments, accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { deleteFile } from "@/lib/storage";
 import { appendPolicyAudit } from "@/lib/audit";
+import { syncInvoicePaymentStatus } from "@/lib/accounting-invoices";
+import { createAgentCommissionPayable } from "@/lib/agent-commission";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -41,6 +44,8 @@ export async function PATCH(
         fileName: policyDocuments.fileName,
         documentTypeKey: policyDocuments.documentTypeKey,
         status: policyDocuments.status,
+        paymentMeta: policyDocuments.paymentMeta,
+        uploadedBy: policyDocuments.uploadedBy,
       })
       .from(policyDocuments)
       .where(eq(policyDocuments.id, docId))
@@ -85,6 +90,67 @@ export async function PATCH(
     if (body.status === "verified") {
       const { checkAndAutoComplete } = await import("@/lib/reminder-sender");
       await checkAndAutoComplete(existing.policyId, existing.documentTypeKey);
+
+      const meta = existing.paymentMeta as { amountCents?: number; method?: string; date?: string | null; ref?: string | null; payer?: string } | null;
+      if (meta?.amountCents && meta.method) {
+        try {
+          let invoiceItemRows = await db
+            .select({ invoiceId: accountingInvoiceItems.invoiceId })
+            .from(accountingInvoiceItems)
+            .where(eq(accountingInvoiceItems.policyId, existing.policyId));
+
+          if (invoiceItemRows.length === 0) {
+            const { autoCreateAccountingInvoices } = await import("@/lib/auto-create-invoices");
+            await autoCreateAccountingInvoices(existing.policyId, "policy", Number(user.id));
+            invoiceItemRows = await db
+              .select({ invoiceId: accountingInvoiceItems.invoiceId })
+              .from(accountingInvoiceItems)
+              .where(eq(accountingInvoiceItems.policyId, existing.policyId));
+          }
+
+          const invoiceIds = [...new Set(invoiceItemRows.map((r) => r.invoiceId))];
+          if (invoiceIds.length > 0) {
+            const [invoice] = await db
+              .select()
+              .from(accountingInvoices)
+              .where(and(eq(accountingInvoices.direction, "receivable"), inArray(accountingInvoices.id, invoiceIds)))
+              .orderBy(desc(accountingInvoices.createdAt))
+              .limit(1);
+
+            if (invoice) {
+              const existingPayments = await db
+                .select({ id: accountingPayments.id })
+                .from(accountingPayments)
+                .where(eq(accountingPayments.invoiceId, invoice.id))
+                .limit(1);
+
+              if (existingPayments.length === 0) {
+                await db.insert(accountingPayments).values({
+                  invoiceId: invoice.id,
+                  amountCents: meta.amountCents,
+                  currency: invoice.currency,
+                  paymentDate: meta.date ?? null,
+                  paymentMethod: meta.method,
+                  referenceNumber: meta.ref ?? null,
+                  status: "verified",
+                  submittedBy: existing.uploadedBy ?? Number(user.id),
+                  verifiedBy: Number(user.id),
+                  verifiedAt: new Date().toISOString(),
+                });
+                await syncInvoicePaymentStatus(invoice.id);
+
+                if (!meta.payer || meta.payer === "client") {
+                  try {
+                    await createAgentCommissionPayable(existing.policyId, Number(user.id));
+                  } catch {}
+                }
+              }
+            }
+          }
+        } catch (payErr) {
+          console.error("Payment reconciliation on document verify failed (non-fatal):", payErr);
+        }
+      }
     }
 
     return NextResponse.json(updated, { status: 200 });
@@ -117,6 +183,7 @@ export async function DELETE(
         storedPath: policyDocuments.storedPath,
         fileName: policyDocuments.fileName,
         documentTypeKey: policyDocuments.documentTypeKey,
+        paymentMeta: policyDocuments.paymentMeta,
       })
       .from(policyDocuments)
       .where(eq(policyDocuments.id, docId))
@@ -128,6 +195,53 @@ export async function DELETE(
 
     await deleteFile(doc.storedPath);
     await db.delete(policyDocuments).where(eq(policyDocuments.id, docId));
+
+    const isPaymentDoc = !!doc.paymentMeta || await (async () => {
+      const { formOptions } = await import("@/db/schema/form_options");
+      const [typeRow] = await db
+        .select({ meta: formOptions.meta })
+        .from(formOptions)
+        .where(and(eq(formOptions.groupKey, "upload_document_types"), eq(formOptions.value, doc.documentTypeKey)))
+        .limit(1);
+      return !!(typeRow?.meta as Record<string, unknown> | null)?.requirePaymentDetails;
+    })();
+
+    if (isPaymentDoc) {
+      try {
+        const invoiceItemRows = await db
+          .select({ invoiceId: accountingInvoiceItems.invoiceId })
+          .from(accountingInvoiceItems)
+          .where(eq(accountingInvoiceItems.policyId, doc.policyId));
+        const invoiceIds = [...new Set(invoiceItemRows.map((r) => r.invoiceId))];
+
+        if (invoiceIds.length > 0) {
+          const receivableInvoices = await db
+            .select({ id: accountingInvoices.id })
+            .from(accountingInvoices)
+            .where(and(eq(accountingInvoices.direction, "receivable"), inArray(accountingInvoices.id, invoiceIds)));
+
+          for (const inv of receivableInvoices) {
+            await db.delete(accountingPayments).where(eq(accountingPayments.invoiceId, inv.id));
+            await syncInvoicePaymentStatus(inv.id);
+          }
+
+          const payableInvoices = await db
+            .select({ id: accountingInvoices.id })
+            .from(accountingInvoices)
+            .where(and(
+              eq(accountingInvoices.direction, "payable"),
+              eq(accountingInvoices.entityType, "agent"),
+              eq(accountingInvoices.entityPolicyId, doc.policyId),
+            ));
+          for (const inv of payableInvoices) {
+            await db.delete(accountingInvoiceItems).where(eq(accountingInvoiceItems.invoiceId, inv.id));
+            await db.delete(accountingInvoices).where(eq(accountingInvoices.id, inv.id));
+          }
+        }
+      } catch (cleanupErr) {
+        console.error("Payment cleanup on document delete failed (non-fatal):", cleanupErr);
+      }
+    }
 
     const userEmail = (user as { email?: string }).email ?? "";
     await appendPolicyAudit(doc.policyId, { id: Number(user.id), email: userEmail }, [

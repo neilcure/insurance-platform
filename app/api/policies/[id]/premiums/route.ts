@@ -10,6 +10,9 @@ import { getPolicyColumns } from "@/lib/db/column-check";
 import { appendPolicyAudit } from "@/lib/audit";
 import { sql } from "drizzle-orm";
 import { loadAccountingFields, buildFieldColumnMap, getColumnType, filterFieldsByContext, type AccountingFieldDef, type PremiumContext } from "@/lib/accounting-fields";
+import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
+import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
+import { accountingInvoiceItems as aiiTable } from "@/db/schema/accounting";
 
 export const dynamic = "force-dynamic";
 
@@ -589,75 +592,23 @@ export async function GET(request: Request, ctx: Ctx) {
 
     const isPolicy = context === "policy";
 
-    const [coverTypeOptions, premiumRows, agentName] = await Promise.all([
+    // Batch: load premiums, cover types, agent name, snapshot, and policyNumber in parallel
+    const [coverTypeOptions, premiumRows, agentName, carSnapshotRow, policyInfoRow] = await Promise.all([
       isPolicy ? loadCoverTypeOptions() : Promise.resolve([] as CoverTypeOption[]),
       isPolicy
         ? db.select().from(policyPremiums).where(eq(policyPremiums.policyId, policyId)).orderBy(policyPremiums.createdAt).catch((): (typeof policyPremiums.$inferSelect)[] => [])
         : Promise.resolve([] as (typeof policyPremiums.$inferSelect)[]),
       isPolicy ? resolveAgentName(policyId) : Promise.resolve(null as string | null),
+      isPolicy
+        ? db.select({ extra: cars.extraAttributes }).from(cars).where(eq(cars.policyId, policyId)).limit(1).then((r) => r[0] ?? null).catch(() => null)
+        : Promise.resolve(null as { extra: unknown } | null),
+      isPolicy
+        ? db.select({ policyNumber: policies.policyNumber }).from(policies).where(eq(policies.id, policyId)).limit(1).then((r) => r[0] ?? null).catch(() => null)
+        : Promise.resolve(null as { policyNumber: string } | null),
     ]);
 
-    const entityLookup = await lookupEntityNamesById(premiumRows);
+    const carExtra = (carSnapshotRow?.extra ?? null) as Record<string, unknown> | null;
     const fieldColumnMap = buildFieldColumnMap(fields);
-    const lines: LineData[] = premiumRows.map((r) => rowToLineData(r, fields, entityLookup, fieldColumnMap));
-
-    // Merge premiumRecord snapshot values into lines.
-    // The snapshot may have values that weren't stored in policy_premiums
-    // (e.g. if the premiumRecord package was configured after the record was created).
-    if (isPolicy) {
-      try {
-        const [snapRow] = await db
-          .select({ extra: cars.extraAttributes })
-          .from(cars)
-          .where(eq(cars.policyId, policyId))
-          .limit(1);
-        if (snapRow) {
-          const snapExtra = (snapRow.extra ?? {}) as Record<string, unknown>;
-          const snapPkgs = (snapExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
-          const premPkg = (snapPkgs.premiumRecord ?? snapPkgs.accounting) as Record<string, unknown> | undefined;
-          if (premPkg && typeof premPkg === "object") {
-            const snapVals = ("values" in premPkg ? (premPkg as { values?: Record<string, unknown> }).values : premPkg) as Record<string, unknown> | undefined;
-            if (snapVals && typeof snapVals === "object") {
-              const stripPfx = (k: string) => { const idx = k.indexOf("__"); return idx >= 0 ? k.slice(idx + 2) : k; };
-              const snapMap = new Map<string, unknown>();
-              for (const [k, v] of Object.entries(snapVals)) {
-                if (v === undefined || v === null || v === "") continue;
-                snapMap.set(stripPfx(k), v);
-              }
-
-              if (lines.length > 0) {
-                for (const line of lines) {
-                  for (const f of fields) {
-                    if (line.values[f.key] === null || line.values[f.key] === undefined || line.values[f.key] === "") {
-                      const snapVal = snapMap.get(f.key);
-                      if (snapVal !== undefined && snapVal !== null && snapVal !== "") {
-                        line.values[f.key] = snapVal;
-                      }
-                    }
-                  }
-                }
-              } else if (snapMap.size > 0) {
-                const vals: Record<string, unknown> = {};
-                for (const f of fields) {
-                  vals[f.key] = snapMap.get(f.key) ?? null;
-                }
-                lines.push({
-                  lineKey: "main",
-                  lineLabel: "Premium",
-                  values: vals,
-                  margin: null,
-                  updatedAt: null,
-                  insurerId: null,
-                  insurerName: null,
-                  collaboratorId: null,
-                  collaboratorName: null,
-                });
-              }
-            }
-          }
-        }
-      } catch { /* non-fatal */ }
-    }
 
     type EntityHint = { insurerId: number | null; insurerName: string | null; collabId: number | null; collabName: string | null };
     const snapshotEntities: Record<string, EntityHint> = {};
@@ -677,10 +628,8 @@ export async function GET(request: Request, ctx: Ctx) {
       return b.includes("collorator") || b.includes("collaborator") || b.includes("collabrator");
     };
 
-    // Extract entity names directly from the policy's snapshot — no entity DB queries needed.
-    // The snapshot already stores the insurer/collaborator names as field values.
-    const extractEntitiesFromSnapshot = (carExtra: Record<string, unknown>) => {
-      const pkgs = (carExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
+    const extractEntitiesFromSnapshot = (carExtraData: Record<string, unknown>) => {
+      const pkgs = (carExtraData.packagesSnapshot ?? {}) as Record<string, unknown>;
       const ensureHint = (hint: string) => {
         if (!snapshotEntities[hint]) {
           snapshotEntities[hint] = { insurerId: null, insurerName: null, collabId: null, collabName: null };
@@ -704,8 +653,11 @@ export async function GET(request: Request, ctx: Ctx) {
       }
     };
 
-    // Read snapshot for the main policy (1 query — just reads existing data, no entity matching)
     const resolveEntitiesFromSnapshot = async (targetPolicyId: number) => {
+      if (targetPolicyId === policyId && carExtra) {
+        extractEntitiesFromSnapshot(carExtra);
+        return;
+      }
       const [carRow2] = await db
         .select({ extra: cars.extraAttributes })
         .from(cars)
@@ -715,9 +667,6 @@ export async function GET(request: Request, ctx: Ctx) {
       extractEntitiesFromSnapshot((carRow2.extra ?? {}) as Record<string, unknown>);
     };
 
-    try { await resolveEntitiesFromSnapshot(policyId); } catch { /* non-fatal */ }
-
-    // Find accounting flow records based on context
     type AccountingRecord = {
       recordId: number;
       recordNumber: string;
@@ -768,33 +717,91 @@ export async function GET(request: Request, ctx: Ctx) {
       return { recordId: lr.pId, recordNumber: lr.pNum, flowKey: fk, fields: recFields, createdAt: lr.pCreated, isActive: lr.pActive };
     };
 
+    // RT3: Run entity lookup, entity extraction, AND linkedRows in parallel
+    // These all depend on RT2 results but NOT on each other
+    const linkedRowsPromise = (async () => {
+      if (context !== "policy") return [];
+      const pn = policyInfoRow?.policyNumber;
+      if (!pn) return [];
+      return db
+        .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, pActive: policies.isActive, cExtra: cars.extraAttributes })
+        .from(policies)
+        .leftJoin(cars, eq(cars.policyId, policies.id))
+        .where(and(
+          sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') IS NOT NULL`,
+          sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != ''`,
+          sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'policyset'`,
+          sql`(
+            (${cars.extraAttributes})::text LIKE ${'%' + pn + '%'}
+            OR (((${cars.extraAttributes})::jsonb ->> 'linkedPolicyId')::int = ${policyId})
+          )`,
+        ))
+        .orderBy(desc(policies.createdAt))
+        .limit(50)
+        .catch(() => []);
+    })();
+
+    const [entityLookup, , linkedRows] = await Promise.all([
+      lookupEntityNamesById(premiumRows),
+      (async () => { try { await resolveEntitiesFromSnapshot(policyId); } catch {} })(),
+      linkedRowsPromise,
+    ]);
+
+    const lines: LineData[] = premiumRows.map((r) => rowToLineData(r, fields, entityLookup, fieldColumnMap));
+
+    // Merge premiumRecord snapshot values into lines (using already-fetched carSnapshotRow)
+    if (isPolicy && carExtra) {
+      try {
+        const snapPkgs = (carExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
+        const premPkg = (snapPkgs.premiumRecord ?? snapPkgs.accounting) as Record<string, unknown> | undefined;
+        if (premPkg && typeof premPkg === "object") {
+          const snapVals = ("values" in premPkg ? (premPkg as { values?: Record<string, unknown> }).values : premPkg) as Record<string, unknown> | undefined;
+          if (snapVals && typeof snapVals === "object") {
+            const stripPfx = (k: string) => { const idx = k.indexOf("__"); return idx >= 0 ? k.slice(idx + 2) : k; };
+            const snapMap = new Map<string, unknown>();
+            for (const [k, v] of Object.entries(snapVals)) {
+              if (v === undefined || v === null || v === "") continue;
+              snapMap.set(stripPfx(k), v);
+            }
+
+            if (lines.length > 0) {
+              for (const line of lines) {
+                for (const f of fields) {
+                  if (line.values[f.key] === null || line.values[f.key] === undefined || line.values[f.key] === "") {
+                    const snapVal = snapMap.get(f.key);
+                    if (snapVal !== undefined && snapVal !== null && snapVal !== "") {
+                      line.values[f.key] = snapVal;
+                    }
+                  }
+                }
+              }
+            } else if (snapMap.size > 0) {
+              const vals: Record<string, unknown> = {};
+              for (const f of fields) {
+                vals[f.key] = snapMap.get(f.key) ?? null;
+              }
+              lines.push({
+                lineKey: "main",
+                lineLabel: "Premium",
+                values: vals,
+                margin: null,
+                updatedAt: null,
+                insurerId: null,
+                insurerName: null,
+                collaboratorId: null,
+                collaboratorName: null,
+              });
+            }
+          }
+        }
+      } catch { /* non-fatal */ }
+    }
+
     try {
       if (context === "policy") {
-        // Find accounting records that reference this policy by ID or number
-        const [policyInfo] = await db
-          .select({ policyNumber: policies.policyNumber })
-          .from(policies)
-          .where(eq(policies.id, policyId))
-          .limit(1);
+        const pn = policyInfoRow?.policyNumber;
 
-        if (policyInfo?.policyNumber) {
-          const pn = policyInfo.policyNumber;
-          const linkedRows = await db
-            .select({ pId: policies.id, pNum: policies.policyNumber, pCreated: policies.createdAt, pActive: policies.isActive, cExtra: cars.extraAttributes })
-            .from(policies)
-            .leftJoin(cars, eq(cars.policyId, policies.id))
-            .where(and(
-              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') IS NOT NULL`,
-              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != ''`,
-              sql`((${cars.extraAttributes})::jsonb ->> 'flowKey') != 'policyset'`,
-              sql`(
-                (${cars.extraAttributes})::text LIKE ${'%' + pn + '%'}
-                OR (((${cars.extraAttributes})::jsonb ->> 'linkedPolicyId')::int = ${policyId})
-              )`,
-            ))
-            .orderBy(desc(policies.createdAt))
-            .limit(50);
-
+        if (pn && linkedRows.length > 0) {
           const seen = new Set<number>();
           for (const lr of linkedRows) {
             if (seen.has(lr.pId)) continue;
@@ -1034,6 +1041,37 @@ export async function GET(request: Request, ctx: Ctx) {
         }
       }
     } catch { /* non-fatal */ }
+
+    // Lazily ensure active endorsement policies linked to this parent
+    // have their premium data synced and invoices created.
+    // Only runs the heavy sync/create for endorsements that don't already
+    // have invoices, so subsequent page loads stay fast.
+    if (isPolicy) {
+      const endorsementRecords = accountingRecords.filter(
+        (r) =>
+          r.flowKey.toLowerCase() === "endorsement" &&
+          r.recordId !== policyId &&
+          r.isActive !== false,
+      );
+      if (endorsementRecords.length > 0) {
+        const endorseIds = endorsementRecords.map((r) => r.recordId);
+        try {
+          const existingItems = await db
+            .select({ policyId: aiiTable.policyId })
+            .from(aiiTable)
+            .where(inArray(aiiTable.policyId, endorseIds));
+          const hasInvoice = new Set(existingItems.map((r) => r.policyId));
+
+          for (const er of endorsementRecords) {
+            if (hasInvoice.has(er.recordId)) continue;
+            try {
+              await syncPremiumSnapshotToTable(er.recordId, Number(user.id));
+              await autoCreateAccountingInvoices(er.recordId, "endorsement_lazy", Number(user.id));
+            } catch { /* non-fatal */ }
+          }
+        } catch { /* non-fatal */ }
+      }
+    }
 
     return NextResponse.json({
       policyId,

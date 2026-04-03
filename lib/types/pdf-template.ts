@@ -106,6 +106,8 @@ export type PdfTemplateMeta = {
   requiresConfirmation?: boolean;
   /** Prefix for auto-generated document numbers (e.g. "QUO", "INV", "REC") */
   documentPrefix?: string;
+  /** Group name for shared document numbering — templates in the same group share one random code */
+  documentSetGroup?: string;
   /** Mark as agent template — auto-appends (A) to document numbers */
   isAgentTemplate?: boolean;
   description?: string;
@@ -141,7 +143,12 @@ export const DATA_SOURCE_OPTIONS: {
 ];
 
 export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
-  policy: ["policyNumber", "createdAt"],
+  policy: [
+    "policyNumber", "createdAt", "flowKey", "status",
+    "linkedPolicyId", "linkedPolicyNumber",
+    "endorsementType", "endorsementReason",
+    "effectiveDate", "expiryDate",
+  ],
   insured: [
     "displayName", "primaryId",
     "fullName", "lastName", "firstName", "idNumber", "companyName",

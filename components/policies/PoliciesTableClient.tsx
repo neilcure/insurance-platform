@@ -1038,6 +1038,11 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
         extraAttributes={detail?.extraAttributes as Record<string, unknown> | undefined}
         onRefresh={refreshCurrent}
         refreshing={refreshing}
+        statusHistory={
+          ((detail?.extraAttributes as Record<string, unknown> | undefined)?.statusHistory as Array<{
+            status: string; changedAt: string; changedBy?: string; note?: string;
+          }>) ?? undefined
+        }
         functionTabs={detail ? ([
           {
             id: "workflow",

@@ -373,11 +373,20 @@ export function resolveFieldValue(
 
   switch (field.source) {
     case "policy": {
+      const snap = ctx.snapshot ?? {};
       const map: Record<string, unknown> = {
         policyNumber: ctx.policyNumber,
         createdAt: ctx.createdAt,
+        flowKey: snap.flowKey ?? "",
+        status: snap.status ?? "",
+        linkedPolicyId: snap.linkedPolicyId ?? "",
+        linkedPolicyNumber: snap.linkedPolicyNumber ?? "",
+        endorsementType: snap.endorsementType ?? "",
+        endorsementReason: snap.endorsementReason ?? "",
+        effectiveDate: snap.effectiveDate ?? "",
+        expiryDate: snap.expiryDate ?? "",
       };
-      raw = map[field.fieldKey] ?? ctx.snapshot[field.fieldKey] ?? "";
+      raw = map[field.fieldKey] ?? snap[field.fieldKey] ?? "";
       break;
     }
     case "insured":

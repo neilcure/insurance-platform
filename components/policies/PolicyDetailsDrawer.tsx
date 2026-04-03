@@ -125,6 +125,11 @@ export function PolicyDetailsDrawer({
       extraAttributes={detail?.extraAttributes as Record<string, unknown> | undefined}
       onRefresh={refreshCurrent}
       refreshing={refreshing}
+      statusHistory={
+        ((detail?.extraAttributes as Record<string, unknown> | undefined)?.statusHistory as Array<{
+          status: string; changedAt: string; changedBy?: string; note?: string;
+        }>) ?? undefined
+      }
       side="right"
       zClass="z-60"
       passthrough

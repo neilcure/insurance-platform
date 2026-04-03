@@ -1,4 +1,4 @@
-import { integer, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 import { policies } from "./insurance";
 import { users } from "./core";
 
@@ -16,5 +16,6 @@ export const policyDocuments = pgTable("policy_documents", {
   verifiedBy: integer("verified_by").references(() => users.id, { onDelete: "set null" }),
   verifiedAt: timestamp("verified_at", { mode: "string" }),
   rejectionNote: text("rejection_note"),
+  paymentMeta: jsonb("payment_meta"),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
 });

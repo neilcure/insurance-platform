@@ -138,14 +138,248 @@ const TEMPLATES: Array<{
       },
     },
   },
+  {
+    label: "Endorsement Quotation",
+    value: "endorsement_quotation",
+    sortOrder: 10,
+    meta: {
+      type: "quotation",
+      flows: ["endorsement"],
+      documentPrefix: "EQ",
+      documentSetGroup: "endorsement_main",
+      header: {
+        title: "Endorsement Quotation",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "eq1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+            { key: "endorsementType", label: "Endorsement Type", format: "text" },
+            { key: "endorsementReason", label: "Reason", format: "text" },
+          ],
+        },
+        {
+          id: "eq2",
+          title: "Insured Information",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "eq3",
+          title: "Endorsement Premium",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Additional Premium", format: "currency", currencyCode: "HKD" },
+            { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Premium", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "This endorsement quotation is subject to the terms of the original policy.",
+        showSignature: true,
+      },
+    },
+  },
+  {
+    label: "Endorsement Invoice",
+    value: "endorsement_invoice",
+    sortOrder: 11,
+    meta: {
+      type: "invoice",
+      flows: ["endorsement"],
+      documentPrefix: "EI",
+      documentSetGroup: "endorsement_main",
+      header: {
+        title: "Endorsement Invoice",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "ei1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+            { key: "endorsementType", label: "Endorsement Type", format: "text" },
+          ],
+        },
+        {
+          id: "ei2",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "ei3",
+          title: "Amount Due",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Additional Premium", format: "currency", currencyCode: "HKD" },
+            { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Premium", format: "currency", currencyCode: "HKD" },
+            { key: "clientPremium", label: "Total Payable", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Payment is due within 14 days of issue.",
+        showSignature: false,
+      },
+    },
+  },
+  {
+    label: "Endorsement Receipt",
+    value: "endorsement_receipt",
+    sortOrder: 12,
+    meta: {
+      type: "receipt",
+      flows: ["endorsement"],
+      documentPrefix: "ER",
+      documentSetGroup: "endorsement_main",
+      header: {
+        title: "Endorsement Receipt",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "er1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+          ],
+        },
+        {
+          id: "er2",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+          ],
+        },
+        {
+          id: "er3",
+          title: "Payment Received",
+          source: "accounting",
+          fields: [
+            { key: "clientPremium", label: "Amount Paid", format: "currency", currencyCode: "HKD" },
+            { key: "currency", label: "Currency", format: "text" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Thank you for your payment.",
+        showSignature: false,
+      },
+    },
+  },
+  {
+    label: "Credit Note",
+    value: "credit_note",
+    sortOrder: 13,
+    meta: {
+      type: "credit_note",
+      flows: ["endorsement"],
+      documentPrefix: "CN",
+      header: {
+        title: "Credit Note",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "cn1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+            { key: "endorsementType", label: "Endorsement Type", format: "text" },
+            { key: "endorsementReason", label: "Reason", format: "text" },
+          ],
+        },
+        {
+          id: "cn2",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "cn3",
+          title: "Credit Details",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Refund Amount", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Refund", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "This credit note has been issued against the original policy premium.",
+        showSignature: true,
+      },
+    },
+  },
+  {
+    label: "Debit Note",
+    value: "debit_note",
+    sortOrder: 14,
+    meta: {
+      type: "debit_note",
+      flows: [],
+      documentPrefix: "DN",
+      header: {
+        title: "Debit Note",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "dn1",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "dn2",
+          title: "Amount Due",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Premium", format: "currency", currencyCode: "HKD" },
+            { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Premium", format: "currency", currencyCode: "HKD" },
+            { key: "clientPremium", label: "Total Payable", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Payment is due within 14 days of issue.",
+        showSignature: false,
+      },
+    },
+  },
 ];
 
-export async function POST() {
-  const user = await requireUser();
-  if (user.userType !== "admin") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
+async function seedTemplates() {
   const results: string[] = [];
 
   for (const tpl of TEMPLATES) {
@@ -177,5 +411,23 @@ export async function POST() {
     results.push(`${tpl.label}: created`);
   }
 
+  return results;
+}
+
+export async function GET() {
+  const user = await requireUser();
+  if (!["admin", "internal_staff"].includes(user.userType)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const results = await seedTemplates();
+  return NextResponse.json({ ok: true, results });
+}
+
+export async function POST() {
+  const user = await requireUser();
+  if (!["admin", "internal_staff"].includes(user.userType)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const results = await seedTemplates();
   return NextResponse.json({ ok: true, results });
 }

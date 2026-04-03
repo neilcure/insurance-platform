@@ -140,6 +140,260 @@ const templates = [
       },
     },
   },
+  {
+    group_key: "document_templates",
+    label: "Endorsement Quotation",
+    value: "endorsement_quotation",
+    value_type: "json",
+    sort_order: 10,
+    is_active: true,
+    meta: {
+      type: "quotation",
+      flows: ["endorsement"],
+      documentPrefix: "EQ",
+      documentSetGroup: "endorsement_main",
+      header: {
+        title: "Endorsement Quotation",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "eq1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+            { key: "endorsementType", label: "Endorsement Type", format: "text" },
+            { key: "endorsementReason", label: "Reason", format: "text" },
+          ],
+        },
+        {
+          id: "eq2",
+          title: "Insured Information",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "eq3",
+          title: "Endorsement Premium",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Additional Premium", format: "currency", currencyCode: "HKD" },
+            { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Premium", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "This endorsement quotation is subject to the terms of the original policy.",
+        showSignature: true,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Endorsement Invoice",
+    value: "endorsement_invoice",
+    value_type: "json",
+    sort_order: 11,
+    is_active: true,
+    meta: {
+      type: "invoice",
+      flows: ["endorsement"],
+      documentPrefix: "EI",
+      documentSetGroup: "endorsement_main",
+      header: {
+        title: "Endorsement Invoice",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "ei1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+            { key: "endorsementType", label: "Endorsement Type", format: "text" },
+          ],
+        },
+        {
+          id: "ei2",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "ei3",
+          title: "Amount Due",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Additional Premium", format: "currency", currencyCode: "HKD" },
+            { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Premium", format: "currency", currencyCode: "HKD" },
+            { key: "clientPremium", label: "Total Payable", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Payment is due within 14 days of issue.",
+        showSignature: false,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Endorsement Receipt",
+    value: "endorsement_receipt",
+    value_type: "json",
+    sort_order: 12,
+    is_active: true,
+    meta: {
+      type: "receipt",
+      flows: ["endorsement"],
+      documentPrefix: "ER",
+      documentSetGroup: "endorsement_main",
+      header: {
+        title: "Endorsement Receipt",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "er1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+          ],
+        },
+        {
+          id: "er2",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+          ],
+        },
+        {
+          id: "er3",
+          title: "Payment Received",
+          source: "accounting",
+          fields: [
+            { key: "clientPremium", label: "Amount Paid", format: "currency", currencyCode: "HKD" },
+            { key: "currency", label: "Currency", format: "text" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Thank you for your payment.",
+        showSignature: false,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Credit Note",
+    value: "credit_note",
+    value_type: "json",
+    sort_order: 13,
+    is_active: true,
+    meta: {
+      type: "credit_note",
+      flows: ["endorsement"],
+      documentPrefix: "CN",
+      header: {
+        title: "Credit Note",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "cn1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+            { key: "endorsementType", label: "Endorsement Type", format: "text" },
+            { key: "endorsementReason", label: "Reason", format: "text" },
+          ],
+        },
+        {
+          id: "cn2",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "cn3",
+          title: "Credit Details",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Refund Amount", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Refund", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "This credit note has been issued against the original policy premium.",
+        showSignature: true,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Debit Note",
+    value: "debit_note",
+    value_type: "json",
+    sort_order: 14,
+    is_active: true,
+    meta: {
+      type: "debit_note",
+      flows: [],
+      documentPrefix: "DN",
+      header: {
+        title: "Debit Note",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "dn1",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "dn2",
+          title: "Amount Due",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Premium", format: "currency", currencyCode: "HKD" },
+            { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Premium", format: "currency", currencyCode: "HKD" },
+            { key: "clientPremium", label: "Total Payable", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Payment is due within 14 days of issue.",
+        showSignature: false,
+      },
+    },
+  },
 ];
 
 async function main() {

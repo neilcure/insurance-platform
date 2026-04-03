@@ -82,6 +82,16 @@ export type DocumentStatusEntry = {
 
 export type DocumentStatusMap = Record<string, DocumentStatusEntry | undefined>;
 
+/**
+ * Extended tracking data stored in policy.documentTracking.
+ * `_setCodes` maps group names to shared random codes so templates
+ * in the same group (e.g. quotation / invoice / receipt) share a number,
+ * while templates in different groups (e.g. credit notes) get independent numbers.
+ */
+export type DocumentTrackingData = DocumentStatusMap & {
+  _setCodes?: Record<string, { code: string; year: number }>;
+};
+
 export const DOC_LIFECYCLE_LABELS: Record<DocLifecycleStatus, string> = {
   generated: "Generated",
   sent: "Sent",

@@ -31,6 +31,9 @@ const TEMPLATE_TYPES: { value: DocumentTemplateMeta["type"]; label: string }[] =
     { value: "receipt", label: "Receipt" },
     { value: "certificate", label: "Certificate" },
     { value: "letter", label: "Letter" },
+    { value: "credit_note", label: "Credit Note" },
+    { value: "debit_note", label: "Debit Note" },
+    { value: "endorsement", label: "Endorsement" },
     { value: "custom", label: "Custom" },
   ];
 
@@ -579,6 +582,27 @@ export default function DocumentTemplatesManager() {
               When set, a unique document number (e.g. QUO-2026-3847) is automatically assigned when the document is first sent.
             </p>
           </div>
+
+          {/* Document Set Group */}
+          {meta.documentPrefix && (
+            <div className="grid gap-1">
+              <Label>
+                Document Set Group{" "}
+                <span className="text-xs text-neutral-400">(optional)</span>
+              </Label>
+              <Input
+                value={meta.documentSetGroup ?? ""}
+                onChange={(e) => setMeta((m) => ({ ...m, documentSetGroup: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "") || undefined }))}
+                placeholder="e.g. main"
+                className="w-40"
+                maxLength={20}
+              />
+              <p className="text-xs text-neutral-400">
+                Templates with the <strong>same group name</strong> share the same random number (e.g. QUO-2026-<strong>3847</strong>, INV-2026-<strong>3847</strong>, REC-2026-<strong>3847</strong>).
+                Leave empty for independent numbering (e.g. credit notes).
+              </p>
+            </div>
+          )}
 
           {/* Agent Template */}
           <div className="grid gap-1">

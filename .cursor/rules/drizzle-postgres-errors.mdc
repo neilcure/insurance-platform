@@ -1,0 +1,41 @@
+---
+description: Drizzle ORM wraps Postgres errors — always check both top-level and cause.code
+globs: "**/*.ts"
+alwaysApply: false
+---
+
+# Drizzle ORM Postgres Error Handling
+
+Drizzle ORM wraps native Postgres errors inside a `cause` property. When catching database errors (e.g. unique constraint violations), **always check both levels**:
+
+```typescript
+// ❌ BAD — only checks top-level, misses Drizzle-wrapped errors
+try {
+  await db.execute(sql`INSERT INTO ...`);
+} catch (err: unknown) {
+  const pgErr = err as { code?: string };
+  if (pgErr.code === "23505") {
+    // This may NEVER match because Drizzle puts code on err.cause
+  }
+}
+
+// ✅ GOOD — checks both top-level and cause
+try {
+  await db.execute(sql`INSERT INTO ...`);
+} catch (err: unknown) {
+  const pgCode = (err as { code?: string }).code
+    ?? (err as { cause?: { code?: string } }).cause?.code;
+  if (pgCode === "23505") {
+    // Duplicate key — handle gracefully
+  }
+}
+```
+
+## Common Postgres error codes
+
+| Code | Meaning | Typical use |
+|------|---------|-------------|
+| `23505` | Unique constraint violation | Duplicate key / upsert logic |
+| `23503` | Foreign key violation | Missing referenced row |
+| `23502` | Not-null violation | Required field missing |
+| `42P01` | Undefined table | Table doesn't exist |

@@ -156,6 +156,16 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       ? "admin"
       : user.userType;
 
+    const paymentAmountCents = Number(formData.get("paymentAmountCents") || 0);
+    const paymentMethod = formData.get("paymentMethod") as string | null;
+    const paymentDate = (formData.get("paymentDate") as string) || null;
+    const paymentRefNum = (formData.get("paymentRef") as string) || null;
+    const paymentPayer = (formData.get("paymentPayer") as string) || "client";
+
+    const paymentMeta = paymentAmountCents > 0 && paymentMethod
+      ? { amountCents: paymentAmountCents, method: paymentMethod, date: paymentDate, ref: paymentRefNum, payer: paymentPayer }
+      : undefined;
+
     const [row] = await db
       .insert(policyDocuments)
       .values({
@@ -169,6 +179,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
         uploadedBy: Number(user.id),
         uploadedByRole: role,
         ...(isAdmin ? { verifiedBy: Number(user.id), verifiedAt: new Date().toISOString() } : {}),
+        ...(paymentMeta ? { paymentMeta } : {}),
       })
       .returning();
 
@@ -183,17 +194,21 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       await checkAndAutoComplete(policyId, documentTypeKey.trim());
     }
 
-    const paymentAmountCents = Number(formData.get("paymentAmountCents") || 0);
-    const paymentMethod = formData.get("paymentMethod") as string | null;
     if (paymentAmountCents > 0 && paymentMethod) {
-      const paymentDate = (formData.get("paymentDate") as string) || null;
-      const paymentRefNum = (formData.get("paymentRef") as string) || null;
-
       try {
-        const invoiceItemRows = await db
+        let invoiceItemRows = await db
           .select({ invoiceId: accountingInvoiceItems.invoiceId })
           .from(accountingInvoiceItems)
           .where(eq(accountingInvoiceItems.policyId, policyId));
+
+        if (invoiceItemRows.length === 0) {
+          const { autoCreateAccountingInvoices } = await import("@/lib/auto-create-invoices");
+          await autoCreateAccountingInvoices(policyId, "policy", Number(user.id));
+          invoiceItemRows = await db
+            .select({ invoiceId: accountingInvoiceItems.invoiceId })
+            .from(accountingInvoiceItems)
+            .where(eq(accountingInvoiceItems.policyId, policyId));
+        }
 
         const invoiceIds = [...new Set(invoiceItemRows.map((r) => r.invoiceId))];
 
@@ -213,9 +228,9 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
               invoiceId: invoice.id,
               amountCents: paymentAmountCents,
               currency: invoice.currency,
-              paymentDate: paymentDate || null,
+              paymentDate: paymentDate ?? null,
               paymentMethod,
-              referenceNumber: paymentRefNum || null,
+              referenceNumber: paymentRefNum ?? null,
               status: isAdmin ? "verified" : "submitted",
               submittedBy: Number(user.id),
               ...(isAdmin ? { verifiedBy: Number(user.id), verifiedAt: new Date().toISOString() } : {}),
@@ -225,11 +240,12 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
               await syncInvoicePaymentStatus(invoice.id);
             }
 
-            // Auto-create agent commission payable when client pays
-            try {
-              await createAgentCommissionPayable(policyId, Number(user.id));
-            } catch (commErr) {
-              console.error("Agent commission creation failed (non-fatal):", commErr);
+            if (paymentPayer === "client") {
+              try {
+                await createAgentCommissionPayable(policyId, Number(user.id));
+              } catch (commErr) {
+                console.error("Agent commission creation failed (non-fatal):", commErr);
+              }
             }
           }
         }

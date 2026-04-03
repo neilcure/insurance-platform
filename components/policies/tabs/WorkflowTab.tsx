@@ -2,8 +2,14 @@
 
 import * as React from "react";
 import { Badge } from "@/components/ui/badge";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, FileText } from "lucide-react";
 import type { PolicyDetail } from "@/lib/types/policy";
+
+type LinkedEndorsement = {
+  policyId: number;
+  policyNumber: string;
+  status: string;
+};
 
 const StatusTab = React.lazy(() =>
   import("@/components/policies/tabs/StatusTab").then((m) => ({ default: m.StatusTab })),
@@ -128,13 +134,49 @@ export function WorkflowTab({
   } | null>(null);
   const [paymentRefreshKey, setPaymentRefreshKey] = React.useState(0);
 
+  const isParentPolicy = !flowKey || flowKey === "policyset" || flowKey === "";
+  const [linkedEndorsements, setLinkedEndorsements] = React.useState<LinkedEndorsement[]>([]);
+  const [endorsementSummaries, setEndorsementSummaries] = React.useState<Record<number, { total: number; verified: number; outstanding: number }>>({});
+
+  React.useEffect(() => {
+    if (!isParentPolicy) return;
+    let cancelled = false;
+    fetch(`/api/policies?linkedPolicyId=${detail.policyId}&_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: Array<Record<string, unknown>>) => {
+        if (cancelled) return;
+        const mapped: LinkedEndorsement[] = rows
+          .filter((r) => (r.isActive ?? r.is_active) !== false)
+          .map((r) => ({
+            policyId: (r.policyId ?? r.id) as number,
+            policyNumber: (r.policyNumber ?? r.policy_number ?? "") as string,
+            status: ((r.extraAttributes as Record<string, unknown> | undefined)?.status ??
+              (r.carExtra as Record<string, unknown> | undefined)?.status ?? "active") as string,
+          }));
+        setLinkedEndorsements(mapped);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isParentPolicy, detail.policyId]);
+
   const toggleSection = (id: string) => {
     setExpandedSection((prev) => (prev === id ? null : id));
   };
 
+  const combinedUploadSummary = React.useMemo(() => {
+    const base = uploadSummary ?? { total: 0, verified: 0, pending: 0, outstanding: 0, rejected: 0 };
+    let total = base.total, verified = base.verified, pending = base.pending, outstanding = base.outstanding, rejected = base.rejected;
+    for (const s of Object.values(endorsementSummaries)) {
+      total += s.total;
+      verified += s.verified;
+      outstanding += s.outstanding;
+    }
+    return { total, verified, pending, outstanding, rejected };
+  }, [uploadSummary, endorsementSummaries]);
+
   const sections = [
     { id: "documents", label: "Documents", show: true },
-    { id: "uploads", label: "Task Requirements", show: true },
+    { id: "uploads", label: "Task List", show: true },
     { id: "payments", label: "Payments", show: true },
     { id: "actions", label: "Additional Actions", show: !!isAdmin },
   ].filter((s) => s.show);
@@ -185,10 +227,13 @@ export function WorkflowTab({
             className="w-full px-3 py-2.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
           >
             <div className="flex items-start justify-between gap-1.5">
-              <span className="text-sm font-medium shrink-0">{sec.label}</span>
+              <span className="text-sm font-medium shrink-0 flex items-center gap-1.5">
+                {sec.label}
+              </span>
               <span className="flex flex-wrap items-center justify-end gap-1">
-                {sec.id === "uploads" && uploadSummary && uploadSummary.total > 0 && (() => {
-                  const allDone = uploadSummary.verified === uploadSummary.total;
+                {sec.id === "uploads" && combinedUploadSummary.total > 0 && (() => {
+                  const s = combinedUploadSummary;
+                  const allDone = s.verified === s.total;
                   return (
                     <>
                       <Badge
@@ -198,21 +243,21 @@ export function WorkflowTab({
                           : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
                         }`}
                       >
-                        {uploadSummary.verified}/{uploadSummary.total}
+                        {s.verified}/{s.total}
                       </Badge>
-                      {uploadSummary.outstanding > 0 && (
+                      {s.outstanding > 0 && (
                         <Badge variant="custom" className="text-[10px] bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
-                          {uploadSummary.outstanding} outstanding
+                          {s.outstanding} outstanding
                         </Badge>
                       )}
-                      {uploadSummary.pending > 0 && (
+                      {s.pending > 0 && (
                         <Badge variant="custom" className="text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
-                          {uploadSummary.pending} pending
+                          {s.pending} pending
                         </Badge>
                       )}
-                      {uploadSummary.rejected > 0 && (
+                      {s.rejected > 0 && (
                         <Badge variant="custom" className="text-[10px] bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
-                          {uploadSummary.rejected} rejected
+                          {s.rejected} rejected
                         </Badge>
                       )}
                     </>
@@ -251,29 +296,92 @@ export function WorkflowTab({
             )}
           </button>
           {sec.id === "uploads" && (
-            <div className={expandedSection === sec.id ? "border-t border-neutral-200 p-3 dark:border-neutral-800" : "hidden"}>
+            <div className={expandedSection === sec.id ? "border-t border-neutral-200 p-3 dark:border-neutral-800 space-y-4" : "hidden"}>
               <React.Suspense fallback={<div className="py-4 text-center text-xs text-neutral-400">Loading...</div>}>
-                <UploadDocumentsTab
-                  policyId={detail.policyId}
-                  flowKey={flowKey}
-                  isAdmin={isAdmin ?? false}
-                  currentStatus={curStatus}
-                  insuredType={insuredType}
-                  hasNcb={hasNcb}
-                  onSummaryChange={setUploadSummary}
-                  onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
-                />
+                <div>
+                  {isParentPolicy && linkedEndorsements.length > 0 && (
+                    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-sky-600 dark:text-sky-400">
+                      <FileText className="h-3 w-3" />
+                      Policy {detail.policyNumber}
+                    </div>
+                  )}
+                  <UploadDocumentsTab
+                    policyId={detail.policyId}
+                    flowKey={flowKey}
+                    isAdmin={isAdmin ?? false}
+                    currentStatus={curStatus}
+                    insuredType={insuredType}
+                    hasNcb={hasNcb}
+                    onSummaryChange={setUploadSummary}
+                    onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
+                    filter="documents"
+                  />
+                </div>
+                {isParentPolicy && linkedEndorsements.map((e) => (
+                  <div key={e.policyId}>
+                    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                      <FileText className="h-3 w-3" />
+                      Endorsement {e.policyNumber}
+                    </div>
+                    <UploadDocumentsTab
+                      policyId={e.policyId}
+                      flowKey="endorsement"
+                      isAdmin={isAdmin ?? false}
+                      currentStatus={curStatus}
+                      onSummaryChange={(s) => {
+                        setEndorsementSummaries((prev) => ({ ...prev, [e.policyId]: s }));
+                      }}
+                      onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
+                      filter="documents"
+                    />
+                  </div>
+                ))}
               </React.Suspense>
             </div>
           )}
           {sec.id === "payments" && (
-            <div className={expandedSection === sec.id ? "border-t border-neutral-200 p-3 dark:border-neutral-800" : "hidden"}>
+            <div className={expandedSection === sec.id ? "border-t border-neutral-200 p-3 dark:border-neutral-800 space-y-4" : "hidden"}>
               <React.Suspense fallback={<div className="py-4 text-center text-xs text-neutral-400">Loading...</div>}>
+                <div>
+                  {isParentPolicy && linkedEndorsements.length > 0 && (
+                    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-sky-600 dark:text-sky-400">
+                      <FileText className="h-3 w-3" />
+                      Policy {detail.policyNumber}
+                    </div>
+                  )}
+                  <UploadDocumentsTab
+                    policyId={detail.policyId}
+                    flowKey={flowKey}
+                    isAdmin={isAdmin ?? false}
+                    currentStatus={curStatus}
+                    insuredType={insuredType}
+                    hasNcb={hasNcb}
+                    onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
+                    filter="payments"
+                  />
+                </div>
+                {isParentPolicy && linkedEndorsements.map((e) => (
+                  <div key={e.policyId}>
+                    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                      <FileText className="h-3 w-3" />
+                      Endorsement {e.policyNumber}
+                    </div>
+                    <UploadDocumentsTab
+                      policyId={e.policyId}
+                      flowKey="endorsement"
+                      isAdmin={isAdmin ?? false}
+                      currentStatus={curStatus}
+                      onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
+                      filter="payments"
+                    />
+                  </div>
+                ))}
                 <PaymentSection
                   policyId={detail.policyId}
                   isAdmin={isAdmin ?? false}
                   onSummaryChange={setPaymentSummary}
                   externalRefreshKey={paymentRefreshKey}
+                  endorsementPolicyIds={isParentPolicy ? linkedEndorsements.map((e) => e.policyId) : undefined}
                 />
               </React.Suspense>
             </div>
@@ -306,33 +414,6 @@ export function WorkflowTab({
         </div>
       ))}
 
-      {/* Status history */}
-      {history.length > 0 && (
-        <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-          <div className="mb-2 text-xs font-medium text-neutral-500 dark:text-neutral-400">History</div>
-          <div className="space-y-1.5">
-            {history.map((entry, idx) => {
-              const def = allKnownStatuses.get(entry.status);
-              return (
-                <div key={idx} className="flex items-start justify-between gap-2 text-xs">
-                  <div>
-                    <Badge variant="outline" className="text-[10px]">
-                      {def?.label ?? entry.status}
-                    </Badge>
-                    {entry.note && (
-                      <div className="mt-0.5 text-neutral-500 dark:text-neutral-400">{entry.note}</div>
-                    )}
-                  </div>
-                  <div className="shrink-0 text-right text-neutral-400 dark:text-neutral-500">
-                    <div>{new Date(entry.changedAt).toLocaleDateString()}</div>
-                    {entry.changedBy && <div>{entry.changedBy}</div>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
