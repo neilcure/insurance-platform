@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
-import { accountingPaymentSchedules, accountingInvoices } from "@/db/schema/accounting";
-import { eq, desc } from "drizzle-orm";
+import { accountingPaymentSchedules, accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
+import { policies } from "@/db/schema/insurance";
+import { eq, desc, and, isNull, ne } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 
 type ScheduleUpdateInput = Partial<typeof accountingPaymentSchedules.$inferInsert>;
@@ -9,12 +10,14 @@ type ScheduleUpdateInput = Partial<typeof accountingPaymentSchedules.$inferInser
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
   try {
     await requireUser();
     const { id } = await ctx.params;
+    const url = new URL(request.url);
+    const includeEligible = url.searchParams.get("includeEligible") === "1";
 
     const [schedule] = await db
       .select()
@@ -26,13 +29,65 @@ export async function GET(
       return NextResponse.json({ error: "Schedule not found" }, { status: 404 });
     }
 
-    const statements = await db
-      .select()
+    const linkedInvoices = await db
+      .select({
+        id: accountingInvoices.id,
+        invoiceNumber: accountingInvoices.invoiceNumber,
+        invoiceType: accountingInvoices.invoiceType,
+        direction: accountingInvoices.direction,
+        entityPolicyId: accountingInvoices.entityPolicyId,
+        entityName: accountingInvoices.entityName,
+        totalAmountCents: accountingInvoices.totalAmountCents,
+        paidAmountCents: accountingInvoices.paidAmountCents,
+        currency: accountingInvoices.currency,
+        status: accountingInvoices.status,
+        notes: accountingInvoices.notes,
+        policyNumber: policies.policyNumber,
+      })
       .from(accountingInvoices)
+      .leftJoin(policies, eq(policies.id, accountingInvoices.entityPolicyId))
       .where(eq(accountingInvoices.scheduleId, Number(id)))
       .orderBy(desc(accountingInvoices.createdAt));
 
-    return NextResponse.json({ ...schedule, statements });
+    let eligibleInvoices: typeof linkedInvoices = [];
+    if (includeEligible) {
+      const direction = schedule.entityType === "agent" ? "payable" : "receivable";
+      const entityField = schedule.entityType === "agent" ? "agent" : "client";
+      eligibleInvoices = await db
+        .select({
+          id: accountingInvoices.id,
+          invoiceNumber: accountingInvoices.invoiceNumber,
+          invoiceType: accountingInvoices.invoiceType,
+          direction: accountingInvoices.direction,
+          entityPolicyId: accountingInvoices.entityPolicyId,
+          entityName: accountingInvoices.entityName,
+          totalAmountCents: accountingInvoices.totalAmountCents,
+          paidAmountCents: accountingInvoices.paidAmountCents,
+          currency: accountingInvoices.currency,
+          status: accountingInvoices.status,
+          notes: accountingInvoices.notes,
+          policyNumber: policies.policyNumber,
+        })
+        .from(accountingInvoices)
+        .leftJoin(policies, eq(policies.id, accountingInvoices.entityPolicyId))
+        .where(
+          and(
+            eq(accountingInvoices.direction, direction),
+            eq(accountingInvoices.entityType, entityField),
+            eq(accountingInvoices.invoiceType, "individual"),
+            isNull(accountingInvoices.scheduleId),
+            ne(accountingInvoices.status, "paid"),
+            ne(accountingInvoices.status, "cancelled"),
+          ),
+        )
+        .orderBy(desc(accountingInvoices.createdAt));
+    }
+
+    return NextResponse.json({
+      ...schedule,
+      linkedInvoices,
+      eligibleInvoices,
+    });
   } catch (err) {
     console.error("GET /api/accounting/schedules/[id] error:", err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

@@ -328,6 +328,7 @@ export function WorkflowTab({
                       flowKey="endorsement"
                       isAdmin={isAdmin ?? false}
                       currentStatus={curStatus}
+                      parentPolicyId={detail.policyId}
                       onSummaryChange={(s) => {
                         setEndorsementSummaries((prev) => ({ ...prev, [e.policyId]: s }));
                       }}
@@ -371,6 +372,7 @@ export function WorkflowTab({
                       flowKey="endorsement"
                       isAdmin={isAdmin ?? false}
                       currentStatus={curStatus}
+                      parentPolicyId={detail.policyId}
                       onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
                       filter="payments"
                     />

@@ -19,6 +19,7 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  CalendarClock,
 } from "lucide-react";
 import Image from "next/image";
 import { Label } from "@/components/ui/label";
@@ -219,6 +220,14 @@ function Lightbox({
   );
 }
 
+type ScheduleInfo = {
+  id: number;
+  entityType: string;
+  entityName: string | null;
+  frequency: string | null;
+  billingDay: number | null;
+};
+
 type DocumentUploadCardProps = {
   typeKey: string;
   label: string;
@@ -230,6 +239,8 @@ type DocumentUploadCardProps = {
   policyId: number;
   isAdmin: boolean;
   onRefresh: () => void;
+  clientSchedule?: ScheduleInfo | null;
+  agentSchedule?: ScheduleInfo | null;
 };
 
 function formatPaymentMethod(m: string | null): string {
@@ -253,6 +264,8 @@ export function DocumentUploadCard({
   policyId,
   isAdmin,
   onRefresh,
+  clientSchedule,
+  agentSchedule,
 }: DocumentUploadCardProps) {
   const [uploading, setUploading] = React.useState(false);
   const [rejectOpen, setRejectOpen] = React.useState(false);
@@ -271,6 +284,7 @@ export function DocumentUploadCard({
   const [paymentDate, setPaymentDate] = React.useState(() => new Date().toISOString().split("T")[0]);
   const [paymentRef, setPaymentRef] = React.useState("");
   const [pendingFile, setPendingFile] = React.useState<File | null>(null);
+  const [payIndividually, setPayIndividually] = React.useState(false);
 
   const statusCfg = STATUS_CONFIG[displayStatus];
   const StatusIcon = statusCfg.icon;
@@ -625,203 +639,266 @@ export function DocumentUploadCard({
         {/* Payment form (shown upfront) + Upload */}
         {(canUpload || (displayStatus === "uploaded" && isAdmin)) && needsPayment && premiumBreakdown ? (
           <div className="space-y-2.5">
-            {/* Step 1: Payer selection (when agent exists) */}
-            {hasAgent && (
-              <div>
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1.5">
-                  Who is making this payment?
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPaymentPayer("client");
-                      setPaymentType("full");
-                      setPaymentAmount((premiumBreakdown.clientPremiumCents / 100).toFixed(2));
-                    }}
-                    className={`rounded-md border-2 p-2 text-left transition-colors ${
-                      paymentPayer === "client"
-                        ? "border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-950/40"
-                        : "border-neutral-200 hover:border-blue-300 dark:border-neutral-700 dark:hover:border-blue-700"
-                    }`}
-                  >
-                    <div className="text-[10px] font-semibold text-blue-800 dark:text-blue-300">Client</div>
-                    <div className="text-sm font-bold text-blue-900 dark:text-blue-200">
-                      {formatCurrency(premiumBreakdown.clientPremiumCents)}
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPaymentPayer("agent");
-                      setPaymentType("full");
-                      setPaymentAmount((premiumBreakdown.agentPremiumCents / 100).toFixed(2));
-                    }}
-                    className={`rounded-md border-2 p-2 text-left transition-colors ${
-                      paymentPayer === "agent"
-                        ? "border-amber-500 bg-amber-50 dark:border-amber-400 dark:bg-amber-950/40"
-                        : "border-neutral-200 hover:border-amber-300 dark:border-neutral-700 dark:hover:border-amber-700"
-                    }`}
-                  >
-                    <div className="text-[10px] font-semibold text-amber-800 dark:text-amber-300">
-                      {premiumBreakdown.agentName || "Agent"}
-                    </div>
-                    <div className="text-sm font-bold text-amber-900 dark:text-amber-200">
-                      {formatCurrency(premiumBreakdown.agentPremiumCents)}
-                    </div>
-                  </button>
-                </div>
-              </div>
-            )}
+            {(() => {
+              const anySchedule = agentSchedule || clientSchedule;
+              const onStatement = !!anySchedule && !payIndividually;
 
-            {/* Step 2: Full / Partial + details (show when payer selected) */}
-            {paymentPayer && (
-              <>
-                {/* Full / Partial toggle */}
-                <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">
-                    Payment Type
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5">
+              if (onStatement) {
+                const schedulesToShow = [
+                  ...(agentSchedule ? [{ schedule: agentSchedule, label: premiumBreakdown.agentName || "Agent", amount: premiumBreakdown.agentPremiumCents, type: "agent" as const }] : []),
+                  ...(clientSchedule ? [{ schedule: clientSchedule, label: "Client", amount: premiumBreakdown.clientPremiumCents, type: "client" as const }] : []),
+                ];
+
+                return (
+                  <div className="space-y-2.5">
+                    {schedulesToShow.map(({ schedule, label, amount, type }) => (
+                      <div key={type} className="rounded-md border-2 border-indigo-300 bg-indigo-50 dark:border-indigo-700 dark:bg-indigo-950/40 p-3">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <CalendarClock className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                          <span className="text-xs font-semibold text-indigo-800 dark:text-indigo-200">
+                            On Statement
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-indigo-700 dark:text-indigo-300 space-y-0.5">
+                          <div>
+                            <span className="font-semibold">{label}</span> premium of{" "}
+                            <span className="font-bold">{formatCurrency(amount)}</span>{" "}
+                            will be collected via periodic statement.
+                          </div>
+                          <div className="text-indigo-600 dark:text-indigo-400">
+                            {schedule.frequency?.charAt(0).toUpperCase()}{schedule.frequency?.slice(1)} billing
+                            {schedule.billingDay ? ` · Day ${schedule.billingDay}` : ""}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                     <button
                       type="button"
                       onClick={() => {
-                        setPaymentType("full");
-                        setPaymentAmount((remainingAmount / 100).toFixed(2));
+                        setPayIndividually(true);
+                        if (!paymentPayer && hasAgent) setPaymentPayer(null);
                       }}
-                      className={`rounded-md border px-2 py-1.5 text-xs font-medium transition-colors text-left ${
-                        paymentType === "full"
-                          ? "border-green-500 bg-green-50 text-green-800 dark:border-green-400 dark:bg-green-950/40 dark:text-green-300"
-                          : "border-neutral-200 text-neutral-600 hover:border-green-300 dark:border-neutral-700 dark:text-neutral-400"
-                      }`}
+                      className="w-full rounded-md border-2 border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-200 dark:hover:bg-amber-950/60 transition-colors"
                     >
-                      <div>Full Payment</div>
-                      <div className="text-[10px] font-bold mt-0.5">{formatCurrency(remainingAmount)}</div>
+                      Pay Individually Instead
                     </button>
+                  </div>
+                );
+              }
+
+              return (
+                <>
+                  {/* Back to statement option — shown when released */}
+                  {anySchedule && payIndividually && (
                     <button
                       type="button"
                       onClick={() => {
-                        setPaymentType("partial");
-                        setPaymentAmount("");
+                        setPayIndividually(false);
+                        setPaymentPayer(hasAgent ? null : "client");
                       }}
-                      className={`rounded-md border px-2 py-1.5 text-xs font-medium transition-colors text-left ${
-                        paymentType === "partial"
-                          ? "border-blue-500 bg-blue-50 text-blue-800 dark:border-blue-400 dark:bg-blue-950/40 dark:text-blue-300"
-                          : "border-neutral-200 text-neutral-600 hover:border-blue-300 dark:border-neutral-700 dark:text-neutral-400"
-                      }`}
+                      className="w-full flex items-center justify-center gap-1.5 rounded-md border-2 border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-600 dark:bg-indigo-950/30 dark:text-indigo-300 dark:hover:bg-indigo-950/50 transition-colors"
                     >
-                      <div>Partial Payment</div>
-                      <div className="text-[10px] mt-0.5">Enter amount</div>
+                      <CalendarClock className="h-3.5 w-3.5" />
+                      Add to Statement
                     </button>
-                  </div>
-                  {alreadyPaid > 0 && (
-                    <div className="mt-1 text-[10px] text-neutral-400 dark:text-neutral-500">
-                      Already paid: {formatCurrency(alreadyPaid)} · Remaining: {formatCurrency(remainingAmount)}
+                  )}
+
+                  {/* Payer selection (when agent exists) */}
+                  {hasAgent && (
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1.5">
+                        Who is making this payment?
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPaymentPayer("client");
+                            setPaymentType("full");
+                            setPaymentAmount((premiumBreakdown.clientPremiumCents / 100).toFixed(2));
+                          }}
+                          className={`rounded-md border-2 p-2 text-left transition-colors ${
+                            paymentPayer === "client"
+                              ? "border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-950/40"
+                              : "border-neutral-200 hover:border-blue-300 dark:border-neutral-700 dark:hover:border-blue-700"
+                          }`}
+                        >
+                          <div className="text-[10px] font-semibold text-blue-800 dark:text-blue-300">Client</div>
+                          <div className="text-sm font-bold text-blue-900 dark:text-blue-200">
+                            {formatCurrency(premiumBreakdown.clientPremiumCents)}
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPaymentPayer("agent");
+                            setPaymentType("full");
+                            setPaymentAmount((premiumBreakdown.agentPremiumCents / 100).toFixed(2));
+                          }}
+                          className={`rounded-md border-2 p-2 text-left transition-colors ${
+                            paymentPayer === "agent"
+                              ? "border-amber-500 bg-amber-50 dark:border-amber-400 dark:bg-amber-950/40"
+                              : "border-neutral-200 hover:border-amber-300 dark:border-neutral-700 dark:hover:border-amber-700"
+                          }`}
+                        >
+                          <div className="text-[10px] font-semibold text-amber-800 dark:text-amber-300">
+                            {premiumBreakdown.agentName || "Agent"}
+                          </div>
+                          <div className="text-sm font-bold text-amber-900 dark:text-amber-200">
+                            {formatCurrency(premiumBreakdown.agentPremiumCents)}
+                          </div>
+                        </button>
+                      </div>
                     </div>
                   )}
-                </div>
 
-                {/* Amount (editable for partial, read-only display for full) */}
-                {paymentType === "partial" && (
-                  <div>
-                    <Label className="text-[10px]">Amount (HKD)</Label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0.01"
-                      max={(remainingAmount / 100).toFixed(2)}
-                      placeholder="0.00"
-                      value={paymentAmount}
-                      onChange={(e) => setPaymentAmount(e.target.value)}
-                      className="mt-0.5 h-7 text-xs"
-                    />
-                    {paymentAmount && Number(paymentAmount) > 0 && (
-                      <div className="mt-0.5 text-[10px] text-neutral-400">
-                        After this: {formatCurrency(remainingAmount - Math.round(Number(paymentAmount) * 100))} remaining
+                  {/* Payment form (show when payer selected) */}
+                  {paymentPayer && (
+                    <>
+                      <div>
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">
+                          Payment Type
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPaymentType("full");
+                              setPaymentAmount((remainingAmount / 100).toFixed(2));
+                            }}
+                            className={`rounded-md border px-2 py-1.5 text-xs font-medium transition-colors text-left ${
+                              paymentType === "full"
+                                ? "border-green-500 bg-green-50 text-green-800 dark:border-green-400 dark:bg-green-950/40 dark:text-green-300"
+                                : "border-neutral-200 text-neutral-600 hover:border-green-300 dark:border-neutral-700 dark:text-neutral-400"
+                            }`}
+                          >
+                            <div>Full Payment</div>
+                            <div className="text-[10px] font-bold mt-0.5">{formatCurrency(remainingAmount)}</div>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPaymentType("partial");
+                              setPaymentAmount("");
+                            }}
+                            className={`rounded-md border px-2 py-1.5 text-xs font-medium transition-colors text-left ${
+                              paymentType === "partial"
+                                ? "border-blue-500 bg-blue-50 text-blue-800 dark:border-blue-400 dark:bg-blue-950/40 dark:text-blue-300"
+                                : "border-neutral-200 text-neutral-600 hover:border-blue-300 dark:border-neutral-700 dark:text-neutral-400"
+                            }`}
+                          >
+                            <div>Partial Payment</div>
+                            <div className="text-[10px] mt-0.5">Enter amount</div>
+                          </button>
+                        </div>
+                        {alreadyPaid > 0 && (
+                          <div className="mt-1 text-[10px] text-neutral-400 dark:text-neutral-500">
+                            Already paid: {formatCurrency(alreadyPaid)} · Remaining: {formatCurrency(remainingAmount)}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                )}
 
-                {/* Method, Date, Reference */}
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <Label className="text-[10px]">Payment Method</Label>
-                    <select
-                      className="mt-0.5 w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
-                      value={paymentMethod}
-                      onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-                    >
-                      {PAYMENT_METHOD_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <Label className="text-[10px]">Date</Label>
-                    <Input
-                      type="date"
-                      value={paymentDate}
-                      onChange={(e) => setPaymentDate(e.target.value)}
-                      className="mt-0.5 h-7 text-xs"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <Label className="text-[10px]">{paymentMethod === "cheque" ? "Cheque No." : "Reference"}</Label>
-                  <Input
-                    type="text"
-                    placeholder={paymentMethod === "cheque" ? "Cheque number" : "Reference"}
-                    value={paymentRef}
-                    onChange={(e) => setPaymentRef(e.target.value)}
-                    className="mt-0.5 h-7 text-xs"
-                  />
-                </div>
+                      {paymentType === "partial" && (
+                        <div>
+                          <Label className="text-[10px]">Amount (HKD)</Label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            max={(remainingAmount / 100).toFixed(2)}
+                            placeholder="0.00"
+                            value={paymentAmount}
+                            onChange={(e) => setPaymentAmount(e.target.value)}
+                            className="mt-0.5 h-7 text-xs"
+                          />
+                          {paymentAmount && Number(paymentAmount) > 0 && (
+                            <div className="mt-0.5 text-[10px] text-neutral-400">
+                              After this: {formatCurrency(remainingAmount - Math.round(Number(paymentAmount) * 100))} remaining
+                            </div>
+                          )}
+                        </div>
+                      )}
 
-                {/* Step 3: Upload proof + submit */}
-                {pendingFile ? (
-                  <div className="flex items-center gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-700 dark:bg-neutral-800/30">
-                    <FileText className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-                    <span className="text-xs font-medium truncate flex-1">{pendingFile.name}</span>
-                    <button type="button" onClick={() => setPendingFile(null)} className="text-neutral-400 hover:text-red-500">
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="w-full gap-1.5 text-xs"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Upload className="h-3.5 w-3.5" />
-                    Attach Payment Proof
-                  </Button>
-                )}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-[10px]">Payment Method</Label>
+                          <select
+                            className="mt-0.5 w-full rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+                            value={paymentMethod}
+                            onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                          >
+                            {PAYMENT_METHOD_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <Label className="text-[10px]">Date</Label>
+                          <Input
+                            type="date"
+                            value={paymentDate}
+                            onChange={(e) => setPaymentDate(e.target.value)}
+                            className="mt-0.5 h-7 text-xs"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <Label className="text-[10px]">{paymentMethod === "cheque" ? "Cheque No." : "Reference"}</Label>
+                        <Input
+                          type="text"
+                          placeholder={paymentMethod === "cheque" ? "Cheque number" : "Reference"}
+                          value={paymentRef}
+                          onChange={(e) => setPaymentRef(e.target.value)}
+                          className="mt-0.5 h-7 text-xs"
+                        />
+                      </div>
 
-                <div className="flex items-center gap-2 pt-0.5">
-                  <Button
-                    size="sm"
-                    className="h-7 text-xs flex-1"
-                    disabled={
-                      uploading
-                      || !pendingFile
-                      || (paymentType === "full" ? remainingAmount <= 0 : !paymentAmount || Number(paymentAmount) <= 0)
-                    }
-                    onClick={() => {
-                      const amt = paymentType === "full" ? (remainingAmount / 100).toFixed(2) : paymentAmount;
-                      void doUpload(pendingFile!, amt);
-                    }}
-                  >
-                    {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                    <span>{uploading ? "Uploading..." : "Submit Payment"}</span>
-                  </Button>
-                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={resetPaymentForm}>
-                    Cancel
-                  </Button>
-                </div>
-              </>
-            )}
+                      {pendingFile ? (
+                        <div className="flex items-center gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-700 dark:bg-neutral-800/30">
+                          <FileText className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+                          <span className="text-xs font-medium truncate flex-1">{pendingFile.name}</span>
+                          <button type="button" onClick={() => setPendingFile(null)} className="text-neutral-400 hover:text-red-500">
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="w-full gap-1.5 text-xs"
+                          onClick={() => fileInputRef.current?.click()}
+                        >
+                          <Upload className="h-3.5 w-3.5" />
+                          Attach Payment Proof
+                        </Button>
+                      )}
+
+                      <div className="flex items-center gap-2 pt-0.5">
+                        <Button
+                          size="sm"
+                          className="h-7 text-xs flex-1"
+                          disabled={
+                            uploading
+                            || !pendingFile
+                            || (paymentType === "full" ? remainingAmount <= 0 : !paymentAmount || Number(paymentAmount) <= 0)
+                          }
+                          onClick={() => {
+                            const amt = paymentType === "full" ? (remainingAmount / 100).toFixed(2) : paymentAmount;
+                            void doUpload(pendingFile!, amt);
+                          }}
+                        >
+                          {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                          <span>{uploading ? "Uploading..." : "Submit Payment"}</span>
+                        </Button>
+                        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={resetPaymentForm}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </>
+              );
+            })()}
           </div>
         ) : null}
 

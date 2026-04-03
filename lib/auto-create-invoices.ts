@@ -9,7 +9,7 @@ import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
 import { generateDocumentNumber } from "@/lib/document-number";
 import { resolvePremiumByRole } from "@/lib/resolve-policy-agent";
 
-export async function autoCreateAccountingInvoices(policyId: number, docType: string, userId: number) {
+export async function autoCreateAccountingInvoices(policyId: number, docType: string, userId: number, documentNumber?: string) {
   try {
     await syncPremiumSnapshotToTable(policyId, userId);
   } catch { /* non-fatal */ }
@@ -117,7 +117,9 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
       const suffix = String.fromCharCode(97 + i);
       const suffixedPolicyNo = `${policy.policyNumber}(${suffix})`;
       const amountCents = resolvePremiumByRole(premium as Record<string, unknown>, "client", accountingFields);
-      const invoiceNumber = await generateDocumentNumber("AR");
+      const invoiceNumber = documentNumber
+        ? `${documentNumber}(${suffix})`
+        : await generateDocumentNumber("INV");
 
       await db.transaction(async (tx) => {
         // Advisory lock scoped to transaction prevents concurrent creation
@@ -196,7 +198,7 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     });
   }
 
-  const invoiceNumber = await generateDocumentNumber("AR");
+  const invoiceNumber = documentNumber ?? await generateDocumentNumber("INV");
 
   await db.transaction(async (tx) => {
     // Advisory lock scoped to transaction prevents concurrent creation

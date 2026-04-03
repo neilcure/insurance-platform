@@ -24,6 +24,7 @@ export const INVOICE_STATUS_COLORS: Record<InvoiceStatus, string> = {
   overdue: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300",
   cancelled: "bg-neutral-300 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-500",
   refunded: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300",
+  statement_created: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-300",
 };
 
 export const PAYMENT_STATUS_COLORS: Record<PaymentStatus | string, string> = {
@@ -89,5 +90,5 @@ export function calculateProRataRefund(
 export function getInvoiceTypePrefix(invoiceType: InvoiceType, direction: string): string {
   if (invoiceType === "credit_note") return "CN";
   if (invoiceType === "statement") return "ST";
-  return direction === "payable" ? "AP" : "AR";
+  return direction === "payable" ? "AP" : "INV";
 }

@@ -28,6 +28,14 @@ export type UploadSummary = {
   rejected: number;
 };
 
+type ScheduleInfo = {
+  id: number;
+  entityType: string;
+  entityName: string | null;
+  frequency: string | null;
+  billingDay: number | null;
+};
+
 export function UploadDocumentsTab({
   policyId,
   flowKey,
@@ -38,6 +46,7 @@ export function UploadDocumentsTab({
   onSummaryChange,
   onPaymentRecorded,
   filter = "all",
+  parentPolicyId,
 }: {
   policyId: number;
   flowKey?: string;
@@ -48,12 +57,24 @@ export function UploadDocumentsTab({
   onSummaryChange?: (summary: UploadSummary) => void;
   onPaymentRecorded?: () => void;
   filter?: "all" | "documents" | "payments";
+  parentPolicyId?: number;
 }) {
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshKey, setRefreshKey] = React.useState(0);
   const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
   const [totalConfigured, setTotalConfigured] = React.useState(0);
+  const [schedules, setSchedules] = React.useState<ScheduleInfo[]>([]);
+  const scheduleLookupId = parentPolicyId ?? policyId;
+  React.useEffect(() => {
+    fetch(`/api/accounting/schedules/by-policy/${scheduleLookupId}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { schedules: [] }))
+      .then((data) => setSchedules(data.schedules ?? []))
+      .catch(() => setSchedules([]));
+  }, [scheduleLookupId]);
+
+  const clientSchedule = schedules.find((s) => s.entityType === "client") ?? null;
+  const agentSchedule = schedules.find((s) => s.entityType === "agent") ?? null;
 
   React.useEffect(() => {
     fetch(`/api/policies/${policyId}/linked-insurers`, { cache: "no-store" })
@@ -248,6 +269,8 @@ export function UploadDocumentsTab({
           policyId={policyId}
           isAdmin={isAdmin}
           onRefresh={refresh}
+          clientSchedule={clientSchedule}
+          agentSchedule={agentSchedule}
         />
       ))}
     </div>

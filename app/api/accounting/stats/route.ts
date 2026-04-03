@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { accountingInvoices, accountingPayments } from "@/db/schema/accounting";
 import { memberships } from "@/db/schema/core";
-import { eq, sql, and, inArray } from "drizzle-orm";
+import { eq, ne, sql, and, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 
 export const dynamic = "force-dynamic";
@@ -46,7 +46,11 @@ export async function GET() {
         count: sql<number>`count(*)::int`,
       })
         .from(accountingInvoices)
-        .where(and(eq(accountingInvoices.direction, "receivable"), ...(conditions.length > 0 ? conditions : []))),
+        .where(and(
+          eq(accountingInvoices.direction, "receivable"),
+          ne(accountingInvoices.invoiceType, "statement"),
+          ...(conditions.length > 0 ? conditions : []),
+        )),
 
       db.select({ count: sql<number>`count(*)::int` })
         .from(accountingPayments)

@@ -320,7 +320,7 @@ async function generateInvoiceNumber(
   direction: string,
   invoiceType: string,
 ): Promise<string> {
-  const prefix = invoiceType === "credit_note" ? "CN" : invoiceType === "statement" ? "ST" : direction === "payable" ? "AP" : "AR";
+  const prefix = invoiceType === "credit_note" ? "CN" : invoiceType === "statement" ? "ST" : direction === "payable" ? "AP" : "INV";
   const year = new Date().getFullYear();
   const countResult = await db
     .select({ count: sql<number>`count(*)::int` })

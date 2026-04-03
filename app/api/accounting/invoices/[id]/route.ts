@@ -262,6 +262,7 @@ export async function PATCH(
       periodStart: true,
       periodEnd: true,
       documentStatus: true,
+      scheduleId: true,
     };
 
     const updates: Record<string, unknown> = { updatedAt: new Date().toISOString() };

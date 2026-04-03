@@ -95,7 +95,7 @@ const BASE_DASHBOARD_ITEMS: { title: string; url: string; icon: LucideIcon }[] =
   { title: "Agents", url: "/dashboard/agents", icon: UserPlus },
   { title: "Accounting", url: "/dashboard/accounting", icon: ClipboardList },
   { title: "Membership", url: "/dashboard/membership", icon: IdCard },
-  { title: "Account", url: "/dashboard/account", icon: User },
+  { title: "Profile", url: "/dashboard/account", icon: User },
 ];
 
 const data = {
@@ -447,6 +447,13 @@ export function AppSidebar(
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton tooltip="Payment Schedules" asChild>
+                        <Link href="/admin/payment-schedules">
+                          <ClipboardList className="h-3.5 w-3.5 shrink-0" />
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
                   </>
                 )}
                 {isAdmin && (
@@ -587,6 +594,14 @@ export function AppSidebar(
                               <Link href="/admin/client-settings">
                                 <Hash className="h-4 w-4 shrink-0" />
                                 <span>Client Number Settings</span>
+                              </Link>
+                            </SidebarMenuButton>
+                          </li>
+                          <li>
+                            <SidebarMenuButton tooltip="Payment Schedules" asChild>
+                              <Link href="/admin/payment-schedules">
+                                <ClipboardList className="h-4 w-4 shrink-0" />
+                                <span>Payment Schedules</span>
                               </Link>
                             </SidebarMenuButton>
                           </li>

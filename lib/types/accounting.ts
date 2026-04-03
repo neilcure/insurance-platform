@@ -2,9 +2,23 @@ export type InvoiceType = "individual" | "statement" | "credit_note";
 export type InvoiceDirection = "payable" | "receivable";
 export type PremiumType = "net_premium" | "agent_premium" | "client_premium";
 export type EntityType = "collaborator" | "agent" | "client";
-export type ScheduleFrequency = "weekly" | "monthly";
+export type ScheduleFrequency = "weekly" | "monthly" | "bimonthly" | "quarterly";
 
-export type InvoiceStatus = "draft" | "pending" | "partial" | "paid" | "submitted" | "verified" | "overdue" | "cancelled" | "refunded";
+export const SCHEDULE_FREQUENCY_LABELS: Record<ScheduleFrequency, string> = {
+  weekly: "Weekly",
+  monthly: "Monthly",
+  bimonthly: "Every 2 Months",
+  quarterly: "Quarterly",
+};
+
+export const SCHEDULE_FREQUENCY_OPTIONS: { value: ScheduleFrequency; label: string }[] = [
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "bimonthly", label: "Every 2 Months" },
+  { value: "quarterly", label: "Quarterly" },
+];
+
+export type InvoiceStatus = "draft" | "pending" | "partial" | "paid" | "submitted" | "verified" | "overdue" | "cancelled" | "refunded" | "statement_created";
 export type PaymentStatus = "recorded" | "submitted" | "verified" | "rejected" | "confirmed";
 
 export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
@@ -17,6 +31,7 @@ export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
   overdue: "Overdue",
   cancelled: "Cancelled",
   refunded: "Refunded",
+  statement_created: "Statement Created",
 };
 
 export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {

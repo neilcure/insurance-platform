@@ -258,7 +258,8 @@ export async function POST(
 
     if (action === "confirm" && isInvoiceType) {
       try {
-        await autoCreateAccountingInvoices(policyId, docType, Number(user.id));
+        const confirmedDocNumber = updatedEntry.documentNumber ?? docNumber ?? undefined;
+        await autoCreateAccountingInvoices(policyId, docType, Number(user.id), confirmedDocNumber);
       } catch (err) {
         console.error("Auto-create accounting invoice error (non-fatal):", err);
       }

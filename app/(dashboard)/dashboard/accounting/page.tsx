@@ -4,6 +4,7 @@ import * as React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { InlinePaymentForm } from "@/components/ui/inline-payment-form";
 import {
   DollarSign,
   AlertCircle,
@@ -117,6 +118,8 @@ function invoiceStatusClass(status: InvoiceStatus): string {
     case "pending":
     case "submitted":
       return "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
+    case "statement_created":
+      return "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200";
     case "overdue":
       return "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200";
     default:
@@ -155,9 +158,29 @@ function StatCard({
   );
 }
 
+type ScheduleSummary = {
+  id: number;
+  entityType: string;
+  entityName: string | null;
+  frequency: string;
+  billingDay: number | null;
+  isActive: boolean;
+  lastGeneratedAt: string | null;
+  lastPeriodStart: string | null;
+  lastPeriodEnd: string | null;
+};
+
+const FREQ_LABELS: Record<string, string> = {
+  weekly: "Weekly",
+  monthly: "Monthly",
+  bimonthly: "Every 2 Months",
+  quarterly: "Quarterly",
+};
+
 export default function AccountingPage() {
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [invoices, setInvoices] = React.useState<InvoiceRow[]>([]);
+  const [schedules, setSchedules] = React.useState<ScheduleSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [invoicesLoading, setInvoicesLoading] = React.useState(true);
   const [expandedInvoice, setExpandedInvoice] = React.useState<number | null>(null);
@@ -217,9 +240,16 @@ export default function AccountingPage() {
     setInvoicesLoading(true);
     fetch(`/api/accounting/invoices?includePayments=1&_t=${Date.now()}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : []))
-      .then((data) => setInvoices(Array.isArray(data) ? data : []))
+      .then((data) => setInvoices(Array.isArray(data) ? (data as InvoiceRow[]).filter((inv) => inv.invoiceType !== "statement") : []))
       .catch(() => setInvoices([]))
       .finally(() => setInvoicesLoading(false));
+  }, [refreshKey]);
+
+  React.useEffect(() => {
+    fetch("/api/accounting/schedules", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => setSchedules(Array.isArray(data) ? data.filter((s: ScheduleSummary) => s.isActive) : []))
+      .catch(() => setSchedules([]));
   }, [refreshKey]);
 
   const handleVerify = async (invoiceId: number, paymentId: number, action: "verify" | "reject") => {
@@ -710,6 +740,16 @@ export default function AccountingPage() {
                         {(!inv.payments || inv.payments.length === 0) && (
                           <div className="text-xs text-neutral-400">No payments recorded yet.</div>
                         )}
+
+                        {/* Record Payment */}
+                        {remaining > 0 && (
+                          <InlinePaymentForm
+                            invoiceId={inv.id}
+                            remainingCents={remaining}
+                            currency={inv.currency}
+                            onSuccess={() => setRefreshKey((k) => k + 1)}
+                          />
+                        )}
                       </div>
                     )}
                   </div>
@@ -719,6 +759,52 @@ export default function AccountingPage() {
           )}
         </CardContent>
       </Card>
+      {/* Active Payment Schedules */}
+      {schedules.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Clock className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+              Active Payment Schedules
+              <Badge variant="custom" className="text-[10px] bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">
+                {schedules.length}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-1.5">
+              {schedules.map((s) => (
+                <div
+                  key={s.id}
+                  className="flex items-center justify-between gap-2 rounded-md border border-neutral-100 dark:border-neutral-700 p-2.5 text-xs"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    {s.entityType === "client" ? (
+                      <User className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
+                    ) : (
+                      <Briefcase className="h-3.5 w-3.5 text-neutral-400 shrink-0" />
+                    )}
+                    <div className="min-w-0">
+                      <div className="font-medium truncate">{s.entityName || `${s.entityType} #${s.id}`}</div>
+                      <div className="text-neutral-500 dark:text-neutral-400">
+                        {FREQ_LABELS[s.frequency] ?? s.frequency}
+                        {s.billingDay ? ` · Day ${s.billingDay}` : ""}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 text-neutral-500 dark:text-neutral-400">
+                    {s.lastGeneratedAt ? (
+                      <div>Last: {new Date(s.lastGeneratedAt).toLocaleDateString()}</div>
+                    ) : (
+                      <div>Never generated</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </main>
   );
 }

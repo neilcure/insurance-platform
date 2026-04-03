@@ -8,6 +8,7 @@ import { clients, users } from "@/db/schema/core";
 import { cars, policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
 import { loadAccountingFields } from "@/lib/accounting-fields";
+import { generateDocumentNumber } from "@/lib/document-number";
 import { and, desc, eq, notInArray, sql, type SQLWrapper } from "drizzle-orm";
 
 type PaymentScheduleRow = typeof accountingPaymentSchedules.$inferSelect;
@@ -70,13 +71,19 @@ export function getDuePeriodForSchedule(schedule: PaymentScheduleRow, now = new 
     };
   }
 
+  const intervalMonths = frequency === "quarterly" ? 3 : frequency === "bimonthly" ? 2 : 1;
   const billingDay = Math.max(1, schedule.billingDay ?? 1);
   const currentMonthDueDay = clampMonthDay(today.getUTCFullYear(), today.getUTCMonth(), billingDay);
   const currentMonthDue = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), currentMonthDueDay));
   if (today < currentMonthDue) return null;
   if (lastPeriodEnd && formatDateOnly(lastPeriodEnd) >= formatDateOnly(currentMonthDue)) return null;
 
-  const priorAnchor = addUtcMonths(currentMonthDue, -1);
+  if (intervalMonths > 1 && lastPeriodEnd) {
+    const nextDue = addUtcMonths(lastPeriodEnd, intervalMonths);
+    if (today < nextDue) return null;
+  }
+
+  const priorAnchor = addUtcMonths(currentMonthDue, -intervalMonths);
   const periodStart = lastPeriodEnd
     ? addUtcDays(lastPeriodEnd, 1)
     : addUtcDays(priorAnchor, 1);
@@ -146,19 +153,8 @@ function buildPolicyDateExpr() {
   )::date`;
 }
 
-async function nextStatementNumber(organisationId: number) {
-  const year = new Date().getFullYear();
-  const countResult = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(accountingInvoices)
-    .where(
-      and(
-        eq(accountingInvoices.organisationId, organisationId),
-        sql`extract(year from ${accountingInvoices.createdAt}) = ${year}`,
-      ),
-    );
-  const count = (countResult[0]?.count ?? 0) + 1;
-  return `ST-${year}-${String(count).padStart(4, "0")}`;
+async function nextStatementNumber(_organisationId: number) {
+  return generateDocumentNumber("ST");
 }
 
 export async function generateStatementInvoice({
