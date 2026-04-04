@@ -102,7 +102,9 @@ export async function POST(
       );
     }
 
-    const docType = inferDocType(tplRow.label);
+    const docType: DocTypeKey | null = (meta?.type && (meta.type as string) !== "custom")
+      ? (meta.type as DocTypeKey)
+      : inferDocType(tplRow.label);
 
     const verifiedPayments = await db
       .select({ id: accountingPayments.id })

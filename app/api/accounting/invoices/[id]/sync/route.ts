@@ -11,8 +11,8 @@ import { loadAccountingFields, resolvePremiumTypeColumn, type AccountingFieldDef
 
 const CENTS_COLUMNS = [
   "grossPremiumCents", "netPremiumCents", "clientPremiumCents",
-  "agentCommissionCents", "creditPremiumCents", "levyCents",
-  "stampDutyCents", "discountCents",
+  "agentPremiumCents", "agentCommissionCents", "creditPremiumCents",
+  "levyCents", "stampDutyCents", "discountCents",
 ];
 
 function computeGainFromFields(colVals: Record<string, number>, fields: AccountingFieldDef[]): number {
@@ -20,10 +20,11 @@ function computeGainFromFields(colVals: Record<string, number>, fields: Accounti
   for (const f of fields) {
     if (!f.premiumColumn) continue;
     const val = colVals[f.premiumColumn] ?? 0;
-    const lbl = f.label.toLowerCase();
-    if (lbl.includes("client")) client = val;
-    else if (lbl.includes("net")) net = val;
-    else if (lbl.includes("agent")) agent = val;
+    const role = f.premiumRole;
+    const lbl = role ? "" : f.label.toLowerCase();
+    if (role === "client" || (!role && lbl.includes("client"))) client = val;
+    else if (role === "net" || (!role && lbl.includes("net"))) net = val;
+    else if (role === "agent" || (!role && lbl.includes("agent"))) agent = val;
   }
   return agent > 0 ? agent - net : client - net;
 }

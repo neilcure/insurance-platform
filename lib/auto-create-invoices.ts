@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { policies } from "@/db/schema/insurance";
+import { cars, policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
 import { accountingInvoices, accountingInvoiceItems, accountingPaymentSchedules } from "@/db/schema/accounting";
 import { memberships, organisations, clients, users } from "@/db/schema/core";
@@ -9,7 +9,7 @@ import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
 import { generateDocumentNumber } from "@/lib/document-number";
 import { resolvePremiumByRole } from "@/lib/resolve-policy-agent";
 
-export async function autoCreateAccountingInvoices(policyId: number, docType: string, userId: number, documentNumber?: string) {
+export async function autoCreateAccountingInvoices(policyId: number, docType: string, userId: number, documentNumber?: string, templateType?: string) {
   try {
     await syncPremiumSnapshotToTable(policyId, userId);
   } catch { /* non-fatal */ }
@@ -35,6 +35,27 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
 
   if (!policy) return;
 
+  // Endorsements may not have their own agentId — inherit from parent policy
+  let effectiveAgentId = policy.agentId;
+  if (!effectiveAgentId) {
+    try {
+      const [carRow] = await db
+        .select({ extraAttributes: cars.extraAttributes })
+        .from(cars)
+        .where(eq(cars.policyId, policyId))
+        .limit(1);
+      const linkedPolicyId = (carRow?.extraAttributes as Record<string, unknown> | null)?.linkedPolicyId;
+      if (linkedPolicyId && Number(linkedPolicyId) > 0) {
+        const [parent] = await db
+          .select({ agentId: policies.agentId })
+          .from(policies)
+          .where(eq(policies.id, Number(linkedPolicyId)))
+          .limit(1);
+        if (parent?.agentId) effectiveAgentId = parent.agentId;
+      }
+    } catch { /* non-fatal */ }
+  }
+
   let organisationId = policy.organisationId;
   if (!organisationId) {
     const [mem] = await db
@@ -50,7 +71,7 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
   }
   if (!organisationId) return;
 
-  const isReceipt = docType.includes("receipt");
+  const isReceipt = templateType ? templateType === "receipt" : docType.includes("receipt");
   const accountingFields = await loadAccountingFields();
 
   function computeGain(p: typeof premiums[number]): number {
@@ -61,7 +82,9 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     return agent > 0 ? agent - net : client - net;
   }
 
-  // Check if there's an active payment schedule for the client
+  // When the client has an active payment schedule, invoices are created
+  // through the document template flow (quotation → confirm → invoice) with
+  // proper document numbers — not here with auto-generated numbers.
   if (policy.clientId) {
     const scheduleRows = await db
       .select({ id: accountingPaymentSchedules.id })
@@ -75,11 +98,16 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
         ),
       )
       .limit(1);
-    if (scheduleRows.length > 0) return;
+    if (scheduleRows.length > 0 && !documentNumber) return;
   }
 
-  const clientPremiumPremiums = premiums.filter((p) => resolvePremiumByRole(p as Record<string, unknown>, "client", accountingFields) > 0);
-  if (clientPremiumPremiums.length === 0) return;
+  const hasAgent = !!effectiveAgentId;
+  // With agent: admin collects agentPremium (net) from agent; agent keeps commission
+  // Without agent: admin collects clientPremium directly from client
+  const receivableRole = hasAgent ? "agent" : "client";
+
+  const eligiblePremiums = premiums.filter((p) => resolvePremiumByRole(p as Record<string, unknown>, receivableRole, accountingFields) > 0);
+  if (eligiblePremiums.length === 0) return;
 
   let clientName: string | null = null;
   if (policy.clientId) {
@@ -92,11 +120,11 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
   }
 
   let agentName: string | null = null;
-  if (policy.agentId) {
+  if (effectiveAgentId) {
     const [a] = await db
       .select({ name: users.name, email: users.email })
       .from(users)
-      .where(eq(users.id, policy.agentId))
+      .where(eq(users.id, effectiveAgentId))
       .limit(1);
     agentName = a?.name || a?.email || null;
   }
@@ -112,11 +140,11 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
   const entityName = clientName || agentName;
 
   if (isTpoWithOd) {
-    for (let i = 0; i < clientPremiumPremiums.length; i++) {
-      const premium = clientPremiumPremiums[i];
+    for (let i = 0; i < eligiblePremiums.length; i++) {
+      const premium = eligiblePremiums[i];
       const suffix = String.fromCharCode(97 + i);
       const suffixedPolicyNo = `${policy.policyNumber}(${suffix})`;
-      const amountCents = resolvePremiumByRole(premium as Record<string, unknown>, "client", accountingFields);
+      const amountCents = resolvePremiumByRole(premium as Record<string, unknown>, receivableRole, accountingFields);
       const invoiceNumber = documentNumber
         ? `${documentNumber}(${suffix})`
         : await generateDocumentNumber("INV");
@@ -126,7 +154,7 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
         await tx.execute(sql`SELECT pg_advisory_xact_lock(${policyId})`);
 
         const [existing] = await tx
-          .select({ id: accountingInvoices.id })
+          .select({ id: accountingInvoices.id, invoiceNumber: accountingInvoices.invoiceNumber })
           .from(accountingInvoices)
           .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
           .where(
@@ -137,7 +165,14 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
             ),
           )
           .limit(1);
-        if (existing) return;
+        if (existing) {
+          if (documentNumber && existing.invoiceNumber !== invoiceNumber) {
+            await tx.update(accountingInvoices)
+              .set({ invoiceNumber })
+              .where(eq(accountingInvoices.id, existing.id));
+          }
+          return;
+        }
 
         const [invoice] = await tx
           .insert(accountingInvoices)
@@ -146,10 +181,10 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
             invoiceNumber,
             invoiceType: "individual",
             direction: "receivable",
-            premiumType: "client_premium",
+            premiumType: hasAgent ? "agent_premium" : "client_premium",
             entityPolicyId: policyId,
-            entityType: "client",
-            entityName,
+            entityType: hasAgent ? "agent" : "client",
+            entityName: hasAgent ? (agentName || entityName) : entityName,
             totalAmountCents: amountCents,
             paidAmountCents: 0,
             currency: premium.currency ?? "HKD",
@@ -185,8 +220,8 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     description: string;
   }> = [];
 
-  for (const premium of clientPremiumPremiums) {
-    const amountCents = resolvePremiumByRole(premium as Record<string, unknown>, "client", accountingFields);
+  for (const premium of eligiblePremiums) {
+    const amountCents = resolvePremiumByRole(premium as Record<string, unknown>, receivableRole, accountingFields);
     totalAmountCents += amountCents;
     items.push({
       policyId,
@@ -205,7 +240,7 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${policyId})`);
 
     const [existing] = await tx
-      .select({ id: accountingInvoices.id })
+      .select({ id: accountingInvoices.id, invoiceNumber: accountingInvoices.invoiceNumber })
       .from(accountingInvoices)
       .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
       .where(
@@ -216,7 +251,14 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
         ),
       )
       .limit(1);
-    if (existing) return;
+    if (existing) {
+      if (documentNumber && existing.invoiceNumber !== invoiceNumber) {
+        await tx.update(accountingInvoices)
+          .set({ invoiceNumber })
+          .where(eq(accountingInvoices.id, existing.id));
+      }
+      return;
+    }
 
     const [invoice] = await tx
       .insert(accountingInvoices)
@@ -225,18 +267,18 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
         invoiceNumber,
         invoiceType: "individual",
         direction: "receivable",
-        premiumType: "client_premium",
+        premiumType: hasAgent ? "agent_premium" : "client_premium",
         entityPolicyId: policyId,
-        entityType: "client",
-        entityName,
+        entityType: hasAgent ? "agent" : "client",
+        entityName: hasAgent ? (agentName || entityName) : entityName,
         totalAmountCents,
         paidAmountCents: 0,
         currency: premiums[0]?.currency ?? "HKD",
         invoiceDate: new Date().toISOString().split("T")[0],
         status: isReceipt ? "paid" : "pending",
-        notes: policy.agentId
-          ? `Client Premium · Agent: ${agentName || "—"}`
-          : `Auto-created (${docType})`,
+        notes: hasAgent
+          ? `Agent Premium · Agent: ${agentName || "—"}`
+          : `Client Premium`,
         createdBy: userId,
       })
       .returning();

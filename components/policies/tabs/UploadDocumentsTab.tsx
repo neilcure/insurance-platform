@@ -269,6 +269,7 @@ export function UploadDocumentsTab({
           policyId={policyId}
           isAdmin={isAdmin}
           onRefresh={refresh}
+          onStatementToggled={() => onPaymentRecorded?.()}
           clientSchedule={clientSchedule}
           agentSchedule={agentSchedule}
         />

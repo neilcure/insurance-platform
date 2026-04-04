@@ -32,7 +32,7 @@ type StatusRow = {
   value: string;
   sortOrder: number;
   isActive: boolean;
-  meta: { color?: string; flows?: string[]; onEnter?: { action: string; templateId?: number }[] } | null;
+  meta: { color?: string; flows?: string[]; triggersInvoice?: boolean; onEnter?: { action: string; templateId?: number }[] } | null;
 };
 
 export default function PolicyStatusesManager() {
@@ -47,6 +47,7 @@ export default function PolicyStatusesManager() {
   const [formSort, setFormSort] = React.useState(0);
   const [formColor, setFormColor] = React.useState(COLOR_PRESETS[0].value);
   const [formFlows, setFormFlows] = React.useState<string[]>([]);
+  const [formTriggersInvoice, setFormTriggersInvoice] = React.useState(false);
 
   async function load() {
     setLoading(true);
@@ -73,6 +74,7 @@ export default function PolicyStatusesManager() {
     setFormSort(rows.length * 10);
     setFormColor(COLOR_PRESETS[0].value);
     setFormFlows([]);
+    setFormTriggersInvoice(false);
     setOpen(true);
   }
 
@@ -83,6 +85,7 @@ export default function PolicyStatusesManager() {
     setFormSort(row.sortOrder);
     setFormColor(row.meta?.color ?? COLOR_PRESETS[0].value);
     setFormFlows(row.meta?.flows ?? []);
+    setFormTriggersInvoice(row.meta?.triggersInvoice ?? false);
     setOpen(true);
   }
 
@@ -102,6 +105,7 @@ export default function PolicyStatusesManager() {
         ...(editing?.meta ?? {}),
         color: formColor,
         flows: formFlows.length > 0 ? formFlows : undefined,
+        triggersInvoice: formTriggersInvoice || undefined,
       },
     };
     try {
@@ -171,7 +175,12 @@ export default function PolicyStatusesManager() {
                 </TableCell>
                 <TableCell className="hidden sm:table-cell text-xs font-mono">{r.value}</TableCell>
                 <TableCell className="hidden sm:table-cell text-xs">
-                  {r.meta?.flows?.length ? r.meta.flows.join(", ") : "All"}
+                  <div className="flex items-center gap-1.5">
+                    {r.meta?.flows?.length ? r.meta.flows.join(", ") : "All"}
+                    {r.meta?.triggersInvoice && (
+                      <span className="inline-flex items-center rounded bg-blue-100 px-1 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300" title="Auto-creates invoice on entering this status">INV</span>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell className="hidden sm:table-cell">{r.sortOrder}</TableCell>
                 <TableCell className="text-right">
@@ -230,6 +239,15 @@ export default function PolicyStatusesManager() {
                 <Input type="number" value={String(formSort)} onChange={(e) => setFormSort(Number(e.target.value))} />
               </div>
             </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 rounded border-neutral-300 dark:border-neutral-600"
+                checked={formTriggersInvoice}
+                onChange={(e) => setFormTriggersInvoice(e.target.checked)}
+              />
+              <span>Auto-create invoice when entering this status</span>
+            </label>
             {flows.length > 0 && (
               <div className="grid gap-1">
                 <Label>Restrict to Flows <span className="text-xs text-neutral-400">(optional)</span></Label>

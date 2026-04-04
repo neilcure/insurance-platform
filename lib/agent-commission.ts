@@ -1,7 +1,7 @@
 import { db } from "@/db/client";
 import { policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
-import { accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
+import { accountingInvoices, accountingInvoiceItems, accountingPaymentSchedules } from "@/db/schema/accounting";
 import { and, eq, sql } from "drizzle-orm";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { generateDocumentNumber } from "@/lib/document-number";
@@ -86,6 +86,19 @@ export async function createAgentCommissionPayable(
 
   const invoiceNumber = await generateDocumentNumber("AP");
 
+  const [agentSchedule] = await db
+    .select({ id: accountingPaymentSchedules.id })
+    .from(accountingPaymentSchedules)
+    .where(
+      and(
+        eq(accountingPaymentSchedules.organisationId, policy.organisationId!),
+        eq(accountingPaymentSchedules.entityType, "agent"),
+        eq(accountingPaymentSchedules.agentId, agentId),
+        eq(accountingPaymentSchedules.isActive, true),
+      ),
+    )
+    .limit(1);
+
   await db.transaction(async (tx) => {
     const [invoice] = await tx
       .insert(accountingInvoices)
@@ -98,11 +111,12 @@ export async function createAgentCommissionPayable(
         entityPolicyId: policyId,
         entityType: "agent",
         entityName: agentName ?? null,
+        scheduleId: agentSchedule?.id ?? null,
         totalAmountCents: totalCommissionCents,
         paidAmountCents: 0,
         currency: premiums[0]?.currency ?? "HKD",
         invoiceDate: new Date().toISOString().split("T")[0],
-        status: "pending",
+        status: agentSchedule ? "statement_created" : "pending",
         notes: `Agent commission · ${policy.policyNumber}`,
         createdBy: userId,
       })

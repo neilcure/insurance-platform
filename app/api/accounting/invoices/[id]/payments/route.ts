@@ -3,7 +3,7 @@ import { db } from "@/db/client";
 import { accountingPayments, accountingInvoices } from "@/db/schema/accounting";
 import { eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
-import { syncInvoicePaymentStatus } from "@/lib/accounting-invoices";
+import { syncInvoicePaymentStatus, crossSettlePolicyInvoices } from "@/lib/accounting-invoices";
 import { createAgentCommissionPayable } from "@/lib/agent-commission";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +25,7 @@ export async function POST(
       paymentMethod,
       referenceNumber,
       notes,
+      payer,
     } = body;
 
     if (!amountCents || amountCents <= 0) {
@@ -52,6 +53,7 @@ export async function POST(
         paymentDate: paymentDate || null,
         paymentMethod: paymentMethod || null,
         referenceNumber: referenceNumber || null,
+        payer: payer || null,
         status: isReceivable ? "submitted" : "recorded",
         notes: notes || null,
         submittedBy: Number(user.id),
@@ -62,12 +64,21 @@ export async function POST(
       await syncInvoicePaymentStatus(invoiceId);
     }
 
-    // Auto-create agent commission payable when payment is recorded on a receivable
     if (isReceivable && invoice.entityPolicyId) {
+      if (!payer || payer === "client") {
+        try {
+          await createAgentCommissionPayable(invoice.entityPolicyId, Number(user.id));
+        } catch (err) {
+          console.error("Agent commission creation failed (non-fatal):", err);
+        }
+      }
+
+      await syncInvoicePaymentStatus(invoiceId);
+
       try {
-        await createAgentCommissionPayable(invoice.entityPolicyId, Number(user.id));
+        await crossSettlePolicyInvoices(invoice.entityPolicyId, payer || null);
       } catch (err) {
-        console.error("Agent commission creation failed (non-fatal):", err);
+        console.error("Cross-settlement failed (non-fatal):", err);
       }
     }
 

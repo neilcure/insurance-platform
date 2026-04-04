@@ -19,6 +19,7 @@ const DB_COLUMN_OPTIONS = [
   { value: "grossPremiumCents", label: "Gross Premium", type: "cents" },
   { value: "netPremiumCents", label: "Net Premium", type: "cents" },
   { value: "clientPremiumCents", label: "Client Premium", type: "cents" },
+  { value: "agentPremiumCents", label: "Agent Premium", type: "cents" },
   { value: "agentCommissionCents", label: "Agent Commission", type: "cents" },
   { value: "creditPremiumCents", label: "Credit Premium", type: "cents" },
   { value: "levyCents", label: "Levy", type: "cents" },
@@ -34,6 +35,20 @@ const PREMIUM_CONTEXT_OPTIONS = [
   { value: "client", label: "Client (Client Premium)" },
   { value: "agent", label: "Agent (Agent Premium)" },
 ];
+const PREMIUM_ROLE_OPTIONS = [
+  { value: "", label: "— None —" },
+  { value: "client", label: "Client Premium (what client pays)" },
+  { value: "agent", label: "Agent Premium (what agent remits — usually auto-computed: client − commission)" },
+  { value: "net", label: "Net Premium (base insurer cost)" },
+  { value: "commission", label: "Commission (what agent keeps)" },
+];
+const COLUMN_TO_SUGGESTED_ROLE: Record<string, string> = {
+  grossPremiumCents: "client",
+  clientPremiumCents: "client",
+  netPremiumCents: "net",
+  agentPremiumCents: "agent",
+  agentCommissionCents: "commission",
+};
 const isPremiumPkg = (p: string) => p === "premiumRecord" || p === "accounting";
 import { InputTypeSelect, type InputType } from "@/components/admin/generic/InputTypeSelect";
 
@@ -339,17 +354,54 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
                 <select
                   className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                   value={String((form.meta as any)?.premiumColumn ?? "")}
-                  onChange={(e) => updateMeta("premiumColumn" as any, (e.target.value || undefined) as any)}
+                  onChange={(e) => {
+                    const col = e.target.value || undefined;
+                    updateMeta("premiumColumn" as any, col as any);
+                    if (col && COLUMN_TO_SUGGESTED_ROLE[col] && !(form.meta as any)?.premiumRole) {
+                      updateMeta("premiumRole" as any, COLUMN_TO_SUGGESTED_ROLE[col] as any);
+                    }
+                  }}
                 >
                   <option value="">None (stored in extra values)</option>
-                  {DB_COLUMN_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label} ({opt.type === "cents" ? "cents" : opt.type === "rate" ? "decimal" : "text"})
-                    </option>
-                  ))}
+                  {DB_COLUMN_OPTIONS.map((opt) => {
+                    const suggested = COLUMN_TO_SUGGESTED_ROLE[opt.value];
+                    return (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label} ({opt.type === "cents" ? "cents" : opt.type === "rate" ? "decimal" : "text"})
+                        {suggested ? ` → suggested role: ${suggested}` : ""}
+                      </option>
+                    );
+                  })}
                 </select>
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
                   Maps this field to a dedicated database column for accounting calculations, invoicing, and sync. Currency fields use cents conversion automatically.
+                </p>
+              </div>
+              <div className="grid gap-1">
+                <Label>Premium Role</Label>
+                {(() => {
+                  const col = (form.meta as any)?.premiumColumn;
+                  const currentRole = (form.meta as any)?.premiumRole || "";
+                  const suggested = col ? COLUMN_TO_SUGGESTED_ROLE[col] : undefined;
+                  const mismatch = suggested && currentRole && currentRole !== suggested;
+                  return mismatch ? (
+                    <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                      <strong>Warning:</strong> Column <code>{col}</code> is typically role &ldquo;{suggested}&rdquo; but is set to &ldquo;{currentRole}&rdquo;.
+                      Incorrect role mapping will produce wrong premium calculations.
+                    </div>
+                  ) : null;
+                })()}
+                <select
+                  className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  value={String((form.meta as any)?.premiumRole ?? "")}
+                  onChange={(e) => updateMeta("premiumRole" as any, (e.target.value || undefined) as any)}
+                >
+                  {PREMIUM_ROLE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Identifies this field's semantic role for invoicing, commission, and cross-settlement logic. Only one field per role.
                 </p>
               </div>
               <div className="grid gap-1">

@@ -487,13 +487,15 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
 
       // Process onEnter hooks for the new status
       const hooksExecuted: string[] = [];
+      let statusDefMeta: Record<string, unknown> | null = null;
       try {
         const [statusDef] = await db
           .select({ meta: formOptions.meta })
           .from(formOptions)
           .where(and(eq(formOptions.groupKey, "policy_statuses"), eq(formOptions.value, body.status)))
           .limit(1);
-        const onEnter = (statusDef?.meta as { onEnter?: { action: string; templateId?: number; targetStatus?: string }[] } | null)?.onEnter;
+        statusDefMeta = (statusDef?.meta ?? null) as Record<string, unknown> | null;
+        const onEnter = (statusDefMeta as { onEnter?: { action: string; templateId?: number; targetStatus?: string }[] } | null)?.onEnter;
         if (Array.isArray(onEnter)) {
           for (const hook of onEnter) {
             try {
@@ -505,14 +507,18 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
         }
       } catch { /* ignore hook lookup errors */ }
 
-      // Auto-create invoices when status transitions to an invoice-related state.
-      // This ensures the Payments section populates as part of the normal workflow.
-      const invoiceTriggerStatuses = [
+      // Auto-create invoices when status has triggersInvoice flag set,
+      // falling back to a hard-coded list for statuses without the flag.
+      const statusTriggersInvoice = (statusDefMeta as { triggersInvoice?: boolean } | null)?.triggersInvoice;
+      const fallbackTriggerStatuses = [
         "invoice_prepared", "invoice_sent", "pending_payment",
         "payment_received", "confirmed", "bound", "active",
       ];
       const normalizedStatus = body.status.toLowerCase().replace(/[\s-]+/g, "_");
-      if (invoiceTriggerStatuses.some((s) => normalizedStatus.includes(s))) {
+      const shouldTrigger = statusTriggersInvoice !== undefined
+        ? statusTriggersInvoice
+        : fallbackTriggerStatuses.some((s) => normalizedStatus.includes(s));
+      if (shouldTrigger) {
         try {
           await syncPremiumSnapshotToTable(id, Number(user.id));
           await autoCreateAccountingInvoices(id, `status_change:${body.status}`, Number(user.id));

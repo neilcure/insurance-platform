@@ -496,8 +496,8 @@ function PdfMergeButton({
   updating: boolean;
   onEmailClick: (tpl: PdfTemplateRow) => void;
   onWhatsAppClick: (tpl: PdfTemplateRow) => void;
-  onTrackingAction: (key: string, action: "send" | "confirm" | "reject" | "reset" | "prepare", extra?: string, documentPrefix?: string, documentSuffix?: string, documentSetGroup?: string) => void;
-  onConfirmWithProof: (key: string, method: "admin" | "upload", note?: string, file?: File) => Promise<void>;
+  onTrackingAction: (key: string, action: "send" | "confirm" | "reject" | "reset" | "prepare", extra?: string, documentPrefix?: string, documentSuffix?: string, documentSetGroup?: string, templateType?: string) => void;
+  onConfirmWithProof: (key: string, method: "admin" | "upload", note?: string, file?: File, templateType?: string) => Promise<void>;
 }) {
   const [generating, setGenerating] = React.useState(false);
   const [actionsOpen, setActionsOpen] = React.useState(false);
@@ -563,7 +563,7 @@ function PdfMergeButton({
       icon: <Send className="h-3.5 w-3.5" />,
       onClick: () => {
         const sentTo = prompt("Sent to (email, optional):");
-        onTrackingAction(trackingKey, "send", sentTo || undefined, meta?.documentPrefix || undefined, meta?.isAgentTemplate ? "(A)" : undefined, meta?.documentSetGroup || undefined);
+        onTrackingAction(trackingKey, "send", sentTo || undefined, meta?.documentPrefix || undefined, meta?.isAgentTemplate ? "(A)" : undefined, meta?.documentSetGroup || undefined, meta?.type);
         setActionsOpen(false);
       },
       show: !status || status === "rejected",
@@ -829,6 +829,7 @@ function PdfMergeButton({
                     confirmMethod,
                     confirmNote.trim() || undefined,
                     confirmFile || undefined,
+                    meta?.type,
                   );
                   setConfirmOpen(false);
                   setConfirmNote("");
@@ -1052,10 +1053,12 @@ export function DocumentsTab({
     documentPrefix?: string,
     documentSuffix?: string,
     documentSetGroup?: string,
+    templateType?: string,
   ) => {
     setTrackingUpdating(true);
     try {
       const body: Record<string, unknown> = { docType, action };
+      if (templateType) body.templateType = templateType;
       if (action === "send" && extra) body.sentTo = extra;
       if (action === "reject" && extra) body.rejectionNote = extra;
       if ((action === "send" || action === "prepare") && documentPrefix) body.documentPrefix = documentPrefix;
@@ -1111,6 +1114,7 @@ export function DocumentsTab({
     method: "admin" | "upload",
     note?: string,
     file?: File,
+    templateType?: string,
   ) => {
     setTrackingUpdating(true);
     try {
@@ -1121,6 +1125,7 @@ export function DocumentsTab({
         formData.append("action", "confirm");
         formData.append("confirmMethod", "upload");
         if (note) formData.append("confirmNote", note);
+        if (templateType) formData.append("templateType", templateType);
         formData.append("proofFile", file);
         res = await fetch(`/api/policies/${detail.policyId}/document-tracking`, {
           method: "POST",
@@ -1135,6 +1140,7 @@ export function DocumentsTab({
             action: "confirm",
             confirmMethod: "admin",
             confirmNote: note,
+            templateType,
           }),
         });
       }
@@ -1237,7 +1243,7 @@ export function DocumentsTab({
           ? toTrackingKey(selected.label) + "_agent"
           : toTrackingKey(selected.label);
         if (!tracking[trackKey] || tracking[trackKey]?.status !== "confirmed") {
-          await handleTrackingAction(trackKey, "send", htmlEmailTo.trim(), selected.meta?.documentPrefix || undefined, isAgent ? "(A)" : undefined, selected.meta?.documentSetGroup || undefined);
+          await handleTrackingAction(trackKey, "send", htmlEmailTo.trim(), selected.meta?.documentPrefix || undefined, isAgent ? "(A)" : undefined, selected.meta?.documentSetGroup || undefined, selected.meta?.type);
         }
       }
     } catch (err: any) {
@@ -1362,32 +1368,33 @@ export function DocumentsTab({
     );
     const showBoth = hasAgent && hasAudienceTpls;
 
-    const toProcess: { key: string; prefix: string; suffix?: string; group?: string }[] = [];
+    const toProcess: { key: string; prefix: string; suffix?: string; group?: string; tplType?: string }[] = [];
 
     for (const tpl of templates) {
       const prefix = tpl.meta?.documentPrefix;
       if (!prefix) continue;
       const group = tpl.meta?.documentSetGroup;
+      const tplType = tpl.meta?.type;
 
       const baseKey = toTrackingKey(tpl.label);
       if (!tracking[baseKey]?.documentNumber && !autoPrepared.has(baseKey)) {
-        toProcess.push({ key: baseKey, prefix, group });
+        toProcess.push({ key: baseKey, prefix, group, tplType });
       }
       if (showBoth) {
         const agentKey = baseKey + "_agent";
         if (!tracking[agentKey]?.documentNumber && !autoPrepared.has(agentKey)) {
-          toProcess.push({ key: agentKey, prefix, suffix: "(A)", group });
+          toProcess.push({ key: agentKey, prefix, suffix: "(A)", group, tplType });
         }
       }
     }
 
     for (const tpl of pdfTemplates) {
-      const meta = tpl.meta as unknown as { documentPrefix?: string; isAgentTemplate?: boolean; documentSetGroup?: string } | null;
+      const meta = tpl.meta as unknown as { documentPrefix?: string; isAgentTemplate?: boolean; documentSetGroup?: string; type?: string } | null;
       const prefix = meta?.documentPrefix;
       if (!prefix) continue;
       const key = toTrackingKey(tpl.label);
       if (!tracking[key]?.documentNumber && !autoPrepared.has(key)) {
-        toProcess.push({ key, prefix, suffix: meta?.isAgentTemplate ? "(A)" : undefined, group: meta?.documentSetGroup });
+        toProcess.push({ key, prefix, suffix: meta?.isAgentTemplate ? "(A)" : undefined, group: meta?.documentSetGroup, tplType: meta?.type });
       }
     }
 
@@ -1400,8 +1407,8 @@ export function DocumentsTab({
     });
 
     (async () => {
-      for (const { key, prefix, suffix, group } of toProcess) {
-        await handleTrackingAction(key, "prepare", undefined, prefix, suffix, group);
+      for (const { key, prefix, suffix, group, tplType } of toProcess) {
+        await handleTrackingAction(key, "prepare", undefined, prefix, suffix, group, tplType);
       }
     })();
   }, [loading, templates, pdfTemplates, tracking, detail.agent, autoPrepared, handleTrackingAction]);
@@ -1501,11 +1508,13 @@ export function DocumentsTab({
                   if (!htmlConfirmKey) return;
                   setHtmlConfirmSubmitting(true);
                   try {
+                    const confirmTpl = templates.find((t) => toTrackingKey(t.label) === htmlConfirmKey || toTrackingKey(t.label) + "_agent" === htmlConfirmKey);
                     await handleConfirmWithProof(
                       htmlConfirmKey,
                       htmlConfirmMethod,
                       htmlConfirmNote.trim() || undefined,
                       htmlConfirmFile || undefined,
+                      confirmTpl?.meta?.type,
                     );
                     setHtmlConfirmKey(null);
                   } finally {
@@ -1749,8 +1758,8 @@ export function DocumentsTab({
             const key = toTrackingKey(label);
             if (!tracking[key] || tracking[key]?.status !== "confirmed") {
               const matchingTpl = pdfTemplates.find((t) => t.label === label);
-              const tplMeta = matchingTpl?.meta as unknown as { documentPrefix?: string; isAgentTemplate?: boolean; documentSetGroup?: string } | null;
-              await handleTrackingAction(key, "send", sentEmail, tplMeta?.documentPrefix || undefined, tplMeta?.isAgentTemplate ? "(A)" : undefined, tplMeta?.documentSetGroup || undefined);
+              const tplMeta = matchingTpl?.meta as unknown as { documentPrefix?: string; isAgentTemplate?: boolean; documentSetGroup?: string; type?: string } | null;
+              await handleTrackingAction(key, "send", sentEmail, tplMeta?.documentPrefix || undefined, tplMeta?.isAgentTemplate ? "(A)" : undefined, tplMeta?.documentSetGroup || undefined, tplMeta?.type);
             }
           }
         }}

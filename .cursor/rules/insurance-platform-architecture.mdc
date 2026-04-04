@@ -1,0 +1,175 @@
+---
+description: Core architecture — entity relationships, premium model, document lifecycle, and payment flow. MUST read before modifying any accounting, payment, invoice, premium, document, or statement code.
+globs: "{lib/auto-create-invoices.ts,lib/agent-commission.ts,lib/accounting-invoices.ts,lib/accounting-statements.ts,lib/resolve-policy-agent.ts,lib/accounting-fields.ts,lib/document-number.ts,app/api/policies/*/documents/**,app/api/policies/*/document-tracking/**,app/api/policies/*/premiums/**,app/api/accounting/**,components/ui/document-upload-card.tsx,components/policies/tabs/PaymentSection.tsx,components/policies/tabs/UploadDocumentsTab.tsx,db/schema/accounting.ts,db/schema/premiums.ts}"
+alwaysApply: false
+---
+
+# Insurance Platform Architecture
+
+## Entity relationship chain
+
+```
+Organisation
+ ├── Client (clients.id)
+ ├── Agent (users.id where userType = 'agent')
+ └── Policy (policies.id)
+      ├── flowKey: product type / "endorsement"
+      ├── clientId → Client
+      ├── agentId → Agent (user)
+      ├── documentTracking (jsonb): quotation/invoice/receipt lifecycle + numbers
+      ├── PolicyPremiums (per lineKey: TPO, OD, main)
+      │    ├── grossPremiumCents, netPremiumCents, clientPremiumCents
+      │    ├── agentCommissionCents, creditPremiumCents
+      │    ├── collaboratorId → another Policy (collaborator record)
+      │    └── insurerPolicyId → another Policy (insurer record)
+      ├── PolicyDocuments (uploaded files: payment_proof, etc.)
+      ├── Cars (vehicle data + extraAttributes.linkedPolicyId for endorsements)
+      └── AccountingInvoiceItems → AccountingInvoices → AccountingPayments
+```
+
+## Premium model (client–agent–admin)
+
+The total policy premium is the **client premium** (what client pays). It is ONE obligation, not multiple additive debts.
+
+| Column | Meaning | premiumRole |
+|--------|---------|-------------|
+| `clientPremiumCents` | What the client pays | `client` |
+| `grossPremiumCents` | Gross premium (may differ from client premium) | — (fallback for `client` if no `clientPremiumCents`) |
+| `agentPremiumCents` | What the agent pays admin (agent premium receivable) | `agent` |
+| `netPremiumCents` | Base insurer cost | `net` |
+| `agentCommissionCents` | What the agent keeps (= client − agent) | `commission` |
+| `creditPremiumCents` | Credit/return amount | — |
+
+**CRITICAL column mapping rules:**
+- `agentPremiumCents` is role `agent` — this is what the agent remits to admin, user-entered
+- `agentCommissionCents` is role `commission` — what the agent keeps, typically calculated = client − agent
+- **NEVER** map `agentCommissionCents` to role `agent` — commission is NOT agent premium
+- **NEVER** store agent premium in `agentCommissionCents` — use `agentPremiumCents`
+
+### Receivable amount depends on agent
+
+- **No agent**: receivable = `clientPremiumCents`. Admin collects the full client premium directly.
+- **With agent**: receivable = `agentPremiumCents` (= net premium). Agent collects from client, keeps commission, remits net to admin.
+- The receivable invoice's `entityType` and `premiumType` must reflect this: `"client"/"client_premium"` or `"agent"/"agent_premium"`.
+
+### Endorsements inherit agent from parent policy
+
+- Endorsement policies are linked via `cars.extraAttributes.linkedPolicyId` → parent policy ID.
+- Endorsements may NOT have their own `agentId` — always resolve via `resolvePolicyAgent` which checks the parent.
+- `linkedPolicyId` may be stored as a **string** in JSONB — always use `Number()` to convert.
+- `autoCreateAccountingInvoices` resolves `effectiveAgentId` from parent when endorsement has no `agentId`.
+
+### Payment paths (who pays admin)
+
+- **Agent pays**: remits `agentPremium` (net). Agent already kept commission from client. Policy is settled.
+- **Client pays directly** (rare, skipping agent): pays `clientPremium`. Admin creates AP (commission payable) to agent for `clientPremium − agentPremium`.
+- **Either payer settling their amount = policy fully paid.** They are alternative paths, NOT additive debts.
+
+### Statement rule
+
+- Invoices added to a payment schedule/statement keep status `"statement_created"` — they are **NEVER** marked `"paid"` individually.
+- Payment flows through the statement. Only when the statement is settled do underlying invoices get settled.
+- `syncInvoicePaymentStatus` must preserve `"statement_created"` status for invoices with a `scheduleId`.
+
+### Premium resolution
+
+`resolvePremiumByRole(row, role, accountingFields)` in `lib/resolve-policy-agent.ts` resolves premium amounts:
+1. **First**: checks `f.premiumRole === role` — explicit semantic role set in admin field config (`meta.premiumRole`)
+2. **Fallback**: checks `f.label.toLowerCase().includes(role)` — label substring match for backwards compatibility
+3. **Last resort**: returns `grossPremiumCents` for "client", `0` for others
+
+Admin fields have `meta.premiumRole: "client" | "agent" | "net"` set via the "Premium Role" dropdown in the field editor.
+Only one field per role is allowed. Use `premiumRole` for all business logic — NEVER match on label text directly.
+
+## Document lifecycle (template-driven)
+
+ALL business documents (quotation, invoice, receipt, credit note) are created through the **document template system**, NOT by auto-generating random numbers.
+
+### Flow: Quotation → Invoice → Receipt
+
+1. **Templates** configured in `form_options` (`group_key = 'document_templates'`) with `DocumentTemplateMeta` (type, documentPrefix, documentSetGroup)
+2. **Prepare**: `POST /api/policies/[id]/document-tracking` action=`prepare` → generates number via `generateDocumentNumber(prefix)` or `generateDocumentNumberWithCode` for set-based numbering
+3. **Send**: action=`send` → marks as sent
+4. **Confirm/Send**: on invoice-type docs, triggers `autoCreateAccountingInvoices(policyId, docType, userId, DOCUMENT_NUMBER, templateType)` on BOTH `send` and `confirm` actions — because templates without "Requires Confirmation" (invoices, receipts) never get a confirm action. The function has built-in deduplication so double-calls are safe. The document number comes from the template, not auto-generated. `templateType` comes from `template.meta.type` (the structured enum), NOT from substring-matching the docType key.
+5. Templates in the same `documentSetGroup` share a random code (e.g. `HIDIQUO-2026-1234` / `HIDIINV-2026-1234` / `HIDIREC-2026-1234`)
+
+### CRITICAL: `autoCreateAccountingInvoices` rules
+
+- When called WITH `documentNumber` (from template confirm): creates invoice with that number — this is the proper flow
+- When called WITHOUT `documentNumber` (from payment upload, status change): uses `generateDocumentNumber("INV")` as fallback
+- When client has active payment schedule AND no `documentNumber`: **returns early** — invoice will be created later via template confirm
+- **NEVER** remove the schedule early-return — it prevents creating invoices with wrong numbers
+
+## Invoice types and directions
+
+| Direction | PremiumType | EntityType | When created |
+|-----------|-------------|------------|--------------|
+| `receivable` | `client_premium` | `client` | Template confirm / auto-create |
+| `payable` | `agent_premium` | `agent` | `createAgentCommissionPayable` when client pays |
+
+### Commission payable (AP)
+
+Created by `lib/agent-commission.ts` when client pays directly:
+- Amount = `clientPremium − agentPremium` per premium line (= commission owed to agent)
+- Auto-links to agent's payment schedule if one exists
+- NOT created when agent pays (agent already kept commission)
+
+## Endorsements
+
+- Endorsement = a `policies` row with `flowKey = 'endorsement'`
+- Parent link: `cars.extraAttributes.linkedPolicyId` → parent policy ID
+- Agent resolution: `resolvePolicyAgent()` checks endorsement's `agentId`, falls back to parent policy's agent
+- Same invoice/payment/premium flow as regular policies, using endorsement's own `policyId`
+
+## Payment schedules and statements
+
+- `accounting_payment_schedules`: recurring billing per client or agent
+- Schedule card in UI shows invoices linked via `accounting_invoices.scheduleId`
+- `PaymentSection` auto-link effect: links unlinked invoices to their schedule on load
+- Statement invoices (`invoiceType = 'statement'`) are generated by cron/manual via `generateStatementInvoice`
+
+## Dynamic config resilience
+
+The app is highly dynamic — document types, accounting fields, statuses, and templates are all admin-configurable via `form_options`. Code must use **structured metadata** for business logic, NOT label/key text.
+
+### Three-layer separation
+
+| Layer | What it is | Who controls | Code should use |
+|-------|-----------|-------------|----------------|
+| **Display** | Labels, names, translations | Admin freely | Never for logic |
+| **Identity** | Stable keys/IDs | Set once | For storage/lookup |
+| **Semantics** | "This IS an invoice", "This IS the client premium" | Admin assigns via meta | For all business logic |
+
+### Semantic metadata on dynamic config
+
+- **Accounting fields**: `meta.premiumRole: "client" | "agent" | "net"` — use instead of `label.includes("client")`
+- **Document templates**: `meta.type: "invoice" | "quotation" | "receipt" | ...` — pass as `templateType` to backend, use instead of `docType.includes("invoice")`
+- **Policy statuses**: `meta.triggersInvoice: boolean` — use instead of hard-coded status arrays
+- **PDF templates**: `meta.type` — same as document templates
+
+### Invoice trigger on status change
+
+Policy PATCH route checks `statusDef.meta.triggersInvoice` (set in PolicyStatusesManager admin UI). Falls back to a hard-coded list only when the flag is `undefined` (not yet migrated). Run `POST /api/dev/migrate-dynamic-config` to populate flags on existing statuses.
+
+## What NOT to do
+
+1. **NEVER** create accounting invoices outside the template confirm flow or `autoCreateAccountingInvoices`
+2. **NEVER** remove the client-schedule early-return in `auto-create-invoices.ts`
+3. **NEVER** sum client + agent payments as if they're separate debts — they settle ONE policy obligation
+10. **NEVER** create receivable for `clientPremium` when policy has an agent — receivable = `agentPremium` (net)
+11. **NEVER** mark an invoice on a statement as `"paid"` — it stays `"statement_created"` until settled through the statement
+4. **NEVER** use invoice `entityType` to determine who made a payment — use `accounting_payments.payer`
+5. **NEVER** store payment amounts on `policy_documents` as the source of truth — `accounting_payments` is authoritative
+6. **NEVER** hard-code document number prefixes — they come from `DocumentTemplateMeta.documentPrefix`
+7. **NEVER** match on `f.label.toLowerCase().includes(role)` for premium resolution — use `f.premiumRole` instead
+8. **NEVER** match on `docType.includes("invoice")` for document type detection — use `templateType` from `template.meta.type` instead
+9. **NEVER** hard-code invoice trigger status arrays — use `meta.triggersInvoice` from `policy_statuses` config
+12. **NEVER** trigger `autoCreateAccountingInvoices` from receipt/quotation template sends — only `invoice`/`debit_note` templates should create accounting invoices
+13. **NEVER** ignore the template's `documentPrefix` — if an invoice already exists with a generic number, update it when the proper template is sent
+14. **NEVER** assume endorsement policies have their own `agentId` — always resolve via parent with `resolvePolicyAgent`
+15. **NEVER** check `typeof linkedPolicyId === "number"` — JSONB may store it as a string; always use `Number()` to convert
+16. **NEVER** record payments on statement-type invoices (`invoiceType = 'statement'`) — always prefer individual invoices; statement invoices are filtered from the payment display
+17. **NEVER** auto-link invoices to statements after user manually removes them — the auto-link effect must only run on first mount
+18. **NEVER** map `agentCommissionCents` to `premiumRole: "agent"` — commission is role `"commission"`. Agent premium is stored in `agentPremiumCents` (role `"agent"`).
+19. **NEVER** store agent premium (what agent pays admin) in `agentCommissionCents` — use `agentPremiumCents` column. These are different values.
+20. **NEVER** rely on label substring matching for premium role resolution (e.g. `"Agent Commission".includes("agent")`) — always use the explicit `premiumRole` metadata from the field config. The label fallback in `resolvePremiumByRole` must exclude "commission" labels from "agent" role matching.

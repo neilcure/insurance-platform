@@ -128,12 +128,14 @@ export function PaymentSection({
   onSummaryChange,
   externalRefreshKey,
   endorsementPolicyIds,
+  hideInvoiceCards,
 }: {
   policyId: number;
   isAdmin: boolean;
   onSummaryChange?: (summary: PaymentSummary) => void;
   externalRefreshKey?: number;
   endorsementPolicyIds?: number[];
+  hideInvoiceCards?: boolean;
 }) {
   const [invoices, setInvoices] = React.useState<InvoiceWithPayments[]>([]);
   const [payables, setPayables] = React.useState<InvoiceWithPayments[]>([]);
@@ -305,44 +307,11 @@ export function PaymentSection({
     }
   };
 
-  const autoLinkedRef = React.useRef(false);
-  React.useEffect(() => {
-    if (!schedules || schedules.length === 0 || autoLinkedRef.current) return;
-    const toLink: { invoiceId: number; scheduleId: number }[] = [];
-
-    // Receivables: if agent schedule exists the agent collects, otherwise client schedule
-    const receivableSchedule = agentSchedule ?? clientSchedule;
-    if (receivableSchedule) {
-      for (const inv of invoices) {
-        if (!inv.scheduleId && inv.totalAmountCents > inv.paidAmountCents) {
-          toLink.push({ invoiceId: inv.id, scheduleId: receivableSchedule.id });
-        }
-      }
-    }
-
-    // Payables always go to agent schedule
-    if (agentSchedule) {
-      for (const inv of payables) {
-        if (!inv.scheduleId && inv.totalAmountCents > inv.paidAmountCents) {
-          toLink.push({ invoiceId: inv.id, scheduleId: agentSchedule.id });
-        }
-      }
-    }
-
-    if (toLink.length === 0) return;
-    autoLinkedRef.current = true;
-    Promise.all(
-      toLink.map(({ invoiceId, scheduleId }) =>
-        fetch(`/api/accounting/invoices/${invoiceId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scheduleId, status: "statement_created" }),
-        }),
-      ),
-    ).then(() => setRefreshKey((k) => k + 1));
-  }, [schedules, invoices, payables, clientSchedule, agentSchedule]);
+  // Invoices are added to statements ONLY by explicit admin action (toggle button).
+  // No auto-linking — admin must manually add policies to statements.
 
   const [togglingSchedule, setTogglingSchedule] = React.useState<number | null>(null);
+  const allScheduleIds = React.useMemo(() => new Set(schedules?.map((s) => s.id) ?? []), [schedules]);
 
   const handleToggleStatement = async (invoiceId: number, scheduleId: number | null) => {
     setTogglingSchedule(invoiceId);
@@ -377,9 +346,17 @@ export function PaymentSection({
     );
   }
 
-  const scheduleCard = (s: ScheduleInfo, label: string, linkedInvs: InvoiceWithPayments[]) => {
-    const onStatementInvs = linkedInvs.filter((inv) => inv.scheduleId === s.id);
-    const totalOnStatement = onStatementInvs.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
+  const scheduleCard = (s: ScheduleInfo, label: string, linkedInvs: InvoiceWithPayments[], matchAllSchedules = false) => {
+    const onStatementInvs = linkedInvs.filter((inv) =>
+      matchAllSchedules ? inv.scheduleId && allScheduleIds.has(inv.scheduleId) : inv.scheduleId === s.id,
+    );
+
+    const receivableOnStatement = onStatementInvs.filter((inv) => inv.direction === "receivable");
+    const payableOnStatement = onStatementInvs.filter((inv) => inv.direction === "payable");
+
+    const totalReceivable = receivableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
+    const totalPayable = payableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
+    const netDue = totalReceivable - totalPayable;
 
     return (
       <div className="rounded-md border border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30 overflow-hidden">
@@ -405,7 +382,7 @@ export function PaymentSection({
             <div className="text-[10px] font-semibold uppercase tracking-wider text-indigo-500 dark:text-indigo-400 mb-1">
               Policies on this statement ({onStatementInvs.length})
             </div>
-            {onStatementInvs.map((inv) => (
+            {receivableOnStatement.map((inv) => (
               <div
                 key={inv.id}
                 className="flex items-center justify-between gap-2 rounded bg-white/60 dark:bg-indigo-900/20 px-2 py-1.5 text-xs"
@@ -422,9 +399,56 @@ export function PaymentSection({
                 </span>
               </div>
             ))}
-            <div className="flex items-center justify-between pt-1 text-xs border-t border-indigo-200/60 dark:border-indigo-700/60 mt-1">
-              <span className="text-indigo-600 dark:text-indigo-400 font-medium">Total on statement</span>
-              <span className="font-bold text-indigo-800 dark:text-indigo-200">{formatCurrency(totalOnStatement)}</span>
+            {payableOnStatement.map((inv) => (
+              <div
+                key={inv.id}
+                className="flex items-center justify-between gap-2 rounded bg-amber-50/60 dark:bg-amber-900/10 px-2 py-1.5 text-xs"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <FileText className="h-3 w-3 shrink-0 text-amber-500" />
+                  <span className="font-medium text-amber-800 dark:text-amber-200">{inv.invoiceNumber}</span>
+                  {inv.notes && (
+                    <span className="text-amber-600 dark:text-amber-400 truncate max-w-[120px]">· {inv.notes}</span>
+                  )}
+                </div>
+                <span className="shrink-0 font-semibold text-amber-700 dark:text-amber-300">
+                  −{formatCurrency(inv.totalAmountCents - inv.paidAmountCents, inv.currency)}
+                </span>
+              </div>
+            ))}
+            <div className="space-y-0.5 pt-1 border-t border-indigo-200/60 dark:border-indigo-700/60 mt-1 text-xs">
+              {totalPayable > 0 && (
+                <>
+                  <div className="flex items-center justify-between text-indigo-500 dark:text-indigo-400">
+                    <span>Receivable</span>
+                    <span>{formatCurrency(totalReceivable)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-amber-600 dark:text-amber-400">
+                    <span>Less commission</span>
+                    <span>−{formatCurrency(totalPayable)}</span>
+                  </div>
+                </>
+              )}
+              <div className="flex items-center justify-between font-medium">
+                {netDue > 0 ? (
+                  <>
+                    <span className="text-indigo-600 dark:text-indigo-400">
+                      {totalPayable > 0 ? "Net due from agent" : "Total on statement"}
+                    </span>
+                    <span className="font-bold text-indigo-800 dark:text-indigo-200">{formatCurrency(netDue)}</span>
+                  </>
+                ) : netDue < 0 ? (
+                  <>
+                    <span className="text-amber-600 dark:text-amber-400">Commission credit to agent</span>
+                    <span className="font-bold text-amber-700 dark:text-amber-300">{formatCurrency(Math.abs(netDue))}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-green-600 dark:text-green-400">Statement settled</span>
+                    <span className="font-bold text-green-700 dark:text-green-300">{formatCurrency(0)}</span>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -446,7 +470,7 @@ export function PaymentSection({
       {clientSchedule && !agentSchedule && scheduleCard(clientSchedule, "Client Statement Billing", invoices)}
 
       {/* No invoices message */}
-      {invoices.length === 0 && (
+      {!hideInvoiceCards && invoices.length === 0 && (
         <div className="py-3 text-center text-xs text-neutral-400">
           {hasClientSchedule
             ? "Client premiums will be included in the next statement."
@@ -455,7 +479,7 @@ export function PaymentSection({
       )}
 
       {/* Individual invoices */}
-      {invoices.map((inv) => {
+      {!hideInvoiceCards && invoices.map((inv) => {
         const isExpanded = expandedInvoice === inv.id;
         const remaining = inv.totalAmountCents - inv.paidAmountCents;
         const methodLabel = (m: string | null) =>
@@ -644,8 +668,7 @@ export function PaymentSection({
                   </div>
                 )}
 
-                {/* Record payment — hidden when on statement */}
-                {remaining > 0 && !inv.scheduleId && (
+                {remaining > 0 && (
                   <InlinePaymentForm
                     invoiceId={inv.id}
                     remainingCents={remaining}
@@ -659,8 +682,14 @@ export function PaymentSection({
         );
       })}
 
-      {/* Agent Premium Payables */}
-      {(payables.length > 0 || agentSchedule) && (
+      {/* Agent Premium Payables — only show when there are payables or invoices manually added to the agent statement */}
+      {(() => {
+        const hasInvsOnAgentStatement = agentSchedule && [...invoices, ...payables].some(
+          (inv) => inv.scheduleId && allScheduleIds.has(inv.scheduleId),
+        );
+        const showAgentSection = payables.length > 0 || hasInvsOnAgentStatement;
+        if (!showAgentSection) return null;
+        return (
         <div className="mt-4">
           <div className="mb-2 flex items-center gap-2">
             <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
@@ -669,8 +698,8 @@ export function PaymentSection({
             </span>
             <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
           </div>
-          {agentSchedule && scheduleCard(agentSchedule, "Agent Statement Billing", [...invoices, ...payables])}
-          {payables.map((inv) => {
+          {hasInvsOnAgentStatement && agentSchedule && scheduleCard(agentSchedule, "Agent Statement Billing", [...invoices, ...payables], true)}
+          {!hideInvoiceCards && payables.map((inv) => {
             const isExpanded = expandedInvoice === inv.id;
             return (
               <div key={inv.id} className="rounded-md border border-amber-200 dark:border-amber-800 overflow-hidden">
@@ -725,40 +754,53 @@ export function PaymentSection({
                 {/* Statement toggle for agent payables */}
                 {(() => {
                   const payableRemaining = inv.totalAmountCents - inv.paidAmountCents;
-                  if (inv.scheduleId) {
-                    return (
-                      <div className="flex items-center justify-between rounded-md bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2">
-                        <div className="flex items-center gap-1.5 text-xs text-indigo-700 dark:text-indigo-300">
-                          <CalendarClock className="h-3.5 w-3.5" />
-                          <span>On statement billing — payment will be collected on schedule</span>
+                  return (
+                    <div className="space-y-2">
+                      {inv.scheduleId && (
+                        <div className="flex items-center justify-between rounded-md bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2">
+                          <div className="flex items-center gap-1.5 text-xs text-indigo-700 dark:text-indigo-300">
+                            <CalendarClock className="h-3.5 w-3.5" />
+                            <span>On statement billing</span>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 text-[11px] text-indigo-600 hover:text-red-600 dark:text-indigo-400"
+                            disabled={togglingSchedule === inv.id}
+                            onClick={(e) => { e.stopPropagation(); handleToggleStatement(inv.id, null); }}
+                          >
+                            {togglingSchedule === inv.id ? "..." : "Release"}
+                          </Button>
                         </div>
+                      )}
+                      {!inv.scheduleId && agentSchedule && payableRemaining > 0 && (
                         <Button
                           size="sm"
-                          variant="ghost"
-                          className="h-6 text-[11px] text-indigo-600 hover:text-red-600 dark:text-indigo-400"
+                          variant="outline"
+                          className="w-full border-indigo-200 text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:text-indigo-300"
                           disabled={togglingSchedule === inv.id}
-                          onClick={(e) => { e.stopPropagation(); handleToggleStatement(inv.id, null); }}
+                          onClick={(e) => { e.stopPropagation(); handleToggleStatement(inv.id, agentSchedule.id); }}
                         >
-                          {togglingSchedule === inv.id ? "..." : "Release"}
+                          <CalendarClock className="h-3.5 w-3.5 mr-1" />
+                          {togglingSchedule === inv.id ? "Adding..." : "Add to Statement"}
                         </Button>
-                      </div>
-                    );
-                  }
-                  if (agentSchedule && payableRemaining > 0) {
-                    return (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="w-full border-indigo-200 text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:text-indigo-300"
-                        disabled={togglingSchedule === inv.id}
-                        onClick={(e) => { e.stopPropagation(); handleToggleStatement(inv.id, agentSchedule.id); }}
-                      >
-                        <CalendarClock className="h-3.5 w-3.5 mr-1" />
-                        {togglingSchedule === inv.id ? "Adding..." : "Add to Statement"}
-                      </Button>
-                    );
-                  }
-                  return null;
+                      )}
+                      {payableRemaining > 0 && (
+                        <InlinePaymentForm
+                          invoiceId={inv.id}
+                          remainingCents={payableRemaining}
+                          currency={inv.currency}
+                          onSuccess={() => setRefreshKey((k) => k + 1)}
+                        />
+                      )}
+                      {payableRemaining <= 0 && inv.paidAmountCents > 0 && (
+                        <div className="flex items-center gap-2 rounded-md bg-green-50 dark:bg-green-900/20 px-3 py-2 text-xs font-medium text-green-700 dark:text-green-300">
+                          <Check className="h-4 w-4" />
+                          Settled
+                        </div>
+                      )}
+                    </div>
+                  );
                 })()}
               </div>
             )}
@@ -766,7 +808,8 @@ export function PaymentSection({
             );
           })}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

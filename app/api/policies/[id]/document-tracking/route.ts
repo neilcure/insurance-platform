@@ -54,6 +54,7 @@ export async function POST(
     let documentSuffix: string | undefined;
     let documentSetGroup: string | undefined;
     let groupSiblingKeys: string[] | undefined;
+    let templateType: string | undefined;
     let proofFile: File | null = null;
 
     const contentType = request.headers.get("content-type") ?? "";
@@ -68,6 +69,7 @@ export async function POST(
       documentPrefix = (formData.get("documentPrefix") as string) || undefined;
       documentSuffix = (formData.get("documentSuffix") as string) || undefined;
       documentSetGroup = (formData.get("documentSetGroup") as string) || undefined;
+      templateType = (formData.get("templateType") as string) || undefined;
       const siblingKeysRaw = formData.get("groupSiblingKeys") as string;
       if (siblingKeysRaw) try { groupSiblingKeys = JSON.parse(siblingKeysRaw); } catch { /* ignore */ }
       const file = formData.get("proofFile");
@@ -84,6 +86,7 @@ export async function POST(
       documentSuffix = body.documentSuffix;
       documentSetGroup = body.documentSetGroup;
       groupSiblingKeys = body.groupSiblingKeys;
+      templateType = body.templateType;
     }
 
     if (!docType || typeof docType !== "string") {
@@ -247,19 +250,25 @@ export async function POST(
         docType,
         action,
         (user as unknown as { name?: string; email?: string }).email || `user:${user.id}`,
+        templateType,
       );
     } catch (err) {
       console.error("Auto-advance status error (non-fatal):", err);
     }
 
-    // Auto-create accounting invoice when an invoice-type document is confirmed
-    const invoiceKeys = ["invoice", "quotation", "receipt", "statement_invoice"];
-    const isInvoiceType = invoiceKeys.some((k) => docType.includes(k));
+    // Auto-create accounting invoice ONLY when an actual invoice/debit_note document is
+    // confirmed or sent. Receipts confirm payment (don't create new invoices), quotations
+    // are pre-invoicing. Using a receipt's document number for the accounting invoice would
+    // prevent the actual invoice template from using its own prefix.
+    const invoiceTriggerTypes = ["invoice", "debit_note"];
+    const isInvoiceType = templateType
+      ? invoiceTriggerTypes.includes(templateType)
+      : ["invoice", "debit_note"].some((k) => docType.includes(k) && !docType.includes("receipt"));
 
-    if (action === "confirm" && isInvoiceType) {
+    if ((action === "confirm" || action === "send") && isInvoiceType) {
       try {
         const confirmedDocNumber = updatedEntry.documentNumber ?? docNumber ?? undefined;
-        await autoCreateAccountingInvoices(policyId, docType, Number(user.id), confirmedDocNumber);
+        await autoCreateAccountingInvoices(policyId, docType, Number(user.id), confirmedDocNumber, templateType);
       } catch (err) {
         console.error("Auto-create accounting invoice error (non-fatal):", err);
       }
@@ -325,16 +334,21 @@ async function autoAdvancePolicyStatus(
   docType: string,
   action: string,
   changedBy: string,
+  templateType?: string,
 ): Promise<string | null> {
   if (action !== "send" && action !== "confirm") return null;
 
-  const docLower = docType.toLowerCase();
   let targetStatus: string | null = null;
 
-  for (const [keyword, mapping] of Object.entries(DOC_ACTION_TO_STATUS)) {
-    if (docLower.includes(keyword) && mapping[action]) {
-      targetStatus = mapping[action];
-      break;
+  if (templateType && DOC_ACTION_TO_STATUS[templateType]?.[action]) {
+    targetStatus = DOC_ACTION_TO_STATUS[templateType][action];
+  } else {
+    const docLower = docType.toLowerCase();
+    for (const [keyword, mapping] of Object.entries(DOC_ACTION_TO_STATUS)) {
+      if (docLower.includes(keyword) && mapping[action]) {
+        targetStatus = mapping[action];
+        break;
+      }
     }
   }
 

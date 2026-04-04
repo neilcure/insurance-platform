@@ -10,6 +10,7 @@ const DB_COLUMN_OPTIONS = [
   { value: "grossPremiumCents", label: "Gross Premium", type: "cents" },
   { value: "netPremiumCents", label: "Net Premium", type: "cents" },
   { value: "clientPremiumCents", label: "Client Premium", type: "cents" },
+  { value: "agentPremiumCents", label: "Agent Premium", type: "cents" },
   { value: "agentCommissionCents", label: "Agent Commission", type: "cents" },
   { value: "creditPremiumCents", label: "Credit Premium", type: "cents" },
   { value: "levyCents", label: "Levy", type: "cents" },
@@ -207,10 +208,11 @@ export async function buildMergeContext(policyId: number): Promise<{
         for (const f of acctFields) {
           if (!f.premiumColumn) continue;
           const val = ((row as Record<string, unknown>)[f.premiumColumn] as number) ?? 0;
-          const lbl = f.label.toLowerCase();
-          if (lbl.includes("client")) marginClient = val;
-          else if (lbl.includes("net")) marginNet = val;
-          else if (lbl.includes("agent")) marginAgent = val;
+          const role = f.premiumRole;
+          const lbl = role ? "" : f.label.toLowerCase();
+          if (role === "client" || (!role && lbl.includes("client"))) marginClient = val;
+          else if (role === "net" || (!role && lbl.includes("net"))) marginNet = val;
+          else if (role === "agent" || (!role && lbl.includes("agent"))) marginAgent = val;
         }
         const gainVal = marginAgent > 0 ? marginAgent - marginNet : marginClient - marginNet;
         const hasAny = marginClient !== 0 || marginNet !== 0 || marginAgent !== 0;

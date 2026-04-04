@@ -204,10 +204,18 @@ export async function generateStatementInvoice({
   const roleToColumn: Record<string, string> = {};
   for (const field of accountingFields) {
     if (!field.premiumColumn) continue;
-    const label = field.label.toLowerCase();
-    if (label.includes("net") && !roleToColumn.net) roleToColumn.net = field.premiumColumn;
-    else if (label.includes("agent") && !roleToColumn.agent) roleToColumn.agent = field.premiumColumn;
-    else if (label.includes("client") && !roleToColumn.client) roleToColumn.client = field.premiumColumn;
+    if (field.premiumRole === "net" && !roleToColumn.net) roleToColumn.net = field.premiumColumn;
+    else if (field.premiumRole === "agent" && !roleToColumn.agent) roleToColumn.agent = field.premiumColumn;
+    else if (field.premiumRole === "client" && !roleToColumn.client) roleToColumn.client = field.premiumColumn;
+  }
+  if (!roleToColumn.net || !roleToColumn.agent || !roleToColumn.client) {
+    for (const field of accountingFields) {
+      if (!field.premiumColumn) continue;
+      const label = field.label.toLowerCase();
+      if (label.includes("net") && !roleToColumn.net) roleToColumn.net = field.premiumColumn;
+      else if (label.includes("agent") && !roleToColumn.agent) roleToColumn.agent = field.premiumColumn;
+      else if (label.includes("client") && !roleToColumn.client) roleToColumn.client = field.premiumColumn;
+    }
   }
 
   const fieldRoleMap: Record<string, string> = {

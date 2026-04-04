@@ -17,6 +17,7 @@ export const policyPremiums = pgTable("policy_premiums", {
   grossPremiumCents: integer("gross_premium_cents"),
   netPremiumCents: integer("net_premium_cents"),
   clientPremiumCents: integer("client_premium_cents"),
+  agentPremiumCents: integer("agent_premium_cents"),
   agentCommissionCents: integer("agent_commission_cents"),
   creditPremiumCents: integer("credit_premium_cents"),
   levyCents: integer("levy_cents"),

@@ -66,7 +66,7 @@ export async function GET(request: Request) {
         .select({
           invoiceId: accountingInvoiceItems.invoiceId,
           totalNet: sql<number>`coalesce(sum(coalesce(${policyPremiums.netPremiumCents}, 0)), 0)::int`,
-          totalAgent: sql<number>`coalesce(sum(coalesce(${policyPremiums.agentCommissionCents}, 0)), 0)::int`,
+          totalAgent: sql<number>`coalesce(sum(coalesce(${policyPremiums.agentPremiumCents}, 0)), 0)::int`,
           totalClient: sql<number>`coalesce(sum(coalesce(${policyPremiums.clientPremiumCents}, 0)), 0)::int`,
         })
         .from(accountingInvoiceItems)

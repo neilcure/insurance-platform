@@ -97,6 +97,8 @@ export type PdfTemplateMeta = {
   sections?: PdfTemplateSection[];
   images?: PdfImageMapping[];
   drawings?: PdfDrawing[];
+  /** Semantic document type for business logic (invoice creation, status advancement) */
+  type?: "quotation" | "invoice" | "receipt" | "certificate" | "letter" | "credit_note" | "debit_note" | "endorsement" | "custom";
   flows?: string[];
   /** Only show this template when policy status matches (empty = always) */
   showWhenStatus?: string[];

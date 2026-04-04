@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { sendPaymentStatusEmail } from "@/lib/accounting-notifications";
 import { getBaseUrlFromRequestUrl } from "@/lib/email";
-import { syncInvoicePaymentStatus } from "@/lib/accounting-invoices";
+import { syncInvoicePaymentStatus, crossSettlePolicyInvoices } from "@/lib/accounting-invoices";
 
 export const dynamic = "force-dynamic";
 
@@ -70,6 +70,18 @@ export async function POST(
           updatedAt: now,
         })
         .where(eq(accountingInvoices.id, invoiceId));
+
+      const [inv] = await db
+        .select({ entityPolicyId: accountingInvoices.entityPolicyId })
+        .from(accountingInvoices)
+        .where(eq(accountingInvoices.id, invoiceId))
+        .limit(1);
+
+      if (inv?.entityPolicyId) {
+        try {
+          await crossSettlePolicyInvoices(inv.entityPolicyId, payment.payer || null);
+        } catch {}
+      }
     } else {
       await db
         .update(accountingPayments)

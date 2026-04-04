@@ -384,6 +384,7 @@ export function WorkflowTab({
                   onSummaryChange={setPaymentSummary}
                   externalRefreshKey={paymentRefreshKey}
                   endorsementPolicyIds={isParentPolicy ? linkedEndorsements.map((e) => e.policyId) : undefined}
+                  hideInvoiceCards
                 />
               </React.Suspense>
             </div>

@@ -15,8 +15,8 @@ import { loadAccountingFields, resolvePremiumTypeColumn, getColumnType } from "@
 
 const CENTS_COLUMNS = [
   "grossPremiumCents", "netPremiumCents", "clientPremiumCents",
-  "agentCommissionCents", "creditPremiumCents", "levyCents",
-  "stampDutyCents", "discountCents",
+  "agentPremiumCents", "agentCommissionCents", "creditPremiumCents",
+  "levyCents", "stampDutyCents", "discountCents",
 ];
 
 export const dynamic = "force-dynamic";

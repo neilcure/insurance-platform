@@ -239,6 +239,7 @@ type DocumentUploadCardProps = {
   policyId: number;
   isAdmin: boolean;
   onRefresh: () => void;
+  onStatementToggled?: () => void;
   clientSchedule?: ScheduleInfo | null;
   agentSchedule?: ScheduleInfo | null;
 };
@@ -264,6 +265,7 @@ export function DocumentUploadCard({
   policyId,
   isAdmin,
   onRefresh,
+  onStatementToggled,
   clientSchedule,
   agentSchedule,
 }: DocumentUploadCardProps) {
@@ -284,7 +286,8 @@ export function DocumentUploadCard({
   const [paymentDate, setPaymentDate] = React.useState(() => new Date().toISOString().split("T")[0]);
   const [paymentRef, setPaymentRef] = React.useState("");
   const [pendingFile, setPendingFile] = React.useState<File | null>(null);
-  const [payIndividually, setPayIndividually] = React.useState(false);
+  const [payIndividually, setPayIndividually] = React.useState(true);
+  const [togglingStatement, setTogglingStatement] = React.useState(false);
 
   const statusCfg = STATUS_CONFIG[displayStatus];
   const StatusIcon = statusCfg.icon;
@@ -302,6 +305,39 @@ export function DocumentUploadCard({
     setPendingFile(null);
   }
 
+  async function handleStatementToggle(addToStatement: boolean) {
+    const schedule = agentSchedule || clientSchedule;
+    if (!schedule) return;
+    setTogglingStatement(true);
+    try {
+      const res = await fetch(`/api/accounting/invoices/by-policy/${policyId}?_t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error("Failed to fetch invoices");
+      const invoices: { id: number; direction: string; invoiceType: string; scheduleId: number | null }[] = await res.json();
+      const receivables = invoices.filter((inv) => inv.direction === "receivable" && inv.invoiceType !== "statement");
+
+      for (const inv of receivables) {
+        if (addToStatement && !inv.scheduleId) {
+          await fetch(`/api/accounting/invoices/${inv.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scheduleId: schedule.id, status: "statement_created" }),
+          });
+        } else if (!addToStatement && inv.scheduleId) {
+          await fetch(`/api/accounting/invoices/${inv.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scheduleId: null, status: "pending" }),
+          });
+        }
+      }
+      onStatementToggled?.();
+    } catch (err) {
+      toast.error((err as Error).message || "Failed to update statement");
+    } finally {
+      setTogglingStatement(false);
+    }
+  }
+
   React.useEffect(() => {
     if (needsPayment && !hasAgent && premiumBreakdown && !paymentAmount) {
       setPaymentAmount((premiumBreakdown.clientPremiumCents / 100).toFixed(2));
@@ -310,18 +346,29 @@ export function DocumentUploadCard({
 
   const fullAmount = React.useMemo(() => {
     if (!premiumBreakdown) return 0;
-    if (paymentPayer === "agent") return premiumBreakdown.agentPremiumCents;
-    return premiumBreakdown.clientPremiumCents;
-  }, [premiumBreakdown, paymentPayer]);
+    if (!hasAgent) return premiumBreakdown.clientPremiumCents;
+    if (paymentPayer === "client") return premiumBreakdown.clientPremiumCents;
+    return premiumBreakdown.agentPremiumCents;
+  }, [premiumBreakdown, hasAgent, paymentPayer]);
 
-  const alreadyPaid = React.useMemo(() => {
-    if (!payments) return 0;
-    return payments
-      .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
-      .reduce((sum, p) => sum + p.amountCents, 0);
+  const receivablePayments = React.useMemo(() => {
+    if (!payments) return [];
+    return payments.filter((p) => !p.direction || p.direction === "receivable");
   }, [payments]);
 
+  const alreadyPaid = React.useMemo(() => {
+    return receivablePayments
+      .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
+      .reduce((sum, p) => sum + p.amountCents, 0);
+  }, [receivablePayments]);
+
   const remainingAmount = Math.max(fullAmount - alreadyPaid, 0);
+
+  React.useEffect(() => {
+    if (paymentPayer && paymentType === "full") {
+      setPaymentAmount((remainingAmount / 100).toFixed(2));
+    }
+  }, [paymentPayer, remainingAmount]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -583,58 +630,112 @@ export function DocumentUploadCard({
           </div>
         )}
 
-        {/* Payment records summary — only show when this type has uploads */}
-        {needsPayment && uploads.length > 0 && payments && payments.length > 0 && (
-          <div className="mb-2 rounded-md border border-emerald-200 bg-emerald-50/50 p-2.5 dark:border-emerald-800 dark:bg-emerald-950/20">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1.5">
-              Payment Records
-            </div>
-            <div className="space-y-1.5">
-              {payments.map((p, i) => (
-                <div key={i} className="text-xs space-y-0.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-emerald-800 dark:text-emerald-300">
-                      {formatCurrency(p.amountCents)}
-                    </span>
+        {/* Payment records summary — only show receivable payments (what was paid toward the policy premium) */}
+        {needsPayment && uploads.length > 0 && receivablePayments.length > 0 && (() => {
+          const clientPmts = receivablePayments.filter((p) => p.payer === "client");
+          const agentPmts = receivablePayments.filter((p) => p.payer === "agent");
+          const untaggedPmts = receivablePayments.filter((p) => !p.payer);
+          const showPayerGroups = hasAgent && (clientPmts.length > 0 || agentPmts.length > 0);
+
+          const renderPayment = (p: PolicyPaymentRecord, i: number) => (
+            <div key={i} className="text-xs space-y-0.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-emerald-800 dark:text-emerald-300">
+                  {formatCurrency(p.amountCents)}
+                </span>
+                <div className="flex items-center gap-1">
+                  {p.payer && hasAgent && (
                     <Badge
                       variant="outline"
                       className={`shrink-0 border-0 text-[9px] ${
-                        p.status === "verified"
-                          ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
-                          : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                        p.payer === "agent"
+                          ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                          : "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
                       }`}
                     >
-                      {p.status === "verified" ? "Verified" : "Pending"}
+                      {p.payer === "agent" ? (premiumBreakdown?.agentName || "Agent") : "Client"}
                     </Badge>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
-                    {p.paymentMethod && (
-                      <span>{formatPaymentMethod(p.paymentMethod)}</span>
-                    )}
-                    {p.paymentDate && (
-                      <>
-                        <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
-                        <span>{p.paymentDate}</span>
-                      </>
-                    )}
-                    {p.referenceNumber && (
-                      <>
-                        <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
-                        <span className="truncate max-w-[120px]" title={p.referenceNumber}>Ref: {p.referenceNumber}</span>
-                      </>
-                    )}
-                  </div>
+                  )}
+                  <Badge
+                    variant="outline"
+                    className={`shrink-0 border-0 text-[9px] ${
+                      p.status === "verified"
+                        ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+                        : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                    }`}
+                  >
+                    {p.status === "verified" ? "Verified" : "Pending"}
+                  </Badge>
                 </div>
-              ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
+                {p.paymentMethod && (
+                  <span>{formatPaymentMethod(p.paymentMethod)}</span>
+                )}
+                {p.paymentDate && (
+                  <>
+                    <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
+                    <span>{p.paymentDate}</span>
+                  </>
+                )}
+                {p.referenceNumber && (
+                  <>
+                    <span className="text-neutral-300 dark:text-neutral-600">&middot;</span>
+                    <span className="truncate max-w-[120px]" title={p.referenceNumber}>Ref: {p.referenceNumber}</span>
+                  </>
+                )}
+              </div>
             </div>
-            <div className="mt-1.5 pt-1.5 border-t border-emerald-200 dark:border-emerald-800 flex items-center justify-between text-xs">
-              <span className="font-semibold text-emerald-800 dark:text-emerald-300">Total</span>
-              <span className="font-bold text-emerald-800 dark:text-emerald-300">
-                {formatCurrency(payments.reduce((sum, p) => sum + p.amountCents, 0))}
-              </span>
+          );
+
+          const verifiedTotal = receivablePayments
+            .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
+            .reduce((sum, p) => sum + p.amountCents, 0);
+
+          const policyPremium = hasAgent
+            ? (premiumBreakdown?.agentPremiumCents ?? 0)
+            : (premiumBreakdown?.clientPremiumCents ?? 0);
+          const isSettled = policyPremium > 0 && verifiedTotal >= policyPremium;
+
+          return (
+            <div className="mb-2 rounded-md border border-emerald-200 bg-emerald-50/50 p-2.5 dark:border-emerald-800 dark:bg-emerald-950/20">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1.5">
+                Payment Records
+              </div>
+              <div className="space-y-1.5">
+                {showPayerGroups ? (
+                  <>
+                    {clientPmts.length > 0 && (
+                      <div className="space-y-1">
+                        {clientPmts.map((p, i) => renderPayment(p, i))}
+                      </div>
+                    )}
+                    {agentPmts.length > 0 && (
+                      <div className="space-y-1">
+                        {agentPmts.map((p, i) => renderPayment(p, i + clientPmts.length))}
+                      </div>
+                    )}
+                    {untaggedPmts.map((p, i) => renderPayment(p, i + clientPmts.length + agentPmts.length))}
+                  </>
+                ) : (
+                  receivablePayments.map((p, i) => renderPayment(p, i))
+                )}
+              </div>
+              <div className="mt-1.5 pt-1.5 border-t border-emerald-200 dark:border-emerald-800 flex items-center justify-between text-xs">
+                <span className="font-semibold text-emerald-800 dark:text-emerald-300">Total</span>
+                <span className="font-bold text-emerald-800 dark:text-emerald-300">
+                  {formatCurrency(verifiedTotal)}{policyPremium > 0 && ` / ${formatCurrency(policyPremium)}`}
+                </span>
+              </div>
+              {isSettled && (
+                <div className="mt-1 flex items-center gap-1 text-[10px] text-green-700 dark:text-green-400">
+                  <CheckCircle2 className="h-3 w-3" />
+                  <span>Policy premium settled</span>
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Payment form (shown upfront) + Upload */}
         {(canUpload || (displayStatus === "uploaded" && isAdmin)) && needsPayment && premiumBreakdown ? (
@@ -674,13 +775,15 @@ export function DocumentUploadCard({
                     ))}
                     <button
                       type="button"
+                      disabled={togglingStatement}
                       onClick={() => {
                         setPayIndividually(true);
                         if (!paymentPayer && hasAgent) setPaymentPayer(null);
+                        void handleStatementToggle(false);
                       }}
-                      className="w-full rounded-md border-2 border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-200 dark:hover:bg-amber-950/60 transition-colors"
+                      className="w-full rounded-md border-2 border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-200 dark:hover:bg-amber-950/60 transition-colors disabled:opacity-50"
                     >
-                      Pay Individually Instead
+                      {togglingStatement ? "Releasing..." : "Pay Individually Instead"}
                     </button>
                   </div>
                 );
@@ -692,14 +795,16 @@ export function DocumentUploadCard({
                   {anySchedule && payIndividually && (
                     <button
                       type="button"
+                      disabled={togglingStatement}
                       onClick={() => {
                         setPayIndividually(false);
                         setPaymentPayer(hasAgent ? null : "client");
+                        void handleStatementToggle(true);
                       }}
-                      className="w-full flex items-center justify-center gap-1.5 rounded-md border-2 border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-600 dark:bg-indigo-950/30 dark:text-indigo-300 dark:hover:bg-indigo-950/50 transition-colors"
+                      className="w-full flex items-center justify-center gap-1.5 rounded-md border-2 border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-600 dark:bg-indigo-950/30 dark:text-indigo-300 dark:hover:bg-indigo-950/50 transition-colors disabled:opacity-50"
                     >
                       <CalendarClock className="h-3.5 w-3.5" />
-                      Add to Statement
+                      {togglingStatement ? "Adding..." : "Add to Statement"}
                     </button>
                   )}
 
@@ -715,7 +820,6 @@ export function DocumentUploadCard({
                           onClick={() => {
                             setPaymentPayer("client");
                             setPaymentType("full");
-                            setPaymentAmount((premiumBreakdown.clientPremiumCents / 100).toFixed(2));
                           }}
                           className={`rounded-md border-2 p-2 text-left transition-colors ${
                             paymentPayer === "client"
@@ -733,7 +837,6 @@ export function DocumentUploadCard({
                           onClick={() => {
                             setPaymentPayer("agent");
                             setPaymentType("full");
-                            setPaymentAmount((premiumBreakdown.agentPremiumCents / 100).toFixed(2));
                           }}
                           className={`rounded-md border-2 p-2 text-left transition-colors ${
                             paymentPayer === "agent"

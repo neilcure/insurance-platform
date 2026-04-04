@@ -9,7 +9,7 @@ import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { validateFile, saveFile } from "@/lib/storage";
 import { appendPolicyAudit } from "@/lib/audit";
-import { syncInvoicePaymentStatus } from "@/lib/accounting-invoices";
+import { syncInvoicePaymentStatus, crossSettlePolicyInvoices } from "@/lib/accounting-invoices";
 import { createAgentCommissionPayable } from "@/lib/agent-commission";
 
 export const dynamic = "force-dynamic";
@@ -94,9 +94,9 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       .where(eq(accountingInvoiceItems.policyId, policyId));
     const invoiceIds = [...new Set(invoiceItemRows.map((r) => r.invoiceId))];
 
-    let paymentsByInvoice: { amountCents: number; paymentMethod: string | null; paymentDate: string | null; referenceNumber: string | null; status: string; createdAt: string }[] = [];
+    let paymentsByInvoice: { amountCents: number; paymentMethod: string | null; paymentDate: string | null; referenceNumber: string | null; status: string; createdAt: string; payer: "client" | "agent" | null; direction: string }[] = [];
     if (invoiceIds.length > 0) {
-      paymentsByInvoice = await db
+      const rawPayments = await db
         .select({
           amountCents: accountingPayments.amountCents,
           paymentMethod: accountingPayments.paymentMethod,
@@ -104,10 +104,27 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
           referenceNumber: accountingPayments.referenceNumber,
           status: accountingPayments.status,
           createdAt: accountingPayments.createdAt,
+          payer: accountingPayments.payer,
+          direction: accountingInvoices.direction,
         })
         .from(accountingPayments)
-        .where(inArray(accountingPayments.invoiceId, invoiceIds))
+        .innerJoin(accountingInvoices, eq(accountingInvoices.id, accountingPayments.invoiceId))
+        .where(and(
+          inArray(accountingPayments.invoiceId, invoiceIds),
+          sql`${accountingInvoices.invoiceType} != 'statement'`,
+        ))
         .orderBy(desc(accountingPayments.createdAt));
+
+      paymentsByInvoice = rawPayments.map((p) => ({
+        amountCents: p.amountCents,
+        paymentMethod: p.paymentMethod,
+        paymentDate: p.paymentDate,
+        referenceNumber: p.referenceNumber,
+        status: p.status,
+        createdAt: p.createdAt,
+        payer: (p.payer as "client" | "agent") || null,
+        direction: p.direction,
+      }));
     }
 
     return NextResponse.json({ documents: rows, payments: paymentsByInvoice }, {
@@ -213,15 +230,31 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
         const invoiceIds = [...new Set(invoiceItemRows.map((r) => r.invoiceId))];
 
         if (invoiceIds.length > 0) {
-          const [invoice] = await db
+          // Prefer individual invoices — statement invoices are filtered out in GET
+          // so payments on them would be invisible in the payment records display
+          let [invoice] = await db
             .select()
             .from(accountingInvoices)
             .where(and(
               eq(accountingInvoices.direction, "receivable"),
               inArray(accountingInvoices.id, invoiceIds),
+              sql`${accountingInvoices.invoiceType} != 'statement'`,
             ))
             .orderBy(desc(accountingInvoices.createdAt))
             .limit(1);
+
+          // Fallback to statement invoice if no individual exists
+          if (!invoice) {
+            [invoice] = await db
+              .select()
+              .from(accountingInvoices)
+              .where(and(
+                eq(accountingInvoices.direction, "receivable"),
+                inArray(accountingInvoices.id, invoiceIds),
+              ))
+              .orderBy(desc(accountingInvoices.createdAt))
+              .limit(1);
+          }
 
           if (invoice) {
             await db.insert(accountingPayments).values({
@@ -231,6 +264,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
               paymentDate: paymentDate ?? null,
               paymentMethod,
               referenceNumber: paymentRefNum ?? null,
+              payer: paymentPayer || "client",
               status: isAdmin ? "verified" : "submitted",
               submittedBy: Number(user.id),
               ...(isAdmin ? { verifiedBy: Number(user.id), verifiedAt: new Date().toISOString() } : {}),
@@ -246,6 +280,12 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
               } catch (commErr) {
                 console.error("Agent commission creation failed (non-fatal):", commErr);
               }
+            }
+
+            try {
+              await crossSettlePolicyInvoices(policyId, paymentPayer);
+            } catch (crossErr) {
+              console.error("Cross-settlement failed (non-fatal):", crossErr);
             }
           }
         }

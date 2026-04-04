@@ -13,6 +13,8 @@ export type ColumnType = "cents" | "rate" | "string";
 
 export type PremiumContext = "policy" | "collaborator" | "insurer" | "client" | "agent" | "self";
 
+export type PremiumRole = "client" | "agent" | "net" | "commission";
+
 export type AccountingFieldDef = {
   key: string;
   label: string;
@@ -23,6 +25,7 @@ export type AccountingFieldDef = {
   options?: Array<{ value: string; label: string }>;
   premiumColumn?: string;
   premiumContexts?: PremiumContext[];
+  premiumRole?: PremiumRole;
 };
 
 /**
@@ -70,6 +73,10 @@ export async function loadAccountingFields(): Promise<AccountingFieldDef[]> {
         premiumContexts: Array.isArray(m?.premiumContexts)
           ? (m.premiumContexts as PremiumContext[])
           : undefined,
+        premiumRole: typeof m?.premiumRole === "string" &&
+          ["client", "agent", "net", "commission"].includes(m.premiumRole)
+          ? (m.premiumRole as PremiumRole)
+          : undefined,
       };
     })
     .filter((f) => f.key);
@@ -111,14 +118,21 @@ export function resolvePremiumTypeColumn(
   premiumType: string,
   fields: AccountingFieldDef[],
 ): { column: string; label: string } {
-  const typeToColumn: Record<string, string> = {};
-  for (const f of fields) {
-    if (!f.premiumColumn) continue;
-    const slug = f.label.toLowerCase().replace(/\s+/g, "_");
-    typeToColumn[slug] = f.premiumColumn;
-  }
-
+  const roleMap: Record<string, PremiumRole> = {
+    client_premium: "client", client: "client",
+    agent_premium: "agent", agent: "agent",
+    net_premium: "net", net: "net",
+    commission: "commission", agent_commission: "commission",
+  };
   const normalizedType = premiumType.replace(/_/g, " ").toLowerCase().trim();
+  const role = roleMap[premiumType.toLowerCase()] ?? roleMap[normalizedType.replace(/\s+premium$/, "")];
+
+  if (role) {
+    for (const f of fields) {
+      if (!f.premiumColumn) continue;
+      if (f.premiumRole === role) return { column: f.premiumColumn, label: f.label };
+    }
+  }
 
   for (const f of fields) {
     if (!f.premiumColumn) continue;

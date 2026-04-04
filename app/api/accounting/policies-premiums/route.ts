@@ -44,6 +44,7 @@ export async function GET(request: Request) {
         grossPremiumCents: policyPremiums.grossPremiumCents,
         netPremiumCents: policyPremiums.netPremiumCents,
         clientPremiumCents: policyPremiums.clientPremiumCents,
+        agentPremiumCents: policyPremiums.agentPremiumCents,
         agentCommissionCents: policyPremiums.agentCommissionCents,
         collaboratorId: policyPremiums.collaboratorId,
         insurerPolicyId: policyPremiums.insurerPolicyId,

@@ -88,6 +88,7 @@ export const accountingPayments = pgTable("accounting_payments", {
   referenceNumber: varchar("reference_number", { length: 100 }),
   status: varchar("status", { length: 20 }).notNull().default("recorded"),
   notes: text("notes"),
+  payer: varchar("payer", { length: 20 }), // 'client', 'agent' — who made this payment to admin
   submittedBy: integer("submitted_by").references(() => users.id, { onDelete: "set null" }),
   verifiedBy: integer("verified_by").references(() => users.id, { onDelete: "set null" }),
   verifiedAt: timestamp("verified_at", { mode: "string" }),

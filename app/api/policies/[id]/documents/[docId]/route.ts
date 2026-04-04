@@ -6,7 +6,7 @@ import { eq, and, desc, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { deleteFile } from "@/lib/storage";
 import { appendPolicyAudit } from "@/lib/audit";
-import { syncInvoicePaymentStatus } from "@/lib/accounting-invoices";
+import { syncInvoicePaymentStatus, crossSettlePolicyInvoices } from "@/lib/accounting-invoices";
 import { createAgentCommissionPayable } from "@/lib/agent-commission";
 
 export const dynamic = "force-dynamic";
@@ -132,6 +132,7 @@ export async function PATCH(
                   paymentDate: meta.date ?? null,
                   paymentMethod: meta.method,
                   referenceNumber: meta.ref ?? null,
+                  payer: (meta.payer as "client" | "agent") || "client",
                   status: "verified",
                   submittedBy: existing.uploadedBy ?? Number(user.id),
                   verifiedBy: Number(user.id),
@@ -144,6 +145,10 @@ export async function PATCH(
                     await createAgentCommissionPayable(existing.policyId, Number(user.id));
                   } catch {}
                 }
+
+                try {
+                  await crossSettlePolicyInvoices(existing.policyId, meta.payer || "client");
+                } catch {}
               }
             }
           }

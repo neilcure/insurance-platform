@@ -171,15 +171,16 @@ export async function syncPremiumSnapshotToTable(
   const dbPayload: Record<string, unknown> = {
     lineLabel: "Premium",
     currency: (structuredColumns.currency as string) ?? "HKD",
-    grossPremiumCents: structuredColumns.grossPremiumCents ?? null,
-    netPremiumCents: structuredColumns.netPremiumCents ?? null,
-    clientPremiumCents: structuredColumns.clientPremiumCents ?? null,
-    agentCommissionCents: structuredColumns.agentCommissionCents ?? null,
-    commissionRate: structuredColumns.commissionRate ?? null,
     extraValues: Object.keys(extraValues).length > 0 ? extraValues : null,
     updatedBy: userId,
     updatedAt: new Date().toISOString(),
   };
+
+  // Dynamically include ALL structured columns from package fields — no hardcoding
+  for (const [col, val] of Object.entries(structuredColumns)) {
+    if (col === "currency") continue;
+    dbPayload[col] = val ?? null;
+  }
 
   const [existing] = await db
     .select({ id: policyPremiums.id })

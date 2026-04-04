@@ -132,12 +132,13 @@ function rowToLineData(
   let client = 0, net = 0, agent = 0;
   for (const f of fields) {
     if (!f.premiumColumn) continue;
-    const lbl = f.label.toLowerCase();
+    const role = f.premiumRole;
+    const lbl = role ? "" : f.label.toLowerCase();
     const rawVal = (row as Record<string, unknown>)[f.premiumColumn] as number | null;
     const val = centsToDisplay(rawVal) ?? 0;
-    if (lbl.includes("client")) client = val;
-    else if (lbl.includes("net")) net = val;
-    else if (lbl.includes("agent")) agent = val;
+    if (role === "client" || (!role && lbl.includes("client"))) client = val;
+    else if (role === "net" || (!role && lbl.includes("net"))) net = val;
+    else if (role === "agent" || (!role && lbl.includes("agent"))) agent = val;
   }
   const margin = client === 0 && net === 0 && agent === 0 ? null : client - net - agent;
   const insurerId = (row as Record<string, unknown>).insurerPolicyId as number | null ?? row.organisationId ?? null;
@@ -344,8 +345,12 @@ function applyDefaultRoleFilter(fields: AccountingFieldDef[], role: PremiumConte
     const k = f.key.toLowerCase();
     const l = f.label.toLowerCase();
     if (k === "currency" || l === "currency") return true;
-    if (role === "client") return k.includes("client") || l.includes("client");
+    if (role === "client") {
+      if (f.premiumRole) return f.premiumRole === "client";
+      return k.includes("client") || l.includes("client");
+    }
     if (role === "agent") {
+      if (f.premiumRole) return f.premiumRole !== "net";
       const isNet = (k.includes("net") || l.includes("net")) && !k.includes("agent") && !l.includes("agent");
       return !isNet;
     }
@@ -1139,15 +1144,15 @@ export async function PUT(request: Request, ctx: Ctx) {
       currency: (structuredColumns.currency as string) ?? "HKD",
       insurerPolicyId: Number.isFinite(insurerId) && insurerId > 0 ? insurerId : null,
       collaboratorId: Number.isFinite(collabId) && collabId > 0 ? collabId : null,
-      grossPremiumCents: structuredColumns.grossPremiumCents ?? null,
-      netPremiumCents: structuredColumns.netPremiumCents ?? null,
-      clientPremiumCents: structuredColumns.clientPremiumCents ?? null,
-      agentCommissionCents: structuredColumns.agentCommissionCents ?? null,
-      commissionRate: structuredColumns.commissionRate ?? null,
       extraValues: Object.keys(extraValues).length > 0 ? extraValues : null,
       updatedBy: Number(user.id),
       updatedAt: new Date().toISOString(),
     };
+
+    for (const [col, val] of Object.entries(structuredColumns)) {
+      if (col === "currency") continue;
+      dbPayload[col] = val ?? null;
+    }
 
     const [existing] = await db
       .select({ id: policyPremiums.id })
