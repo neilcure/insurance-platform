@@ -34,6 +34,7 @@ const TEMPLATE_TYPES: { value: DocumentTemplateMeta["type"]; label: string }[] =
     { value: "credit_note", label: "Credit Note" },
     { value: "debit_note", label: "Debit Note" },
     { value: "endorsement", label: "Endorsement" },
+    { value: "statement", label: "Statement" },
     { value: "custom", label: "Custom" },
   ];
 
@@ -44,6 +45,7 @@ const SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "policy", label: "Policy Info" },
   { value: "agent", label: "Agent Info" },
   { value: "accounting", label: "Accounting / Premium" },
+  { value: "statement", label: "Statement Items" },
   { value: "client", label: "Client Info" },
   { value: "organisation", label: "Organisation" },
   { value: "custom", label: "Custom (manual)" },
@@ -619,6 +621,24 @@ export default function DocumentTemplatesManager() {
             <p className="text-xs text-neutral-400 ml-6">
               Mark this as an agent copy. Document numbers will automatically have <strong>(A)</strong> appended (e.g. INV-2026-3847(A)).
               Use this for agent-facing versions with agent-specific premium fields (Agent Premium, Agent Commission, etc.).
+            </p>
+          </div>
+
+          {/* Requires Statement (Payment Schedule) */}
+          <div className="grid gap-1">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={meta.requiresStatement ?? false}
+                onChange={(e) =>
+                  setMeta((m) => ({ ...m, requiresStatement: e.target.checked }))
+                }
+              />
+              <span className="font-medium">Requires Statement</span>
+            </label>
+            <p className="text-xs text-neutral-400 ml-6">
+              When enabled, this document will only display for audiences (client/agent) that are assigned to a Payment Schedule with an active statement.
+              If no statement exists for the audience, the document sections and footer will be hidden.
             </p>
           </div>
 

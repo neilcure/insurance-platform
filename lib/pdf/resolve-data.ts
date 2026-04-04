@@ -36,6 +36,25 @@ export type InvoiceContext = {
   parentInvoiceNumber?: string | null;
 };
 
+export type StatementContext = {
+  statementNumber: string;
+  statementDate: string | null;
+  statementStatus: string;
+  entityName: string | null;
+  entityType: string;
+  activeTotal: number;
+  paidIndividuallyTotal: number;
+  totalAmountCents: number;
+  paidAmountCents: number;
+  currency: string;
+  items: {
+    description: string | null;
+    amountCents: number;
+    status: string;
+    policyId: number;
+  }[];
+};
+
 export type MergeContext = {
   policyNumber: string;
   createdAt: string;
@@ -45,6 +64,7 @@ export type MergeContext = {
   organisation?: Record<string, unknown> | null;
   accountingLines?: AccountingLineContext[];
   invoiceData?: InvoiceContext | null;
+  statementData?: StatementContext | null;
   isTpoWithOd?: boolean;
 };
 
@@ -365,6 +385,35 @@ function resolveInvoice(
   }
 }
 
+function resolveStatement(
+  stmt: StatementContext | null | undefined,
+  fieldKey: string,
+): unknown {
+  if (!stmt) return "";
+  const activeItems = stmt.items.filter((it) => it.status === "active");
+  const paidItems = stmt.items.filter((it) => it.status === "paid_individually");
+
+  switch (fieldKey) {
+    case "statementNumber": return stmt.statementNumber;
+    case "statementDate": return stmt.statementDate ?? "";
+    case "statementStatus": return stmt.statementStatus;
+    case "entityName": return stmt.entityName ?? "";
+    case "entityType": return stmt.entityType;
+    case "activeTotal": return stmt.activeTotal / 100;
+    case "paidIndividuallyTotal": return stmt.paidIndividuallyTotal / 100;
+    case "totalAmountCents": return stmt.totalAmountCents / 100;
+    case "paidAmountCents": return stmt.paidAmountCents / 100;
+    case "currency": return stmt.currency;
+    case "itemCount": return stmt.items.length;
+    case "activeItemCount": return activeItems.length;
+    case "paidIndividuallyItemCount": return paidItems.length;
+    case "itemDescriptions": return activeItems.map((it) => it.description ?? "Premium").join("\n");
+    case "itemAmounts": return activeItems.map((it) => (it.amountCents / 100).toFixed(2)).join("\n");
+    case "itemStatuses": return stmt.items.map((it) => it.status).join("\n");
+    default: return "";
+  }
+}
+
 export function resolveFieldValue(
   field: PdfFieldMapping,
   ctx: MergeContext,
@@ -422,6 +471,9 @@ export function resolveFieldValue(
       break;
     case "invoice":
       raw = resolveInvoice(ctx.invoiceData, field.fieldKey);
+      break;
+    case "statement":
+      raw = resolveStatement(ctx.statementData, field.fieldKey);
       break;
     case "static":
       raw = field.staticValue ?? "";

@@ -289,6 +289,21 @@ export function DocumentUploadCard({
   const [payIndividually, setPayIndividually] = React.useState(true);
   const [togglingStatement, setTogglingStatement] = React.useState(false);
 
+  React.useEffect(() => {
+    if (!needsPayment) return;
+    const schedule = agentSchedule || clientSchedule;
+    if (!schedule) return;
+    fetch(`/api/accounting/invoices/by-policy/${policyId}?_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((invoices: { scheduleId: number | null; direction: string; invoiceType: string }[]) => {
+        const onStatement = invoices
+          .filter((inv) => inv.direction === "receivable" && inv.invoiceType !== "statement")
+          .some((inv) => inv.scheduleId != null);
+        setPayIndividually(!onStatement);
+      })
+      .catch(() => {});
+  }, [policyId, needsPayment, agentSchedule, clientSchedule]);
+
   const statusCfg = STATUS_CONFIG[displayStatus];
   const StatusIcon = statusCfg.icon;
 
@@ -310,26 +325,37 @@ export function DocumentUploadCard({
     if (!schedule) return;
     setTogglingStatement(true);
     try {
-      const res = await fetch(`/api/accounting/invoices/by-policy/${policyId}?_t=${Date.now()}`, { cache: "no-store" });
-      if (!res.ok) throw new Error("Failed to fetch invoices");
-      const invoices: { id: number; direction: string; invoiceType: string; scheduleId: number | null }[] = await res.json();
+      const invRes = await fetch(`/api/accounting/invoices/by-policy/${policyId}?_t=${Date.now()}`, { cache: "no-store" });
+      if (!invRes.ok) throw new Error("Failed to fetch invoices");
+      const invoices: { id: number; direction: string; invoiceType: string; scheduleId: number | null }[] = await invRes.json();
       const receivables = invoices.filter((inv) => inv.direction === "receivable" && inv.invoiceType !== "statement");
 
-      for (const inv of receivables) {
-        if (addToStatement && !inv.scheduleId) {
-          await fetch(`/api/accounting/invoices/${inv.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ scheduleId: schedule.id, status: "statement_created" }),
-          });
-        } else if (!addToStatement && inv.scheduleId) {
-          await fetch(`/api/accounting/invoices/${inv.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ scheduleId: null, status: "pending" }),
-          });
+      if (addToStatement) {
+        let patched = 0;
+        for (const inv of receivables) {
+          if (!inv.scheduleId) {
+            await fetch(`/api/accounting/invoices/${inv.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ scheduleId: schedule.id, status: "statement_created" }),
+            });
+            patched++;
+          }
         }
+        toast.success(patched > 0 ? "Policy added to statement billing" : "Already on statement billing");
+      } else {
+        for (const inv of receivables) {
+          if (inv.scheduleId) {
+            await fetch(`/api/accounting/invoices/${inv.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ scheduleId: null, status: "pending" }),
+            });
+          }
+        }
+        toast.success("Policy removed from statement billing");
       }
+      setPayIndividually(!addToStatement);
       onStatementToggled?.();
     } catch (err) {
       toast.error((err as Error).message || "Failed to update statement");

@@ -42,6 +42,7 @@ export type PdfFieldMapping = {
     | "organisation"
     | "accounting"
     | "invoice"
+    | "statement"
     | "static";
   packageName?: string;
   /** For accounting source: which premium line to pull from (e.g. "tpo", "main") */
@@ -138,6 +139,7 @@ export const DATA_SOURCE_OPTIONS: {
   { value: "package", label: "Package (Snapshot)", description: "Any package field from policy snapshot" },
   { value: "accounting", label: "Accounting (Premiums)", description: "Premium amounts, insurer/collaborator per line" },
   { value: "invoice", label: "Invoice", description: "Invoice number, dates, amounts, status, entity" },
+  { value: "statement", label: "Statement", description: "Statement number, items, totals, entity — for statement documents" },
   { value: "agent", label: "Agent", description: "Agent name, email, user number" },
   { value: "client", label: "Client", description: "Client number, display name, primary ID, etc." },
   { value: "organisation", label: "Organisation / Insurer", description: "Company name, contact, address (policy-level)" },
@@ -184,6 +186,14 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
     "remainingAmount", "status", "entityName", "entityType", "premiumType",
     "direction", "currency", "invoiceType", "periodStart", "periodEnd", "notes",
     "cancellationDate", "refundReason", "parentInvoiceNumber",
+  ],
+  statement: [
+    "statementNumber", "statementDate", "statementStatus",
+    "entityName", "entityType",
+    "activeTotal", "paidIndividuallyTotal", "totalAmountCents",
+    "paidAmountCents", "currency",
+    "itemCount", "activeItemCount", "paidIndividuallyItemCount",
+    "itemDescriptions", "itemAmounts", "itemStatuses",
   ],
   static: [],
 };

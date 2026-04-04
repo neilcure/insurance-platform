@@ -2,8 +2,9 @@ import { db } from "@/db/client";
 import { policies, cars } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
 import { users, clients, organisations } from "@/db/schema/core";
-import { eq, sql, inArray } from "drizzle-orm";
-import type { MergeContext, AccountingLineContext } from "./resolve-data";
+import { accountingPaymentSchedules, accountingInvoices } from "@/db/schema/accounting";
+import { eq, sql, inArray, and, or } from "drizzle-orm";
+import type { MergeContext, AccountingLineContext, StatementContext } from "./resolve-data";
 import { loadAccountingFields, buildColumnFieldMap, getColumnType } from "@/lib/accounting-fields";
 
 const DB_COLUMN_OPTIONS = [
@@ -237,6 +238,113 @@ export async function buildMergeContext(policyId: number): Promise<{
       return k.includes("own_vehicle") || k.includes("owndamage");
     });
 
+  let statementData: StatementContext | null = null;
+  try {
+    const entityConditions = [];
+    if (policy.clientId) {
+      entityConditions.push(
+        and(
+          eq(accountingPaymentSchedules.entityType, "client"),
+          eq(accountingPaymentSchedules.clientId, policy.clientId),
+        ),
+      );
+    }
+    if (policy.agentId) {
+      entityConditions.push(
+        and(
+          eq(accountingPaymentSchedules.entityType, "agent"),
+          eq(accountingPaymentSchedules.agentId, policy.agentId),
+        ),
+      );
+    }
+
+    if (entityConditions.length > 0 && policy.organisationId) {
+      const schedules = await db
+        .select({ id: accountingPaymentSchedules.id })
+        .from(accountingPaymentSchedules)
+        .where(
+          and(
+            eq(accountingPaymentSchedules.organisationId, policy.organisationId),
+            eq(accountingPaymentSchedules.isActive, true),
+            entityConditions.length === 1
+              ? entityConditions[0]
+              : or(...entityConditions),
+          ),
+        );
+
+      for (const sched of schedules) {
+        const [stmt] = await db
+          .select({
+            id: accountingInvoices.id,
+            invoiceNumber: accountingInvoices.invoiceNumber,
+            status: accountingInvoices.status,
+            totalAmountCents: accountingInvoices.totalAmountCents,
+            paidAmountCents: accountingInvoices.paidAmountCents,
+            currency: accountingInvoices.currency,
+            entityType: accountingInvoices.entityType,
+            entityName: accountingInvoices.entityName,
+            invoiceDate: accountingInvoices.invoiceDate,
+          })
+          .from(accountingInvoices)
+          .where(
+            and(
+              eq(accountingInvoices.scheduleId, sched.id),
+              eq(accountingInvoices.invoiceType, "statement"),
+              inArray(accountingInvoices.status, ["draft", "pending", "partial", "settled"]),
+            ),
+          )
+          .limit(1);
+
+        if (stmt) {
+          const rawItems = await db.execute(sql`
+            SELECT "id", "policy_id", "amount_cents", "description",
+                   coalesce("status", 'active') AS "status"
+            FROM "accounting_invoice_items"
+            WHERE "invoice_id" = ${stmt.id}
+            ORDER BY "id"
+          `);
+          const rawRows = Array.isArray(rawItems)
+            ? rawItems
+            : (rawItems as { rows?: unknown[] }).rows ?? [];
+          const items = (rawRows as {
+            id: number;
+            policy_id: number;
+            amount_cents: number;
+            description: string | null;
+            status: string;
+          }[]).map((r) => ({
+            description: r.description,
+            amountCents: r.amount_cents,
+            status: r.status,
+            policyId: r.policy_id,
+          }));
+
+          const activeTotal = items
+            .filter((it) => it.status === "active")
+            .reduce((sum, it) => sum + it.amountCents, 0);
+          const paidIndividuallyTotal = items
+            .filter((it) => it.status === "paid_individually")
+            .reduce((sum, it) => sum + it.amountCents, 0);
+
+          statementData = {
+            statementNumber: stmt.invoiceNumber,
+            statementDate: stmt.invoiceDate,
+            statementStatus: stmt.status,
+            entityName: stmt.entityName,
+            entityType: stmt.entityType,
+            activeTotal,
+            paidIndividuallyTotal,
+            totalAmountCents: stmt.totalAmountCents,
+            paidAmountCents: stmt.paidAmountCents,
+            currency: stmt.currency,
+            items,
+          };
+          break;
+        }
+      }
+    }
+  } catch { /* statement data is optional */ }
+
   const ctx: MergeContext = {
     policyNumber: policy.policyNumber,
     createdAt: policy.createdAt,
@@ -248,6 +356,7 @@ export async function buildMergeContext(policyId: number): Promise<{
     client: clientData,
     organisation: orgData,
     accountingLines,
+    statementData,
     isTpoWithOd,
   };
 

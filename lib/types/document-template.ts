@@ -9,7 +9,7 @@ export type TemplateSection = {
   id: string;
   title: string;
   /** Where to pull data from in the snapshot */
-  source: "insured" | "contactinfo" | "package" | "policy" | "agent" | "accounting" | "client" | "organisation" | "custom";
+  source: "insured" | "contactinfo" | "package" | "policy" | "agent" | "accounting" | "client" | "organisation" | "statement" | "static" | "custom";
   /** Required when source is "package" */
   packageName?: string;
   /** Which audience sees this section: "all" (default), "client", or "agent" */
@@ -18,7 +18,7 @@ export type TemplateSection = {
 };
 
 export type DocumentTemplateMeta = {
-  type: "quotation" | "invoice" | "receipt" | "certificate" | "letter" | "credit_note" | "debit_note" | "endorsement" | "custom";
+  type: "quotation" | "invoice" | "receipt" | "certificate" | "letter" | "credit_note" | "debit_note" | "endorsement" | "statement" | "custom";
   /** Restrict to specific flows (empty = available for all flows) */
   flows?: string[];
   /** Only show this document when policy status matches (empty = always) */
@@ -33,6 +33,8 @@ export type DocumentTemplateMeta = {
   documentSetGroup?: string;
   /** Mark as agent template — auto-appends (A) to document numbers */
   isAgentTemplate?: boolean;
+  /** When true, hides the document if no statement exists for this audience (requires Payment Schedule) */
+  requiresStatement?: boolean;
   header: {
     title: string;
     subtitle?: string;

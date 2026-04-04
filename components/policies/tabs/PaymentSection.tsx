@@ -167,6 +167,30 @@ export function PaymentSection({
   const agentSchedule = schedules?.find((s) => s.entityType === "agent") ?? null;
   const hasClientSchedule = !!clientSchedule;
 
+  type StatementItemInfo = {
+    id: number;
+    policyId: number;
+    policyPremiumId: number | null;
+    amountCents: number;
+    description: string | null;
+    status: string;
+  };
+  type StatementData = {
+    id: number;
+    statementNumber: string;
+    status: string;
+    totalAmountCents: number;
+    paidAmountCents: number;
+    currency: string;
+    entityType: string;
+    entityName: string | null;
+    items: StatementItemInfo[];
+    activeTotal: number;
+    paidIndividuallyTotal: number;
+  };
+  const [statementsBySchedule, setStatementsBySchedule] = React.useState<Record<number, StatementData | null>>({});
+  const [itemActionBusy, setItemActionBusy] = React.useState<number | null>(null);
+
   React.useEffect(() => {
     fetch(`/api/accounting/schedules/by-policy/${policyId}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : { schedules: [] }))
@@ -176,6 +200,39 @@ export function PaymentSection({
       })
       .catch(() => setSchedules([]));
   }, [policyId, refreshKey, externalRefreshKey]);
+
+  React.useEffect(() => {
+    if (!schedules || schedules.length === 0) return;
+    for (const s of schedules) {
+      fetch(`/api/accounting/statements?scheduleId=${s.id}&_t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : { statement: null }))
+        .then((data) => {
+          setStatementsBySchedule((prev) => ({ ...prev, [s.id]: data.statement ?? null }));
+        })
+        .catch(() => {});
+    }
+  }, [schedules, refreshKey, externalRefreshKey]);
+
+  const handleStatementItemAction = async (
+    statementId: number,
+    itemId: number,
+    action: "paid_individually" | "reactivate" | "remove",
+  ) => {
+    setItemActionBusy(itemId);
+    try {
+      const res = await fetch(`/api/accounting/statements/${statementId}/items`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId, action }),
+      });
+      if (!res.ok) throw new Error("Failed to update item");
+      setRefreshKey((k) => k + 1);
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setItemActionBusy(null);
+    }
+  };
 
   const summaryRef = React.useRef(onSummaryChange);
   summaryRef.current = onSummaryChange;
@@ -347,16 +404,23 @@ export function PaymentSection({
   }
 
   const scheduleCard = (s: ScheduleInfo, label: string, linkedInvs: InvoiceWithPayments[], matchAllSchedules = false) => {
+    const stmt = statementsBySchedule[s.id] ?? null;
+
     const onStatementInvs = linkedInvs.filter((inv) =>
       matchAllSchedules ? inv.scheduleId && allScheduleIds.has(inv.scheduleId) : inv.scheduleId === s.id,
     );
 
+    const activeItems = stmt?.items.filter((it) => it.status === "active") ?? [];
+    const paidIndItems = stmt?.items.filter((it) => it.status === "paid_individually") ?? [];
+
     const receivableOnStatement = onStatementInvs.filter((inv) => inv.direction === "receivable");
     const payableOnStatement = onStatementInvs.filter((inv) => inv.direction === "payable");
 
-    const totalReceivable = receivableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
+    const totalReceivable = stmt ? stmt.activeTotal : receivableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
     const totalPayable = payableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
     const netDue = totalReceivable - totalPayable;
+
+    const hasItems = stmt ? stmt.items.length > 0 : onStatementInvs.length > 0;
 
     return (
       <div className="rounded-md border border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30 overflow-hidden">
@@ -372,33 +436,121 @@ export function PaymentSection({
               {s.billingDay ? ` (day ${s.billingDay})` : ""}
             </div>
           </div>
-          <Badge variant="custom" className="text-[10px] bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">
-            Period Pay
-          </Badge>
+          {stmt && (
+            <Badge variant="custom" className="text-[10px] bg-indigo-200 text-indigo-800 dark:bg-indigo-800 dark:text-indigo-200 font-mono">
+              {stmt.statementNumber}
+            </Badge>
+          )}
+          {!stmt && (
+            <Badge variant="custom" className="text-[10px] bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">
+              Period Pay
+            </Badge>
+          )}
         </div>
 
-        {onStatementInvs.length > 0 && (
+        {hasItems && (
           <div className="border-t border-indigo-200 dark:border-indigo-800 px-3 py-2 space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-indigo-500 dark:text-indigo-400 mb-1">
-              Policies on this statement ({onStatementInvs.length})
+              {stmt ? `Items on ${stmt.statementNumber}` : `Policies on this statement`}
+              {" "}({stmt ? activeItems.length : onStatementInvs.length})
             </div>
-            {receivableOnStatement.map((inv) => (
-              <div
-                key={inv.id}
-                className="flex items-center justify-between gap-2 rounded bg-white/60 dark:bg-indigo-900/20 px-2 py-1.5 text-xs"
-              >
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <FileText className="h-3 w-3 shrink-0 text-indigo-400" />
-                  <span className="font-medium text-indigo-800 dark:text-indigo-200">{inv.invoiceNumber}</span>
-                  {inv.notes && (
-                    <span className="text-indigo-500 dark:text-indigo-400 truncate max-w-[120px]">· {inv.notes}</span>
-                  )}
-                </div>
-                <span className="shrink-0 font-semibold text-indigo-700 dark:text-indigo-300">
-                  {formatCurrency(inv.totalAmountCents - inv.paidAmountCents, inv.currency)}
-                </span>
-              </div>
-            ))}
+
+            {stmt ? (
+              <>
+                {activeItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between gap-2 rounded bg-white/60 dark:bg-indigo-900/20 px-2 py-1.5 text-xs"
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <FileText className="h-3 w-3 shrink-0 text-indigo-400" />
+                      <span className="font-medium text-indigo-800 dark:text-indigo-200 truncate">
+                        {item.description ?? "Premium"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="font-semibold text-indigo-700 dark:text-indigo-300">
+                        {formatCurrency(item.amountCents)}
+                      </span>
+                      {isAdmin && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-5 w-5 p-0 text-neutral-400 hover:text-red-500"
+                          disabled={itemActionBusy === item.id}
+                          onClick={() => handleStatementItemAction(stmt.id, item.id, "remove")}
+                          title="Remove from statement"
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                {paidIndItems.length > 0 && (
+                  <>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 mt-2 mb-0.5">
+                      Paid Individually ({paidIndItems.length})
+                    </div>
+                    {paidIndItems.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center justify-between gap-2 rounded bg-neutral-100/60 dark:bg-neutral-800/30 px-2 py-1.5 text-xs opacity-60"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <FileText className="h-3 w-3 shrink-0 text-neutral-400" />
+                          <span className="font-medium text-neutral-500 dark:text-neutral-400 truncate line-through">
+                            {item.description ?? "Premium"}
+                          </span>
+                          <Badge variant="custom" className="text-[9px] bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                            Paid Individually
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="font-semibold text-neutral-400 line-through">
+                            {formatCurrency(item.amountCents)}
+                          </span>
+                          {isAdmin && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-5 px-1 text-[10px] text-indigo-500 hover:text-indigo-700"
+                              disabled={itemActionBusy === item.id}
+                              onClick={() => handleStatementItemAction(stmt.id, item.id, "reactivate")}
+                              title="Move back to statement"
+                            >
+                              Restore
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                {receivableOnStatement.map((inv) => (
+                  <div
+                    key={inv.id}
+                    className="flex items-center justify-between gap-2 rounded bg-white/60 dark:bg-indigo-900/20 px-2 py-1.5 text-xs"
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <FileText className="h-3 w-3 shrink-0 text-indigo-400" />
+                      <span className="font-medium text-indigo-800 dark:text-indigo-200">{inv.invoiceNumber}</span>
+                      {inv.notes && (
+                        <span className="text-indigo-500 dark:text-indigo-400 truncate max-w-[120px]">· {inv.notes}</span>
+                      )}
+                    </div>
+                    <span className="shrink-0 font-semibold text-indigo-700 dark:text-indigo-300">
+                      {formatCurrency(inv.totalAmountCents - inv.paidAmountCents, inv.currency)}
+                    </span>
+                  </div>
+                ))}
+              </>
+            )}
+
             {payableOnStatement.map((inv) => (
               <div
                 key={inv.id}
@@ -416,6 +568,7 @@ export function PaymentSection({
                 </span>
               </div>
             ))}
+
             <div className="space-y-0.5 pt-1 border-t border-indigo-200/60 dark:border-indigo-700/60 mt-1 text-xs">
               {totalPayable > 0 && (
                 <>
@@ -428,6 +581,12 @@ export function PaymentSection({
                     <span>−{formatCurrency(totalPayable)}</span>
                   </div>
                 </>
+              )}
+              {stmt && paidIndItems.length > 0 && (
+                <div className="flex items-center justify-between text-neutral-400 dark:text-neutral-500">
+                  <span>Paid individually</span>
+                  <span>−{formatCurrency(stmt.paidIndividuallyTotal)}</span>
+                </div>
               )}
               <div className="flex items-center justify-between font-medium">
                 {netDue > 0 ? (
@@ -453,7 +612,7 @@ export function PaymentSection({
           </div>
         )}
 
-        {onStatementInvs.length === 0 && (
+        {!hasItems && (
           <div className="border-t border-indigo-200 dark:border-indigo-800 px-3 py-1.5">
             <div className="text-[11px] text-indigo-500 dark:text-indigo-400 italic">
               No policies added to this statement yet.

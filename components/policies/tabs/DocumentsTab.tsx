@@ -31,32 +31,144 @@ function toTrackingKey(label: string): string {
   return label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 }
 
+type ExtraDocContext = {
+  statementData?: StatementDataForPreview | null;
+  accountingLines?: AccountingLineForPreview[];
+  clientData?: Record<string, unknown> | null;
+  organisationData?: Record<string, unknown> | null;
+};
+
+type StatementDataForPreview = {
+  statementNumber: string;
+  statementDate: string | null;
+  statementStatus: string;
+  entityName: string | null;
+  entityType: string;
+  activeTotal: number;
+  paidIndividuallyTotal: number;
+  totalAmountCents: number;
+  paidAmountCents: number;
+  currency: string;
+  items: {
+    description: string | null;
+    amountCents: number;
+    status: string;
+    policyId: number;
+  }[];
+};
+
+type AccountingLineForPreview = {
+  lineKey: string;
+  lineLabel: string;
+  clientPremium: number | null;
+  agentPremium: number | null;
+  netPremium: number | null;
+  grossPremium: number | null;
+  levy: number | null;
+  stampDuty: number | null;
+  discount: number | null;
+  currency: string;
+};
+
 function resolveFieldValue(
   snapshot: SnapshotData,
   detail: PolicyDetail,
   section: TemplateSection,
   fieldKey: string,
+  extra?: ExtraDocContext,
 ): unknown {
   if (section.source === "policy") {
-    const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
+    const ext = (detail.extraAttributes ?? {}) as Record<string, unknown>;
     const map: Record<string, unknown> = {
       policyNumber: detail.policyNumber,
       createdAt: detail.createdAt,
       policyId: detail.policyId,
-      flowKey: extra.flowKey ?? "",
-      status: extra.status ?? "",
-      linkedPolicyId: extra.linkedPolicyId ?? "",
-      linkedPolicyNumber: extra.linkedPolicyNumber ?? "",
-      endorsementType: extra.endorsementType ?? "",
-      endorsementReason: extra.endorsementReason ?? "",
-      effectiveDate: extra.effectiveDate ?? "",
-      expiryDate: extra.expiryDate ?? "",
+      flowKey: ext.flowKey ?? "",
+      status: ext.status ?? "",
+      linkedPolicyId: ext.linkedPolicyId ?? "",
+      linkedPolicyNumber: ext.linkedPolicyNumber ?? "",
+      endorsementType: ext.endorsementType ?? "",
+      endorsementReason: ext.endorsementReason ?? "",
+      effectiveDate: ext.effectiveDate ?? "",
+      expiryDate: ext.expiryDate ?? "",
     };
-    return map[fieldKey] ?? extra[fieldKey] ?? snapshot[fieldKey] ?? "";
+    return map[fieldKey] ?? ext[fieldKey] ?? snapshot[fieldKey] ?? "";
   }
 
   if (section.source === "agent") {
     return (detail.agent as Record<string, unknown> | undefined)?.[fieldKey] ?? "";
+  }
+
+  if (section.source === "client") {
+    const cd = extra?.clientData;
+    if (!cd) return "";
+    const fuzzy = (obj: Record<string, unknown>, key: string): unknown => {
+      if (key in obj) return obj[key];
+      const lower = key.toLowerCase();
+      for (const k of Object.keys(obj)) {
+        if (k.toLowerCase() === lower) return obj[k];
+      }
+      return undefined;
+    };
+    return fuzzy(cd, fieldKey) ?? "";
+  }
+
+  if (section.source === "organisation") {
+    const od = extra?.organisationData;
+    if (!od) return "";
+    if (fieldKey === "fullAddress") {
+      const parts: string[] = [];
+      for (const k of ["flatNumber", "floorNumber", "blockNumber", "blockName", "streetNumber", "streetName", "propertyName", "districtName", "area"]) {
+        const v = String(od[k] ?? "").trim();
+        if (v) parts.push(v);
+      }
+      return parts.join(", ");
+    }
+    return od[fieldKey] ?? "";
+  }
+
+  if (section.source === "statement") {
+    const stmt = extra?.statementData;
+    if (!stmt) return "";
+    const activeItems = stmt.items.filter((it) => it.status === "active");
+    const paidItems = stmt.items.filter((it) => it.status === "paid_individually");
+    switch (fieldKey) {
+      case "statementNumber": return stmt.statementNumber;
+      case "statementDate": return stmt.statementDate ?? "";
+      case "statementStatus": return stmt.statementStatus;
+      case "entityName": return stmt.entityName ?? "";
+      case "entityType": return stmt.entityType;
+      case "activeTotal": return stmt.activeTotal / 100;
+      case "paidIndividuallyTotal": return stmt.paidIndividuallyTotal / 100;
+      case "totalAmountCents": return stmt.totalAmountCents / 100;
+      case "paidAmountCents": return stmt.paidAmountCents / 100;
+      case "currency": return stmt.currency;
+      case "itemCount": return stmt.items.length;
+      case "activeItemCount": return activeItems.length;
+      case "paidIndividuallyItemCount": return paidItems.length;
+      case "itemDescriptions": return activeItems.map((it) => it.description ?? "Premium").join("\n");
+      case "itemAmounts": return activeItems.map((it) => (it.amountCents / 100).toFixed(2)).join("\n");
+      case "itemStatuses": return stmt.items.map((it) => it.status).join("\n");
+      default: return "";
+    }
+  }
+
+  if (section.source === "accounting") {
+    const lines = extra?.accountingLines;
+    if (!lines?.length) return "";
+    const line = lines[0];
+    const accMap: Record<string, unknown> = {
+      clientPremium: line.clientPremium,
+      agentPremium: line.agentPremium,
+      netPremium: line.netPremium,
+      grossPremium: line.grossPremium,
+      levy: line.levy,
+      stampDuty: line.stampDuty,
+      discount: line.discount,
+      currency: line.currency,
+      lineLabel: line.lineLabel,
+    };
+    return accMap[fieldKey] ?? "";
   }
 
   if (section.source === "insured" || section.source === "contactinfo") {
@@ -141,6 +253,10 @@ function resolveFieldValue(
     );
   }
 
+  if (section.source === "static") {
+    return (section as unknown as { staticValue?: string }).staticValue ?? "";
+  }
+
   return "";
 }
 
@@ -209,6 +325,86 @@ function DocumentPreview({
   const meta = template.meta!;
   const printRef = React.useRef<HTMLDivElement>(null);
 
+  const needsExtraContext = meta.type === "statement" || meta.sections.some(
+    (s) => s.source === "statement" || s.source === "accounting" || s.source === "client" || s.source === "organisation",
+  );
+
+  const [extraCtx, setExtraCtx] = React.useState<ExtraDocContext>({});
+  const [loadingExtra, setLoadingExtra] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!needsExtraContext) return;
+    let cancelled = false;
+    setLoadingExtra(true);
+
+    (async () => {
+      const ctx: ExtraDocContext = {};
+      try {
+        const aud = audience ?? "client";
+        const stmtRes = await fetch(`/api/accounting/statements/by-policy/${detail.policyId}?_t=${Date.now()}&audience=${aud}`, { cache: "no-store" });
+        if (stmtRes.ok) {
+          const { statement } = await stmtRes.json() as { statement: StatementDataForPreview | null };
+          console.log("[DocPreview] statement for policy", detail.policyId, ":", statement ? `found (${statement.statementNumber}, ${statement.items?.length ?? 0} items)` : "null");
+          if (statement) ctx.statementData = statement;
+        }
+
+        const premRes = await fetch(`/api/policies/${detail.policyId}/premiums?_t=${Date.now()}`, { cache: "no-store" });
+        if (premRes.ok) {
+          const premData = await premRes.json();
+          const fields = Array.isArray(premData.fields) ? premData.fields as { key: string; label: string; premiumRole?: string; premiumColumn?: string }[] : [];
+          const lines = Array.isArray(premData.lines) ? premData.lines : [];
+
+          const findKey = (role: string) => {
+            const f = fields.find((fd) => fd.premiumRole === role);
+            if (f) return f.key;
+            const byLabel = fields.find((fd) => fd.label.toLowerCase().includes(role));
+            return byLabel?.key ?? null;
+          };
+          const clientKey = findKey("client");
+          const agentKey = findKey("agent");
+          const netKey = findKey("net");
+          const grossKey = fields.find((fd) => /gross/i.test(fd.label))?.key ?? null;
+          const levyKey = fields.find((fd) => /levy/i.test(fd.label))?.key ?? null;
+          const stampKey = fields.find((fd) => /stamp/i.test(fd.label))?.key ?? null;
+          const discountKey = fields.find((fd) => /discount/i.test(fd.label))?.key ?? null;
+          const currencyKey = fields.find((fd) => /currency/i.test(fd.label) || fd.key === "currency")?.key ?? null;
+
+          const num = (v: unknown) => v != null ? Number(v) : null;
+
+          ctx.accountingLines = lines.map((ln: { lineKey: string; lineLabel: string; values: Record<string, unknown> }) => ({
+            lineKey: ln.lineKey ?? "",
+            lineLabel: ln.lineLabel ?? ln.lineKey ?? "",
+            clientPremium: num(clientKey ? ln.values?.[clientKey] : null),
+            agentPremium: num(agentKey ? ln.values?.[agentKey] : null),
+            netPremium: num(netKey ? ln.values?.[netKey] : null),
+            grossPremium: num(grossKey ? ln.values?.[grossKey] : null),
+            levy: num(levyKey ? ln.values?.[levyKey] : null),
+            stampDuty: num(stampKey ? ln.values?.[stampKey] : null),
+            discount: num(discountKey ? ln.values?.[discountKey] : null),
+            currency: String(currencyKey ? ln.values?.[currencyKey] ?? "HKD" : "HKD"),
+          }));
+        }
+
+        if (detail.clientId) {
+          const cliRes = await fetch(`/api/clients/${detail.clientId}?_t=${Date.now()}`, { cache: "no-store" });
+          if (cliRes.ok) {
+            const cliData = await cliRes.json();
+            ctx.clientData = cliData.client ?? cliData;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch extra doc context:", err);
+      }
+
+      if (!cancelled) {
+        setExtraCtx(ctx);
+        setLoadingExtra(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [needsExtraContext, detail.policyId, detail.clientId, audience]);
+
   const hasAudienceSections = meta.sections.some(
     (s) => s.audience === "client" || s.audience === "agent",
   );
@@ -257,10 +453,17 @@ function DocumentPreview({
     lines.push("");
 
     for (const section of filteredSections) {
+      const isAgentFld = (f: { key: string; label: string }) =>
+        /agent/i.test(f.label) || /agent/i.test(f.key);
       const fields = section.fields
+        .filter((f) => {
+          if (!hasAudienceSections) return true;
+          if (viewAudience === "client" && isAgentFld(f)) return false;
+          return true;
+        })
         .map((f) => ({
           ...f,
-          resolved: resolveFieldValue(snapshot, detail, section, f.key),
+          resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx),
         }))
         .filter((f) => f.resolved !== "" && f.resolved !== null && f.resolved !== undefined);
 
@@ -331,22 +534,22 @@ function DocumentPreview({
 
       <div
         ref={printRef}
-        className="rounded-md border border-neutral-200 bg-white p-3 sm:p-6 text-neutral-900 dark:border-neutral-700 max-w-[800px]"
+        className="rounded-md border border-neutral-200 bg-white p-3 sm:p-6 text-neutral-900 dark:border-neutral-700 max-w-[800px] overflow-hidden"
         style={{ fontFamily: "system-ui, -apple-system, sans-serif", color: "#1a1a1a" }}
       >
         {/* Header */}
         <div className="border-b-2 border-neutral-800 pb-2 sm:pb-3 mb-3 sm:mb-5">
-          <div className="flex items-start justify-between">
-            <div>
-              <h1 className="text-base sm:text-2xl font-bold leading-tight m-0">{meta.header.title}</h1>
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <h1 className="text-base sm:text-2xl font-bold leading-tight m-0 wrap-break-word">{meta.header.title}</h1>
               {meta.header.subtitle && (
                 <div className="text-xs sm:text-[15px] text-neutral-500 mt-0.5">{meta.header.subtitle}</div>
               )}
             </div>
             {trackingEntry?.documentNumber && (
-              <div className="text-right shrink-0 ml-4">
+              <div className="text-right ml-2 shrink-0 max-w-[45%]">
                 <div className="text-[10px] sm:text-xs text-neutral-400 uppercase tracking-wider">Doc No.</div>
-                <div className="text-sm sm:text-lg font-bold text-neutral-800">{trackingEntry.documentNumber}</div>
+                <div className="text-xs sm:text-base font-bold text-neutral-800 break-all">{trackingEntry.documentNumber}</div>
               </div>
             )}
           </div>
@@ -360,12 +563,32 @@ function DocumentPreview({
           </div>
         </div>
 
-        {/* Sections */}
-        {filteredSections.map((section) => {
+        {/* Loading extra data */}
+        {loadingExtra && needsExtraContext && (
+          <div className="flex items-center gap-2 text-xs text-neutral-400 py-3">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Loading data...
+          </div>
+        )}
+        {!loadingExtra && meta.requiresStatement && !extraCtx.statementData && (
+          <div className="text-xs text-amber-600 bg-amber-50 rounded px-2 py-1.5 mb-2">
+            No statement found for this {viewAudience}. The {viewAudience} is not assigned to a Payment Schedule.
+          </div>
+        )}
+
+        {/* Sections — skip entirely when requiresStatement is set and no statement data exists */}
+        {!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData) && filteredSections.map((section) => {
+          const isAgentField = (f: { key: string; label: string }) =>
+            /agent/i.test(f.label) || /agent/i.test(f.key);
           const fields = section.fields
+            .filter((f) => {
+              if (!hasAudienceSections) return true;
+              if (viewAudience === "client" && isAgentField(f)) return false;
+              return true;
+            })
             .map((f) => ({
               ...f,
-              resolved: resolveFieldValue(snapshot, detail, section, f.key),
+              resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx),
             }))
             .filter(
               (f) =>
@@ -390,7 +613,7 @@ function DocumentPreview({
                     <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium sm:w-[40%] sm:shrink-0">
                       {f.label}
                     </span>
-                    <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word sm:text-right">
+                    <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word sm:text-right" style={{ whiteSpace: "pre-line" }}>
                       {formatValue(f.resolved, f.format, f.currencyCode)}
                     </span>
                   </div>
@@ -400,13 +623,13 @@ function DocumentPreview({
           );
         })}
 
-        {/* Footer */}
-        {meta.footer?.text && (
+        {/* Footer — hide when requiresStatement and no data */}
+        {!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData) && meta.footer?.text && (
           <div className="mt-6 sm:mt-8 pt-2 sm:pt-3 border-t border-neutral-300 text-[10px] sm:text-xs text-neutral-400">
             {meta.footer.text}
           </div>
         )}
-        {meta.footer?.showSignature && (
+        {!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData) && meta.footer?.showSignature && (
           <div className="mt-10 sm:mt-16 flex justify-between">
             <div className="w-36 sm:w-[200px] border-t border-neutral-800 pt-1 text-[10px] sm:text-xs">Authorized Signature</div>
             <div className="w-36 sm:w-[200px] border-t border-neutral-800 pt-1 text-[10px] sm:text-xs">Client Signature</div>
