@@ -121,6 +121,28 @@ function resolveFieldValue(
 
 const formatValue = formatResolvedValue;
 
+function isPerItemField(key: string): boolean {
+  return key === "itemDescriptions" || key === "itemAmounts" || key === "itemStatuses" || key.startsWith("item_");
+}
+
+function getItemFieldValue(
+  item: StatementDataForPreview["items"][0],
+  fieldKey: string,
+): unknown {
+  switch (fieldKey) {
+    case "itemDescriptions": return item.description ?? "Premium";
+    case "itemAmounts": return item.amountCents / 100;
+    case "itemStatuses": return item.status;
+    default:
+      if (fieldKey.startsWith("item_")) {
+        const premKey = fieldKey.slice(5);
+        const v = item.premiums?.[premKey];
+        return v != null ? v : null;
+      }
+      return null;
+  }
+}
+
 function needsConfirmation(meta: DocumentTemplateMeta): boolean {
   if (meta.requiresConfirmation !== undefined) return meta.requiresConfirmation;
   return meta.type === "quotation";
@@ -243,6 +265,10 @@ function DocumentPreview({
     .border-b { border-bottom: 1px solid #f0f0f0; }
     .border-b-2 { border-bottom: 2px solid #333; }
     .border-t { border-top: 1px solid #ddd; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { padding: 6px 8px; font-weight: 600; color: #737373; border-bottom: 1px solid #e5e5e5; }
+    td { padding: 6px 8px; font-weight: 600; color: #1a1a1a; border-bottom: 1px solid #f5f5f5; }
+    tr:nth-child(even) td { background: #fafafa; }
     @media print { body { padding: 20px; } }
   `;
 
@@ -279,12 +305,67 @@ function DocumentPreview({
     for (const section of filteredSections) {
       const isAgentFld = (f: { key: string; label: string }) =>
         /agent/i.test(f.label) || /agent/i.test(f.key);
-      const fields = section.fields
-        .filter((f) => {
-          if (!hasAudienceSections) return true;
-          if (viewAudience === "client" && isAgentFld(f)) return false;
-          return true;
-        })
+      const visibleFlds = section.fields.filter((f) => {
+        if (!hasAudienceSections) return true;
+        if (viewAudience === "client" && isAgentFld(f)) return false;
+        return true;
+      });
+
+      const useTable =
+        (section.layout === "table" || section.id === "line_items") &&
+        extraCtx.statementData?.items?.length;
+
+      if (useTable) {
+        const items = extraCtx.statementData!.items.filter((it) => it.status === "active");
+        const tableCols = visibleFlds.filter((f) => isPerItemField(f.key));
+        const scalarFlds = visibleFlds
+          .filter((f) => !isPerItemField(f.key))
+          .map((f) => ({
+            ...f,
+            resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
+          }))
+          .filter((f) => f.resolved !== "" && f.resolved !== null && f.resolved !== undefined);
+
+        if (tableCols.length === 0 && scalarFlds.length === 0) continue;
+
+        lines.push(`▸ ${section.title}`);
+
+        if (scalarFlds.length > 0) {
+          const maxLbl = Math.max(...scalarFlds.map((f) => f.label.length));
+          for (const f of scalarFlds) {
+            lines.push(`  ${f.label.padEnd(maxLbl)}  ${formatValue(f.resolved, f.format, f.currencyCode)}`);
+          }
+        }
+
+        if (tableCols.length > 0 && items.length > 0) {
+          const colWidths = tableCols.map((col) => {
+            const headerLen = col.label.length;
+            const maxVal = Math.max(
+              ...items.map((it) => formatValue(getItemFieldValue(it, col.key), col.format, col.currencyCode).length),
+            );
+            return Math.max(headerLen, maxVal);
+          });
+
+          const headerLine = tableCols.map((col, i) =>
+            col.key === "itemDescriptions" ? col.label.padEnd(colWidths[i]) : col.label.padStart(colWidths[i]),
+          ).join("  ");
+          lines.push(`  ${headerLine}`);
+          lines.push(`  ${"─".repeat(headerLine.length)}`);
+
+          for (const item of items) {
+            const row = tableCols.map((col, i) => {
+              const val = formatValue(getItemFieldValue(item, col.key), col.format, col.currencyCode);
+              return col.key === "itemDescriptions" ? val.padEnd(colWidths[i]) : val.padStart(colWidths[i]);
+            }).join("  ");
+            lines.push(`  ${row}`);
+          }
+        }
+
+        lines.push("");
+        continue;
+      }
+
+      const fields = visibleFlds
         .map((f) => ({
           ...f,
           resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
@@ -404,12 +485,105 @@ function DocumentPreview({
         {!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData) && filteredSections.map((section) => {
           const isAgentField = (f: { key: string; label: string }) =>
             /agent/i.test(f.label) || /agent/i.test(f.key);
-          const fields = section.fields
-            .filter((f) => {
-              if (!hasAudienceSections) return true;
-              if (viewAudience === "client" && isAgentField(f)) return false;
-              return true;
-            })
+          const visibleFields = section.fields.filter((f) => {
+            if (!hasAudienceSections) return true;
+            if (viewAudience === "client" && isAgentField(f)) return false;
+            return true;
+          });
+
+          const useTable =
+            (section.layout === "table" || section.id === "line_items") &&
+            extraCtx.statementData?.items?.length;
+
+          if (useTable) {
+            const items = extraCtx.statementData!.items.filter((it) => it.status === "active");
+            const tableCols = visibleFields.filter((f) => isPerItemField(f.key));
+            const scalarFields = visibleFields
+              .filter((f) => !isPerItemField(f.key))
+              .map((f) => ({
+                ...f,
+                resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
+              }))
+              .filter((f) => f.resolved !== "" && f.resolved !== null && f.resolved !== undefined);
+
+            if (tableCols.length === 0 && scalarFields.length === 0) return null;
+
+            return (
+              <div key={section.id} className="mb-3 sm:mb-5">
+                <div className="text-[11px] sm:text-sm font-bold text-neutral-700 uppercase tracking-wide border-b border-neutral-300 pb-1 mb-1.5 sm:mb-2">
+                  {section.title}
+                </div>
+
+                {scalarFields.length > 0 && (
+                  <div className="mb-2">
+                    {scalarFields.map((f, idx) => (
+                      <div
+                        key={f.key}
+                        className={`flex justify-between gap-3 py-1 sm:py-1.5 ${idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                      >
+                        <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[40%] shrink-0">
+                          {f.label}
+                        </span>
+                        <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
+                          {formatValue(f.resolved, f.format, f.currencyCode)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {tableCols.length > 0 && items.length > 0 && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[11px] sm:text-[13px] border-collapse">
+                      <thead>
+                        <tr className="border-b border-neutral-200">
+                          {tableCols.map((col) => (
+                            <th
+                              key={col.key}
+                              className={cn(
+                                "py-1.5 px-2 font-semibold text-neutral-500 whitespace-nowrap",
+                                col.key === "itemDescriptions" ? "text-left" : "text-right",
+                              )}
+                            >
+                              {col.label}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {items.map((item, rowIdx) => (
+                          <tr
+                            key={rowIdx}
+                            className={cn(
+                              "border-b border-neutral-100",
+                              rowIdx % 2 === 1 && "bg-neutral-50",
+                            )}
+                          >
+                            {tableCols.map((col) => {
+                              const raw = getItemFieldValue(item, col.key);
+                              return (
+                                <td
+                                  key={col.key}
+                                  className={cn(
+                                    "py-1.5 px-2 font-semibold text-neutral-900",
+                                    col.key === "itemDescriptions" ? "text-left" : "text-right whitespace-nowrap",
+                                  )}
+                                >
+                                  {formatValue(raw, col.format, col.currencyCode)}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          const fields = visibleFields
             .map((f) => ({
               ...f,
               resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
@@ -432,12 +606,12 @@ function DocumentPreview({
                 {fields.map((f, idx) => (
                   <div
                     key={f.key}
-                    className={`flex flex-col sm:flex-row sm:justify-between sm:gap-3 print:flex-row print:justify-between py-1 sm:py-1.5 ${idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                    className={`flex justify-between gap-3 py-1 sm:py-1.5 ${idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}
                   >
-                    <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium sm:w-[40%] sm:shrink-0">
+                    <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[40%] shrink-0">
                       {f.label}
                     </span>
-                    <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word sm:text-right" style={{ whiteSpace: "pre-line" }}>
+                    <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
                       {formatValue(f.resolved, f.format, f.currencyCode)}
                     </span>
                   </div>

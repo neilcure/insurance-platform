@@ -44,10 +44,11 @@ const STATEMENT_SECTIONS = [
     id: "line_items",
     title: "Line Items",
     source: "statement",
+    layout: "table",
     fields: [
       { key: "itemDescriptions", label: "Description" },
       { key: "itemAmounts", label: "Amount", format: "currency", currencyCode: "HKD" },
-      { key: "itemStatuses", label: "Status" },
+      { key: "item_clientPremium", label: "Client Premium", format: "currency", currencyCode: "HKD" },
     ],
   },
   {

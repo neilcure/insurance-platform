@@ -23,8 +23,8 @@ interface SlideDrawerProps {
   children: React.ReactNode;
 }
 
-const LEFT_WIDTH = "w-[280px] sm:w-[320px] md:w-[380px]";
-const RIGHT_WIDTH = "w-[300px] sm:w-[360px] md:w-[420px]";
+const LEFT_WIDTH = "w-[calc(100vw-3.5rem)] sm:w-[384px] md:w-[456px]";
+const RIGHT_WIDTH = "w-[calc(100vw-3.5rem)] sm:w-[432px] md:w-[504px]";
 
 export function SlideDrawer({
   open,

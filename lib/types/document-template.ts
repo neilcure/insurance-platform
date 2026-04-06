@@ -14,6 +14,8 @@ export type TemplateSection = {
   packageName?: string;
   /** Which audience sees this section: "all" (default), "client", or "agent" */
   audience?: "all" | "client" | "agent";
+  /** Render fields as a table (one row per item) instead of label–value pairs */
+  layout?: "default" | "table";
   fields: TemplateFieldMapping[];
 };
 
