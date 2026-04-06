@@ -8,6 +8,7 @@ import { loadAccountingFields } from "@/lib/accounting-fields";
 import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
 import { generateDocumentNumber } from "@/lib/document-number";
 import { resolvePremiumByRole } from "@/lib/resolve-policy-agent";
+import { resolveDocPrefix } from "@/lib/resolve-prefix";
 
 export async function autoCreateAccountingInvoices(policyId: number, docType: string, userId: number, documentNumber?: string, templateType?: string) {
   try {
@@ -145,9 +146,10 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
       const suffix = String.fromCharCode(97 + i);
       const suffixedPolicyNo = `${policy.policyNumber}(${suffix})`;
       const amountCents = resolvePremiumByRole(premium as Record<string, unknown>, receivableRole, accountingFields);
+      const invPrefix = documentNumber ? null : await resolveDocPrefix("invoice", "INV");
       const invoiceNumber = documentNumber
         ? `${documentNumber}(${suffix})`
-        : await generateDocumentNumber("INV");
+        : await generateDocumentNumber(invPrefix!);
 
       await db.transaction(async (tx) => {
         // Advisory lock scoped to transaction prevents concurrent creation
@@ -233,7 +235,7 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     });
   }
 
-  const invoiceNumber = documentNumber ?? await generateDocumentNumber("INV");
+  const invoiceNumber = documentNumber ?? await generateDocumentNumber(await resolveDocPrefix("invoice", "INV"));
 
   await db.transaction(async (tx) => {
     // Advisory lock scoped to transaction prevents concurrent creation

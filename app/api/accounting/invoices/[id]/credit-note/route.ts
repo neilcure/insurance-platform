@@ -6,6 +6,7 @@ import {
 } from "@/db/schema/accounting";
 import { eq, and, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
+import { resolveDocPrefix } from "@/lib/resolve-prefix";
 
 export const dynamic = "force-dynamic";
 
@@ -185,7 +186,7 @@ export async function POST(
 }
 
 async function generateCreditNoteNumber(orgId: number): Promise<string> {
-  const prefix = "CN";
+  const prefix = await resolveDocPrefix("credit_note", "CN");
   const year = new Date().getFullYear();
   const countResult = await db
     .select({ count: sql<number>`count(*)::int` })

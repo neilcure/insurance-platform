@@ -299,11 +299,10 @@ export default function AccountingPage() {
     return result;
   }, [invoices]);
 
-  // Extract specific doc numbers from the documentNumbers map
-  function getDocNumber(inv: InvoiceRow, prefix: string): string | null {
+  function getDocNumberByType(inv: InvoiceRow, type: string): string | null {
     if (!inv.documentNumbers) return null;
-    for (const [, num] of Object.entries(inv.documentNumbers)) {
-      if (typeof num === "string" && num.toUpperCase().startsWith(prefix.toUpperCase())) return num;
+    for (const [key, num] of Object.entries(inv.documentNumbers)) {
+      if (key.includes(type)) return num;
     }
     return null;
   }
@@ -527,8 +526,8 @@ export default function AccountingPage() {
               {filtered.map((inv) => {
                 const isExpanded = expandedInvoice === inv.id;
                 const remaining = inv.totalAmountCents - inv.paidAmountCents;
-                const quotationNo = getDocNumber(inv, "QUO") || getDocNumber(inv, "HIDIQUO");
-                const receiptNo = getDocNumber(inv, "REC");
+                const quotationNo = getDocNumberByType(inv, "quotation") || getDocNumberByType(inv, "quote");
+                const receiptNo = getDocNumberByType(inv, "receipt");
 
                 return (
                   <div key={inv.id} className="rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">

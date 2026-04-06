@@ -19,6 +19,9 @@ All field value resolution, insured name extraction, and template formatting MUS
 | Get name from insured + packages fallback | `getDisplayNameFromSnapshot(snapshot)` |
 | Case-insensitive key lookup on any object | `fuzzyGet(obj, key)` |
 | Build formatted address from getter | `buildAddressFromGetter(getter)` |
+| Get primary ID from insured snapshot | `getInsuredPrimaryId(insured)` |
+| Get contact field (mobile, tel, email) | `getContactField(insured, key)` |
+| Resolve document number for current template | `resolveRawValue({ source: "policy", fieldKey: "documentNumber" }, ctx)` — requires `documentTracking` + `currentDocTrackingKey` in ctx |
 
 ## NEVER duplicate these patterns
 

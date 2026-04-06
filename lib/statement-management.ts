@@ -5,10 +5,10 @@ import {
   accountingPaymentSchedules,
 } from "@/db/schema/accounting";
 import { policyPremiums } from "@/db/schema/premiums";
-import { formOptions } from "@/db/schema/form_options";
 import { policies } from "@/db/schema/insurance";
 import { users, clients } from "@/db/schema/core";
 import { generateDocumentNumber } from "@/lib/document-number";
+import { resolveDocPrefix } from "@/lib/resolve-prefix";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { resolvePremiumByRole } from "@/lib/resolve-policy-agent";
 import { and, eq, sql, inArray } from "drizzle-orm";
@@ -30,24 +30,7 @@ async function ensureItemStatusColumn() {
 // Look up the statement document template prefix from form_options
 // ---------------------------------------------------------------------------
 async function getStatementPrefix(): Promise<string> {
-  const rows = await db
-    .select({ meta: formOptions.meta })
-    .from(formOptions)
-    .where(
-      and(
-        eq(formOptions.groupKey, "document_templates"),
-        eq(formOptions.isActive, true),
-      ),
-    );
-
-  for (const row of rows) {
-    const meta = row.meta as Record<string, unknown> | null;
-    if (meta?.type === "statement" && meta.documentPrefix) {
-      return meta.documentPrefix as string;
-    }
-  }
-
-  return "ST";
+  return resolveDocPrefix("statement", "ST");
 }
 
 // ---------------------------------------------------------------------------

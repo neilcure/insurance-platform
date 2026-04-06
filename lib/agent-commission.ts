@@ -6,6 +6,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { generateDocumentNumber } from "@/lib/document-number";
 import { resolvePolicyAgent, resolvePremiumByRole } from "@/lib/resolve-policy-agent";
+import { resolveDocPrefix } from "@/lib/resolve-prefix";
 
 /**
  * When a client pays the Client Premium directly, the agent earns a commission
@@ -84,7 +85,7 @@ export async function createAgentCommissionPayable(
 
   if (totalCommissionCents <= 0 || items.length === 0) return;
 
-  const invoiceNumber = await generateDocumentNumber("AP");
+  const invoiceNumber = await generateDocumentNumber(await resolveDocPrefix("payable", "AP"));
 
   const [agentSchedule] = await db
     .select({ id: accountingPaymentSchedules.id })

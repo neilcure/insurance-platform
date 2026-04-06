@@ -55,6 +55,10 @@ export async function POST(
   }
   const { ctx: mergeCtx, policyNumber } = result;
 
+  const docTrackingKey = tplRow.label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  const isAgentTpl = (meta as unknown as { isAgentTemplate?: boolean }).isAgentTemplate;
+  mergeCtx.currentDocTrackingKey = isAgentTpl ? `${docTrackingKey}_agent` : docTrackingKey;
+
   try {
     const templateBytes = await readPdfTemplate(meta.filePath);
     const templateImages: PdfImageMapping[] = meta.images ?? [];

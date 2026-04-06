@@ -1,4 +1,4 @@
-import type { InvoiceStatus, PaymentStatus, InvoiceType } from "@/lib/types/accounting";
+import type { InvoiceStatus, PaymentStatus } from "@/lib/types/accounting";
 
 export function fmtCurrency(cents: number, currency = "HKD"): string {
   return new Intl.NumberFormat("en-HK", {
@@ -87,8 +87,4 @@ export function calculateProRataRefund(
   return { eligible: true, refundCents, usedMonths, remainingMonths, usedPremiumCents };
 }
 
-export function getInvoiceTypePrefix(invoiceType: InvoiceType, direction: string): string {
-  if (invoiceType === "credit_note") return "CN";
-  if (invoiceType === "statement") return "ST";
-  return direction === "payable" ? "AP" : "INV";
-}
+export { resolveInvoicePrefix as getInvoiceTypePrefix } from "@/lib/resolve-prefix";

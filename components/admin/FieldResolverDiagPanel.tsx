@@ -20,6 +20,13 @@ type PackageSummary = { name: string; fieldCount: number; sampleKeys: string[] }
 
 type ConvenienceResult = Record<string, string>;
 
+type DocTrackingItem = { key: string; documentNumber: string; status: string };
+
+type PrefixData = {
+  adminConfigured: Record<string, string>;
+  effective: Record<string, string>;
+};
+
 type FullResponse = {
   mode: "full";
   policyNumber: string;
@@ -31,6 +38,8 @@ type FullResponse = {
   packageSummary: PackageSummary[];
   convenienceHelpers: ConvenienceResult;
   fieldResults: FieldResult[];
+  documentTracking: DocTrackingItem[];
+  prefixes?: PrefixData;
 };
 
 type CustomResponse = {
@@ -353,6 +362,95 @@ export function FieldResolverDiagPanel() {
               </table>
             </div>
           </div>
+
+          {/* Document Tracking */}
+          {data.documentTracking.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-sm font-semibold">Document Tracking ({data.documentTracking.length} entries)</h4>
+              <div className="overflow-x-auto rounded-md border dark:border-neutral-700">
+                <table className="w-full text-sm">
+                  <thead className="bg-neutral-50 dark:bg-neutral-800">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Tracking Key</th>
+                      <th className="px-3 py-2 text-left font-medium">Document Number</th>
+                      <th className="px-3 py-2 text-left font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y dark:divide-neutral-700">
+                    {data.documentTracking.map((d) => (
+                      <tr key={d.key}>
+                        <td className="px-3 py-2 font-mono text-xs">{d.key}</td>
+                        <td className="px-3 py-2 font-mono text-xs font-semibold">
+                          {d.documentNumber || <span className="text-neutral-400 italic">not assigned</span>}
+                        </td>
+                        <td className="px-3 py-2">
+                          <Badge variant="outline" className="text-[10px]">{d.status || "none"}</Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-1 text-[10px] text-neutral-400">
+                Use <code>source: policy</code> + <code>fieldKey: documentNumber</code> in templates.
+                Set the tracking key via the Custom Field Test (<code>docTrackingKey</code> parameter).
+              </p>
+            </div>
+          )}
+
+          {/* Resolved Prefixes */}
+          {data.prefixes && (
+            <div>
+              <h4 className="mb-2 text-sm font-semibold">Document Number Prefixes (from lib/resolve-prefix.ts)</h4>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="rounded-md border dark:border-neutral-700">
+                  <div className="bg-neutral-50 px-3 py-2 text-xs font-semibold dark:bg-neutral-800">
+                    Admin-Configured (from Document Templates)
+                  </div>
+                  {Object.keys(data.prefixes.adminConfigured).length > 0 ? (
+                    <div className="divide-y dark:divide-neutral-700">
+                      {Object.entries(data.prefixes.adminConfigured).map(([type, prefix]) => (
+                        <div key={type} className="flex items-center justify-between px-3 py-2 text-sm">
+                          <span className="font-mono text-xs text-neutral-600 dark:text-neutral-400">{type}</span>
+                          <Badge variant="outline" className="font-mono text-xs font-bold">{prefix}</Badge>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="px-3 py-3 text-xs text-neutral-400 italic">
+                      No prefixes configured in document templates — all will use hardcoded fallbacks
+                    </div>
+                  )}
+                </div>
+                <div className="rounded-md border dark:border-neutral-700">
+                  <div className="bg-neutral-50 px-3 py-2 text-xs font-semibold dark:bg-neutral-800">
+                    Effective (what the system actually uses)
+                  </div>
+                  <div className="divide-y dark:divide-neutral-700">
+                    {Object.entries(data.prefixes.effective).map(([type, prefix]) => {
+                      const adminVal = data.prefixes?.adminConfigured[type];
+                      const isFromAdmin = !!adminVal;
+                      return (
+                        <div key={type} className="flex items-center justify-between px-3 py-2 text-sm">
+                          <span className="font-mono text-xs text-neutral-600 dark:text-neutral-400">{type}</span>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className="font-mono text-xs font-bold">{prefix}</Badge>
+                            <span className={`text-[10px] ${isFromAdmin ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}`}>
+                              {isFromAdmin ? "admin" : "fallback"}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              <p className="mt-1 text-[10px] text-neutral-400">
+                Admin-configured prefixes are read from Document Templates settings.
+                &quot;fallback&quot; means no admin prefix found for that type — system uses a built-in default.
+              </p>
+            </div>
+          )}
 
           {/* Filters */}
           <div>

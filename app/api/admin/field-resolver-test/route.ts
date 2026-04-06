@@ -17,14 +17,19 @@ import {
   type ResolveContext,
   type SnapshotData,
 } from "@/lib/field-resolver";
+import { getAllResolvedPrefixes, resolveInvoicePrefix } from "@/lib/resolve-prefix";
 
 export const dynamic = "force-dynamic";
+
+type DocTrackingMap = Record<string, { documentNumber?: string; status?: string; [key: string]: unknown }>;
 
 function buildContext(
   row: { pId: number; pNum: string; pCreated: string; cExtra: unknown; agentId: number | null },
   extra: Record<string, unknown>,
   snapshot: SnapshotData,
   agent: Record<string, unknown> | null,
+  documentTracking?: DocTrackingMap | null,
+  currentDocTrackingKey?: string,
 ): ResolveContext {
   return {
     policyNumber: row.pNum,
@@ -33,6 +38,8 @@ function buildContext(
     snapshot,
     policyExtra: extra,
     agent,
+    documentTracking: documentTracking ?? null,
+    currentDocTrackingKey,
   };
 }
 
@@ -60,6 +67,7 @@ export async function GET(request: NextRequest) {
       pCreated: policies.createdAt,
       cExtra: cars.extraAttributes,
       agentId: policies.agentId,
+      docTracking: policies.documentTracking,
     })
     .from(policies)
     .leftJoin(cars, eq(cars.policyId, policies.id))
@@ -86,11 +94,16 @@ export async function GET(request: NextRequest) {
     if (agentRow) agent = agentRow as Record<string, unknown>;
   }
 
+  const docTracking = (row.docTracking ?? null) as DocTrackingMap | null;
+  const customDocKey = request.nextUrl.searchParams.get("docTrackingKey") || undefined;
+
   const ctx = buildContext(
     { pId: row.pId, pNum: row.pNum, pCreated: String(row.pCreated ?? ""), cExtra: row.cExtra, agentId: row.agentId },
     extra,
     snapshot,
     agent,
+    docTracking,
+    customDocKey,
   );
 
   // Custom single-field test mode
@@ -121,6 +134,8 @@ export async function GET(request: NextRequest) {
     { source: "policy", fieldKey: "flowKey" },
     { source: "policy", fieldKey: "effectiveDate" },
     { source: "policy", fieldKey: "expiryDate" },
+    { source: "policy", fieldKey: "documentNumber" },
+    { source: "policy", fieldKey: "documentStatus" },
     { source: "insured", fieldKey: "displayName" },
     { source: "insured", fieldKey: "primaryId" },
     { source: "insured", fieldKey: "insuredType" },
@@ -200,6 +215,27 @@ export async function GET(request: NextRequest) {
     packageSummary.push({ name: pkgName, fieldCount: keys.length, sampleKeys: keys.slice(0, 30) });
   }
 
+  // Document tracking summary
+  const docTrackingSummary: { key: string; documentNumber: string; status: string }[] = [];
+  if (docTracking) {
+    for (const [key, entry] of Object.entries(docTracking)) {
+      if (key.startsWith("_")) continue;
+      docTrackingSummary.push({
+        key,
+        documentNumber: (entry as Record<string, unknown>)?.documentNumber as string ?? "",
+        status: (entry as Record<string, unknown>)?.status as string ?? "",
+      });
+    }
+  }
+
+  const adminPrefixes = await getAllResolvedPrefixes();
+  const effectivePrefixes = {
+    invoice: await resolveInvoicePrefix("invoice", "receivable"),
+    payable: await resolveInvoicePrefix("invoice", "payable"),
+    credit_note: await resolveInvoicePrefix("credit_note", "receivable"),
+    statement: await resolveInvoicePrefix("statement", "receivable"),
+  };
+
   return NextResponse.json({
     mode: "full",
     policyNumber: row.pNum,
@@ -211,5 +247,10 @@ export async function GET(request: NextRequest) {
     packageSummary,
     convenienceHelpers: convenience,
     fieldResults: results,
+    documentTracking: docTrackingSummary,
+    prefixes: {
+      adminConfigured: adminPrefixes,
+      effective: effectivePrefixes,
+    },
   });
 }

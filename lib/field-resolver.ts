@@ -78,6 +78,15 @@ export type FieldRef = {
   staticValue?: string;
 };
 
+/** Shape of a single document tracking entry (mirrors DocumentStatusEntry). */
+export type DocTrackingEntry = {
+  documentNumber?: string;
+  status?: string;
+  sentTo?: string;
+  sentAt?: string;
+  [key: string]: unknown;
+};
+
 /** All data a resolver might need. */
 export type ResolveContext = {
   policyNumber?: string;
@@ -92,6 +101,10 @@ export type ResolveContext = {
   invoiceData?: InvoiceCtx | null;
   statementData?: StatementCtx | null;
   isTpoWithOd?: boolean;
+  /** Document tracking data keyed by tracking key (e.g. "quotation", "invoice_agent"). */
+  documentTracking?: Record<string, DocTrackingEntry> | null;
+  /** The current template's tracking key — determines which documentNumber is resolved. */
+  currentDocTrackingKey?: string;
 };
 
 export type FormatOptions = {
@@ -280,7 +293,26 @@ function resolvePackage(
   );
 }
 
+function resolveDocTracking(ctx: ResolveContext, key: string): unknown {
+  const trackingKey = ctx.currentDocTrackingKey;
+  if (!trackingKey || !ctx.documentTracking) return "";
+  const entry = ctx.documentTracking[trackingKey];
+  if (!entry) return "";
+  switch (key) {
+    case "documentNumber": return entry.documentNumber ?? "";
+    case "documentStatus": return entry.status ?? "";
+    case "documentSentTo": return entry.sentTo ?? "";
+    case "documentSentAt": return entry.sentAt ?? "";
+    default: return entry[key] ?? "";
+  }
+}
+
 function resolvePolicy(ctx: ResolveContext, key: string): unknown {
+  if (key === "documentNumber" || key === "documentStatus" ||
+      key === "documentSentTo" || key === "documentSentAt") {
+    return resolveDocTracking(ctx, key);
+  }
+
   const ext = ctx.policyExtra ?? {};
   const map: Record<string, unknown> = {
     policyNumber: ctx.policyNumber,

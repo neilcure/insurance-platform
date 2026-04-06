@@ -6,6 +6,7 @@ import {
   type InvoiceCtx,
   type StatementCtx,
   type ResolveContext,
+  type DocTrackingEntry,
 } from "@/lib/field-resolver";
 
 export type { SnapshotData };
@@ -25,6 +26,8 @@ export type MergeContext = {
   invoiceData?: InvoiceContext | null;
   statementData?: StatementContext | null;
   isTpoWithOd?: boolean;
+  documentTracking?: Record<string, DocTrackingEntry> | null;
+  currentDocTrackingKey?: string;
 };
 
 function toResolveContext(ctx: MergeContext): ResolveContext {
@@ -41,6 +44,8 @@ function toResolveContext(ctx: MergeContext): ResolveContext {
     invoiceData: ctx.invoiceData,
     statementData: ctx.statementData,
     isTpoWithOd: ctx.isTpoWithOd,
+    documentTracking: ctx.documentTracking,
+    currentDocTrackingKey: ctx.currentDocTrackingKey,
   };
 }
 

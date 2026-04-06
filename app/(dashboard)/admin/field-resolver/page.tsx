@@ -165,6 +165,67 @@ export default async function FieldResolverDiagPage() {
       </SettingsBlock>
 
       <SettingsBlock
+        title="Document Number Resolution"
+        description="How document numbers from tracking data are accessed via the resolver."
+      >
+        <div className="space-y-4">
+          <div className="rounded-md border p-4 dark:border-neutral-700">
+            <h4 className="mb-2 text-sm font-semibold">How it works</h4>
+            <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-2">
+              Document numbers are stored in <code>policies.documentTracking</code> (a JSON column),
+              keyed by a tracking key derived from the template label. The field-resolver accesses
+              them when <code>source = &quot;policy&quot;</code> and the context includes the current
+              template&apos;s tracking key.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-neutral-50 dark:bg-neutral-800">
+                  <tr>
+                    <th className="px-3 py-1.5 text-left font-medium">Field Key</th>
+                    <th className="px-3 py-1.5 text-left font-medium">Resolves To</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y dark:divide-neutral-700 text-xs">
+                  {[
+                    { key: "documentNumber", desc: "The generated document number (e.g. QUO-2026-3847)" },
+                    { key: "documentStatus", desc: "Tracking status (sent, confirmed, rejected)" },
+                    { key: "documentSentTo", desc: "Email address the document was sent to" },
+                    { key: "documentSentAt", desc: "ISO timestamp when the document was sent" },
+                  ].map((r) => (
+                    <tr key={r.key}>
+                      <td className="px-3 py-1.5 font-mono">{r.key}</td>
+                      <td className="px-3 py-1.5">{r.desc}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="rounded-md border p-4 dark:border-neutral-700">
+            <h4 className="mb-2 text-sm font-semibold">Prefix Settings Flow</h4>
+            <div className="space-y-2 text-sm text-neutral-600 dark:text-neutral-300">
+              <p>
+                <strong>Document template prefix</strong> (e.g. QUO, INV, REC) — configured per template
+                in Admin &gt; Policy Settings &gt; Document Templates. Stored in <code>form_options.meta.documentPrefix</code>.
+                Used at &quot;prepare&quot; or &quot;send&quot; time to generate the number.
+              </p>
+              <p>
+                <strong>Flow prefix</strong> (e.g. POL, CLI) — configured in Admin &gt; Client Number Settings &gt;
+                Flow Prefixes. Stored in <code>app_settings[flow_prefixes]</code>.
+                Used at policy creation time to generate <code>policyNumber</code>.
+              </p>
+              <p>
+                <strong>Client number prefix</strong> (C for company, P for personal) — configured in Admin &gt;
+                Client Number Settings. Stored in <code>app_settings[client_number_prefixes]</code>.
+                Used when creating client records from flows.
+              </p>
+            </div>
+          </div>
+        </div>
+      </SettingsBlock>
+
+      <SettingsBlock
         title="Address Building"
         description="How fullAddress is constructed from individual fields."
       >

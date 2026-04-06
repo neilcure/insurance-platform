@@ -26,6 +26,7 @@ import {
   type SnapshotData,
   type ResolveContext,
   type FieldRef,
+  type DocTrackingEntry,
 } from "@/lib/field-resolver";
 
 function toTrackingKey(label: string): string {
@@ -74,6 +75,8 @@ function buildResolveContext(
   snapshot: SnapshotData,
   detail: PolicyDetail,
   extra?: ExtraDocContext,
+  tracking?: Record<string, DocTrackingEntry> | null,
+  currentDocTrackingKey?: string,
 ): ResolveContext {
   const ext = (detail.extraAttributes ?? {}) as Record<string, unknown>;
   return {
@@ -87,6 +90,8 @@ function buildResolveContext(
     organisation: extra?.organisationData,
     accountingLines: extra?.accountingLines,
     statementData: extra?.statementData,
+    documentTracking: tracking,
+    currentDocTrackingKey,
   };
 }
 
@@ -105,10 +110,12 @@ function resolveFieldValue(
   section: TemplateSection,
   fieldKey: string,
   extra?: ExtraDocContext,
+  tracking?: Record<string, DocTrackingEntry> | null,
+  currentDocTrackingKey?: string,
 ): unknown {
   return resolveRawValue(
     docFieldRef(section, fieldKey),
-    buildResolveContext(snapshot, detail, extra),
+    buildResolveContext(snapshot, detail, extra, tracking, currentDocTrackingKey),
   );
 }
 
@@ -124,6 +131,8 @@ function DocumentPreview({
   detail,
   snapshot,
   trackingEntry,
+  tracking,
+  docTrackingKey,
   audience,
   onConfirmDoc,
   onOpenEmailDialog,
@@ -132,6 +141,8 @@ function DocumentPreview({
   detail: PolicyDetail;
   snapshot: SnapshotData;
   trackingEntry?: DocumentStatusEntry;
+  tracking?: Record<string, DocTrackingEntry> | null;
+  docTrackingKey?: string;
   audience?: "client" | "agent";
   onConfirmDoc?: (trackingKey: string) => void;
   onOpenEmailDialog?: (subject: string, htmlContent: string, plainText: string) => void;
@@ -276,7 +287,7 @@ function DocumentPreview({
         })
         .map((f) => ({
           ...f,
-          resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx),
+          resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
         }))
         .filter((f) => f.resolved !== "" && f.resolved !== null && f.resolved !== undefined);
 
@@ -401,7 +412,7 @@ function DocumentPreview({
             })
             .map((f) => ({
               ...f,
-              resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx),
+              resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
             }))
             .filter(
               (f) =>
@@ -1480,6 +1491,8 @@ export function DocumentsTab({
           detail={detail}
           snapshot={snapshot}
           trackingEntry={tracking[selKey]}
+          tracking={tracking as Record<string, DocTrackingEntry> | null}
+          docTrackingKey={selKey}
           audience={selectedAudience}
           onConfirmDoc={(key) => {
             setHtmlConfirmKey(key);

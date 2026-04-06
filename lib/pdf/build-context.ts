@@ -35,6 +35,7 @@ export async function buildMergeContext(policyId: number): Promise<{
       agentId: policies.agentId,
       isActive: policies.isActive,
       createdAt: policies.createdAt,
+      documentTracking: policies.documentTracking,
     })
     .from(policies)
     .where(eq(policies.id, policyId))
@@ -347,6 +348,7 @@ export async function buildMergeContext(policyId: number): Promise<{
     accountingLines,
     statementData,
     isTpoWithOd,
+    documentTracking: policy.documentTracking as Record<string, { documentNumber?: string; status?: string; [key: string]: unknown }> | null,
   };
 
   return { ctx, policyNumber: policy.policyNumber };

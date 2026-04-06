@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { accountingInvoices, accountingInvoiceItems, accountingPayments } from "@/db/schema/accounting";
-import { formOptions } from "@/db/schema/form_options";
 import { memberships, organisations, clients, users } from "@/db/schema/core";
 import { policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
 import { and, desc, eq, sql, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
+import { resolveInvoicePrefix } from "@/lib/resolve-prefix";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
@@ -160,9 +160,9 @@ export async function GET(request: Request) {
           const policy = policyId ? policyMap.get(policyId) : undefined;
           const tracking = (policy?.documentTracking ?? {}) as Record<string, { documentNumber?: string }>;
 
-          // Extract document numbers from tracking
           const docNumbers: Record<string, string> = {};
           for (const [key, entry] of Object.entries(tracking)) {
+            if (key.startsWith("_")) continue;
             if (entry?.documentNumber) {
               docNumbers[key] = entry.documentNumber;
             }
@@ -316,37 +316,12 @@ export async function POST(request: Request) {
   }
 }
 
-async function resolveStatementPrefix(): Promise<string> {
-  try {
-    const rows = await db
-      .select({ meta: formOptions.meta })
-      .from(formOptions)
-      .where(
-        and(
-          eq(formOptions.groupKey, "document_templates"),
-          eq(formOptions.isActive, true),
-        ),
-      );
-    for (const row of rows) {
-      const meta = row.meta as Record<string, unknown> | null;
-      if (meta?.type === "statement" && meta.documentPrefix) {
-        return meta.documentPrefix as string;
-      }
-    }
-  } catch { /* fall through */ }
-  return "ST";
-}
-
 async function generateInvoiceNumber(
   orgId: number,
   direction: string,
   invoiceType: string,
 ): Promise<string> {
-  let prefix: string;
-  if (invoiceType === "credit_note") prefix = "CN";
-  else if (invoiceType === "statement") prefix = await resolveStatementPrefix();
-  else if (direction === "payable") prefix = "AP";
-  else prefix = "INV";
+  const prefix = await resolveInvoicePrefix(invoiceType, direction);
   const year = new Date().getFullYear();
   const countResult = await db
     .select({ count: sql<number>`count(*)::int` })

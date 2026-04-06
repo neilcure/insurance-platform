@@ -4,7 +4,6 @@ import {
   accountingInvoices,
   accountingInvoiceItems,
 } from "@/db/schema/accounting";
-import { formOptions } from "@/db/schema/form_options";
 import { policyPremiums } from "@/db/schema/premiums";
 import { policies } from "@/db/schema/insurance";
 import { cars } from "@/db/schema/insurance";
@@ -13,6 +12,7 @@ import { requireUser } from "@/lib/auth/require-user";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { resolvePremiumByRole } from "@/lib/resolve-policy-agent";
 import { generateDocumentNumber } from "@/lib/document-number";
+import { resolveDocPrefix } from "@/lib/resolve-prefix";
 
 export const dynamic = "force-dynamic";
 
@@ -209,19 +209,8 @@ export async function GET(
     // Fix statement number if it uses old hardcoded "ST-" prefix instead of template prefix
     if (stmt.invoiceNumber.startsWith("ST-")) {
       try {
-        const tplRows = await db
-          .select({ meta: formOptions.meta })
-          .from(formOptions)
-          .where(and(eq(formOptions.groupKey, "document_templates"), eq(formOptions.isActive, true)));
-        let tplPrefix: string | null = null;
-        for (const row of tplRows) {
-          const meta = row.meta as Record<string, unknown> | null;
-          if (meta?.type === "statement" && meta.documentPrefix && meta.documentPrefix !== "ST") {
-            tplPrefix = meta.documentPrefix as string;
-            break;
-          }
-        }
-        if (tplPrefix) {
+        const tplPrefix = await resolveDocPrefix("statement", "ST");
+        if (tplPrefix !== "ST") {
           const newNumber = await generateDocumentNumber(tplPrefix);
           await db.update(accountingInvoices).set({ invoiceNumber: newNumber }).where(eq(accountingInvoices.id, stmt.id));
           stmt.invoiceNumber = newNumber;

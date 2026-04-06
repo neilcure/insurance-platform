@@ -7,9 +7,9 @@ import {
 import { clients, users } from "@/db/schema/core";
 import { cars, policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
-import { formOptions } from "@/db/schema/form_options";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { generateDocumentNumber } from "@/lib/document-number";
+import { resolveDocPrefix } from "@/lib/resolve-prefix";
 import { and, desc, eq, notInArray, sql, type SQLWrapper } from "drizzle-orm";
 
 type PaymentScheduleRow = typeof accountingPaymentSchedules.$inferSelect;
@@ -154,29 +154,8 @@ function buildPolicyDateExpr() {
   )::date`;
 }
 
-async function getStatementPrefix(): Promise<string> {
-  try {
-    const rows = await db
-      .select({ meta: formOptions.meta })
-      .from(formOptions)
-      .where(
-        and(
-          eq(formOptions.groupKey, "document_templates"),
-          eq(formOptions.isActive, true),
-        ),
-      );
-    for (const row of rows) {
-      const meta = row.meta as Record<string, unknown> | null;
-      if (meta?.type === "statement" && meta.documentPrefix) {
-        return meta.documentPrefix as string;
-      }
-    }
-  } catch { /* fall through to default */ }
-  return "ST";
-}
-
 async function nextStatementNumber(_organisationId: number) {
-  const prefix = await getStatementPrefix();
+  const prefix = await resolveDocPrefix("statement", "ST");
   return generateDocumentNumber(prefix);
 }
 
