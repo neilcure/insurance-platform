@@ -132,12 +132,22 @@ export default function DocumentTemplatesManager() {
     if (source === "package" && packageName) {
       return pkgFieldsCache[packageName] ?? [];
     }
+    if (source === "accounting") {
+      return pkgFieldsCache["premiumRecord"] ?? [];
+    }
     const hints = (FIELD_KEY_HINTS as Record<string, string[]>)[source];
     if (!hints) return [];
-    return hints.map((k) => ({
+    const base = hints.map((k) => ({
       key: k,
       label: k.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()).trim(),
     }));
+    if (source === "statement") {
+      const premFields = pkgFieldsCache["premiumRecord"] ?? [];
+      for (const pf of premFields) {
+        base.push({ key: `item_${pf.key}`, label: `Item ${pf.label}` });
+      }
+    }
+    return base;
   }
 
   async function load() {
@@ -196,6 +206,7 @@ export default function DocumentTemplatesManager() {
   React.useEffect(() => {
     void load();
     void loadLookups();
+    void loadPkgFields("premiumRecord");
   }, []);
 
   function startCreate() {
@@ -737,8 +748,10 @@ export default function DocumentTemplatesManager() {
             <div className="space-y-5">
               {meta.sections.map((section, sIdx) => {
                 const availableFields = getFieldsForSource(section.source, section.packageName);
-                const needsLoad = section.source === "package" && section.packageName && !pkgFieldsCache[section.packageName];
-                if (needsLoad && section.packageName) void loadPkgFields(section.packageName);
+                const needsLoad = (section.source === "package" && section.packageName && !pkgFieldsCache[section.packageName])
+                  || ((section.source === "accounting" || section.source === "statement") && !pkgFieldsCache["premiumRecord"]);
+                if (section.source === "package" && needsLoad && section.packageName) void loadPkgFields(section.packageName);
+                if ((section.source === "accounting" || section.source === "statement") && !pkgFieldsCache["premiumRecord"]) void loadPkgFields("premiumRecord");
 
                 const selectedKeys = new Set(section.fields.map((f) => f.key));
                 const allSelected = availableFields.length > 0 && availableFields.every((f) => selectedKeys.has(f.key));

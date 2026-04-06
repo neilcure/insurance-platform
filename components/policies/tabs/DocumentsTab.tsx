@@ -54,20 +54,19 @@ type StatementDataForPreview = {
     amountCents: number;
     status: string;
     policyId: number;
+    premiums?: Record<string, number>;
   }[];
+  premiumTotals?: Record<string, number>;
 };
 
 type AccountingLineForPreview = {
   lineKey: string;
   lineLabel: string;
-  clientPremium: number | null;
-  agentPremium: number | null;
-  netPremium: number | null;
-  grossPremium: number | null;
-  levy: number | null;
-  stampDuty: number | null;
-  discount: number | null;
-  currency: string;
+  /** Raw field values keyed by dynamic admin-configured field keys */
+  values: Record<string, unknown>;
+  margin: number | null;
+  insurerName: string | null;
+  collaboratorName: string | null;
 };
 
 function resolveFieldValue(
@@ -149,26 +148,34 @@ function resolveFieldValue(
       case "itemDescriptions": return activeItems.map((it) => it.description ?? "Premium").join("\n");
       case "itemAmounts": return activeItems.map((it) => (it.amountCents / 100).toFixed(2)).join("\n");
       case "itemStatuses": return stmt.items.map((it) => it.status).join("\n");
-      default: return "";
+      default: {
+        if (fieldKey.startsWith("item_")) {
+          const premKey = fieldKey.slice(5);
+          return activeItems
+            .map((it) => {
+              const v = it.premiums?.[premKey];
+              return v != null ? v : "";
+            })
+            .join("\n");
+        }
+        return "";
+      }
     }
   }
 
   if (section.source === "accounting") {
+    const totals = extra?.statementData?.premiumTotals;
+    if (totals && fieldKey in totals) return totals[fieldKey] ?? "";
+
     const lines = extra?.accountingLines;
-    if (!lines?.length) return "";
+    if (!lines?.length) return totals ? "" : "";
     const line = lines[0];
-    const accMap: Record<string, unknown> = {
-      clientPremium: line.clientPremium,
-      agentPremium: line.agentPremium,
-      netPremium: line.netPremium,
-      grossPremium: line.grossPremium,
-      levy: line.levy,
-      stampDuty: line.stampDuty,
-      discount: line.discount,
-      currency: line.currency,
-      lineLabel: line.lineLabel,
-    };
-    return accMap[fieldKey] ?? "";
+    if (fieldKey in line.values) return line.values[fieldKey] ?? "";
+    if (fieldKey === "margin") return line.margin;
+    if (fieldKey === "lineLabel") return line.lineLabel;
+    if (fieldKey === "insurerName") return line.insurerName ?? "";
+    if (fieldKey === "collaboratorName") return line.collaboratorName ?? "";
+    return "";
   }
 
   if (section.source === "insured" || section.source === "contactinfo") {
@@ -270,16 +277,19 @@ function formatValue(
   if (!s) return "";
 
   if (format === "currency" || format === "negative_currency") {
+    const cur = (currencyCode || "HKD").toUpperCase();
+    const fmtOne = (v: unknown) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return String(v);
+      try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur }).format(n); }
+      catch { return n.toFixed(2); }
+    };
+    if (s.includes("\n")) {
+      return s.split("\n").map((line) => fmtOne(line.trim())).join("\n");
+    }
     const n = Number(raw);
     if (!Number.isFinite(n)) return s;
-    try {
-      return new Intl.NumberFormat(undefined, {
-        style: "currency",
-        currency: (currencyCode || "HKD").toUpperCase(),
-      }).format(n);
-    } catch {
-      return n.toFixed(2);
-    }
+    return fmtOne(n);
   }
 
   if (format === "date") {
@@ -354,35 +364,34 @@ function DocumentPreview({
           const fields = Array.isArray(premData.fields) ? premData.fields as { key: string; label: string; premiumRole?: string; premiumColumn?: string }[] : [];
           const lines = Array.isArray(premData.lines) ? premData.lines : [];
 
-          const findKey = (role: string) => {
-            const f = fields.find((fd) => fd.premiumRole === role);
-            if (f) return f.key;
-            const byLabel = fields.find((fd) => fd.label.toLowerCase().includes(role));
-            return byLabel?.key ?? null;
-          };
-          const clientKey = findKey("client");
-          const agentKey = findKey("agent");
-          const netKey = findKey("net");
-          const grossKey = fields.find((fd) => /gross/i.test(fd.label))?.key ?? null;
-          const levyKey = fields.find((fd) => /levy/i.test(fd.label))?.key ?? null;
-          const stampKey = fields.find((fd) => /stamp/i.test(fd.label))?.key ?? null;
-          const discountKey = fields.find((fd) => /discount/i.test(fd.label))?.key ?? null;
-          const currencyKey = fields.find((fd) => /currency/i.test(fd.label) || fd.key === "currency")?.key ?? null;
+          type ApiLine = { lineKey: string; lineLabel: string; values: Record<string, unknown>; margin?: number | null; insurerName?: string | null; collaboratorName?: string | null };
+          const roleAliasMap: Record<string, string> = { client: "clientPremium", agent: "agentPremium", net: "netPremium", commission: "agentCommission" };
+          const labelAliasMap: Record<string, string> = { gross: "grossPremium", credit: "creditPremium", levy: "levy", stamp: "stampDuty", discount: "discount", currency: "currency", commission_rate: "commissionRate" };
 
-          const num = (v: unknown) => v != null ? Number(v) : null;
-
-          ctx.accountingLines = lines.map((ln: { lineKey: string; lineLabel: string; values: Record<string, unknown> }) => ({
-            lineKey: ln.lineKey ?? "",
-            lineLabel: ln.lineLabel ?? ln.lineKey ?? "",
-            clientPremium: num(clientKey ? ln.values?.[clientKey] : null),
-            agentPremium: num(agentKey ? ln.values?.[agentKey] : null),
-            netPremium: num(netKey ? ln.values?.[netKey] : null),
-            grossPremium: num(grossKey ? ln.values?.[grossKey] : null),
-            levy: num(levyKey ? ln.values?.[levyKey] : null),
-            stampDuty: num(stampKey ? ln.values?.[stampKey] : null),
-            discount: num(discountKey ? ln.values?.[discountKey] : null),
-            currency: String(currencyKey ? ln.values?.[currencyKey] ?? "HKD" : "HKD"),
-          }));
+          ctx.accountingLines = lines.map((ln: ApiLine) => {
+            const vals = { ...(ln.values ?? {}) };
+            for (const fd of fields) {
+              const v = vals[fd.key];
+              if (v === undefined || v === null) continue;
+              if (fd.premiumRole && roleAliasMap[fd.premiumRole] && !(roleAliasMap[fd.premiumRole] in vals)) {
+                vals[roleAliasMap[fd.premiumRole]] = v;
+              }
+              const lbl = fd.label.toLowerCase();
+              for (const [pattern, alias] of Object.entries(labelAliasMap)) {
+                if (lbl.includes(pattern) && !(alias in vals)) {
+                  vals[alias] = v;
+                }
+              }
+            }
+            return {
+              lineKey: ln.lineKey ?? "",
+              lineLabel: ln.lineLabel ?? ln.lineKey ?? "",
+              values: vals,
+              margin: ln.margin ?? null,
+              insurerName: ln.insurerName ?? null,
+              collaboratorName: ln.collaboratorName ?? null,
+            };
+          });
         }
 
         if (detail.clientId) {

@@ -4,6 +4,7 @@ import {
   accountingInvoices,
   accountingInvoiceItems,
 } from "@/db/schema/accounting";
+import { formOptions } from "@/db/schema/form_options";
 import { policyPremiums } from "@/db/schema/premiums";
 import { policies } from "@/db/schema/insurance";
 import { cars } from "@/db/schema/insurance";
@@ -11,6 +12,7 @@ import { eq, and, sql, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { resolvePremiumByRole } from "@/lib/resolve-policy-agent";
+import { generateDocumentNumber } from "@/lib/document-number";
 
 export const dynamic = "force-dynamic";
 
@@ -204,6 +206,29 @@ export async function GET(
       return NextResponse.json({ statement: null });
     }
 
+    // Fix statement number if it uses old hardcoded "ST-" prefix instead of template prefix
+    if (stmt.invoiceNumber.startsWith("ST-")) {
+      try {
+        const tplRows = await db
+          .select({ meta: formOptions.meta })
+          .from(formOptions)
+          .where(and(eq(formOptions.groupKey, "document_templates"), eq(formOptions.isActive, true)));
+        let tplPrefix: string | null = null;
+        for (const row of tplRows) {
+          const meta = row.meta as Record<string, unknown> | null;
+          if (meta?.type === "statement" && meta.documentPrefix && meta.documentPrefix !== "ST") {
+            tplPrefix = meta.documentPrefix as string;
+            break;
+          }
+        }
+        if (tplPrefix) {
+          const newNumber = await generateDocumentNumber(tplPrefix);
+          await db.update(accountingInvoices).set({ invoiceNumber: newNumber }).where(eq(accountingInvoices.id, stmt.id));
+          stmt.invoiceNumber = newNumber;
+        }
+      } catch { /* non-fatal */ }
+    }
+
     // Get ALL items on the statement
     const rawItems = await db.execute(sql`
       SELECT "id", "policy_id", "policy_premium_id", "amount_cents",
@@ -343,6 +368,45 @@ export async function GET(
       .filter((it) => it.status === "paid_individually")
       .reduce((sum, it) => sum + it.amountCents, 0);
 
+    // Build premium totals + per-item breakdowns from the actual policy_premiums rows
+    const premiumTotals: Record<string, number> = {};
+    const itemPremiumMap = new Map<number, Record<string, number>>();
+    const premiumIds = [...new Set(items.map((it) => it.policyPremiumId).filter(Boolean))] as number[];
+    if (premiumIds.length > 0) {
+      try {
+        const premRows = await db.select().from(policyPremiums).where(inArray(policyPremiums.id, premiumIds));
+        const accountingFields = await loadAccountingFields();
+        const { buildFieldColumnMap, getColumnType } = await import("@/lib/accounting-fields");
+        const colMap = buildFieldColumnMap(accountingFields);
+        for (const row of premRows) {
+          const rowValues: Record<string, number> = {};
+          for (const f of accountingFields) {
+            const mappedCol = colMap[f.key];
+            let val: number | null = null;
+            if (mappedCol) {
+              const rawVal = (row as Record<string, unknown>)[mappedCol];
+              if (rawVal != null) {
+                val = getColumnType(mappedCol) === "cents" ? Number(rawVal) / 100 : Number(rawVal);
+              }
+            } else {
+              const extra = (row.extraValues ?? {}) as Record<string, unknown>;
+              if (extra[f.key] != null) val = Number(extra[f.key]);
+            }
+            if (val != null && Number.isFinite(val)) {
+              premiumTotals[f.key] = (premiumTotals[f.key] ?? 0) + val;
+              rowValues[f.key] = val;
+            }
+          }
+          itemPremiumMap.set(row.id, rowValues);
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    const enrichedItems = items.map((it) => ({
+      ...it,
+      premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
+    }));
+
     return NextResponse.json({
       statement: {
         statementNumber: stmt.invoiceNumber,
@@ -353,9 +417,10 @@ export async function GET(
         currency: stmt.currency,
         entityType: stmt.entityType,
         entityName: stmt.entityName,
-        items,
+        items: enrichedItems,
         activeTotal,
         paidIndividuallyTotal,
+        premiumTotals,
       },
     });
   } catch (err) {

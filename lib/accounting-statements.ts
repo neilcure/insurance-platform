@@ -7,6 +7,7 @@ import {
 import { clients, users } from "@/db/schema/core";
 import { cars, policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
+import { formOptions } from "@/db/schema/form_options";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { generateDocumentNumber } from "@/lib/document-number";
 import { and, desc, eq, notInArray, sql, type SQLWrapper } from "drizzle-orm";
@@ -153,8 +154,30 @@ function buildPolicyDateExpr() {
   )::date`;
 }
 
+async function getStatementPrefix(): Promise<string> {
+  try {
+    const rows = await db
+      .select({ meta: formOptions.meta })
+      .from(formOptions)
+      .where(
+        and(
+          eq(formOptions.groupKey, "document_templates"),
+          eq(formOptions.isActive, true),
+        ),
+      );
+    for (const row of rows) {
+      const meta = row.meta as Record<string, unknown> | null;
+      if (meta?.type === "statement" && meta.documentPrefix) {
+        return meta.documentPrefix as string;
+      }
+    }
+  } catch { /* fall through to default */ }
+  return "ST";
+}
+
 async function nextStatementNumber(_organisationId: number) {
-  return generateDocumentNumber("ST");
+  const prefix = await getStatementPrefix();
+  return generateDocumentNumber(prefix);
 }
 
 export async function generateStatementInvoice({

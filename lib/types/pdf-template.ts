@@ -166,8 +166,8 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
   ],
   package: [],
   accounting: [
-    "grossPremium", "netPremium", "clientPremium", "agentCommission",
-    "creditPremium", "levy", "stampDuty", "discount",
+    "grossPremium", "netPremium", "clientPremium", "agentPremium",
+    "agentCommission", "creditPremium", "levy", "stampDuty", "discount",
     "commissionRate", "currency", "margin", "lineLabel",
     "insurerName", "insurerContactName", "insurerContactEmail", "insurerContactPhone",
     "insurerAddress",
