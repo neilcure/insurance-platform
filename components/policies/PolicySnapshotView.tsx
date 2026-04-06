@@ -6,6 +6,7 @@ import { normalizeFieldKey, isHiddenPackage } from "@/lib/utils";
 import { ClientLinkedPolicies } from "@/components/policies/ClientLinkedPolicies";
 import { EndorsementHistory } from "@/components/policies/EndorsementHistory";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { formatResolvedValue } from "@/lib/field-resolver";
 
 type RepeatableSubField = {
   label: string;
@@ -271,11 +272,7 @@ function applyCase(text: string, mode?: "original" | "upper" | "lower" | "title"
 }
 
 function formatCurrency(n: number, code: string) {
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency: code.toUpperCase() }).format(n);
-  } catch {
-    return n.toFixed(2);
-  }
+  return formatResolvedValue(n, "currency", code);
 }
 
 function formatFieldValue(

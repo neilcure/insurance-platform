@@ -4,6 +4,7 @@ import { clients, users } from "@/db/schema/core";
 import { cars } from "@/db/schema/insurance";
 import { requireUser } from "@/lib/auth/require-user";
 import { and, eq, isNull } from "drizzle-orm";
+import { getInsuredDisplayName, getInsuredType, getInsuredPrimaryId, getContactField } from "@/lib/field-resolver";
 
 async function createClientFromFlow(carId: number, createdBy: number): Promise<{ id: number; displayName: string } | null> {
   const [carRow] = await db
@@ -17,23 +18,9 @@ async function createClientFromFlow(carId: number, createdBy: number): Promise<{
   if (!ea || ea.flowKey !== "clientSet") return null;
 
   const snap = (ea.insuredSnapshot ?? {}) as Record<string, unknown>;
-  const category = String(snap.insuredType ?? snap.insured_category ?? "personal").toLowerCase();
-  const isCompany = category === "company";
-
-  let displayName = "";
-  let primaryId = "";
-
-  if (isCompany) {
-    displayName = String(snap["insured__companyName"] ?? snap["insured__companyname"] ?? "");
-    primaryId = String(snap["insured__brNumber"] ?? snap["insured__brnumber"] ?? "");
-  } else {
-    const last = String(snap["insured__lastname"] ?? snap["insured_lastname"] ?? "");
-    const first = String(snap["insured__firstname"] ?? snap["insured_firstname"] ?? "");
-    displayName = [last, first].filter(Boolean).join(" ");
-    primaryId = String(snap["insured__idNumber"] ?? snap["insured__idnumber"] ?? "");
-  }
-
-  if (!displayName) displayName = "Client";
+  const category = getInsuredType(snap) || "personal";
+  const displayName = getInsuredDisplayName(snap) || "Client";
+  const primaryId = getInsuredPrimaryId(snap);
 
   const extra: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(snap)) {
@@ -41,7 +28,7 @@ async function createClientFromFlow(carId: number, createdBy: number): Promise<{
     extra[k] = v;
   }
 
-  const phone = String(snap["contactinfo__mobile"] ?? snap["contactinfo_mobile"] ?? snap["contactinfo__tel"] ?? "");
+  const phone = getContactField(snap, "mobile") || getContactField(snap, "tel");
 
   const [newClient] = await db
     .insert(clients)

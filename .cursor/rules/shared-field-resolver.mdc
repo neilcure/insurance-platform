@@ -1,0 +1,58 @@
+---
+description: Use shared field-resolver for all field value resolution, insured name extraction, address building, and display formatting
+alwaysApply: true
+---
+
+# Shared Field Resolver (`lib/field-resolver.ts`)
+
+All field value resolution, insured name extraction, and template formatting MUST use the shared module.
+
+## When to use
+
+| Need | Import from `@/lib/field-resolver` |
+|------|-----|
+| Resolve a field value from snapshot by source + key | `resolveRawValue(ref, ctx)` |
+| Resolve + format in one call (PDF/HTML templates) | `resolveAndFormat(ref, ctx, opts)` |
+| Format raw value as currency/date/boolean/number | `formatResolvedValue(raw, format, currencyCode)` |
+| Get display name from insured snapshot | `getInsuredDisplayName(insured)` |
+| Get insured type (personal/company) | `getInsuredType(insured)` |
+| Get name from insured + packages fallback | `getDisplayNameFromSnapshot(snapshot)` |
+| Case-insensitive key lookup on any object | `fuzzyGet(obj, key)` |
+| Build formatted address from getter | `buildAddressFromGetter(getter)` |
+
+## NEVER duplicate these patterns
+
+```typescript
+// ❌ BAD — inline insured name extraction
+const last = snap.insured__lastName ?? snap.insured_lastName ?? snap.lastName;
+const first = snap.insured__firstName ?? snap.insured_firstName ?? snap.firstName;
+const name = [last, first].filter(Boolean).join(" ");
+
+// ✅ GOOD
+import { getInsuredDisplayName } from "@/lib/field-resolver";
+const name = getInsuredDisplayName(insuredSnapshot);
+
+// ❌ BAD — inline package value lookup with prefix fallback
+const val = vals[key] ?? vals[`${pkg}__${key}`] ?? vals[`${pkg}_${key}`];
+
+// ✅ GOOD
+import { resolveRawValue } from "@/lib/field-resolver";
+const val = resolveRawValue({ source: "package", fieldKey: key, packageName: pkg }, ctx);
+
+// ❌ BAD — inline currency formatting
+new Intl.NumberFormat("en-HK", { style: "currency", currency: "HKD" }).format(n);
+
+// ✅ GOOD (for template/snapshot display)
+import { formatResolvedValue } from "@/lib/field-resolver";
+formatResolvedValue(n, "currency", "HKD");
+
+// ✅ ALSO OK (for accounting UI — different concern)
+import { fmtCurrency } from "@/lib/accounting-utils";
+```
+
+## Scope boundaries
+
+- **Template/snapshot field resolution** → always use `lib/field-resolver.ts`
+- **Accounting UI display** (cents → display) → use `lib/accounting-utils.ts` `fmtCurrency`
+- **Live form values** (RHF) → use `lib/formula.ts` `resolveFieldValue` (different contract)
+- **Date display in UI** → use `lib/format/date.ts` helpers

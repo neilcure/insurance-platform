@@ -29,6 +29,7 @@ import dynamic from "next/dynamic";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { RecordDetailsDrawer } from "@/components/ui/record-details-drawer";
 import { FieldEditDialog, loadEditFields, type EditField } from "@/components/ui/field-edit-dialog";
+import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
 
 const PolicySnapshotView = dynamic(
   () => import("@/components/policies/PolicySnapshotView").then((m) => m.PolicySnapshotView),
@@ -127,51 +128,10 @@ type Row = {
 
 function extractNameFromExtra(extra: Record<string, unknown> | null | undefined): string {
   if (!extra) return "";
-  const insured = extra.insuredSnapshot as Record<string, unknown> | undefined;
-  const pkgs = extra.packagesSnapshot as Record<string, unknown> | undefined;
-  const norm = (k: string) => k.replace(/^[a-zA-Z0-9]+__/, "").replace(/^_+/, "").toLowerCase().replace(/[^a-z]/g, "");
-  const insuredType = String(insured?.insuredType ?? insured?.insured__category ?? "").trim().toLowerCase();
-
-  if (insuredType === "personal" && insured) {
-    let first = "", last = "";
-    for (const [k, v] of Object.entries(insured)) {
-      const n = norm(k), s = String(v ?? "").trim();
-      if (!s) continue;
-      if (!last && /lastname|surname/.test(n)) last = s;
-      if (!first && /firstname/.test(n)) first = s;
-    }
-    const combined = [last, first].filter(Boolean).join(" ");
-    if (combined) return combined;
-  }
-
-  const findInObj = (obj: Record<string, unknown>, patterns: RegExp[]): string => {
-    for (const [k, v] of Object.entries(obj)) {
-      const n = norm(k), s = String(v ?? "").trim();
-      if (!s) continue;
-      if (patterns.some((p) => p.test(n))) return s;
-    }
-    return "";
-  };
-
-  const COMPANY_PATTERNS = [/companyname/, /coname/, /organisationname/, /orgname/];
-  const GENERIC_PATTERNS = [/^fullname$/, /^name$/];
-
-  const tryAllSources = (patterns: RegExp[]): string => {
-    if (insured) { const r = findInObj(insured, patterns); if (r) return r; }
-    if (pkgs) {
-      for (const entry of Object.values(pkgs)) {
-        if (!entry || typeof entry !== "object") continue;
-        const vals = (entry as { values?: Record<string, unknown> }).values ?? (entry as Record<string, unknown>);
-        const r = findInObj(vals as Record<string, unknown>, patterns);
-        if (r) return r;
-      }
-    }
-    return "";
-  };
-
-  const company = tryAllSources(COMPANY_PATTERNS);
-  if (company) return company;
-  return tryAllSources(GENERIC_PATTERNS);
+  return getDisplayNameFromSnapshot({
+    insuredSnapshot: extra.insuredSnapshot as Record<string, unknown> | null | undefined,
+    packagesSnapshot: extra.packagesSnapshot as Record<string, unknown> | null | undefined,
+  });
 }
 
 export default function PoliciesTableClient({ initialRows, entityLabel }: { initialRows: Row[]; entityLabel?: string }) {

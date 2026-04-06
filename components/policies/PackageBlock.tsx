@@ -17,6 +17,7 @@ import { EntityPickerDrawer, type EntityPickerSelection } from "@/components/pol
 import { AgentPickerDrawer, type AgentPickerSelection } from "@/components/policies/AgentPickerDrawer";
 import { LinkedPolicyCard } from "@/components/policies/LinkedPolicyCard";
 import { Search } from "lucide-react";
+import { getInsuredDisplayName, getInsuredType } from "@/lib/field-resolver";
 
 type EntityPickerFieldMapping = {
   sourceField: string;
@@ -29,32 +30,13 @@ type EntityPickerMeta = {
   mappings: EntityPickerFieldMapping[];
 };
 
-function normKey(k: string): string {
-  return k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
-}
-
 function resolveInsuredVirtuals(snap: Record<string, unknown> | null): Record<string, string> {
   if (!snap) return {};
   const result: Record<string, string> = {};
-  const rawType = String(snap?.insuredType ?? snap?.insured__category ?? snap?.category ?? "").trim().toLowerCase();
-  const isPersonal = rawType === "personal";
-
-  let firstName = "", lastName = "", companyName = "", fullName = "";
-  for (const [k, v] of Object.entries(snap)) {
-    const n = normKey(k), s = String(v ?? "").trim();
-    if (!s) continue;
-    if (!lastName && /lastname|surname|lname/.test(n)) lastName = s;
-    if (!firstName && /firstname|fname/.test(n)) firstName = s;
-    if (!companyName && /companyname|organisationname|orgname|corporatename/.test(n)) companyName = s;
-    if (!fullName && /fullname|displayname|^name$/.test(n)) fullName = s;
-  }
-
-  const personalName = [lastName, firstName].filter(Boolean).join(" ") || fullName;
-  result.insuredDisplayName = isPersonal
-    ? (personalName || companyName || "")
-    : (companyName || personalName || "");
-  if (rawType) result.insuredType = rawType;
-
+  const displayName = getInsuredDisplayName(snap);
+  if (displayName) result.insuredDisplayName = displayName;
+  const insuredType = getInsuredType(snap);
+  if (insuredType) result.insuredType = insuredType;
   return result;
 }
 

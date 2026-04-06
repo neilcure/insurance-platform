@@ -6,6 +6,7 @@ import { accountingPaymentSchedules, accountingInvoices } from "@/db/schema/acco
 import { eq, sql, inArray, and, or } from "drizzle-orm";
 import type { MergeContext, AccountingLineContext, StatementContext } from "./resolve-data";
 import { loadAccountingFields, buildColumnFieldMap, getColumnType } from "@/lib/accounting-fields";
+import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
 
 const DB_COLUMN_OPTIONS = [
   { value: "grossPremiumCents", label: "Gross Premium", type: "cents" },
@@ -147,23 +148,11 @@ export async function buildMergeContext(policyId: number): Promise<{
           .leftJoin(cars, eq(cars.policyId, policies.id))
           .where(inArray(policies.id, lineCollabIds));
         for (const c of collabRows) {
-          const pkgs = ((c.carExtra as Record<string, unknown>)?.packagesSnapshot ?? {}) as Record<string, unknown>;
-          let name = "";
-          for (const data of Object.values(pkgs)) {
-            if (!data || typeof data !== "object") continue;
-            const vals = ("values" in (data as Record<string, unknown>)
-              ? (data as { values?: Record<string, unknown> }).values
-              : data) as Record<string, unknown>;
-            if (!vals) continue;
-            for (const [k, v] of Object.entries(vals)) {
-              const n = k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
-              if (/companyname|organisationname|fullname|displayname|^name$/.test(n) && v) {
-                name = String(v);
-                break;
-              }
-            }
-            if (name) break;
-          }
+          const carSnap = (c.carExtra as Record<string, unknown>) ?? {};
+          const name = getDisplayNameFromSnapshot({
+            insuredSnapshot: carSnap.insuredSnapshot as Record<string, unknown> | null | undefined,
+            packagesSnapshot: (carSnap.packagesSnapshot ?? {}) as Record<string, unknown>,
+          });
           collabMap.set(c.policyId, {
             name: name || `Collaborator #${c.policyId}`,
             ...((c.carExtra as Record<string, unknown>) ?? {}),

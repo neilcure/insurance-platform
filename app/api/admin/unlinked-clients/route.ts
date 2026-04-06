@@ -4,6 +4,7 @@ import { clients } from "@/db/schema/core";
 import { cars } from "@/db/schema/insurance";
 import { requireUser } from "@/lib/auth/require-user";
 import { isNull, asc, sql } from "drizzle-orm";
+import { getInsuredDisplayName, getInsuredType, getInsuredPrimaryId } from "@/lib/field-resolver";
 
 export const dynamic = "force-dynamic";
 
@@ -56,23 +57,9 @@ export async function GET() {
       const snap = ea.insuredSnapshot as Record<string, unknown> | null;
       if (!snap) continue;
 
-      const category = String(snap.insuredType ?? snap.insured_category ?? snap.insured__category ?? "personal").toLowerCase();
-      const isCompany = category === "company";
-
-      let displayName = "";
-      let primaryId = "";
-
-      if (isCompany) {
-        displayName = String(snap["insured__companyName"] ?? snap["insured__companyname"] ?? snap["insured_companyname"] ?? "");
-        primaryId = String(snap["insured__brNumber"] ?? snap["insured__brnumber"] ?? snap["insured_brnumber"] ?? "");
-      } else {
-        const last = String(snap["insured__lastname"] ?? snap["insured_lastname"] ?? "");
-        const first = String(snap["insured__firstname"] ?? snap["insured_firstname"] ?? "");
-        displayName = [last, first].filter(Boolean).join(" ");
-        primaryId = String(snap["insured__idNumber"] ?? snap["insured__idnumber"] ?? snap["insured_idnumber"] ?? "");
-      }
-
-      if (!displayName) displayName = "Unknown Client";
+      const category = getInsuredType(snap) || "personal";
+      const displayName = getInsuredDisplayName(snap) || "Unknown Client";
+      const primaryId = getInsuredPrimaryId(snap);
 
       results.push({
         id: `flow_${fc.carId}`,

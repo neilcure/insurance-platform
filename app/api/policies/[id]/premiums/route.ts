@@ -12,6 +12,7 @@ import { sql } from "drizzle-orm";
 import { loadAccountingFields, buildFieldColumnMap, getColumnType, filterFieldsByContext, type AccountingFieldDef, type PremiumContext } from "@/lib/accounting-fields";
 import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
 import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
+import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
 import { accountingInvoiceItems as aiiTable } from "@/db/schema/accounting";
 
 export const dynamic = "force-dynamic";
@@ -157,44 +158,10 @@ function rowToLineData(
 
 function extractCollaboratorName(carExtra: Record<string, unknown> | null | undefined): string {
   if (!carExtra) return "";
-  const norm = (k: string) => k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
-  const scanForName = (obj: Record<string, unknown>): string => {
-    for (const [k, v] of Object.entries(obj)) {
-      const n = norm(k);
-      const s = String(v ?? "").trim();
-      if (!s) continue;
-      if (/companyname|organisationname|orgname|fullname|displayname|coname|collconame|^name$/.test(n)) return s;
-    }
-    let first = "", last = "";
-    for (const [k, v] of Object.entries(obj)) {
-      const n = norm(k);
-      const s = String(v ?? "").trim();
-      if (!s) continue;
-      if (!last && /lastname|surname/.test(n)) last = s;
-      if (!first && /firstname|fname/.test(n)) first = s;
-    }
-    return (first || last) ? [last, first].filter(Boolean).join(" ") : "";
-  };
-
-  // Check insuredSnapshot first (client-like records store names here)
-  const insured = (carExtra.insuredSnapshot ?? null) as Record<string, unknown> | null;
-  if (insured && typeof insured === "object") {
-    const name = scanForName(insured);
-    if (name) return name;
-  }
-
-  // Then check packagesSnapshot
-  const pkgs = (carExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
-  for (const data of Object.values(pkgs)) {
-    if (!data || typeof data !== "object") continue;
-    const vals = ("values" in (data as Record<string, unknown>)
-      ? (data as { values?: Record<string, unknown> }).values
-      : data) as Record<string, unknown> | undefined;
-    if (!vals) continue;
-    const name = scanForName(vals);
-    if (name) return name;
-  }
-  return "";
+  return getDisplayNameFromSnapshot({
+    insuredSnapshot: carExtra.insuredSnapshot as Record<string, unknown> | null | undefined,
+    packagesSnapshot: (carExtra.packagesSnapshot ?? {}) as Record<string, unknown>,
+  });
 }
 
 async function findInsurerFlowKey(): Promise<string | null> {

@@ -5,6 +5,7 @@ import { policyPremiums } from "@/db/schema/premiums";
 import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { eq, sql } from "drizzle-orm";
+import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
 
 export const dynamic = "force-dynamic";
 
@@ -125,58 +126,11 @@ export async function GET(_request: Request, ctx: Ctx) {
 function extractRecordName(
   carExtra: Record<string, unknown>,
 ): string | null {
-  const norm = (k: string) =>
-    k
-      .replace(/^[a-zA-Z0-9]+__?/, "")
-      .toLowerCase()
-      .replace(/[^a-z]/g, "");
-
-  const scanForName = (obj: Record<string, unknown>): string => {
-    for (const [k, v] of Object.entries(obj)) {
-      const n = norm(k);
-      const s = String(v ?? "").trim();
-      if (!s) continue;
-      if (
-        /companyname|organisationname|orgname|fullname|displayname|coname|collconame|^name$/.test(
-          n,
-        )
-      )
-        return s;
-    }
-    let first = "",
-      last = "";
-    for (const [k, v] of Object.entries(obj)) {
-      const n = norm(k);
-      const s = String(v ?? "").trim();
-      if (!s) continue;
-      if (!last && /lastname|surname/.test(n)) last = s;
-      if (!first && /firstname|fname/.test(n)) first = s;
-    }
-    return first || last ? [last, first].filter(Boolean).join(" ") : "";
-  };
-
-  const insured = (carExtra.insuredSnapshot ?? null) as Record<
-    string,
-    unknown
-  > | null;
-  if (insured && typeof insured === "object") {
-    const name = scanForName(insured);
-    if (name) return name;
-  }
-
-  const pkgs = (carExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
-  for (const data of Object.values(pkgs)) {
-    if (!data || typeof data !== "object") continue;
-    const vals = (
-      "values" in (data as Record<string, unknown>)
-        ? (data as { values?: Record<string, unknown> }).values
-        : data
-    ) as Record<string, unknown> | undefined;
-    if (!vals) continue;
-    const name = scanForName(vals);
-    if (name) return name;
-  }
-  return null;
+  const name = getDisplayNameFromSnapshot({
+    insuredSnapshot: carExtra.insuredSnapshot as Record<string, unknown> | null | undefined,
+    packagesSnapshot: (carExtra.packagesSnapshot ?? {}) as Record<string, unknown>,
+  });
+  return name || null;
 }
 
 function namesMatch(a: string, b: string): boolean {

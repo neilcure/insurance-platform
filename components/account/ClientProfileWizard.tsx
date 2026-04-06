@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { Loader2, MapPin, Save } from "lucide-react";
 import { PackageBlock } from "@/components/policies/PackageBlock";
 import { AddressTool, type AddressFieldMap } from "@/components/policies/address-tool";
+import { getInsuredDisplayName, getInsuredType, getInsuredPrimaryId, getContactField } from "@/lib/field-resolver";
 
 type ClientData = {
   id: number;
@@ -208,31 +209,10 @@ export function ClientProfileWizard({ userName, userEmail, userTimezone }: Props
           fields[k] = v;
         }
 
-        // Extract core client fields from the form values
-        const category = String(
-          allValues["insured__category"] ?? allValues["insuredType"] ?? client.category ?? ""
-        ).toLowerCase();
-        const isCompany = category === "company";
-
-        let displayName = "";
-        if (isCompany) {
-          displayName = String(allValues["insured__companyName"] ?? allValues["insured__companyname"] ?? client.displayName ?? "");
-        } else {
-          const last = String(allValues["insured__lastname"] ?? "");
-          const first = String(allValues["insured__firstname"] ?? "");
-          displayName = [last, first].filter(Boolean).join(" ") || client.displayName;
-        }
-
-        let primaryId = "";
-        if (isCompany) {
-          primaryId = String(allValues["insured__brNumber"] ?? allValues["insured__brnumber"] ?? client.primaryId ?? "");
-        } else {
-          primaryId = String(allValues["insured__idNumber"] ?? allValues["insured__idnumber"] ?? client.primaryId ?? "");
-        }
-
-        const contactPhone = String(
-          allValues["contactinfo__mobile"] ?? allValues["contactinfo__tel"] ?? client.contactPhone ?? ""
-        );
+        const category = getInsuredType(fields) || client.category || "personal";
+        const displayName = getInsuredDisplayName(fields) || client.displayName;
+        const primaryId = getInsuredPrimaryId(fields) || client.primaryId || "";
+        const contactPhone = getContactField(fields, "mobile") || getContactField(fields, "tel") || client.contactPhone || "";
 
         const profileRes = await fetch("/api/account/client-profile", {
           method: "PATCH",

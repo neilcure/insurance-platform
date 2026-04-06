@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import PoliciesTableClient from "@/components/policies/PoliciesTableClient";
 import { FlowNewButton } from "@/components/flows/FlowNewButton";
 import { serverFetch } from "@/lib/auth/server-fetch";
+import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
 
 type PolicyRowRaw = {
   policyId: number;
@@ -22,86 +23,12 @@ type FlowOption = {
   meta?: { showInDashboard?: boolean; icon?: string; dashboardLabel?: string } | null;
 };
 
-const FIRST_NAME_PATTERNS = [/^firstname$/, /firstname/];
-const LAST_NAME_PATTERNS = [/^lastname$/, /^surname$/, /lastname/, /surname/];
-const COMPANY_NAME_PATTERNS = [/companyname/, /coname/, /organisationname/, /orgname/];
-const GENERIC_NAME_PATTERNS = [/^fullname$/, /^name$/];
-
-function normalizeKeyForName(rawKey: string): string {
-  const stripped = rawKey.replace(/^[a-zA-Z0-9]+__/, "");
-  const clean = stripped.replace(/^_+/, "");
-  return clean.toLowerCase().replace(/[^a-z]/g, "");
-}
-
-function findByPatterns(obj: Record<string, unknown> | undefined, patterns: RegExp[]): string {
-  if (!obj) return "";
-  for (const [k, v] of Object.entries(obj)) {
-    const norm = normalizeKeyForName(k);
-    const s = String(v ?? "").trim();
-    if (s && patterns.some((p) => p.test(norm))) return s;
-  }
-  return "";
-}
-
 function extractDisplayName(extra: Record<string, unknown> | null | undefined): string {
   if (!extra) return "";
-  const insured = extra.insuredSnapshot as Record<string, unknown> | undefined;
-  const pkgs = extra.packagesSnapshot as Record<string, unknown> | undefined;
-
-  const insuredType = String(
-    insured?.insuredType ?? insured?.insured__category ?? ""
-  ).trim().toLowerCase();
-
-  // Personal: prefer lastName + firstName
-  if (insuredType === "personal" && insured) {
-    let first = "", last = "";
-    for (const [k, v] of Object.entries(insured)) {
-      const norm = normalizeKeyForName(k);
-      const s = String(v ?? "").trim();
-      if (!s) continue;
-      if (!last && LAST_NAME_PATTERNS.some((p) => p.test(norm))) last = s;
-      if (!first && FIRST_NAME_PATTERNS.some((p) => p.test(norm))) first = s;
-    }
-    const combined = [last, first].filter(Boolean).join(" ");
-    if (combined) return combined;
-  }
-
-  // Search all sources: insured → package values → extra
-  const allSources: Array<Record<string, unknown>> = [];
-  if (insured) allSources.push(insured);
-  if (pkgs) {
-    for (const entry of Object.values(pkgs)) {
-      if (!entry || typeof entry !== "object") continue;
-      const vals = (entry as { values?: Record<string, unknown> }).values ?? (entry as Record<string, unknown>);
-      allSources.push(vals as Record<string, unknown>);
-    }
-  }
-  allSources.push(extra);
-
-  // Pass 1: company-specific names (companyName, coName, orgName)
-  for (const src of allSources) {
-    const r = findByPatterns(src, COMPANY_NAME_PATTERNS);
-    if (r) return r;
-  }
-  // Pass 2: generic names (fullName, name)
-  for (const src of allSources) {
-    const r = findByPatterns(src, GENERIC_NAME_PATTERNS);
-    if (r) return r;
-  }
-  // Pass 3: personal name fallback
-  for (const src of allSources) {
-    let first = "", last = "";
-    for (const [k, v] of Object.entries(src)) {
-      const norm = normalizeKeyForName(k);
-      const s = String(v ?? "").trim();
-      if (!s) continue;
-      if (!last && LAST_NAME_PATTERNS.some((p) => p.test(norm))) last = s;
-      if (!first && FIRST_NAME_PATTERNS.some((p) => p.test(norm))) first = s;
-    }
-    const combined = [last, first].filter(Boolean).join(" ");
-    if (combined) return combined;
-  }
-  return "";
+  return getDisplayNameFromSnapshot({
+    insuredSnapshot: extra.insuredSnapshot as Record<string, unknown> | null | undefined,
+    packagesSnapshot: extra.packagesSnapshot as Record<string, unknown> | undefined,
+  });
 }
 
 async function fetchPolicies(flowKey: string): Promise<PolicyRow[]> {

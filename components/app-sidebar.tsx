@@ -25,6 +25,7 @@ import {
   Stamp,
   ClipboardList,
   ListOrdered,
+  Bug,
   type LucideIcon,
 } from "lucide-react";
 import { getIcon } from "@/lib/icons";
@@ -454,6 +455,15 @@ export function AppSidebar(
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
+                    {isAdmin && (
+                      <SidebarMenuItem>
+                        <SidebarMenuButton tooltip="Field Resolver" asChild>
+                          <Link href="/admin/field-resolver">
+                            <Bug className="h-3.5 w-3.5 shrink-0" />
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )}
                   </>
                 )}
                 {isAdmin && (
@@ -605,6 +615,16 @@ export function AppSidebar(
                               </Link>
                             </SidebarMenuButton>
                           </li>
+                          {isAdmin && (
+                            <li>
+                              <SidebarMenuButton tooltip="Field Resolver" asChild>
+                                <Link href="/admin/field-resolver">
+                                  <Bug className="h-4 w-4 shrink-0" />
+                                  <span>Field Resolver</span>
+                                </Link>
+                              </SidebarMenuButton>
+                            </li>
+                          )}
                           {isAdmin && (
                             <li>
                               <Collapsible asChild className="group/collapsible" open={policyOpen} onOpenChange={setPolicyOpen}>

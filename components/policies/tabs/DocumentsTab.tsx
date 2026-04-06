@@ -20,12 +20,13 @@ import type {
   TemplateSection,
 } from "@/lib/types/document-template";
 import type { PolicyDetail } from "@/lib/types/policy";
-
-type SnapshotData = {
-  insuredSnapshot?: Record<string, unknown> | null;
-  packagesSnapshot?: Record<string, unknown> | null;
-  [key: string]: unknown;
-};
+import {
+  resolveRawValue,
+  formatResolvedValue,
+  type SnapshotData,
+  type ResolveContext,
+  type FieldRef,
+} from "@/lib/field-resolver";
 
 function toTrackingKey(label: string): string {
   return label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
@@ -69,6 +70,35 @@ type AccountingLineForPreview = {
   collaboratorName: string | null;
 };
 
+function buildResolveContext(
+  snapshot: SnapshotData,
+  detail: PolicyDetail,
+  extra?: ExtraDocContext,
+): ResolveContext {
+  const ext = (detail.extraAttributes ?? {}) as Record<string, unknown>;
+  return {
+    policyNumber: detail.policyNumber,
+    policyId: detail.policyId as number,
+    createdAt: detail.createdAt,
+    snapshot,
+    policyExtra: ext,
+    agent: detail.agent as Record<string, unknown> | null | undefined,
+    client: extra?.clientData,
+    organisation: extra?.organisationData,
+    accountingLines: extra?.accountingLines,
+    statementData: extra?.statementData,
+  };
+}
+
+function docFieldRef(section: TemplateSection, fieldKey: string): FieldRef {
+  return {
+    source: section.source,
+    fieldKey,
+    packageName: section.packageName,
+    staticValue: (section as unknown as { staticValue?: string }).staticValue,
+  };
+}
+
 function resolveFieldValue(
   snapshot: SnapshotData,
   detail: PolicyDetail,
@@ -76,239 +106,13 @@ function resolveFieldValue(
   fieldKey: string,
   extra?: ExtraDocContext,
 ): unknown {
-  if (section.source === "policy") {
-    const ext = (detail.extraAttributes ?? {}) as Record<string, unknown>;
-    const map: Record<string, unknown> = {
-      policyNumber: detail.policyNumber,
-      createdAt: detail.createdAt,
-      policyId: detail.policyId,
-      flowKey: ext.flowKey ?? "",
-      status: ext.status ?? "",
-      linkedPolicyId: ext.linkedPolicyId ?? "",
-      linkedPolicyNumber: ext.linkedPolicyNumber ?? "",
-      endorsementType: ext.endorsementType ?? "",
-      endorsementReason: ext.endorsementReason ?? "",
-      effectiveDate: ext.effectiveDate ?? "",
-      expiryDate: ext.expiryDate ?? "",
-    };
-    return map[fieldKey] ?? ext[fieldKey] ?? snapshot[fieldKey] ?? "";
-  }
-
-  if (section.source === "agent") {
-    return (detail.agent as Record<string, unknown> | undefined)?.[fieldKey] ?? "";
-  }
-
-  if (section.source === "client") {
-    const cd = extra?.clientData;
-    if (!cd) return "";
-    const fuzzy = (obj: Record<string, unknown>, key: string): unknown => {
-      if (key in obj) return obj[key];
-      const lower = key.toLowerCase();
-      for (const k of Object.keys(obj)) {
-        if (k.toLowerCase() === lower) return obj[k];
-      }
-      return undefined;
-    };
-    return fuzzy(cd, fieldKey) ?? "";
-  }
-
-  if (section.source === "organisation") {
-    const od = extra?.organisationData;
-    if (!od) return "";
-    if (fieldKey === "fullAddress") {
-      const parts: string[] = [];
-      for (const k of ["flatNumber", "floorNumber", "blockNumber", "blockName", "streetNumber", "streetName", "propertyName", "districtName", "area"]) {
-        const v = String(od[k] ?? "").trim();
-        if (v) parts.push(v);
-      }
-      return parts.join(", ");
-    }
-    return od[fieldKey] ?? "";
-  }
-
-  if (section.source === "statement") {
-    const stmt = extra?.statementData;
-    if (!stmt) return "";
-    const activeItems = stmt.items.filter((it) => it.status === "active");
-    const paidItems = stmt.items.filter((it) => it.status === "paid_individually");
-    switch (fieldKey) {
-      case "statementNumber": return stmt.statementNumber;
-      case "statementDate": return stmt.statementDate ?? "";
-      case "statementStatus": return stmt.statementStatus;
-      case "entityName": return stmt.entityName ?? "";
-      case "entityType": return stmt.entityType;
-      case "activeTotal": return stmt.activeTotal / 100;
-      case "paidIndividuallyTotal": return stmt.paidIndividuallyTotal / 100;
-      case "totalAmountCents": return stmt.totalAmountCents / 100;
-      case "paidAmountCents": return stmt.paidAmountCents / 100;
-      case "currency": return stmt.currency;
-      case "itemCount": return stmt.items.length;
-      case "activeItemCount": return activeItems.length;
-      case "paidIndividuallyItemCount": return paidItems.length;
-      case "itemDescriptions": return activeItems.map((it) => it.description ?? "Premium").join("\n");
-      case "itemAmounts": return activeItems.map((it) => (it.amountCents / 100).toFixed(2)).join("\n");
-      case "itemStatuses": return stmt.items.map((it) => it.status).join("\n");
-      default: {
-        if (fieldKey.startsWith("item_")) {
-          const premKey = fieldKey.slice(5);
-          return activeItems
-            .map((it) => {
-              const v = it.premiums?.[premKey];
-              return v != null ? v : "";
-            })
-            .join("\n");
-        }
-        return "";
-      }
-    }
-  }
-
-  if (section.source === "accounting") {
-    const totals = extra?.statementData?.premiumTotals;
-    if (totals && fieldKey in totals) return totals[fieldKey] ?? "";
-
-    const lines = extra?.accountingLines;
-    if (!lines?.length) return totals ? "" : "";
-    const line = lines[0];
-    if (fieldKey in line.values) return line.values[fieldKey] ?? "";
-    if (fieldKey === "margin") return line.margin;
-    if (fieldKey === "lineLabel") return line.lineLabel;
-    if (fieldKey === "insurerName") return line.insurerName ?? "";
-    if (fieldKey === "collaboratorName") return line.collaboratorName ?? "";
-    return "";
-  }
-
-  if (section.source === "insured" || section.source === "contactinfo") {
-    const insured = snapshot.insuredSnapshot ?? {};
-    const prefix = section.source;
-
-    const stripPfx = (k: string): string =>
-      k.replace(/^(insured|contactinfo)(__?|_)/i, "").toLowerCase().replace(/[^a-z0-9]/g, "");
-
-    const robustGet = (pfx: string, key: string): string => {
-      const direct = insured[key] ?? insured[`${pfx}__${key}`] ?? insured[`${pfx}_${key}`];
-      if (direct !== undefined && direct !== null && String(direct).trim()) return String(direct).trim();
-      const norm = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-      for (const [k, v] of Object.entries(insured)) {
-        if (stripPfx(k) === norm && v !== undefined && v !== null && String(v).trim()) return String(v).trim();
-      }
-      return "";
-    };
-
-    if (section.source === "insured" && fieldKey === "displayName") {
-      const iType = (robustGet("insured", "insuredType") || robustGet("insured", "category")).toLowerCase();
-      if (iType === "personal") {
-        const combined = [robustGet("insured", "lastName"), robustGet("insured", "firstName")].filter(Boolean).join(" ");
-        return combined || robustGet("insured", "fullName");
-      }
-      if (iType === "company") return robustGet("insured", "companyName") || robustGet("insured", "organisationName");
-      return robustGet("insured", "companyName") || robustGet("insured", "organisationName") || robustGet("insured", "fullName") ||
-        [robustGet("insured", "lastName"), robustGet("insured", "firstName")].filter(Boolean).join(" ");
-    }
-
-    if (section.source === "insured" && fieldKey === "primaryId") {
-      const iType = (robustGet("insured", "insuredType") || robustGet("insured", "category")).toLowerCase();
-      if (iType === "personal") return robustGet("insured", "idNumber");
-      if (iType === "company") return robustGet("insured", "brNumber");
-      return robustGet("insured", "idNumber") || robustGet("insured", "brNumber");
-    }
-
-    if (section.source === "contactinfo" && fieldKey === "fullAddress") {
-      const g = (k: string) => robustGet("contactinfo", k);
-      const first = (...keys: string[]) => { for (const k of keys) { const v = g(k); if (v) return v; } return ""; };
-      const tc = (s: string) => {
-        if (!s) return s;
-        const lo = s.toLowerCase();
-        return (lo === s || s.toUpperCase() === s) ? lo.replace(/(?:^|\s|[-'/])\S/g, (ch) => ch.toUpperCase()) : s;
-      };
-      const parts: string[] = [];
-      const flat = first("flatNumber", "flatNo", "flat");
-      const floor = first("floorNumber", "floorNo", "floor", "foorNo");
-      const block = first("blockNumber", "blockNo");
-      const blockName = tc(first("blockName", "block"));
-      const streetNum = first("streetNumber", "streetNo");
-      const street = tc(first("streetName", "street"));
-      const prop = tc(first("propertyName", "property"));
-      const district = tc(first("districtName", "district"));
-      const area = tc(first("area", "region"));
-      if (flat) parts.push(`Flat ${flat}`);
-      if (floor) parts.push(`${floor}/F`);
-      if (block || blockName) parts.push([block, blockName].filter(Boolean).join(" "));
-      if (streetNum || street) parts.push([streetNum, street].filter(Boolean).join(" "));
-      if (prop) parts.push(prop);
-      if (district) parts.push(district);
-      if (area) parts.push(area);
-      return parts.join(", ");
-    }
-
-    return robustGet(prefix, fieldKey) || "";
-  }
-
-  if (section.source === "package" && section.packageName) {
-    const pkgs = (snapshot.packagesSnapshot ?? {}) as Record<string, unknown>;
-    const pkg = pkgs[section.packageName];
-    if (!pkg || typeof pkg !== "object") return "";
-    const vals =
-      "values" in (pkg as Record<string, unknown>)
-        ? ((pkg as { values?: Record<string, unknown> }).values ?? {})
-        : (pkg as Record<string, unknown>);
-    return (
-      vals[fieldKey] ??
-      vals[`${section.packageName}__${fieldKey}`] ??
-      vals[`${section.packageName}_${fieldKey}`] ??
-      ""
-    );
-  }
-
-  if (section.source === "static") {
-    return (section as unknown as { staticValue?: string }).staticValue ?? "";
-  }
-
-  return "";
+  return resolveRawValue(
+    docFieldRef(section, fieldKey),
+    buildResolveContext(snapshot, detail, extra),
+  );
 }
 
-function formatValue(
-  raw: unknown,
-  format?: string,
-  currencyCode?: string,
-): string {
-  if (raw === null || raw === undefined) return "";
-  const s = String(raw).trim();
-  if (!s) return "";
-
-  if (format === "currency" || format === "negative_currency") {
-    const cur = (currencyCode || "HKD").toUpperCase();
-    const fmtOne = (v: unknown) => {
-      const n = Number(v);
-      if (!Number.isFinite(n)) return String(v);
-      try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur }).format(n); }
-      catch { return n.toFixed(2); }
-    };
-    if (s.includes("\n")) {
-      return s.split("\n").map((line) => fmtOne(line.trim())).join("\n");
-    }
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return s;
-    return fmtOne(n);
-  }
-
-  if (format === "date") {
-    const d = new Date(s);
-    if (Number.isNaN(d.getTime())) return s;
-    return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()}`;
-  }
-
-  if (format === "boolean") {
-    return raw === true || raw === "true" ? "Yes" : "No";
-  }
-
-  if (format === "number") {
-    const n = Number(raw);
-    return Number.isFinite(n) ? n.toLocaleString() : s;
-  }
-
-  return s;
-}
+const formatValue = formatResolvedValue;
 
 function needsConfirmation(meta: DocumentTemplateMeta): boolean {
   if (meta.requiresConfirmation !== undefined) return meta.requiresConfirmation;
