@@ -465,11 +465,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
 
   function getColumnValue(row: Row, path: string): React.ReactNode {
     if (path === "_builtin.policyNumber") {
-      return (
-        <span className={`font-mono ${row.isActive !== false ? "text-green-600 dark:text-green-400" : "text-neutral-400 dark:text-neutral-500"}`}>
-          {row.policyNumber}
-        </span>
-      );
+      return <span className="font-mono">{row.policyNumber}</span>;
     }
     if (path === "_builtin.displayName") return row.displayName || <span className="text-neutral-400">—</span>;
     if (path === "_builtin.createdAt") return formatDDMMYYYYHHMM(row.createdAt);
@@ -947,7 +943,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
         </TableHeader>
         <TableBody>
           {filtered.map((r) => (
-            <TableRow key={r.policyId} className={`cursor-pointer group border-l-2 border-l-transparent transition-colors ${r.isActive === false ? "hover:bg-red-50/60 dark:hover:bg-red-950/30 hover:border-l-red-500" : "hover:bg-green-50/60 dark:hover:bg-green-950/30 hover:border-l-green-500"}`} onClick={() => openDetails(r.policyId)}>
+            <TableRow key={r.policyId} className={`cursor-pointer group border-l-2 border-l-transparent transition-colors ${r.isActive === false ? "text-neutral-400 dark:text-neutral-500 hover:bg-red-50/60 dark:hover:bg-red-950/30 hover:border-l-red-500" : "text-green-600 dark:text-green-400 hover:bg-green-50/60 dark:hover:bg-green-950/30 hover:border-l-green-500"}`} onClick={() => openDetails(r.policyId)}>
               {activeColumns.length > 0 ? (
                 activeColumns.map((path) => (
                   <TableCell key={path} className="max-w-[200px] text-sm wrap-break-word">
@@ -955,7 +951,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
                   </TableCell>
                 ))
               ) : (
-                <TableCell className="font-mono text-neutral-400">
+                <TableCell className="font-mono">
                   {r.policyNumber}
                 </TableCell>
               )}
