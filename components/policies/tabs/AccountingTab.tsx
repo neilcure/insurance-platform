@@ -759,14 +759,16 @@ function PaymentStatusCard({ policyId, canEdit, endorsementPolicyIds }: { policy
           )}
         </span>
       </button>
-      <div className={open ? "border-t border-neutral-200 dark:border-neutral-700 p-3" : "hidden"}>
-        <PaymentSection
-          policyId={policyId}
-          isAdmin={canEdit}
-          onSummaryChange={setSummary}
-          endorsementPolicyIds={endorsementPolicyIds}
-        />
-      </div>
+      {open && (
+        <div className="border-t border-neutral-200 dark:border-neutral-700 p-3">
+          <PaymentSection
+            policyId={policyId}
+            isAdmin={canEdit}
+            onSummaryChange={setSummary}
+            endorsementPolicyIds={endorsementPolicyIds}
+          />
+        </div>
+      )}
     </div>
   );
 }

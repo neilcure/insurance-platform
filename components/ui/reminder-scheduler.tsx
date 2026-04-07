@@ -65,12 +65,12 @@ export function ReminderScheduler({
   async function loadReminders() {
     try {
       const res = await fetch(
-        `/api/policies/${policyId}/reminders?_t=${Date.now()}`,
+        `/api/policies/${policyId}/reminders?documentTypeKey=${encodeURIComponent(documentTypeKey)}&_t=${Date.now()}`,
         { cache: "no-store" },
       );
       if (!res.ok) return;
-      const all: ReminderScheduleRow[] = await res.json();
-      setReminders(all.filter((r) => r.documentTypeKey === documentTypeKey));
+      const data: ReminderScheduleRow[] = await res.json();
+      setReminders(data);
     } catch {
       // silent
     } finally {

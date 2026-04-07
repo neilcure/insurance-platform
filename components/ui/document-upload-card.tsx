@@ -242,6 +242,7 @@ type DocumentUploadCardProps = {
   onStatementToggled?: () => void;
   clientSchedule?: ScheduleInfo | null;
   agentSchedule?: ScheduleInfo | null;
+  hasStatementInvoices?: boolean;
 };
 
 function formatPaymentMethod(m: string | null): string {
@@ -268,6 +269,7 @@ export function DocumentUploadCard({
   onStatementToggled,
   clientSchedule,
   agentSchedule,
+  hasStatementInvoices,
 }: DocumentUploadCardProps) {
   const [uploading, setUploading] = React.useState(false);
   const [rejectOpen, setRejectOpen] = React.useState(false);
@@ -286,23 +288,12 @@ export function DocumentUploadCard({
   const [paymentDate, setPaymentDate] = React.useState(() => new Date().toISOString().split("T")[0]);
   const [paymentRef, setPaymentRef] = React.useState("");
   const [pendingFile, setPendingFile] = React.useState<File | null>(null);
-  const [payIndividually, setPayIndividually] = React.useState(true);
+  const [payIndividually, setPayIndividually] = React.useState(!hasStatementInvoices);
   const [togglingStatement, setTogglingStatement] = React.useState(false);
 
   React.useEffect(() => {
-    if (!needsPayment) return;
-    const schedule = agentSchedule || clientSchedule;
-    if (!schedule) return;
-    fetch(`/api/accounting/invoices/by-policy/${policyId}?_t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((invoices: { scheduleId: number | null; direction: string; invoiceType: string }[]) => {
-        const onStatement = invoices
-          .filter((inv) => inv.direction === "receivable" && inv.invoiceType !== "statement")
-          .some((inv) => inv.scheduleId != null);
-        setPayIndividually(!onStatement);
-      })
-      .catch(() => {});
-  }, [policyId, needsPayment, agentSchedule, clientSchedule]);
+    setPayIndividually(!hasStatementInvoices);
+  }, [hasStatementInvoices]);
 
   const statusCfg = STATUS_CONFIG[displayStatus];
   const StatusIcon = statusCfg.icon;

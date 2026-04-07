@@ -129,6 +129,7 @@ export function PaymentSection({
   externalRefreshKey,
   endorsementPolicyIds,
   hideInvoiceCards,
+  initialSchedules,
 }: {
   policyId: number;
   isAdmin: boolean;
@@ -136,6 +137,7 @@ export function PaymentSection({
   externalRefreshKey?: number;
   endorsementPolicyIds?: number[];
   hideInvoiceCards?: boolean;
+  initialSchedules?: { id: number; entityType: string; frequency?: string | null; entityName?: string | null; billingDay?: number | null; isActive?: boolean }[];
 }) {
   const [invoices, setInvoices] = React.useState<InvoiceWithPayments[]>([]);
   const [payables, setPayables] = React.useState<InvoiceWithPayments[]>([]);
@@ -162,7 +164,9 @@ export function PaymentSection({
     billingDay: number | null;
     isActive: boolean;
   };
-  const [schedules, setSchedules] = React.useState<ScheduleInfo[] | undefined>(undefined);
+  const [schedules, setSchedules] = React.useState<ScheduleInfo[] | undefined>(
+    initialSchedules as ScheduleInfo[] | undefined,
+  );
   const clientSchedule = schedules?.find((s) => s.entityType === "client") ?? null;
   const agentSchedule = schedules?.find((s) => s.entityType === "agent") ?? null;
   const hasClientSchedule = !!clientSchedule;
@@ -191,7 +195,9 @@ export function PaymentSection({
   const [statementsBySchedule, setStatementsBySchedule] = React.useState<Record<number, StatementData | null>>({});
   const [itemActionBusy, setItemActionBusy] = React.useState<number | null>(null);
 
+  const skipInitialScheduleFetch = React.useRef(!!initialSchedules);
   React.useEffect(() => {
+    if (skipInitialScheduleFetch.current) { skipInitialScheduleFetch.current = false; return; }
     fetch(`/api/accounting/schedules/by-policy/${policyId}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : { schedules: [] }))
       .then((data) => {

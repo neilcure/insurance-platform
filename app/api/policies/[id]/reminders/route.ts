@@ -51,6 +51,14 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       .groupBy(reminderSendLog.scheduleId)
       .as("log_stats");
 
+    const url = new URL(_.url);
+    const docTypeFilter = url.searchParams.get("documentTypeKey");
+
+    const conditions = [eq(reminderSchedules.policyId, policyId)];
+    if (docTypeFilter) {
+      conditions.push(eq(reminderSchedules.documentTypeKey, docTypeFilter));
+    }
+
     const rows = await db
       .select({
         id: reminderSchedules.id,
@@ -74,7 +82,7 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       .from(reminderSchedules)
       .leftJoin(creatorAlias, eq(creatorAlias.id, reminderSchedules.createdBy))
       .leftJoin(logStats, eq(logStats.scheduleId, reminderSchedules.id))
-      .where(eq(reminderSchedules.policyId, policyId))
+      .where(and(...conditions))
       .orderBy(reminderSchedules.createdAt);
 
     return NextResponse.json(rows, {

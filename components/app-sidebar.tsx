@@ -339,7 +339,7 @@ export function AppSidebar(
     }
   }, [userKey, isClientUser]);
 
-  // Poll unread audit log count for admin users
+  // Fetch unread audit log count for admin users
   const fetchAuditBadge = React.useCallback(async () => {
     if (!isAdmin) return;
     try {
@@ -359,11 +359,16 @@ export function AppSidebar(
     void fetchAuditBadge();
   }, [loadFlowsOnce, loadPackagesOnce, fetchOrgName, fetchAuditBadge]);
 
-  // Poll audit badge every 30 seconds
+  // Refresh audit badge on events, not polling
   React.useEffect(() => {
     if (!isAdmin) return;
-    const interval = setInterval(() => void fetchAuditBadge(), 30_000);
-    return () => clearInterval(interval);
+    const onChanged = () => void fetchAuditBadge();
+    window.addEventListener("audit:changed", onChanged);
+    window.addEventListener("focus", onChanged);
+    return () => {
+      window.removeEventListener("audit:changed", onChanged);
+      window.removeEventListener("focus", onChanged);
+    };
   }, [isAdmin, fetchAuditBadge]);
 
   // Listen for account changes to refresh org name live

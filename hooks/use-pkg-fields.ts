@@ -14,19 +14,21 @@ export type PkgFieldInfo = {
   } | null;
 };
 
-export function usePkgFields() {
-  const [cache, setCache] = React.useState<Record<string, PkgFieldInfo[]>>({});
+const STALE_MS = 30_000;
+const globalCache: Record<string, { fields: PkgFieldInfo[]; fetchedAt: number }> = {};
+const inflight: Record<string, Promise<PkgFieldInfo[]>> = {};
 
-  const load = React.useCallback(
-    async (pkg: string) => {
-      if (cache[pkg]) return;
-      try {
-        const res = await fetch(
-          `/api/admin/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}`,
-          { cache: "no-store" },
-        );
-        if (!res.ok) return;
-        const data = (await res.json()) as PkgFieldInfo[];
+function fetchPkgFields(pkg: string): Promise<PkgFieldInfo[]> {
+  if (globalCache[pkg] && Date.now() - globalCache[pkg].fetchedAt < STALE_MS) {
+    return Promise.resolve(globalCache[pkg].fields);
+  }
+  if (!inflight[pkg]) {
+    inflight[pkg] = fetch(
+      `/api/admin/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}`,
+      { cache: "no-store" },
+    )
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: PkgFieldInfo[]) => {
         const rows = (Array.isArray(data) ? data : []).map((r) => ({
           id: r.id,
           value: r.value,
@@ -34,10 +36,26 @@ export function usePkgFields() {
           isActive: r.isActive,
           meta: (r.meta ?? null) as PkgFieldInfo["meta"],
         }));
-        setCache((prev) => ({ ...prev, [pkg]: rows }));
-      } catch {
-        /* ignore */
-      }
+        globalCache[pkg] = { fields: rows, fetchedAt: Date.now() };
+        delete inflight[pkg];
+        return rows;
+      })
+      .catch(() => {
+        delete inflight[pkg];
+        return globalCache[pkg]?.fields ?? [];
+      });
+  }
+  return inflight[pkg];
+}
+
+export function usePkgFields() {
+  const [cache, setCache] = React.useState<Record<string, PkgFieldInfo[]>>({});
+
+  const load = React.useCallback(
+    async (pkg: string) => {
+      if (cache[pkg]) return;
+      const rows = await fetchPkgFields(pkg);
+      setCache((prev) => (prev[pkg] ? prev : { ...prev, [pkg]: rows }));
     },
     [cache],
   );

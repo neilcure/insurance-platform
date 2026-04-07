@@ -86,6 +86,7 @@ export function AuditLogPanel() {
         body: JSON.stringify({ markAll: true }),
       });
       setEntries((prev) => prev.map((e) => ({ ...e, isRead: true })));
+      window.dispatchEvent(new Event("audit:changed"));
       toast.success("All marked as read");
     } catch {
       toast.error("Failed to mark as read");

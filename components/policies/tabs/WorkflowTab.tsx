@@ -100,6 +100,16 @@ export function WorkflowTab({
   const [linkedEndorsements, setLinkedEndorsements] = React.useState<LinkedEndorsement[]>([]);
   const [endorsementSummaries, setEndorsementSummaries] = React.useState<Record<number, { total: number; verified: number; outstanding: number }>>({});
 
+  // Shared schedule data — fetched once, passed to all endorsement UploadDocumentsTab instances
+  const [parentSchedules, setParentSchedules] = React.useState<{ id: number; entityType: string; entityName: string | null; frequency: string | null; billingDay: number | null; isActive?: boolean }[]>([]);
+  React.useEffect(() => {
+    if (!isParentPolicy) return;
+    fetch(`/api/accounting/schedules/by-policy/${detail.policyId}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { schedules: [] }))
+      .then((data) => setParentSchedules(data.schedules ?? []))
+      .catch(() => setParentSchedules([]));
+  }, [isParentPolicy, detail.policyId]);
+
   React.useEffect(() => {
     if (!isParentPolicy) return;
     let cancelled = false;
@@ -257,8 +267,8 @@ export function WorkflowTab({
               </div>
             )}
           </button>
-          {sec.id === "uploads" && (
-            <div className={expandedSection === sec.id ? "border-t border-neutral-200 p-3 dark:border-neutral-800 space-y-4" : "hidden"}>
+          {sec.id === "uploads" && expandedSection === sec.id && (
+            <div className="border-t border-neutral-200 p-3 dark:border-neutral-800 space-y-4">
               <React.Suspense fallback={<div className="py-4 text-center text-xs text-neutral-400">Loading...</div>}>
                 <div>
                   {isParentPolicy && linkedEndorsements.length > 0 && (
@@ -291,6 +301,7 @@ export function WorkflowTab({
                       isAdmin={isAdmin ?? false}
                       currentStatus={e.status}
                       parentPolicyId={detail.policyId}
+                      parentSchedules={parentSchedules}
                       onSummaryChange={(s) => {
                         setEndorsementSummaries((prev) => ({ ...prev, [e.policyId]: s }));
                       }}
@@ -302,8 +313,8 @@ export function WorkflowTab({
               </React.Suspense>
             </div>
           )}
-          {sec.id === "payments" && (
-            <div className={expandedSection === sec.id ? "border-t border-neutral-200 p-3 dark:border-neutral-800 space-y-4" : "hidden"}>
+          {sec.id === "payments" && expandedSection === sec.id && (
+            <div className="border-t border-neutral-200 p-3 dark:border-neutral-800 space-y-4">
               <React.Suspense fallback={<div className="py-4 text-center text-xs text-neutral-400">Loading...</div>}>
                 <div>
                   {isParentPolicy && linkedEndorsements.length > 0 && (
@@ -319,6 +330,7 @@ export function WorkflowTab({
                     currentStatus={curStatus}
                     insuredType={insuredType}
                     hasNcb={hasNcb}
+                    parentSchedules={parentSchedules}
                     onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
                     filter="payments"
                   />
@@ -335,6 +347,7 @@ export function WorkflowTab({
                       isAdmin={isAdmin ?? false}
                       currentStatus={e.status}
                       parentPolicyId={detail.policyId}
+                      parentSchedules={parentSchedules}
                       onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
                       filter="payments"
                     />
@@ -347,6 +360,7 @@ export function WorkflowTab({
                   externalRefreshKey={paymentRefreshKey}
                   endorsementPolicyIds={isParentPolicy ? linkedEndorsements.map((e) => e.policyId) : undefined}
                   hideInvoiceCards
+                  initialSchedules={parentSchedules}
                 />
               </React.Suspense>
             </div>

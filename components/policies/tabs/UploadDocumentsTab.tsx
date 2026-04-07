@@ -48,6 +48,7 @@ export function UploadDocumentsTab({
   onPaymentRecorded,
   filter = "all",
   parentPolicyId,
+  parentSchedules,
 }: {
   policyId: number;
   flowKey?: string;
@@ -59,6 +60,7 @@ export function UploadDocumentsTab({
   onPaymentRecorded?: () => void;
   filter?: "all" | "documents" | "payments";
   parentPolicyId?: number;
+  parentSchedules?: ScheduleInfo[];
 }) {
   const { allOptions: statusOptionsFromHook } = usePolicyStatuses();
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
@@ -67,17 +69,33 @@ export function UploadDocumentsTab({
   const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
   const [policyLineKeys, setPolicyLineKeys] = React.useState<Set<string>>(new Set());
   const [totalConfigured, setTotalConfigured] = React.useState(0);
-  const [schedules, setSchedules] = React.useState<ScheduleInfo[]>([]);
+  const [schedules, setSchedules] = React.useState<ScheduleInfo[]>(parentSchedules ?? []);
   const scheduleLookupId = parentPolicyId ?? policyId;
   React.useEffect(() => {
+    if (parentSchedules) { setSchedules(parentSchedules); return; }
     fetch(`/api/accounting/schedules/by-policy/${scheduleLookupId}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : { schedules: [] }))
       .then((data) => setSchedules(data.schedules ?? []))
       .catch(() => setSchedules([]));
-  }, [scheduleLookupId]);
+  }, [scheduleLookupId, parentSchedules]);
 
   const clientSchedule = schedules.find((s) => s.entityType === "client") ?? null;
   const agentSchedule = schedules.find((s) => s.entityType === "agent") ?? null;
+
+  const [hasStatementInvoices, setHasStatementInvoices] = React.useState(false);
+  React.useEffect(() => {
+    const schedule = agentSchedule || clientSchedule;
+    if (!schedule) return;
+    fetch(`/api/accounting/invoices/by-policy/${policyId}?_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((invoices: { scheduleId: number | null; direction: string; invoiceType: string }[]) => {
+        const onStatement = invoices
+          .filter((inv) => inv.direction === "receivable" && inv.invoiceType !== "statement")
+          .some((inv) => inv.scheduleId != null);
+        setHasStatementInvoices(onStatement);
+      })
+      .catch(() => {});
+  }, [policyId, agentSchedule, clientSchedule]);
 
   React.useEffect(() => {
     fetch(`/api/policies/${policyId}/linked-insurers`, { cache: "no-store" })
@@ -283,6 +301,7 @@ export function UploadDocumentsTab({
           onStatementToggled={() => onPaymentRecorded?.()}
           clientSchedule={clientSchedule}
           agentSchedule={agentSchedule}
+          hasStatementInvoices={hasStatementInvoices}
         />
       ))}
     </div>
