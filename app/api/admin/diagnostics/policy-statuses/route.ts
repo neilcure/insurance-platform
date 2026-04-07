@@ -94,7 +94,7 @@ export async function GET() {
       policyNumber: r.policyNumber,
       flowKey: r.flowKey,
       isActive: r.isActive,
-      status: (extra.status as string) || "active",
+      status: (extra.status as string) || "quotation_prepared",
       statusHistory: Array.isArray(extra.statusHistory)
         ? (extra.statusHistory as PolicyStatusRow["statusHistory"])
         : [],
@@ -162,7 +162,7 @@ export async function GET() {
   for (const p of policyStatuses) {
     for (let i = 0; i < p.statusHistory.length; i++) {
       const entry = p.statusHistory[i];
-      const prev = i > 0 ? p.statusHistory[i - 1].status : "active";
+      const prev = i > 0 ? p.statusHistory[i - 1].status : "quotation_prepared";
       recentTransitions.push({
         policyNumber: p.policyNumber,
         policyId: p.policyId,

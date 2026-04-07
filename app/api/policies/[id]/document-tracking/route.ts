@@ -169,7 +169,18 @@ export async function POST(
         const updated = { ...existing };
         delete updated[docType];
         await db.update(policies).set({ documentTracking: updated }).where(eq(policies.id, policyId));
-        return NextResponse.json({ documentTracking: updated });
+        let statusRolledBack: string | null = null;
+        try {
+          const { recalculatePolicyStatus } = await import("@/lib/auto-advance-status");
+          const userEmail = (user as unknown as { email?: string }).email || `user:${user.id}`;
+          statusRolledBack = await recalculatePolicyStatus(policyId, userEmail, `${docType.replace(/_/g, " ")} tracking reset`);
+        } catch (err) {
+          console.error("Status recalculate on reset failed (non-fatal):", err);
+        }
+        return NextResponse.json({
+          documentTracking: updated,
+          ...(statusRolledBack ? { statusRolledBack } : {}),
+        });
       }
       default:
         return NextResponse.json({ error: "Invalid action" }, { status: 400 });
@@ -242,18 +253,32 @@ export async function POST(
       .set({ documentTracking: updatedMap })
       .where(eq(policies.id, policyId));
 
-    // Auto-advance policy status based on document tracking action
+    const userEmail = (user as unknown as { name?: string; email?: string }).email || `user:${user.id}`;
+
+    // On reject: recalculate status (may roll back if the rejected doc caused an advance)
     let autoStatusAdvanced: string | null = null;
-    try {
-      autoStatusAdvanced = await autoAdvancePolicyStatus(
-        policyId,
-        docType,
-        action,
-        (user as unknown as { name?: string; email?: string }).email || `user:${user.id}`,
-        templateType,
-      );
-    } catch (err) {
-      console.error("Auto-advance status error (non-fatal):", err);
+    let statusRolledBack: string | null = null;
+
+    if (action === "reject") {
+      try {
+        const { recalculatePolicyStatus } = await import("@/lib/auto-advance-status");
+        statusRolledBack = await recalculatePolicyStatus(policyId, userEmail, `${docType.replace(/_/g, " ")} rejected`);
+      } catch (err) {
+        console.error("Status recalculate on reject failed (non-fatal):", err);
+      }
+    } else {
+      // Auto-advance policy status based on document tracking action
+      try {
+        autoStatusAdvanced = await autoAdvancePolicyStatus(
+          policyId,
+          docType,
+          action,
+          userEmail,
+          templateType,
+        );
+      } catch (err) {
+        console.error("Auto-advance status error (non-fatal):", err);
+      }
     }
 
     // Auto-create accounting invoice ONLY when an actual invoice/debit_note document is
@@ -277,6 +302,7 @@ export async function POST(
     return NextResponse.json({
       documentTracking: updatedMap,
       ...(autoStatusAdvanced ? { statusAdvanced: autoStatusAdvanced } : {}),
+      ...(statusRolledBack ? { statusRolledBack } : {}),
     });
   } catch (err) {
     console.error("POST document-tracking error:", err);
@@ -314,19 +340,16 @@ function resolveSetCode(
   return null;
 }
 
-const STATUS_ORDER = [
-  "quotation_prepared",
-  "quotation_sent",
-  "quotation_confirmed",
-  "invoice_prepared",
-  "invoice_sent",
-  "payment_confirmed",
-  "completed",
-] as const;
-
 const DOC_ACTION_TO_STATUS: Record<string, Record<string, string>> = {
-  quotation: { send: "quotation_sent", confirm: "quotation_confirmed" },
-  invoice:   { send: "invoice_sent" },
+  quotation: { prepare: "quotation_prepared", send: "quotation_sent", confirm: "quotation_confirmed" },
+  invoice:   { prepare: "invoice_prepared", send: "invoice_sent" },
+  receipt:   { send: "payment_received" },
+};
+
+const ACTION_NOTE_LABELS: Record<string, string> = {
+  prepare: "prepared",
+  send: "sent",
+  confirm: "confirmed",
 };
 
 async function autoAdvancePolicyStatus(
@@ -336,7 +359,7 @@ async function autoAdvancePolicyStatus(
   changedBy: string,
   templateType?: string,
 ): Promise<string | null> {
-  if (action !== "send" && action !== "confirm") return null;
+  if (action !== "send" && action !== "confirm" && action !== "prepare") return null;
 
   let targetStatus: string | null = null;
 
@@ -354,40 +377,14 @@ async function autoAdvancePolicyStatus(
 
   if (!targetStatus) return null;
 
-  const [carRow] = await db
-    .select({ id: cars.id, extraAttributes: cars.extraAttributes })
-    .from(cars)
-    .where(eq(cars.policyId, policyId))
-    .limit(1);
-  if (!carRow) return null;
-
-  const existing = (carRow.extraAttributes ?? {}) as Record<string, unknown>;
-  const currentStatus = (existing.status as string) ?? "active";
-
-  const currentIdx = STATUS_ORDER.indexOf(currentStatus as typeof STATUS_ORDER[number]);
-  const targetIdx = STATUS_ORDER.indexOf(targetStatus as typeof STATUS_ORDER[number]);
-
-  if (targetIdx >= 0 && currentIdx >= targetIdx) return null;
-
-  const historyArr = Array.isArray(existing.statusHistory)
-    ? [...(existing.statusHistory as unknown[])]
-    : [];
-  historyArr.push({
-    status: targetStatus,
-    changedAt: new Date().toISOString(),
+  const { advancePolicyStatus } = await import("@/lib/auto-advance-status");
+  const noteLabel = ACTION_NOTE_LABELS[action] ?? action;
+  return advancePolicyStatus(
+    policyId,
+    targetStatus,
     changedBy,
-    note: `Auto: ${docType.replace(/_/g, " ")} ${action === "send" ? "sent" : "confirmed"}`,
-  });
-
-  const updated: Record<string, unknown> = {
-    ...existing,
-    status: targetStatus,
-    statusHistory: historyArr,
-    _lastEditedAt: new Date().toISOString(),
-  };
-
-  await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
-  return targetStatus;
+    `Auto: ${docType.replace(/_/g, " ")} ${noteLabel}`,
+  );
 }
 
 // autoCreateAccountingInvoices is imported from @/lib/auto-create-invoices

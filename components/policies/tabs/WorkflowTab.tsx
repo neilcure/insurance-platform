@@ -46,7 +46,7 @@ export function WorkflowTab({
   const { getLabel, getColor, getOption } = usePolicyStatuses(flowKey);
   const [expandedSection, setExpandedSection] = React.useState<string | null>(null);
 
-  const curStatus = currentStatus || "active";
+  const curStatus = currentStatus || "quotation_prepared";
   const currentDef = getOption(curStatus);
   const history = statusHistory ?? [];
 
@@ -113,7 +113,7 @@ export function WorkflowTab({
             policyId: (r.policyId ?? r.id) as number,
             policyNumber: (r.policyNumber ?? r.policy_number ?? "") as string,
             status: ((r.extraAttributes as Record<string, unknown> | undefined)?.status ??
-              (r.carExtra as Record<string, unknown> | undefined)?.status ?? "active") as string,
+              (r.carExtra as Record<string, unknown> | undefined)?.status ?? "quotation_prepared") as string,
           }));
         setLinkedEndorsements(mapped);
       })
@@ -289,7 +289,7 @@ export function WorkflowTab({
                       policyId={e.policyId}
                       flowKey="endorsement"
                       isAdmin={isAdmin ?? false}
-                      currentStatus={curStatus}
+                      currentStatus={e.status}
                       parentPolicyId={detail.policyId}
                       onSummaryChange={(s) => {
                         setEndorsementSummaries((prev) => ({ ...prev, [e.policyId]: s }));
@@ -333,7 +333,7 @@ export function WorkflowTab({
                       policyId={e.policyId}
                       flowKey="endorsement"
                       isAdmin={isAdmin ?? false}
-                      currentStatus={curStatus}
+                      currentStatus={e.status}
                       parentPolicyId={detail.policyId}
                       onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
                       filter="payments"

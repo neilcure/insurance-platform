@@ -1323,6 +1323,10 @@ export function DocumentsTab({
         toast.info(`Status auto-advanced to: ${data.statusAdvanced.replace(/_/g, " ")}`);
         onStatusAutoAdvanced?.();
       }
+      if (data.statusRolledBack) {
+        toast.warning(`Status rolled back to: ${data.statusRolledBack.replace(/_/g, " ")}`);
+        onStatusAutoAdvanced?.();
+      }
     } catch (err: any) {
       if (action !== "prepare") {
         toast.error(err.message || "Failed to update");
@@ -1477,6 +1481,7 @@ export function DocumentsTab({
   }, [htmlEmailTo, htmlEmailSubject, htmlEmailHtml, htmlEmailPlain, detail.policyId, selected, tracking, handleTrackingAction]);
 
   const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
+  const [policyLineKeys, setPolicyLineKeys] = React.useState<Set<string>>(new Set());
 
   React.useEffect(() => {
     fetch(`/api/policies/${detail.policyId}/linked-insurers`, { cache: "no-store" })
@@ -1485,6 +1490,14 @@ export function DocumentsTab({
         setPolicyInsurerIds(data.insurerPolicyIds ?? []);
       })
       .catch(() => setPolicyInsurerIds([]));
+
+    fetch(`/api/policies/${detail.policyId}/premiums?_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { lines: [] }))
+      .then((data: { lines?: { lineKey?: string }[] }) => {
+        const keys = new Set((data.lines ?? []).map((l) => l.lineKey ?? "").filter(Boolean));
+        setPolicyLineKeys(keys);
+      })
+      .catch(() => {});
   }, [detail.policyId]);
 
   React.useEffect(() => {
@@ -1492,7 +1505,7 @@ export function DocumentsTab({
     let cancelled = false;
     setLoading(true);
 
-    const status = currentStatus || "active";
+    const status = currentStatus || "quotation_prepared";
 
     const matchingIds = [...new Set([detail.policyId, ...policyInsurerIds])];
 
@@ -1504,16 +1517,18 @@ export function DocumentsTab({
     const matchesStatus = (sws: string[] | undefined) => {
       if (!sws || sws.length === 0) return true;
       const currentIdx = statusOrder.indexOf(status);
-      // Find the earliest status in the template's showWhenStatus list
       const earliestIdx = Math.min(
         ...sws.map((s) => statusOrder.indexOf(s)).filter((i) => i >= 0),
       );
       if (currentIdx < 0 || earliestIdx === Infinity) {
-        // Fallback to exact match if status not found in the ordered list
         return sws.includes(status);
       }
-      // Show if current status is at or past the earliest trigger status
       return currentIdx >= earliestIdx;
+    };
+
+    const matchesLineKey = (key: string | undefined) => {
+      if (!key) return true;
+      return policyLineKeys.size === 0 || policyLineKeys.has(key);
     };
 
     const loadHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
@@ -1532,6 +1547,7 @@ export function DocumentsTab({
             if (!matchesInsurer(r.meta.insurerPolicyIds)) return false;
           }
           if (!matchesStatus(r.meta.showWhenStatus)) return false;
+          if (!matchesLineKey(r.meta.accountingLineKey)) return false;
           return true;
         });
         setTemplates(applicable);
@@ -1556,6 +1572,7 @@ export function DocumentsTab({
             if (!matchesInsurer(meta.insurerPolicyIds)) return false;
           }
           if (!matchesStatus(meta.showWhenStatus)) return false;
+          if (!matchesLineKey(meta.accountingLineKey)) return false;
           return true;
         });
         setPdfTemplates(applicable);
@@ -1567,7 +1584,7 @@ export function DocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [flowKey, currentStatus, policyInsurerIds, detail.policyId, statusOrder]);
+  }, [flowKey, currentStatus, policyInsurerIds, policyLineKeys, detail.policyId, statusOrder]);
 
   // Auto-prepare: assign document numbers when templates become visible
   const [autoPrepared, setAutoPrepared] = React.useState<Set<string>>(new Set());

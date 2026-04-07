@@ -58,16 +58,17 @@ export async function GET() {
       : sql`(cars.extra_attributes)::jsonb ->> 'flowKey' = ${insurerFlowKey}`;
 
     const insurerRows = await db
-      .select({ policyId: policies.id, carExtra: cars.extraAttributes })
+      .select({ policyId: policies.id, policyNumber: policies.policyNumber, carExtra: cars.extraAttributes })
       .from(policies)
       .leftJoin(cars, eq(cars.policyId, policies.id))
       .where(flowFilter)
       .orderBy(policies.createdAt);
 
-    const result = insurerRows.map((r) => ({
-      id: r.policyId,
-      name: extractName(r.carExtra as Record<string, unknown> | null) || `Insurance Co. #${r.policyId}`,
-    }));
+    const result = insurerRows.map((r) => {
+      const extracted = extractName(r.carExtra as Record<string, unknown> | null);
+      const name = extracted || `Insurer ${r.policyNumber}`;
+      return { id: r.policyId, name };
+    });
 
     return NextResponse.json(result);
   } catch (err) {

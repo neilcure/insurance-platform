@@ -309,7 +309,7 @@ export function ActionsTab({
     return actions.filter((a) => {
       const sws = a.meta?.showWhenStatus;
       if (!sws || sws.length === 0) return true;
-      const status = currentStatus || "active";
+      const status = currentStatus || "quotation_prepared";
       return sws.includes(status);
     });
   }, [actions, currentStatus]);

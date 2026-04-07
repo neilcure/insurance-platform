@@ -37,6 +37,8 @@ export type DocumentTemplateMeta = {
   isAgentTemplate?: boolean;
   /** When true, hides the document if no statement exists for this audience (requires Payment Schedule) */
   requiresStatement?: boolean;
+  /** Restrict to a specific accounting line key (e.g. "tpo", "od"). Only shows when the policy has a premium line with this key. Empty = all. */
+  accountingLineKey?: string;
   header: {
     title: string;
     subtitle?: string;

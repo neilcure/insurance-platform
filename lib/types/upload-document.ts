@@ -18,6 +18,8 @@ export type UploadDocumentTypeMeta = {
   requireNcb?: boolean;
   /** Show payment detail fields (method, amount, reference) on upload — creates an accounting_payments record */
   requirePaymentDetails?: boolean;
+  /** Restrict to a specific accounting line key (e.g. "tpo", "od"). Only shows when the policy has a premium line with this key. Empty = all. */
+  accountingLineKey?: string;
 };
 
 export type UploadDocumentTypeRow = {

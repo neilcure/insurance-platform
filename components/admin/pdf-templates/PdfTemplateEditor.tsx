@@ -294,6 +294,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const [settingsFlows, setSettingsFlows] = React.useState<string[]>(meta.flows ?? []);
   const [settingsShowWhenStatus, setSettingsShowWhenStatus] = React.useState<string[]>(meta.showWhenStatus ?? []);
   const [settingsInsurerIds, setSettingsInsurerIds] = React.useState<number[]>(meta.insurerPolicyIds ?? []);
+  const [settingsLineKey, setSettingsLineKey] = React.useState(meta.accountingLineKey ?? "");
   const [settingsDesc, setSettingsDesc] = React.useState(meta.description ?? "");
   const [settingsSaving, setSettingsSaving] = React.useState(false);
 
@@ -324,6 +325,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           flows: settingsFlows,
           showWhenStatus: settingsShowWhenStatus,
           insurerPolicyIds: settingsInsurerIds,
+          accountingLineKey: settingsLineKey || undefined,
           description: settingsDesc,
         }),
       });
@@ -2853,6 +2855,20 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                 </label>
               ))}
             </div>
+          </div>
+
+          <div>
+            <Label className="text-xs">Cover Type (Accounting Line Key)</Label>
+            <Input
+              value={settingsLineKey}
+              onChange={(e) => setSettingsLineKey(e.target.value.trim())}
+              className="mt-1 h-8 text-xs"
+              placeholder="e.g. tpo, od"
+            />
+            <p className="mt-1 text-[10px] text-neutral-400">
+              For multi-cover policies (TPO + OD): set to the premium line key.
+              Leave empty for all policies.
+            </p>
           </div>
 
           <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3 pb-1">

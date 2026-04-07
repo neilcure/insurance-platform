@@ -59,7 +59,7 @@ export async function POST(
       .where(eq(cars.policyId, id))
       .limit(1);
     const policyStatus = String(
-      (carRow?.extraAttributes as Record<string, unknown> | null)?.status ?? "active",
+      (carRow?.extraAttributes as Record<string, unknown> | null)?.status ?? "quotation_prepared",
     );
     if (!REASSIGNABLE_STATUSES.has(policyStatus)) {
       return NextResponse.json(

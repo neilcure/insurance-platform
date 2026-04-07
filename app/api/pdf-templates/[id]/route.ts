@@ -107,6 +107,9 @@ export async function PATCH(
   if (typeof body.description === "string") {
     newMeta.description = body.description;
   }
+  if ("accountingLineKey" in body) {
+    newMeta.accountingLineKey = typeof body.accountingLineKey === "string" ? body.accountingLineKey : undefined;
+  }
 
   updates.meta = newMeta as unknown as Record<string, unknown>;
 

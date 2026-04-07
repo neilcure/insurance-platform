@@ -11,10 +11,11 @@ export const dynamic = "force-dynamic";
 
 function extractName(carExtra: Record<string, unknown> | null | undefined): string {
   if (!carExtra) return "";
-  return getDisplayNameFromSnapshot({
+  const fromSnapshot = getDisplayNameFromSnapshot({
     insuredSnapshot: carExtra.insuredSnapshot as Record<string, unknown> | null | undefined,
     packagesSnapshot: (carExtra.packagesSnapshot ?? {}) as Record<string, unknown>,
   });
+  return fromSnapshot;
 }
 
 async function findInsurerFlowKey(): Promise<string | null> {
@@ -54,30 +55,30 @@ export async function GET() {
         : sql`(cars.extra_attributes)::jsonb ->> 'flowKey' = ${fk}`;
 
     const [collabRows, insurerFlowKey] = await Promise.all([
-      db.select({ policyId: policies.id, carExtra: cars.extraAttributes })
+      db.select({ policyId: policies.id, policyNumber: policies.policyNumber, carExtra: cars.extraAttributes })
         .from(policies).leftJoin(cars, eq(cars.policyId, policies.id))
         .where(flowFilter("collaboratorSet"))
         .orderBy(policies.createdAt)
-        .catch(() => [] as { policyId: number; carExtra: unknown }[]),
+        .catch(() => [] as { policyId: number; policyNumber: string; carExtra: unknown }[]),
       findInsurerFlowKey(),
     ]);
 
     const availableCollabs = collabRows.map((r) => ({
       id: r.policyId,
-      name: extractName(r.carExtra as Record<string, unknown> | null) || `Collaborator #${r.policyId}`,
+      name: extractName(r.carExtra as Record<string, unknown> | null) || `Collaborator ${r.policyNumber}`,
     }));
 
     let availableInsurers: { id: number; name: string }[] = [];
     if (insurerFlowKey) {
       try {
         const insurerRows = await db
-          .select({ policyId: policies.id, carExtra: cars.extraAttributes })
+          .select({ policyId: policies.id, policyNumber: policies.policyNumber, carExtra: cars.extraAttributes })
           .from(policies).leftJoin(cars, eq(cars.policyId, policies.id))
           .where(flowFilter(insurerFlowKey))
           .orderBy(policies.createdAt);
         availableInsurers = insurerRows.map((r) => ({
           id: r.policyId,
-          name: extractName(r.carExtra as Record<string, unknown> | null) || `Insurance Co. #${r.policyId}`,
+          name: extractName(r.carExtra as Record<string, unknown> | null) || `Insurer ${r.policyNumber}`,
         }));
       } catch { /* ignore */ }
     }

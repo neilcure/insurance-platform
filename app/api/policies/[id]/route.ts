@@ -458,7 +458,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
 
     // Handle status change
     if (body.status) {
-      const oldStatus = (existing.status as string) ?? "active";
+      const oldStatus = (existing.status as string) ?? "quotation_prepared";
       const historyArr = Array.isArray(existing.statusHistory)
         ? [...(existing.statusHistory as unknown[])]
         : [];

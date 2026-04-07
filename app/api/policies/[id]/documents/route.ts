@@ -211,7 +211,31 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       await checkAndAutoComplete(policyId, documentTypeKey.trim());
     }
 
+    // Opt-in: notify admin when agent/client uploads a document
+    if (!isAdmin) {
+      try {
+        const { notifyAdminOfUpload } = await import("@/lib/upload-notification");
+        await notifyAdminOfUpload(policyId, documentTypeKey.trim(), file.name, userEmail || role);
+      } catch (notifErr) {
+        console.error("Upload notification failed (non-fatal):", notifErr);
+      }
+    }
+
     if (paymentAmountCents > 0 && paymentMethod) {
+      if (isAdmin) {
+        try {
+          const { advancePolicyStatus } = await import("@/lib/auto-advance-status");
+          await advancePolicyStatus(
+            policyId,
+            "payment_received",
+            userEmail || `user:${user.id}`,
+            `Auto: payment proof uploaded and verified (${documentTypeKey.trim()})`,
+          );
+        } catch (statusErr) {
+          console.error("Auto-advance status on payment upload failed (non-fatal):", statusErr);
+        }
+      }
+
       try {
         let invoiceItemRows = await db
           .select({ invoiceId: accountingInvoiceItems.invoiceId })

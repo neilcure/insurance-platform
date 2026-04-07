@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { SettingsBlock } from "@/components/ui/settings-block";
 import { FieldResolverDiagPanel } from "@/components/admin/FieldResolverDiagPanel";
 import { PolicyStatusDiagPanel } from "@/components/admin/PolicyStatusDiagPanel";
+import { StatusFlowDiagPanel } from "@/components/admin/StatusFlowDiagPanel";
 
 export default async function FieldResolverDiagPage() {
   const me = await requireUser();
@@ -60,6 +61,13 @@ export default async function FieldResolverDiagPage() {
             </tbody>
           </table>
         </div>
+      </SettingsBlock>
+
+      <SettingsBlock
+        title="Status Flow Engine"
+        description="Auto-advance rules, document action triggers, chain rules, and per-policy status lookup. Shows exactly how document actions drive policy status."
+      >
+        <StatusFlowDiagPanel />
       </SettingsBlock>
 
       <SettingsBlock

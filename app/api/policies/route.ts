@@ -422,6 +422,8 @@ export async function POST(request: Request) {
           } catch { /* best-effort */ }
         }
 
+        const initialStatus = "quotation_prepared";
+        const userEmail = (user as unknown as { email?: string }).email || `user:${user.id}`;
         const snapshot = {
           ...(vehicle || {}),
           insuredSnapshot: (body as any).insured,
@@ -434,6 +436,13 @@ export async function POST(request: Request) {
           ...(linkedPolicyNumber ? { linkedPolicyNumber } : {}),
           ...(endorsementChanges ? { _endorsementChanges: endorsementChanges } : {}),
           ...(entityLinkedPolicyIds.length > 0 ? { entityLinkedPolicyIds } : {}),
+          status: initialStatus,
+          statusHistory: [{
+            status: initialStatus,
+            changedAt: new Date().toISOString(),
+            changedBy: userEmail,
+            note: "Auto: policy created",
+          }],
         } as Record<string, unknown>;
 
         // Normalize vehicle primitives for DB column types

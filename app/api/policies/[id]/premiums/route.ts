@@ -508,12 +508,12 @@ async function lookupEntityNamesById(
 
   try {
     const entityRows = await db
-      .select({ policyId: policies.id, carExtra: cars.extraAttributes })
+      .select({ policyId: policies.id, policyNumber: policies.policyNumber, carExtra: cars.extraAttributes })
       .from(policies)
       .leftJoin(cars, eq(cars.policyId, policies.id))
       .where(inArray(policies.id, allIds));
     for (const r of entityRows) {
-      const name = extractEntityName(r.carExtra as Record<string, unknown> | null) || `#${r.policyId}`;
+      const name = extractEntityName(r.carExtra as Record<string, unknown> | null) || r.policyNumber;
       if (insurerIds.includes(r.policyId)) insurers.set(r.policyId, name);
       if (collabIds.includes(r.policyId)) collabs.set(r.policyId, name);
     }

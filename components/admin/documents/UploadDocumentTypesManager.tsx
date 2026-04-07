@@ -253,6 +253,11 @@ export default function UploadDocumentTypesManager() {
                         Payment details
                       </span>
                     )}
+                    {r.meta?.accountingLineKey && (
+                      <span className="inline-block rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
+                        Line: {r.meta.accountingLineKey}
+                      </span>
+                    )}
                   </div>
                 </TableCell>
                 <TableCell className="hidden sm:table-cell text-xs">
@@ -524,6 +529,23 @@ export default function UploadDocumentTypesManager() {
               />
               Require payment details (method, amount, reference) on upload
             </label>
+
+            <div className="grid gap-1">
+              <Label>Cover Type (Accounting Line Key)</Label>
+              <Input
+                value={meta.accountingLineKey ?? ""}
+                onChange={(e) =>
+                  setMeta((m) => ({ ...m, accountingLineKey: e.target.value.trim() || undefined }))
+                }
+                placeholder="e.g. tpo, od"
+                className="max-w-xs"
+              />
+              <p className="text-xs text-neutral-400">
+                For multi-cover policies (e.g. TPO + OD): set this to the premium line key
+                so this upload type only appears for policies with that cover.
+                Leave empty for all policies.
+              </p>
+            </div>
           </div>
 
           <DialogFooter>

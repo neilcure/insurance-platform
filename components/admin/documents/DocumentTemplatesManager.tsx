@@ -705,6 +705,30 @@ export default function DocumentTemplatesManager() {
             </p>
           </div>
 
+          {/* Accounting Line Key */}
+          <div className="grid gap-1">
+            <Label>Cover Type (Accounting Line Key)</Label>
+            <Input
+              value={meta.accountingLineKey ?? ""}
+              onChange={(e) =>
+                setMeta((m) => ({ ...m, accountingLineKey: e.target.value.trim() || undefined }))
+              }
+              placeholder="e.g. tpo, od"
+              className="max-w-xs"
+            />
+            <p className="text-xs text-neutral-400">
+              <strong>Used for multi-cover policies</strong> (e.g. TPO + Own Damage).
+              When a policy has multiple cover types, each cover type gets its own set of documents
+              (quotation, invoice, debit note, receipt, etc.).
+              Set this to the premium line key that this template belongs to
+              (e.g. &ldquo;tpo&rdquo; or &ldquo;od&rdquo;).
+            </p>
+            <p className="text-xs text-neutral-400">
+              <strong>Leave empty</strong> if this template applies to all policies regardless of cover type
+              (e.g. single-cover policies, or shared documents like covernote/full policy).
+            </p>
+          </div>
+
           {/* Requires Confirmation */}
           <div className="grid gap-1">
             <label className="flex items-center gap-2 text-sm">
@@ -1268,6 +1292,11 @@ export default function DocumentTemplatesManager() {
                     {r.meta?.isAgentTemplate && (
                       <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
                         AGENT
+                      </span>
+                    )}
+                    {r.meta?.accountingLineKey && (
+                      <span className="ml-2 inline-flex items-center rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-semibold text-purple-800 dark:bg-purple-900/30 dark:text-purple-300">
+                        Line: {r.meta.accountingLineKey}
                       </span>
                     )}
                   </div>

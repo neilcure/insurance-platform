@@ -94,6 +94,17 @@ export async function PATCH(
       const meta = existing.paymentMeta as { amountCents?: number; method?: string; date?: string | null; ref?: string | null; payer?: string } | null;
       if (meta?.amountCents && meta.method) {
         try {
+          const { advancePolicyStatus } = await import("@/lib/auto-advance-status");
+          await advancePolicyStatus(
+            existing.policyId,
+            "payment_received",
+            userEmail || `user:${user.id}`,
+            `Auto: payment proof verified (${existing.documentTypeKey})`,
+          );
+        } catch (statusErr) {
+          console.error("Auto-advance status on payment verify failed (non-fatal):", statusErr);
+        }
+        try {
           let invoiceItemRows = await db
             .select({ invoiceId: accountingInvoiceItems.invoiceId })
             .from(accountingInvoiceItems)
@@ -155,6 +166,23 @@ export async function PATCH(
         } catch (payErr) {
           console.error("Payment reconciliation on document verify failed (non-fatal):", payErr);
         }
+      }
+    }
+
+    // Recalculate status when rejecting a previously verified document
+    if (body.status === "rejected" && existing.status === "verified") {
+      try {
+        const { recalculatePolicyStatus } = await import("@/lib/auto-advance-status");
+        const rolledBack = await recalculatePolicyStatus(
+          existing.policyId,
+          userEmail || `user:${user.id}`,
+          `${existing.documentTypeKey} verification rejected`,
+        );
+        if (rolledBack) {
+          return NextResponse.json({ ...updated, statusRolledBack: rolledBack }, { status: 200 });
+        }
+      } catch (statusErr) {
+        console.error("Status recalculate on reject failed (non-fatal):", statusErr);
       }
     }
 
@@ -253,7 +281,23 @@ export async function DELETE(
       { key: "document_delete", from: `${doc.fileName} (${doc.documentTypeKey})`, to: null },
     ]);
 
-    return NextResponse.json({ success: true }, { status: 200 });
+    // Recalculate status after deleting a verified document (payment proof deletion may roll back status)
+    let statusRolledBack: string | null = null;
+    try {
+      const { recalculatePolicyStatus } = await import("@/lib/auto-advance-status");
+      statusRolledBack = await recalculatePolicyStatus(
+        doc.policyId,
+        userEmail || `user:${user.id}`,
+        `${doc.documentTypeKey} document deleted`,
+      );
+    } catch (statusErr) {
+      console.error("Status recalculate on document delete failed (non-fatal):", statusErr);
+    }
+
+    return NextResponse.json({
+      success: true,
+      ...(statusRolledBack ? { statusRolledBack } : {}),
+    }, { status: 200 });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

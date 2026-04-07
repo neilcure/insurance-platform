@@ -232,7 +232,7 @@ function resolveInsuredDisplayName(insured: Record<string, unknown>): string {
     if (org) return org;
   }
 
-  for (const k of ["companyName", "organisationName", "fullName"]) {
+  for (const k of ["companyName", "organisationName", "collCoName", "fullName", "name", "displayName"]) {
     const v = String(insuredGet(insured, k) ?? "").trim();
     if (v) return v;
   }
@@ -676,10 +676,11 @@ export function getDisplayNameFromSnapshot(
     const vals = "values" in obj ? ((obj.values as Record<string, unknown>) ?? {}) : obj;
     for (const [k, v] of Object.entries(vals)) {
       const norm = k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
-      if (/companyname|organisationname|fullname|displayname|^name$/.test(norm) && v) {
+      if (/companyname|organisationname|organizationname|fullname|displayname|insurername|collconame|^name$/.test(norm) && v) {
         return String(v).trim();
       }
     }
   }
+
   return "";
 }

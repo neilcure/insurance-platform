@@ -65,6 +65,7 @@ export function UploadDocumentsTab({
   const [loading, setLoading] = React.useState(true);
   const [refreshKey, setRefreshKey] = React.useState(0);
   const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
+  const [policyLineKeys, setPolicyLineKeys] = React.useState<Set<string>>(new Set());
   const [totalConfigured, setTotalConfigured] = React.useState(0);
   const [schedules, setSchedules] = React.useState<ScheduleInfo[]>([]);
   const scheduleLookupId = parentPolicyId ?? policyId;
@@ -85,6 +86,14 @@ export function UploadDocumentsTab({
         setPolicyInsurerIds(data.insurerPolicyIds ?? []);
       })
       .catch(() => setPolicyInsurerIds([]));
+
+    fetch(`/api/policies/${policyId}/premiums?_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { lines: [] }))
+      .then((data: { lines?: { lineKey?: string }[] }) => {
+        const keys = new Set((data.lines ?? []).map((l) => l.lineKey ?? "").filter(Boolean));
+        setPolicyLineKeys(keys);
+      })
+      .catch(() => {});
   }, [policyId]);
 
   React.useEffect(() => {
@@ -130,7 +139,7 @@ export function UploadDocumentsTab({
 
         const sws = t.meta?.showWhenStatus;
         if (sws && sws.length > 0) {
-          const status = currentStatus || "active";
+          const status = currentStatus || "quotation_prepared";
           const hasUploadsForType = uploads.some((u) => u.documentTypeKey === t.value);
           if (!hasUploadsForType) {
             const curOrder = statusOrder.get(status);
@@ -147,6 +156,9 @@ export function UploadDocumentsTab({
         if (its && its.length > 0 && insuredType) {
           if (!its.includes(insuredType)) return false;
         }
+
+        const alk = t.meta?.accountingLineKey;
+        if (alk && policyLineKeys.size > 0 && !policyLineKeys.has(alk)) return false;
         if (t.meta?.requireNcb && !hasNcb) return false;
         return true;
       });
@@ -193,7 +205,7 @@ export function UploadDocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [policyId, flowKey, currentStatus, refreshKey, policyInsurerIds, insuredType, hasNcb, filter, statusOptionsFromHook]);
+  }, [policyId, flowKey, currentStatus, refreshKey, policyInsurerIds, policyLineKeys, insuredType, hasNcb, filter, statusOptionsFromHook]);
 
   const summaryRef = React.useRef(onSummaryChange);
   summaryRef.current = onSummaryChange;
@@ -242,7 +254,7 @@ export function UploadDocumentsTab({
             <p>{totalConfigured} document type{totalConfigured !== 1 ? "s" : ""} configured but none match this policy.</p>
             <p>
               Policy context: flow=<span className="font-mono">{flowKey ?? "(none)"}</span>,
-              status=<span className="font-mono">{currentStatus ?? "active"}</span>,
+              status=<span className="font-mono">{currentStatus ?? "quotation_prepared"}</span>,
               insured=<span className="font-mono">{insuredType ?? "(unknown)"}</span>
               {hasNcb && ", NCB=yes"}
             </p>
