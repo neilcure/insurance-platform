@@ -17,7 +17,7 @@ import {
   Plus, Trash2, Save, Crosshair, Copy,
   FolderPlus, Pencil, Check, X,
   FileText, ImagePlus, Eye, EyeOff, Search, Loader2,
-  Type, Square, Settings2,
+  Type, Square, Settings2, FlaskConical, CheckCircle2,
 } from "lucide-react";
 import type {
   PdfTemplateRow, PdfTemplateMeta, PdfFieldMapping, PdfTemplateSection,
@@ -182,6 +182,7 @@ function FieldListItem({
   isSelected,
   isMultiSelected,
   sectionColor,
+  validationStatus,
   onSelect,
   onCtrlClick,
 }: {
@@ -189,6 +190,7 @@ function FieldListItem({
   isSelected: boolean;
   isMultiSelected: boolean;
   sectionColor?: string;
+  validationStatus?: "ok" | "optional";
   onSelect: () => void;
   onCtrlClick: () => void;
 }) {
@@ -214,7 +216,9 @@ function FieldListItem({
             : "hover:bg-neutral-50 dark:hover:bg-neutral-900 text-neutral-700 dark:text-neutral-300"
       }`}
     >
-      {sectionColor && (
+      {validationStatus === "ok" && <CheckCircle2 className="h-3 w-3 shrink-0 text-green-500" />}
+      {validationStatus === "optional" && <span className="h-2 w-2 shrink-0 rounded-full bg-blue-400 dark:bg-blue-500" />}
+      {sectionColor && !validationStatus && (
         <div className="w-1.5 h-4 rounded-full shrink-0" style={{ backgroundColor: sectionColor }} />
       )}
       <span className="truncate font-medium flex-1">{field.label || field.fieldKey}</span>
@@ -238,6 +242,14 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const [currentPage, setCurrentPage] = React.useState(0);
   const [placingMode, setPlacingMode] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
+  const [validatingFields, setValidatingFields] = React.useState(false);
+  const [validationResult, setValidationResult] = React.useState<{
+    policyNumber: string;
+    totalFields: number;
+    okCount: number;
+    optionalCount: number;
+    results: { id: string; source: string; fieldKey: string; resolved: unknown; status: "ok" | "optional" }[];
+  } | null>(null);
   const [numPages, setNumPages] = React.useState(meta.pages?.length ?? 1);
   const [collapsedSections, setCollapsedSections] = React.useState<Set<string>>(new Set());
   const [renamingSectionId, setRenamingSectionId] = React.useState<string | null>(null);
@@ -1320,6 +1332,54 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     setSaving(false);
   }
 
+  async function handleValidateFields() {
+    if (fields.length === 0) {
+      toast.error("No fields to validate — add fields first");
+      return;
+    }
+    setValidatingFields(true);
+    setValidationResult(null);
+    try {
+      const payload = fields
+        .filter((f) => f.source !== "static")
+        .map((f) => ({
+          id: f.id,
+          source: f.source,
+          fieldKey: f.fieldKey,
+          packageName: f.packageName,
+          format: f.format,
+        }));
+      if (payload.length === 0) {
+        toast.info("All fields are static — nothing to validate");
+        setValidatingFields(false);
+        return;
+      }
+      const reqBody: Record<string, unknown> = { fields: payload, templateType: "pdf" };
+      if (previewPolicyId) reqBody.policyId = previewPolicyId;
+      const res = await fetch("/api/admin/validate-template-fields", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reqBody),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Validation failed");
+      const data = await res.json();
+      setValidationResult(data);
+      const msg = data.okCount === data.totalFields
+        ? `All ${data.totalFields} fields resolved against ${data.policyNumber}`
+        : `${data.okCount}/${data.totalFields} fields resolved against ${data.policyNumber}`;
+      data.okCount === data.totalFields ? toast.success(msg) : toast.info(msg);
+    } catch (err: unknown) {
+      toast.error((err as { message?: string })?.message ?? "Validation failed");
+    } finally {
+      setValidatingFields(false);
+    }
+  }
+
+  const validationMap = React.useMemo(() => {
+    if (!validationResult) return new Map<string, "ok" | "optional">();
+    return new Map(validationResult.results.map((r) => [r.id, r.status]));
+  }, [validationResult]);
+
   const pageFields = fields.filter((f) => f.page === currentPage);
   const pageImages = images.filter((img) => img.page === currentPage);
 
@@ -1349,6 +1409,17 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
             <span className="hidden sm:inline">Preview Data</span>
           </Button>
         )}
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={handleValidateFields}
+          disabled={validatingFields || fields.length === 0}
+          className="gap-1.5 shrink-0"
+          title="Validate all fields against a sample policy"
+        >
+          {validatingFields ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
+          <span className="hidden sm:inline">Validate</span>
+        </Button>
         <Button size="sm" variant="ghost" onClick={() => setShowSettings(true)} className="gap-1.5 shrink-0" title="Template Settings">
           <Settings2 className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Settings</span>
@@ -1365,6 +1436,23 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           {isDirty && <span className="sm:hidden w-1.5 h-1.5 rounded-full bg-white" />}
         </Button>
       </div>
+
+      {/* Validation result banner */}
+      {validationResult && (
+        <div className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300">
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+          <span className="flex-1">
+            <strong>{validationResult.policyNumber}</strong>
+            {" — "}<span className="font-medium">{validationResult.okCount} resolved</span>
+            {validationResult.optionalCount > 0 && (
+              <span className="text-blue-600 dark:text-blue-400">, {validationResult.optionalCount} empty for this policy</span>
+            )}
+          </span>
+          <button onClick={() => setValidationResult(null)} className="shrink-0 hover:opacity-70">
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
 
       {/* Toolbar row 2: editing actions */}
       <div className="flex flex-wrap items-center gap-1.5">
@@ -1816,6 +1904,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                         isSelected={f.id === selectedId}
                         isMultiSelected={multiSelectedIds.has(f.id)}
                         sectionColor={section.color}
+                        validationStatus={validationMap.get(f.id)}
                         onSelect={() => { setSelectedId(f.id); setSelectedImageId(null); setSelectedDrawingId(null); }}
                         onCtrlClick={() => setMultiSelectedIds((prev) => { const n = new Set(prev); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; })}
                       />
@@ -1845,6 +1934,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                       field={f}
                       isSelected={f.id === selectedId}
                       isMultiSelected={multiSelectedIds.has(f.id)}
+                      validationStatus={validationMap.get(f.id)}
                       onSelect={() => { setSelectedId(f.id); setSelectedImageId(null); setSelectedDrawingId(null); }}
                       onCtrlClick={() => setMultiSelectedIds((prev) => { const n = new Set(prev); if (n.has(f.id)) n.delete(f.id); else n.add(f.id); return n; })}
                     />

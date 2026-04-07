@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Upload } from "lucide-react";
 import { DocumentUploadCard } from "@/components/ui/document-upload-card";
+import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 import type {
   DocumentStatus,
   PolicyDocumentRow,
@@ -59,6 +60,7 @@ export function UploadDocumentsTab({
   filter?: "all" | "documents" | "payments";
   parentPolicyId?: number;
 }) {
+  const { allOptions: statusOptionsFromHook } = usePolicyStatuses();
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshKey, setRefreshKey] = React.useState(0);
@@ -103,20 +105,17 @@ export function UploadDocumentsTab({
       fetch(`/api/policies/${policyId}/documents?_t=${Date.now()}`, { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : { documents: [], payments: [] }))
         .catch(() => ({ documents: [], payments: [] })),
-      fetch(`/api/form-options?groupKey=policy_statuses&_t=${Date.now()}`, { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : []))
-        .catch(() => []),
       fetch(`/api/policies/${policyId}/premium-summary?_t=${Date.now()}`, { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null),
-    ]).then(([types, docsData, statuses, premiumData]: [UploadDocumentTypeRow[], { documents: PolicyDocumentRow[]; payments: PolicyPaymentRecord[] } | PolicyDocumentRow[], { value: string; sortOrder: number }[], PremiumBreakdown | null]) => {
+    ]).then(([types, docsData, premiumData]: [UploadDocumentTypeRow[], { documents: PolicyDocumentRow[]; payments: PolicyPaymentRecord[] } | PolicyDocumentRow[], PremiumBreakdown | null]) => {
       const uploads: PolicyDocumentRow[] = Array.isArray(docsData) ? docsData : docsData.documents;
       const policyPayments: PolicyPaymentRecord[] = Array.isArray(docsData) ? [] : (docsData.payments ?? []);
       if (cancelled) return;
       setTotalConfigured(types.length);
 
       const statusOrder = new Map<string, number>();
-      for (const s of statuses) statusOrder.set(s.value, s.sortOrder ?? 0);
+      for (const s of statusOptionsFromHook) statusOrder.set(s.value, s.sortOrder ?? 0);
 
       const applicable = types.filter((t) => {
         const hasInsurerRestriction = t.meta?.insurerPolicyIds && t.meta.insurerPolicyIds.length > 0;
@@ -194,7 +193,7 @@ export function UploadDocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [policyId, flowKey, currentStatus, refreshKey, policyInsurerIds, insuredType, hasNcb, filter]);
+  }, [policyId, flowKey, currentStatus, refreshKey, policyInsurerIds, insuredType, hasNcb, filter, statusOptionsFromHook]);
 
   const summaryRef = React.useRef(onSummaryChange);
   summaryRef.current = onSummaryChange;

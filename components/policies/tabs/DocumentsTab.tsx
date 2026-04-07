@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 import {
   FileText, Printer, ChevronLeft, Stamp, Download, Loader2,
   Mail, MessageCircle, CheckCircle2, Send, XCircle, X, Paperclip, Upload, ShieldCheck,
@@ -1245,6 +1246,7 @@ export function DocumentsTab({
   currentStatus?: string;
   onStatusAutoAdvanced?: () => void;
 }) {
+  const { sortedValues: statusOrder } = usePolicyStatuses();
   const [templates, setTemplates] = React.useState<DocumentTemplateRow[]>([]);
   const [pdfTemplates, setPdfTemplates] = React.useState<PdfTemplateRow[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -1499,16 +1501,7 @@ export function DocumentsTab({
       return matchingIds.some((pid) => tplInsurerIds.includes(pid));
     };
 
-    // "showWhenStatus" means "show FROM the earliest listed status onwards".
-    // We load the ordered status list to compare positions.
-    const loadStatusOrder = fetch(`/api/form-options?groupKey=policy_statuses&_t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows: { value: string; sortOrder?: number }[]) =>
-        rows.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)).map((r) => r.value),
-      )
-      .catch(() => [] as string[]);
-
-    const matchesStatus = (sws: string[] | undefined, statusOrder: string[]) => {
+    const matchesStatus = (sws: string[] | undefined) => {
       if (!sws || sws.length === 0) return true;
       const currentIdx = statusOrder.indexOf(status);
       // Find the earliest status in the template's showWhenStatus list
@@ -1523,60 +1516,58 @@ export function DocumentsTab({
       return currentIdx >= earliestIdx;
     };
 
-    loadStatusOrder.then((statusOrder) => {
-      const loadHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : []))
-        .then((rows: DocumentTemplateRow[]) => {
-          if (cancelled) return;
-          const applicable = rows.filter((r) => {
-            if (!r.meta) return false;
-            const hasInsurerRestriction = r.meta.insurerPolicyIds && r.meta.insurerPolicyIds.length > 0;
-            if (!hasInsurerRestriction) {
-              const flows = r.meta.flows;
-              if (flows && flows.length > 0) {
-                if (!flowKey || !flows.includes(flowKey)) return false;
-              }
-            } else {
-              if (!matchesInsurer(r.meta.insurerPolicyIds)) return false;
+    const loadHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: DocumentTemplateRow[]) => {
+        if (cancelled) return;
+        const applicable = rows.filter((r) => {
+          if (!r.meta) return false;
+          const hasInsurerRestriction = r.meta.insurerPolicyIds && r.meta.insurerPolicyIds.length > 0;
+          if (!hasInsurerRestriction) {
+            const flows = r.meta.flows;
+            if (flows && flows.length > 0) {
+              if (!flowKey || !flows.includes(flowKey)) return false;
             }
-            if (!matchesStatus(r.meta.showWhenStatus, statusOrder)) return false;
-            return true;
-          });
-          setTemplates(applicable);
-        })
-        .catch(() => {});
+          } else {
+            if (!matchesInsurer(r.meta.insurerPolicyIds)) return false;
+          }
+          if (!matchesStatus(r.meta.showWhenStatus)) return false;
+          return true;
+        });
+        setTemplates(applicable);
+      })
+      .catch(() => {});
 
-      const loadPdf = fetch(`/api/form-options?groupKey=pdf_merge_templates&_t=${Date.now()}`, { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : []))
-        .then((rows: PdfTemplateRow[]) => {
-          if (cancelled) return;
-          const applicable = rows.filter((r) => {
-            const meta = r.meta as unknown as PdfTemplateMeta | null;
-            if (!meta) return false;
-            if (!meta.fields?.length && !meta.pages?.length) return false;
-            const hasInsurerRestriction = meta.insurerPolicyIds && meta.insurerPolicyIds.length > 0;
-            if (!hasInsurerRestriction) {
-              const flows = meta.flows;
-              if (flows && flows.length > 0) {
-                if (!flowKey || !flows.includes(flowKey)) return false;
-              }
-            } else {
-              if (!matchesInsurer(meta.insurerPolicyIds)) return false;
+    const loadPdf = fetch(`/api/form-options?groupKey=pdf_merge_templates&_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: PdfTemplateRow[]) => {
+        if (cancelled) return;
+        const applicable = rows.filter((r) => {
+          const meta = r.meta as unknown as PdfTemplateMeta | null;
+          if (!meta) return false;
+          if (!meta.fields?.length && !meta.pages?.length) return false;
+          const hasInsurerRestriction = meta.insurerPolicyIds && meta.insurerPolicyIds.length > 0;
+          if (!hasInsurerRestriction) {
+            const flows = meta.flows;
+            if (flows && flows.length > 0) {
+              if (!flowKey || !flows.includes(flowKey)) return false;
             }
-            if (!matchesStatus(meta.showWhenStatus, statusOrder)) return false;
-            return true;
-          });
-          setPdfTemplates(applicable);
-        })
-        .catch(() => {});
+          } else {
+            if (!matchesInsurer(meta.insurerPolicyIds)) return false;
+          }
+          if (!matchesStatus(meta.showWhenStatus)) return false;
+          return true;
+        });
+        setPdfTemplates(applicable);
+      })
+      .catch(() => {});
 
-      Promise.all([loadHtml, loadPdf]).finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    Promise.all([loadHtml, loadPdf]).finally(() => {
+      if (!cancelled) setLoading(false);
     });
 
     return () => { cancelled = true; };
-  }, [flowKey, currentStatus, policyInsurerIds, detail.policyId]);
+  }, [flowKey, currentStatus, policyInsurerIds, detail.policyId, statusOrder]);
 
   // Auto-prepare: assign document numbers when templates become visible
   const [autoPrepared, setAutoPrepared] = React.useState<Set<string>>(new Set());

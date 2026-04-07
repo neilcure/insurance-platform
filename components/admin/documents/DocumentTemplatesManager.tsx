@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
-import { Plus, Trash2, CheckSquare, Square, ArrowLeft, Copy, Pencil, EyeOff, Eye } from "lucide-react";
+import { Plus, Trash2, CheckSquare, Square, ArrowLeft, Copy, Pencil, EyeOff, Eye, FlaskConical, Loader2, CheckCircle2 } from "lucide-react";
 import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
@@ -112,6 +112,56 @@ export default function DocumentTemplatesManager() {
   const [statusOptions, setStatusOptions] = React.useState<{ label: string; value: string }[]>([]);
   const [availableInsurers, setAvailableInsurers] = React.useState<{ id: number; name: string }[]>([]);
   const [pkgFieldsCache, setPkgFieldsCache] = React.useState<Record<string, { key: string; label: string }[]>>({});
+  const [validating, setValidating] = React.useState(false);
+  const [validatePolicyNum, setValidatePolicyNum] = React.useState("");
+  const [validationResult, setValidationResult] = React.useState<{
+    policyNumber: string;
+    totalFields: number;
+    okCount: number;
+    optionalCount: number;
+    results: { id: string; source: string; fieldKey: string; resolved: unknown; status: "ok" | "optional" }[];
+  } | null>(null);
+
+  async function validateFields() {
+    const allFields = meta.sections.flatMap((s) =>
+      s.fields
+        .filter((f) => f.key)
+        .map((f, i) => ({
+          id: `${s.id}-${i}`,
+          source: s.source,
+          fieldKey: f.key,
+          packageName: s.packageName,
+        })),
+    );
+    if (allFields.length === 0) {
+      toast.error("No fields to validate — add fields first");
+      return;
+    }
+    setValidating(true);
+    setValidationResult(null);
+    try {
+      const payload: Record<string, unknown> = { fields: allFields, templateType: "document" };
+      if (validatePolicyNum.trim()) {
+        payload.policyNumber = validatePolicyNum.trim();
+      }
+      const res = await fetch("/api/admin/validate-template-fields", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Validation failed");
+      const data = await res.json();
+      setValidationResult(data);
+      const msg = data.okCount === data.totalFields
+        ? `All ${data.totalFields} fields resolved against ${data.policyNumber}`
+        : `${data.okCount}/${data.totalFields} fields resolved against ${data.policyNumber}`;
+      data.okCount === data.totalFields ? toast.success(msg) : toast.info(msg);
+    } catch (err: unknown) {
+      toast.error((err as { message?: string })?.message ?? "Validation failed");
+    } finally {
+      setValidating(false);
+    }
+  }
 
   const loadPkgFields = React.useCallback(async (pkg: string) => {
     if (pkgFieldsCache[pkg]) return;
@@ -215,6 +265,7 @@ export default function DocumentTemplatesManager() {
     setFormValue("");
     setFormSort(0);
     setMeta(defaultMeta());
+    setValidationResult(null);
     setOpen(true);
   }
 
@@ -224,6 +275,7 @@ export default function DocumentTemplatesManager() {
     setFormValue(row.value);
     setFormSort(row.sortOrder);
     setMeta(row.meta ?? defaultMeta());
+    setValidationResult(null);
     setOpen(true);
   }
 
@@ -947,13 +999,27 @@ export default function DocumentTemplatesManager() {
                         {section.fields.length > 0 && (
                           <div className="mt-3 rounded-md border border-neutral-200 dark:border-neutral-700">
                             <div className="flex items-center gap-2 border-b border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-medium text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800/50 dark:text-neutral-400">
+                              {validationResult && <span className="w-5" />}
                               <span className="w-40">Field Key</span>
                               <span className="flex-1">Display Label (editable)</span>
                               <span className="w-24">Format</span>
                               <span className="w-8" />
                             </div>
-                            {section.fields.map((field, fIdx) => (
+                            {section.fields.map((field, fIdx) => {
+                              const vr = validationResult?.results.find((r) => r.id === `${section.id}-${fIdx}`);
+                              return (
                               <div key={field.key} className="flex items-center gap-2 border-b border-neutral-100 px-3 py-1 last:border-b-0 dark:border-neutral-800">
+                                {validationResult && (
+                                  <span className="w-5 shrink-0 flex items-center justify-center" title={
+                                    vr?.status === "ok" ? `Resolved: ${String(vr.resolved)}` : "Empty for this policy"
+                                  }>
+                                    {vr?.status === "ok" ? (
+                                      <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+                                    ) : vr ? (
+                                      <span className="h-2.5 w-2.5 rounded-full bg-blue-400 dark:bg-blue-500" />
+                                    ) : null}
+                                  </span>
+                                )}
                                 <span className="w-40 shrink-0 text-xs font-mono text-neutral-400">{field.key}</span>
                                 <Input
                                   className="h-7 flex-1 text-sm"
@@ -982,7 +1048,8 @@ export default function DocumentTemplatesManager() {
                                   <Trash2 className="h-3 w-3" />
                                 </Button>
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -1079,8 +1146,41 @@ export default function DocumentTemplatesManager() {
           </fieldset>
         </div>
 
+        {/* Validation result */}
+        {validationResult && (
+          <div className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300">
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              Tested against <strong>{validationResult.policyNumber}</strong>
+              {" — "}<span className="font-medium">{validationResult.okCount} resolved</span>
+              {validationResult.optionalCount > 0 && (
+                <span className="text-blue-600 dark:text-blue-400">, {validationResult.optionalCount} empty for this policy</span>
+              )}
+            </span>
+          </div>
+        )}
+
         {/* Bottom save bar */}
         <div className="flex items-center justify-end gap-2 border-t border-neutral-200 pt-4 dark:border-neutral-700">
+          <div className="mr-auto flex items-center gap-2">
+            <Input
+              placeholder="Policy number (optional)"
+              value={validatePolicyNum}
+              onChange={(e) => setValidatePolicyNum(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && validateFields()}
+              className="h-8 w-48 text-xs"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={validateFields}
+              disabled={validating}
+              className="gap-1.5"
+            >
+              {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
+              Validate
+            </Button>
+          </div>
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancel
           </Button>

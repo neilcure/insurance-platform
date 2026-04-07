@@ -7,6 +7,56 @@ alwaysApply: true
 
 All field value resolution, insured name extraction, and template formatting MUST use the shared module.
 
+## Dynamic field pipeline (Admin → Snapshot → Resolution)
+
+The system uses a fully dynamic, admin-configured pipeline. Nothing is hard-coded per insurance product.
+
+### 1. Admin configures packages & fields (`form_options` table)
+
+- **Packages**: `groupKey = "packages"` — each row's `value` is the package key (e.g. `insured`, `vehicleinfo`, `contactinfo`)
+- **Package fields**: `groupKey = "${pkg}_fields"` — each row's `value` is the field key (e.g. `lastName`, `companyName`). Field keys are stored WITHOUT the package prefix.
+- **Categories**: `groupKey = "${pkg}_category"` — per-package categories (e.g. `personal`, `company`)
+- **Accounting fields**: `groupKey = "premiumRecord_fields"` — custom premium columns beyond built-in DB columns
+
+### 2. Policy wizard captures data into snapshots
+
+When a policy is created, form values are saved into `cars.extraAttributes` as:
+```json
+{
+  "insuredSnapshot": { "lastName": "Chan", "firstName": "John", ... },
+  "packagesSnapshot": {
+    "vehicleinfo": { "values": { "make": "Toyota", "model": "Camry" } },
+    "insured": { "values": { "lastName": "Chan" } }
+  }
+}
+```
+Form field names use the pattern `${pkg}__${fieldKey}` (double underscore), but stored snapshot keys may or may not include the prefix.
+
+### 3. Field resolver matches keys from snapshots
+
+`resolveRawValue({ source, fieldKey, packageName }, ctx)` routes to source-specific resolvers:
+
+| Source | Data comes from | Key matching |
+|--------|----------------|--------------|
+| `insured` | `snapshot.insuredSnapshot` | `fuzzyGet` + `prefixedGet` strips `insured__`/`insured_` prefixes |
+| `contactinfo` | `snapshot.insuredSnapshot` | `prefixedGet` strips `contactinfo__`/`contactinfo_` prefixes |
+| `package` | `snapshot.packagesSnapshot[packageName].values` | `fuzzyGet` + tries `${pkg}__${key}` and `${pkg}_${key}` variants |
+| `policy` | Built-in fields: `policyNumber`, `status`, `effectiveDate`, etc. + `documentTracking` | Direct map lookup, falls back to `policyExtra` |
+| `agent` | `users` table row for `policies.agentId` | `fuzzyGet` (name, email, userNumber) |
+| `client` | `clients` table row for `policies.clientId` | `fuzzyGet` (displayName, clientNumber, etc.) |
+| `organisation` | `organisations` table row | `fuzzyGet`, plus special `fullAddress` builder |
+| `accounting` | `policyPremiums` rows + admin-configured fields | Resolves by `lineKey` + `fieldKey`; supports `total` aggregation |
+| `invoice` | `accountingInvoices` row | Direct switch/case on known invoice fields |
+| `statement` | Statement data built from `accountingInvoices` + items | Direct switch/case + `item_` prefix for per-item premium breakdown |
+| `static` | Template config | Returns `staticValue` directly |
+
+### Key matching strategy
+
+- `fuzzyGet(obj, key)`: case-insensitive exact match
+- `prefixedGet(obj, key, prefix)`: tries `key` → `${prefix}__${key}` → `${prefix}_${key}` → normalized match stripping all prefixes
+- Package fields: tries `key` → `${packageName}__${key}` → `${packageName}_${key}`
+- Special computed keys: `displayName` (insured), `primaryId` (insured), `fullAddress` (contact/org)
+
 ## When to use
 
 | Need | Import from `@/lib/field-resolver` |
@@ -52,6 +102,11 @@ formatResolvedValue(n, "currency", "HKD");
 // ✅ ALSO OK (for accounting UI — different concern)
 import { fmtCurrency } from "@/lib/accounting-utils";
 ```
+
+## Context builders
+
+- `lib/pdf/build-context.ts` → `buildMergeContext(policyId)`: loads full policy data (snapshot, agent, client, org, accounting lines, statement) into `MergeContext`
+- `lib/pdf/resolve-data.ts` → `resolveFieldValue(field, ctx)`: wraps `resolveAndFormat` for PDF field mappings
 
 ## Scope boundaries
 

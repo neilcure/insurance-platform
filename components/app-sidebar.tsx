@@ -26,6 +26,7 @@ import {
   ClipboardList,
   ListOrdered,
   Bug,
+  Activity,
   type LucideIcon,
 } from "lucide-react";
 import { getIcon } from "@/lib/icons";
@@ -457,7 +458,7 @@ export function AppSidebar(
                     </SidebarMenuItem>
                     {isAdmin && (
                       <SidebarMenuItem>
-                        <SidebarMenuButton tooltip="Field Resolver" asChild>
+                        <SidebarMenuButton tooltip="System Diagnostics" asChild>
                           <Link href="/admin/field-resolver">
                             <Bug className="h-3.5 w-3.5 shrink-0" />
                           </Link>
@@ -617,10 +618,10 @@ export function AppSidebar(
                           </li>
                           {isAdmin && (
                             <li>
-                              <SidebarMenuButton tooltip="Field Resolver" asChild>
+                              <SidebarMenuButton tooltip="System Diagnostics" asChild>
                                 <Link href="/admin/field-resolver">
                                   <Bug className="h-4 w-4 shrink-0" />
-                                  <span>Field Resolver</span>
+                                  <span>System Diagnostics</span>
                                 </Link>
                               </SidebarMenuButton>
                             </li>

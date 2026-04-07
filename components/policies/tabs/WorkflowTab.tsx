@@ -4,6 +4,7 @@ import * as React from "react";
 import { Badge } from "@/components/ui/badge";
 import { ChevronRight, FileText } from "lucide-react";
 import type { PolicyDetail } from "@/lib/types/policy";
+import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 
 type LinkedEndorsement = {
   policyId: number;
@@ -27,17 +28,6 @@ const PaymentSection = React.lazy(() =>
   import("@/components/policies/tabs/PaymentSection").then((m) => ({ default: m.PaymentSection })),
 );
 
-type StatusOption = { value: string; label: string; color: string };
-
-const DEFAULT_STATUS_OPTIONS: StatusOption[] = [
-  { value: "draft", label: "Draft", color: "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200" },
-  { value: "pending", label: "Pending Review", color: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200" },
-  { value: "active", label: "Active", color: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200" },
-  { value: "suspended", label: "Suspended", color: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" },
-  { value: "expired", label: "Expired", color: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200" },
-  { value: "cancelled", label: "Cancelled", color: "bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400" },
-];
-
 export function WorkflowTab({
   detail,
   flowKey,
@@ -53,39 +43,11 @@ export function WorkflowTab({
   isAdmin?: boolean;
   onRefresh?: () => void;
 }) {
-  const [statusOptions, setStatusOptions] = React.useState<StatusOption[]>([...DEFAULT_STATUS_OPTIONS]);
+  const { getLabel, getColor, getOption } = usePolicyStatuses(flowKey);
   const [expandedSection, setExpandedSection] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    fetch(`/api/form-options?groupKey=policy_statuses&_t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows: { label: string; value: string; meta?: { color?: string; flows?: string[] } }[]) => {
-        if (!Array.isArray(rows) || rows.length === 0) return;
-        const applicable = rows.filter((r) => {
-          const flows = r.meta?.flows;
-          if (!flows || flows.length === 0) return true;
-          return flowKey ? flows.includes(flowKey) : false;
-        });
-        if (applicable.length > 0) {
-          setStatusOptions(applicable.map((r) => ({
-            value: r.value,
-            label: r.label,
-            color: r.meta?.color || "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200",
-          })));
-        }
-      })
-      .catch(() => {});
-  }, [flowKey]);
-
-  const allKnownStatuses = React.useMemo(() => {
-    const map = new Map<string, StatusOption>();
-    for (const s of DEFAULT_STATUS_OPTIONS) map.set(s.value, s);
-    for (const s of statusOptions) map.set(s.value, s);
-    return map;
-  }, [statusOptions]);
-
   const curStatus = currentStatus || "active";
-  const currentDef = allKnownStatuses.get(curStatus);
+  const currentDef = getOption(curStatus);
   const history = statusHistory ?? [];
 
   const { insuredType, hasNcb } = React.useMemo(() => {
