@@ -36,6 +36,7 @@ function toTrackingKey(label: string): string {
 
 type ExtraDocContext = {
   statementData?: StatementDataForPreview | null;
+  hasSchedule?: boolean;
   accountingLines?: AccountingLineForPreview[];
   clientData?: Record<string, unknown> | null;
   organisationData?: Record<string, unknown> | null;
@@ -191,9 +192,10 @@ function DocumentPreview({
         const aud = audience ?? "client";
         const stmtRes = await fetch(`/api/accounting/statements/by-policy/${detail.policyId}?_t=${Date.now()}&audience=${aud}`, { cache: "no-store" });
         if (stmtRes.ok) {
-          const { statement } = await stmtRes.json() as { statement: StatementDataForPreview | null };
-          console.log("[DocPreview] statement for policy", detail.policyId, ":", statement ? `found (${statement.statementNumber}, ${statement.items?.length ?? 0} items)` : "null");
+          const { statement, hasSchedule } = await stmtRes.json() as { statement: StatementDataForPreview | null; hasSchedule?: boolean };
+          console.log("[DocPreview] statement for policy", detail.policyId, ":", statement ? `found (${statement.statementNumber}, ${statement.items?.length ?? 0} items)` : "null", "hasSchedule:", hasSchedule);
           if (statement) ctx.statementData = statement;
+          ctx.hasSchedule = !!hasSchedule;
         }
 
         const premRes = await fetch(`/api/policies/${detail.policyId}/premiums?_t=${Date.now()}`, { cache: "no-store" });
@@ -477,8 +479,10 @@ function DocumentPreview({
           </div>
         )}
         {!loadingExtra && meta.requiresStatement && !extraCtx.statementData && (
-          <div className="text-xs text-amber-600 bg-amber-50 rounded px-2 py-1.5 mb-2">
-            No statement found for this {viewAudience}. The {viewAudience} is not assigned to a Payment Schedule.
+          <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-900/30 rounded px-2 py-1.5 mb-2">
+            {extraCtx.hasSchedule
+              ? `This policy has not been added to a statement yet. Create a statement from the ${viewAudience}'s Payment Schedule to preview this document.`
+              : `No statement found for this ${viewAudience}. The ${viewAudience} is not assigned to a Payment Schedule.`}
           </div>
         )}
 

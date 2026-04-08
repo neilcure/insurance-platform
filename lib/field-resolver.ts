@@ -451,13 +451,21 @@ function resolveInvoice(inv: InvoiceCtx | null | undefined, fieldKey: string): u
   }
 }
 
-function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: string): unknown {
+function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: string, ctx?: ResolveContext): unknown {
   if (!stmt) return "";
   const activeItems = stmt.items.filter((it) => it.status === "active");
   const paidItems = stmt.items.filter((it) => it.status === "paid_individually");
 
   switch (fieldKey) {
-    case "statementNumber": return stmt.statementNumber;
+    case "statementNumber": {
+      if (stmt.statementNumber) return stmt.statementNumber;
+      // Fall back to the template's own document number
+      const trackKey = ctx?.currentDocTrackingKey;
+      if (trackKey && ctx?.documentTracking?.[trackKey]?.documentNumber) {
+        return ctx.documentTracking[trackKey].documentNumber;
+      }
+      return "";
+    }
     case "statementDate": return stmt.statementDate ?? "";
     case "statementStatus": return stmt.statementStatus;
     case "entityName": return stmt.entityName ?? "";
@@ -535,7 +543,7 @@ export function resolveRawValue(ref: FieldRef, ctx: ResolveContext): unknown {
       return resolveInvoice(ctx.invoiceData, ref.fieldKey);
 
     case "statement":
-      return resolveStatement(ctx.statementData, ref.fieldKey);
+      return resolveStatement(ctx.statementData, ref.fieldKey, ctx);
 
     case "static":
       return ref.staticValue ?? "";

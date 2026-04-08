@@ -398,23 +398,15 @@ function LineView({ line, fields, canEdit, onEdit, displayPolicyNumber }: { line
           <>
             {fields.filter((f) => {
               const v = line.values[f.key];
-              return v !== null && v !== undefined && v !== "";
+              if (v === null || v === undefined || v === "") return false;
+              if (v === 0 && (f.inputType === "currency" || f.inputType === "negative_currency")) return false;
+              return true;
             }).map((f, idx) => (
               <React.Fragment key={f.key}>
                 {idx > 0 && <Separator className="my-0.5" />}
                 <SummaryRow label={f.label} value={formatDisplayValue(line.values[f.key], f, currency)} className={f.inputType === "negative_currency" ? "text-red-600 dark:text-red-400" : undefined} />
               </React.Fragment>
             ))}
-            {line.margin !== null && (
-              <>
-                <Separator className="my-0.5" />
-                <SummaryRow
-                  label="Margin"
-                  value={fmtCurrency(line.margin, currency)}
-                  className={line.margin >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}
-                />
-              </>
-            )}
           </>
         )}
       </div>
@@ -944,8 +936,7 @@ export function AccountingTab({
 
   const isTpoWithOd = React.useMemo(() => {
     if (expectedTemplates.length < 2) return false;
-    const keys = expectedTemplates.map((t) => t.key.toLowerCase());
-    return keys.includes("tpo") && keys.some((k) => k.includes("own_vehicle") || k.includes("owndamage"));
+    return new Set(expectedTemplates.map((t) => t.key)).size >= 2;
   }, [expectedTemplates]);
 
   const displayLines = React.useMemo(() => {
@@ -988,6 +979,45 @@ export function AccountingTab({
     }
     for (const line of lines) {
       if (result.some((r) => r.lineKey === line.lineKey)) continue;
+
+      if (line.lineKey === "main" && expectedTemplates.length >= 2) {
+        const emptyIndices = result
+          .map((r, i) => ({ r, i }))
+          .filter(({ r }) => !lines.some((l) => l.lineKey === r.lineKey))
+          .map(({ i }) => i);
+
+        if (emptyIndices.length === 0) continue;
+
+        if (emptyIndices.length >= 2) {
+          const tpVals: Record<string, unknown> = {};
+          const odVals: Record<string, unknown> = {};
+          for (const f of fields) {
+            const kLow = f.key.toLowerCase();
+            const lLow = f.label.toLowerCase();
+            const isPd = lLow.includes("(pd)") || lLow.includes("(od)")
+              || kLow.endsWith("pd") || kLow.endsWith("od")
+              || kLow.includes("owndamage") || kLow.includes("ownvehicle");
+            if (isPd) {
+              odVals[f.key] = line.values[f.key];
+              tpVals[f.key] = null;
+            } else {
+              tpVals[f.key] = line.values[f.key];
+              odVals[f.key] = null;
+            }
+          }
+          const currencyVal = line.values.currency;
+          if (currencyVal !== undefined) {
+            tpVals.currency = currencyVal;
+            odVals.currency = currencyVal;
+          }
+          result[emptyIndices[0]] = { ...result[emptyIndices[0]], values: tpVals, updatedAt: line.updatedAt };
+          result[emptyIndices[1]] = { ...result[emptyIndices[1]], values: odVals, updatedAt: line.updatedAt };
+        } else {
+          result[emptyIndices[0]] = { ...result[emptyIndices[0]], values: { ...line.values }, updatedAt: line.updatedAt };
+        }
+        continue;
+      }
+
       const hasPremiumData = Object.entries(line.values).some(
         ([k, v]) => k !== "currency" && v !== null && v !== undefined && v !== "" && v !== 0,
       ) || line.insurerId !== null || line.collaboratorId !== null;
@@ -1216,11 +1246,23 @@ export function AccountingTab({
         <div className="text-sm font-medium">Accounting</div>
       </div>
 
-      {displayLines.map((line, idx) => (
+      {displayLines.map((line, idx) => {
+        let viewFields = fields;
+        if (isTpoWithOd && displayLines.length >= 2) {
+          const pdNormLabels = new Set(
+            fields.filter((f) => isPdField(f))
+              .map((f) => f.label.replace(/\s*\((?:PD|OD|pd|od)\)\s*/gi, "").trim().toLowerCase()),
+          );
+          viewFields = fields.filter((f) => {
+            if (isPdField(f)) return true;
+            return pdNormLabels.has(f.label.trim().toLowerCase());
+          });
+        }
+        return (
         <LineView
           key={line.lineKey}
           line={line}
-          fields={fields}
+          fields={viewFields}
           canEdit={canEdit}
           displayPolicyNumber={
             policyNumber && isTpoWithOd
@@ -1238,12 +1280,22 @@ export function AccountingTab({
             else toast.error("Failed to load entity options");
           }}
         />
-      ))}
+        );
+      })}
 
       {displayLines.length > 1 && (() => {
         const currency = (typeof displayLines[0]?.values?.currency === "string" && displayLines[0].values.currency) || "HKD";
 
-        const currencyFields = fields.filter((f) => f.inputType === "currency" || f.inputType === "negative_currency");
+        let currencyFields = fields.filter((f) => f.inputType === "currency" || f.inputType === "negative_currency");
+        if (isTpoWithOd) {
+          const pdNormLabels = new Set(
+            currencyFields.filter((f) => isPdField(f))
+              .map((f) => f.label.replace(/\s*\((?:PD|OD|pd|od)\)\s*/gi, "").trim().toLowerCase()),
+          );
+          currencyFields = currencyFields.filter((f) =>
+            isPdField(f) || pdNormLabels.has(f.label.trim().toLowerCase()),
+          );
+        }
         const sumField = (key: string) => {
           let total = 0;
           let found = false;
@@ -1254,19 +1306,31 @@ export function AccountingTab({
           return found ? total : null;
         };
 
-        const totals = currencyFields.map((f) => ({
-          key: f.key,
-          label: f.label,
-          total: sumField(f.key),
-        })).filter((t) => t.total !== null && t.total !== 0);
-
-        let totalMargin = 0;
-        let hasMargin = false;
-        for (const l of displayLines) {
-          if (l.margin !== null) { totalMargin += l.margin; hasMargin = true; }
+        const pairs = new Map<string, { label: string; keys: string[] }>();
+        for (const f of currencyFields) {
+          const normLabel = isPdField(f)
+            ? f.label.replace(/\s*\((?:PD|OD|pd|od)\)\s*/gi, "").trim()
+            : f.label;
+          const existing = pairs.get(normLabel);
+          if (existing) {
+            existing.keys.push(f.key);
+          } else {
+            pairs.set(normLabel, { label: normLabel, keys: [f.key] });
+          }
         }
 
-        if (totals.length === 0 && !hasMargin) return null;
+        const totals: { key: string; label: string; total: number }[] = [];
+        for (const [, { label, keys }] of pairs) {
+          let total = 0;
+          let found = false;
+          for (const key of keys) {
+            const v = sumField(key);
+            if (v !== null) { total += v; found = true; }
+          }
+          if (found && total !== 0) totals.push({ key: keys[0], label, total });
+        }
+
+        if (totals.length === 0) return null;
         return (
           <div className="rounded-md border border-neutral-700 bg-neutral-900 dark:border-neutral-300 dark:bg-neutral-50">
             <div className="border-b border-neutral-600 px-3 py-2 dark:border-neutral-200">
@@ -1279,16 +1343,6 @@ export function AccountingTab({
                   <SummaryRow label={t.label} value={fmtCurrency(t.total, currency)} className="text-white! dark:text-black! font-semibold" />
                 </React.Fragment>
               ))}
-              {hasMargin && (
-                <>
-                  {totals.length > 0 && <Separator className="my-0.5 bg-neutral-700 dark:bg-neutral-300" />}
-                  <SummaryRow
-                    label="Total Margin"
-                    value={fmtCurrency(totalMargin, currency)}
-                    className={totalMargin >= 0 ? "text-green-400! dark:text-green-600! font-bold" : "text-red-400! dark:text-red-600! font-bold"}
-                  />
-                </>
-              )}
             </div>
           </div>
         );

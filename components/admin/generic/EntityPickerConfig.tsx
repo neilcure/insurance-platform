@@ -51,11 +51,12 @@ export function EntityPickerConfigEditor({
     void loadPkgFields(currentPkg);
   }, [currentPkg, loadPkgFields]);
 
+  const selectedFlow = value?.flow;
   React.useEffect(() => {
-    if (!value?.flow) return;
+    if (!selectedFlow) return;
     async function loadFlowPkgs() {
       try {
-        const res = await fetch(`/api/admin/form-options?groupKey=${encodeURIComponent(`${value!.flow}_steps`)}`, { cache: "no-store" });
+        const res = await fetch(`/api/admin/form-options?groupKey=${encodeURIComponent(`${selectedFlow}_steps`)}`, { cache: "no-store" });
         if (!res.ok) {
           const pkgRes = await fetch("/api/admin/form-options?groupKey=packages", { cache: "no-store" });
           if (!pkgRes.ok) return;
@@ -82,7 +83,7 @@ export function EntityPickerConfigEditor({
       } catch { /* ignore */ }
     }
     void loadFlowPkgs();
-  }, [value?.flow]);
+  }, [selectedFlow]);
 
   React.useEffect(() => {
     if (selectedSourcePkg) {
@@ -91,10 +92,10 @@ export function EntityPickerConfigEditor({
   }, [selectedSourcePkg, loadPkgFields]);
 
   React.useEffect(() => {
-    if (value?.flow) {
+    if (selectedFlow) {
       void loadPkgFields("insured");
     }
-  }, [value?.flow, loadPkgFields]);
+  }, [selectedFlow, loadPkgFields]);
 
   if (!value) {
     return (

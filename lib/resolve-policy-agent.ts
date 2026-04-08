@@ -63,24 +63,47 @@ export function resolvePremiumByRole(
   role: "client" | "agent" | "net" | "commission",
   accountingFields: AccountingFieldDef[],
 ): number {
-  // Pass 1: explicit premiumRole match (highest priority)
-  for (const f of accountingFields) {
-    if (!f.premiumColumn) continue;
-    if (f.premiumRole === role) {
+  const extra = (premiumRow.extraValues ?? {}) as Record<string, unknown>;
+
+  // Read field value: structured column (cents) or extraValues (display → cents)
+  const readVal = (f: AccountingFieldDef): number => {
+    if (f.premiumColumn) {
       return (premiumRow[f.premiumColumn] as number) ?? 0;
     }
-  }
+    const ev = extra[f.key];
+    if (ev == null) return 0;
+    const n = Number(ev);
+    // extraValues stores display values; convert to cents
+    return Number.isFinite(n) ? Math.round(n * 100) : 0;
+  };
 
-  // Pass 2: label substring fallback — but EXCLUDE commission fields for "agent" role.
+  // Pass 1: explicit premiumRole match — sum ALL matching fields so that
+  // multi-line rows (e.g. TPO+OD) where values live in different columns
+  // or in extraValues are resolved correctly.
+  let total = 0;
+  let found = false;
+  for (const f of accountingFields) {
+    if (!f.premiumColumn && !(f.key in extra)) continue;
+    if (f.premiumRole === role) {
+      const val = readVal(f);
+      if (val) { total += val; found = true; }
+    }
+  }
+  if (found) return total;
+
+  // Pass 2: label substring fallback — sum ALL matching, but EXCLUDE
+  // commission fields for "agent" role.
   const commissionExclusions = ["commission", "comm."];
   for (const f of accountingFields) {
-    if (!f.premiumColumn) continue;
+    if (!f.premiumColumn && !(f.key in extra)) continue;
     const lbl = f.label.toLowerCase();
     if (!lbl.includes(role)) continue;
     if (role === "agent" && f.premiumRole === "commission") continue;
     if (role === "agent" && commissionExclusions.some((ex) => lbl.includes(ex))) continue;
-    return (premiumRow[f.premiumColumn] as number) ?? 0;
+    const val = readVal(f);
+    if (val) { total += val; found = true; }
   }
+  if (found) return total;
 
   // Pass 3: "commission" is computed = client − agent (if no explicit commission field)
   if (role === "commission") {
@@ -89,8 +112,6 @@ export function resolvePremiumByRole(
     if (client > 0 && agent > 0) return Math.max(client - agent, 0);
   }
 
-  // No hardcoded fallback — if no matching package field exists, return 0.
-  // The admin must create the field in the package with the correct premiumRole.
   return 0;
 }
 

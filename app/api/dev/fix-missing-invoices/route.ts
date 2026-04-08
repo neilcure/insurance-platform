@@ -106,6 +106,22 @@ export async function POST() {
     const tracking = policy.documentTracking as TrackingData | null;
     if (!tracking || typeof tracking !== "object") continue;
 
+    // Scan tracking for invoice-type document number
+    let bestDocNumber: string | undefined;
+    let bestDocType: string | undefined;
+    for (const [key, raw] of Object.entries(tracking)) {
+      if (key.startsWith("_")) continue;
+      if (key.endsWith("_agent")) continue;
+      const entry = raw as TrackingEntry | null;
+      if (!entry || typeof entry !== "object") continue;
+      const keyLower = key.toLowerCase();
+      if (invoiceKeywords.some((kw) => keyLower.includes(kw))) {
+        bestDocNumber = entry.documentNumber;
+        bestDocType = key;
+        break;
+      }
+    }
+
     const [existing] = await db
       .select({ id: accountingInvoices.id })
       .from(accountingInvoices)
@@ -120,32 +136,18 @@ export async function POST() {
       .limit(1);
 
     if (existing) {
-      details.push(`Policy ${policy.id}: SKIPPED — already has receivable invoice #${existing.id}`);
+      try {
+        await autoCreateAccountingInvoices(policy.id, bestDocType ?? "invoice", 1, bestDocNumber);
+        details.push(`Policy ${policy.id}: REPAIR — checked for missing items on invoice #${existing.id}`);
+      } catch { /* non-fatal */ }
       continue;
-    }
-
-    let bestDocNumber: string | undefined;
-    let bestDocType: string | undefined;
-
-    for (const [key, raw] of Object.entries(tracking)) {
-      if (key.startsWith("_")) continue;
-      if (key.endsWith("_agent")) continue;
-      const entry = raw as TrackingEntry | null;
-      if (!entry || typeof entry !== "object") continue;
-
-      const keyLower = key.toLowerCase();
-      if (invoiceKeywords.some((kw) => keyLower.includes(kw))) {
-        bestDocNumber = entry.documentNumber;
-        bestDocType = key;
-        details.push(`Policy ${policy.id}: found doc "${key}" status="${entry.status}" docNum="${entry.documentNumber}"`);
-        break;
-      }
     }
 
     if (!bestDocNumber || !bestDocType) {
       details.push(`Policy ${policy.id}: no invoice-type document found`);
       continue;
     }
+    details.push(`Policy ${policy.id}: found doc "${bestDocType}" docNum="${bestDocNumber}"`);
 
     try {
       await autoCreateAccountingInvoices(policy.id, bestDocType, 1, bestDocNumber);

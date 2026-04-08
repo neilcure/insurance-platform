@@ -623,25 +623,51 @@ export async function POST(request: Request) {
         type LineTemplate = { key: string; label: string };
         let lineTemplates: LineTemplate[] = [{ key: "main", label: "Premium" }];
         try {
-          const coverTypeVal = String(normalized.coverType ?? (policy as any)?.coverType ?? "").trim();
+          // Scan ALL packages (not just policy/premiumRecord) for coverType
+          // and OD indicator — matches resolveTemplates detection logic.
+          let coverTypeVal = String(normalized.coverType ?? "").trim();
+          let hasOwnVehicleDamage = false;
+
+          const scanForCoverTypeAndOd = (obj: Record<string, unknown>) => {
+            for (const [k, v] of Object.entries(obj)) {
+              const bare = k.includes("__") ? k.split("__").pop()! : k;
+              if (bare === "coverType" && typeof v === "string" && v.trim() && !coverTypeVal) {
+                coverTypeVal = v.trim();
+              }
+              const lower = k.toLowerCase();
+              const lowerBare = bare.toLowerCase();
+              if (
+                (lowerBare.includes("ownvehicle") || lowerBare.includes("own_vehicle") || lowerBare === "withownvehicledamage") &&
+                (v === true || v === "true" || v === "Yes" || v === "yes")
+              ) {
+                hasOwnVehicleDamage = true;
+              }
+              if (lower.includes("covertype__opt_tpo__c") && (v === true || v === "true")) {
+                hasOwnVehicleDamage = true;
+              }
+              if (lowerBare.endsWith("pd") && typeof v === "string" && v.trim()) {
+                hasOwnVehicleDamage = true;
+              }
+            }
+          };
+
+          // Scan normalized (policy + premiumRecord merged) first
+          scanForCoverTypeAndOd(normalized);
+
+          // Then scan ALL packages to catch fields in policyinfo, vehicleinfo, etc.
+          for (const [, pkgData] of Object.entries((packages as Record<string, unknown>) ?? {})) {
+            if (!pkgData || typeof pkgData !== "object") continue;
+            const vals = ("values" in (pkgData as Record<string, unknown>)
+              ? (pkgData as { values?: Record<string, unknown> }).values
+              : pkgData) as Record<string, unknown> | undefined;
+            if (vals && typeof vals === "object") scanForCoverTypeAndOd(vals);
+          }
+
           if (coverTypeVal) {
             const catRows = await db
               .select()
               .from(formOptions)
               .where(and(eq(formOptions.groupKey, "policy_category"), eq(formOptions.isActive, true)));
-
-            // Check for "with Own Vehicle Damage" boolean in the submitted data
-            let hasOwnVehicleDamage = false;
-            for (const [k, v] of Object.entries(normalized)) {
-              const lower = k.toLowerCase();
-              if (
-                (lower.includes("ownvehicle") || lower.includes("own_vehicle") || lower === "withownvehicledamage") &&
-                (v === true || v === "true" || v === "Yes" || v === "yes")
-              ) {
-                hasOwnVehicleDamage = true;
-                break;
-              }
-            }
 
             let effectiveVal = coverTypeVal;
             if (coverTypeVal.toLowerCase() === "tpo" && hasOwnVehicleDamage) {
@@ -670,16 +696,64 @@ export async function POST(request: Request) {
         const hasAnyValue = Object.values(payload.structuredCents).some((v) => v !== null) || payload.commRate !== null;
 
         if (hasAnyValue || Object.keys(payload.extraValues).length > 0) {
-          const batchValues = lineTemplates.map((tmpl) => ({
-            policyId: result.policy.id,
-            lineKey: tmpl.key,
-            lineLabel: tmpl.label,
-            currency: payload.currency,
-            ...payload.structuredCents,
-            commissionRate: payload.commRate,
-            extraValues: Object.keys(payload.extraValues).length > 0 ? payload.extraValues : null,
-            updatedBy: Number(user.id),
-          }));
+          // For multi-line templates (e.g. TPO+OD), partition values so
+          // PD-suffixed fields go to the second line and non-PD to the first.
+          const isPdField = (fKey: string, fLabel: string) => {
+            const kLow = fKey.toLowerCase();
+            const lLow = fLabel.toLowerCase();
+            return lLow.includes("(pd)") || lLow.includes("(od)")
+              || kLow.endsWith("pd") || kLow.endsWith("od")
+              || kLow.includes("owndamage") || kLow.includes("ownvehicle");
+          };
+
+          const partitionForLine = (lineIdx: number) => {
+            if (lineTemplates.length < 2) return payload.structuredCents;
+            const partitioned: Record<string, unknown> = {};
+            for (const f of acctFields) {
+              const col = fieldColumnMap[f.key];
+              if (!col || !(col in payload.structuredCents)) continue;
+              const pd = isPdField(f.key, f.label);
+              // Line 0 = TP (non-PD), line 1+ = OD (PD)
+              if ((lineIdx === 0 && !pd) || (lineIdx > 0 && pd)) {
+                partitioned[col] = payload.structuredCents[col];
+              } else {
+                partitioned[col] = null;
+              }
+            }
+            // Pass through non-field columns (like currency)
+            for (const [col, val] of Object.entries(payload.structuredCents)) {
+              if (!(col in partitioned)) partitioned[col] = val;
+            }
+            return partitioned;
+          };
+
+          const partitionExtraForLine = (lineIdx: number) => {
+            if (lineTemplates.length < 2) return payload.extraValues;
+            const partitioned: Record<string, unknown> = {};
+            for (const [key, val] of Object.entries(payload.extraValues)) {
+              const fieldDef = acctFields.find(f => f.key === key);
+              const label = fieldDef?.label ?? key;
+              const pd = isPdField(key, label);
+              if ((lineIdx === 0 && !pd) || (lineIdx > 0 && pd)) {
+                partitioned[key] = val;
+              }
+            }
+            return partitioned;
+          };
+
+          const batchValues = lineTemplates.map((tmpl, idx) => {
+            const lineExtra = partitionExtraForLine(idx);
+            return {
+              policyId: result.policy.id,
+              lineKey: tmpl.key,
+              lineLabel: tmpl.label,
+              currency: payload.currency,
+              ...partitionForLine(idx),
+              commissionRate: payload.commRate,
+              extraValues: Object.keys(lineExtra).length > 0 ? lineExtra : null,
+              updatedBy: Number(user.id),
+            };
+          });
           if (batchValues.length > 0) {
             await db.insert(policyPremiums).values(batchValues).onConflictDoNothing();
           }

@@ -126,11 +126,15 @@ export async function buildMergeContext(policyId: number): Promise<{
 
   let accountingLines: AccountingLineContext[] = [];
   try {
-    const premiumRows = await db
+    const allPremiumRows = await db
       .select()
       .from(policyPremiums)
       .where(eq(policyPremiums.policyId, policyId))
       .orderBy(policyPremiums.createdAt);
+
+    // Filter out phantom "main" rows when line-specific rows exist
+    const nonMain = allPremiumRows.filter((r) => r.lineKey !== "main");
+    const premiumRows = nonMain.length >= 2 ? nonMain : allPremiumRows;
 
     if (premiumRows.length > 0) {
       const lineOrgIds = [...new Set(premiumRows.map((r) => r.organisationId).filter(Boolean))] as number[];
@@ -199,11 +203,12 @@ export async function buildMergeContext(policyId: number): Promise<{
         for (const f of acctFields) {
           if (!f.premiumColumn) continue;
           const val = ((row as Record<string, unknown>)[f.premiumColumn] as number) ?? 0;
+          if (!val) continue;
           const role = f.premiumRole;
           const lbl = role ? "" : f.label.toLowerCase();
-          if (role === "client" || (!role && lbl.includes("client"))) marginClient = val;
-          else if (role === "net" || (!role && lbl.includes("net"))) marginNet = val;
-          else if (role === "agent" || (!role && lbl.includes("agent"))) marginAgent = val;
+          if (role === "client" || (!role && lbl.includes("client"))) marginClient += val;
+          else if (role === "net" || (!role && lbl.includes("net"))) marginNet += val;
+          else if (role === "agent" || (!role && lbl.includes("agent") && !lbl.includes("commission"))) marginAgent += val;
         }
         const gainVal = marginAgent > 0 ? marginAgent - marginNet : marginClient - marginNet;
         const hasAny = marginClient !== 0 || marginNet !== 0 || marginAgent !== 0;
@@ -222,11 +227,7 @@ export async function buildMergeContext(policyId: number): Promise<{
 
   const isTpoWithOd =
     accountingLines.length >= 2 &&
-    accountingLines.some((l) => l.lineKey.toLowerCase() === "tpo") &&
-    accountingLines.some((l) => {
-      const k = l.lineKey.toLowerCase();
-      return k.includes("own_vehicle") || k.includes("owndamage");
-    });
+    new Set(accountingLines.map((l) => l.lineKey)).size >= 2;
 
   let statementData: StatementContext | null = null;
   try {

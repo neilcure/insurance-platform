@@ -137,9 +137,10 @@ function rowToLineData(
     const lbl = role ? "" : f.label.toLowerCase();
     const rawVal = (row as Record<string, unknown>)[f.premiumColumn] as number | null;
     const val = centsToDisplay(rawVal) ?? 0;
-    if (role === "client" || (!role && lbl.includes("client"))) client = val;
-    else if (role === "net" || (!role && lbl.includes("net"))) net = val;
-    else if (role === "agent" || (!role && lbl.includes("agent"))) agent = val;
+    if (!val) continue;
+    if (role === "client" || (!role && lbl.includes("client"))) client += val;
+    else if (role === "net" || (!role && lbl.includes("net"))) net += val;
+    else if (role === "agent" || (!role && lbl.includes("agent") && !lbl.includes("commission"))) agent += val;
   }
   const margin = client === 0 && net === 0 && agent === 0 ? null : client - net - agent;
   const insurerId = (row as Record<string, unknown>).insurerPolicyId as number | null ?? row.organisationId ?? null;

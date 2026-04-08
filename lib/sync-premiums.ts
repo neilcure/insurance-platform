@@ -1,7 +1,7 @@
 import { db } from "@/db/client";
 import { policyPremiums } from "@/db/schema/premiums";
 import { cars } from "@/db/schema/insurance";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { loadAccountingFields, buildFieldColumnMap, getColumnType } from "@/lib/accounting-fields";
 
 function displayToCents(val: unknown): number | null {
@@ -166,6 +166,16 @@ export async function syncPremiumSnapshotToTable(
 
   const hasAnyValue = Object.values(structuredColumns).some((v) => v !== null && v !== undefined);
   if (!hasAnyValue && Object.keys(extraValues).length === 0) return;
+
+  // Don't create/update a "main" row when line-specific rows already exist
+  // (e.g. TPO+OD creates separate "tpo" and "own_vehicle_damage" rows).
+  // A phantom "main" row causes double-counting in summaries and invoices.
+  const existingNonMain = await db
+    .select({ id: policyPremiums.id })
+    .from(policyPremiums)
+    .where(and(eq(policyPremiums.policyId, policyId), sql`${policyPremiums.lineKey} <> 'main'`))
+    .limit(1);
+  if (existingNonMain.length > 0) return;
 
   const lineKey = "main";
   const dbPayload: Record<string, unknown> = {

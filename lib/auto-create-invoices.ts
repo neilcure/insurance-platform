@@ -107,7 +107,29 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
   // Without agent: admin collects clientPremium directly from client
   const receivableRole = hasAgent ? "agent" : "client";
 
-  const eligiblePremiums = premiums.filter((p) => resolvePremiumByRole(p as Record<string, unknown>, receivableRole, accountingFields) > 0);
+  let agentScheduleId: number | null = null;
+  if (hasAgent && organisationId) {
+    const [row] = await db
+      .select({ id: accountingPaymentSchedules.id })
+      .from(accountingPaymentSchedules)
+      .where(
+        and(
+          eq(accountingPaymentSchedules.organisationId, organisationId),
+          eq(accountingPaymentSchedules.entityType, "agent"),
+          eq(accountingPaymentSchedules.agentId, effectiveAgentId!),
+          eq(accountingPaymentSchedules.isActive, true),
+        ),
+      )
+      .limit(1);
+    agentScheduleId = row?.id ?? null;
+  }
+
+  // When line-specific rows exist (e.g. "tpo" + "own_vehicle_damage"),
+  // ignore any phantom "main" row left over from snapshot sync.
+  const nonMainPremiums = premiums.filter((p) => p.lineKey !== "main");
+  const activePremiums = nonMainPremiums.length >= 2 ? nonMainPremiums : premiums;
+
+  const eligiblePremiums = activePremiums.filter((p) => resolvePremiumByRole(p as Record<string, unknown>, receivableRole, accountingFields) > 0);
   if (eligiblePremiums.length === 0) return;
 
   let clientName: string | null = null;
@@ -130,88 +152,11 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     agentName = a?.name || a?.email || null;
   }
 
-  const isTpoWithOd =
-    premiums.length >= 2 &&
-    premiums.some((p) => p.lineKey.toLowerCase() === "tpo") &&
-    premiums.some((p) => {
-      const k = p.lineKey.toLowerCase();
-      return k.includes("own_vehicle") || k.includes("owndamage");
-    });
-
   const entityName = clientName || agentName;
 
-  if (isTpoWithOd) {
-    for (let i = 0; i < eligiblePremiums.length; i++) {
-      const premium = eligiblePremiums[i];
-      const suffix = String.fromCharCode(97 + i);
-      const suffixedPolicyNo = `${policy.policyNumber}(${suffix})`;
-      const amountCents = resolvePremiumByRole(premium as Record<string, unknown>, receivableRole, accountingFields);
-      const invPrefix = documentNumber ? null : await resolveDocPrefix("invoice", "INV");
-      const invoiceNumber = documentNumber
-        ? `${documentNumber}(${suffix})`
-        : await generateDocumentNumber(invPrefix!);
-
-      await db.transaction(async (tx) => {
-        // Advisory lock scoped to transaction prevents concurrent creation
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(${policyId})`);
-
-        const [existing] = await tx
-          .select({ id: accountingInvoices.id, invoiceNumber: accountingInvoices.invoiceNumber })
-          .from(accountingInvoices)
-          .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
-          .where(
-            and(
-              eq(accountingInvoiceItems.policyId, policyId),
-              eq(accountingInvoices.direction, "receivable"),
-              sql`${accountingInvoices.status} <> 'cancelled'`,
-            ),
-          )
-          .limit(1);
-        if (existing) {
-          if (documentNumber && existing.invoiceNumber !== invoiceNumber) {
-            await tx.update(accountingInvoices)
-              .set({ invoiceNumber })
-              .where(eq(accountingInvoices.id, existing.id));
-          }
-          return;
-        }
-
-        const [invoice] = await tx
-          .insert(accountingInvoices)
-          .values({
-            organisationId,
-            invoiceNumber,
-            invoiceType: "individual",
-            direction: "receivable",
-            premiumType: hasAgent ? "agent_premium" : "client_premium",
-            entityPolicyId: policyId,
-            entityType: hasAgent ? "agent" : "client",
-            entityName: hasAgent ? (agentName || entityName) : entityName,
-            totalAmountCents: amountCents,
-            paidAmountCents: 0,
-            currency: premium.currency ?? "HKD",
-            invoiceDate: new Date().toISOString().split("T")[0],
-            status: isReceipt ? "paid" : "pending",
-            notes: `Policy ${suffixedPolicyNo} – ${premium.lineLabel || premium.lineKey}`,
-            createdBy: userId,
-          })
-          .returning();
-
-        await tx.insert(accountingInvoiceItems).values({
-          invoiceId: invoice.id,
-          policyId,
-          policyPremiumId: premium.id,
-          lineKey: premium.lineKey,
-          amountCents,
-          gainCents: computeGain(premium),
-          description: `${premium.lineLabel || premium.lineKey} [${suffixedPolicyNo}]`,
-        });
-      });
-    }
-    return;
-  }
-
-  // Standard case: one invoice for total Client Premium
+  // Always ONE invoice per policy with all premium lines as items — quotation,
+  // invoice, and receipt documents show both (a) and (b) in a single document,
+  // the same way statements aggregate endorsements.
   let totalAmountCents = 0;
   const items: Array<{
     policyId: number;
@@ -222,16 +167,27 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     description: string;
   }> = [];
 
-  for (const premium of eligiblePremiums) {
+  const hasMultipleLines = new Set(eligiblePremiums.map((p) => p.lineKey)).size >= 2;
+
+  for (let i = 0; i < eligiblePremiums.length; i++) {
+    const premium = eligiblePremiums[i];
     const amountCents = resolvePremiumByRole(premium as Record<string, unknown>, receivableRole, accountingFields);
     totalAmountCents += amountCents;
+
+    const suffix = hasMultipleLines ? String.fromCharCode(97 + i) : "";
+    const suffixedPolicyNo = suffix ? `${policy.policyNumber}(${suffix})` : policy.policyNumber;
+    const lineDesc = premium.lineLabel || premium.lineKey;
+    const desc = hasMultipleLines
+      ? `${lineDesc} [${suffixedPolicyNo}]`
+      : `${suffixedPolicyNo} · ${lineDesc}`;
+
     items.push({
       policyId,
       policyPremiumId: premium.id,
       lineKey: premium.lineKey,
       amountCents,
       gainCents: computeGain(premium),
-      description: premium.lineLabel || premium.lineKey,
+      description: desc,
     });
   }
 
@@ -242,7 +198,7 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${policyId})`);
 
     const [existing] = await tx
-      .select({ id: accountingInvoices.id, invoiceNumber: accountingInvoices.invoiceNumber })
+      .select({ id: accountingInvoices.id, invoiceNumber: accountingInvoices.invoiceNumber, scheduleId: accountingInvoices.scheduleId })
       .from(accountingInvoices)
       .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
       .where(
@@ -259,6 +215,56 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
           .set({ invoiceNumber })
           .where(eq(accountingInvoices.id, existing.id));
       }
+
+      // Repair: remove orphaned items whose policyPremiumId no longer exists
+      const validPremiumIds = new Set(premiums.map((p) => p.id));
+      const existingItemRows = await tx
+        .select({ id: accountingInvoiceItems.id, policyPremiumId: accountingInvoiceItems.policyPremiumId })
+        .from(accountingInvoiceItems)
+        .where(eq(accountingInvoiceItems.invoiceId, existing.id));
+
+      const orphanIds = existingItemRows
+        .filter((r) => r.policyPremiumId && !validPremiumIds.has(r.policyPremiumId))
+        .map((r) => r.id);
+      if (orphanIds.length > 0) {
+        for (const oid of orphanIds) {
+          await tx.delete(accountingInvoiceItems).where(eq(accountingInvoiceItems.id, oid));
+        }
+      }
+
+      // Add missing premium line items
+      const remainingItems = await tx
+        .select({ policyPremiumId: accountingInvoiceItems.policyPremiumId })
+        .from(accountingInvoiceItems)
+        .where(eq(accountingInvoiceItems.invoiceId, existing.id));
+      const coveredPremiumIds = new Set(remainingItems.map((r) => r.policyPremiumId));
+
+      const missingItems = items.filter((it) => !coveredPremiumIds.has(it.policyPremiumId));
+      if (missingItems.length > 0) {
+        await tx.insert(accountingInvoiceItems).values(
+          missingItems.map((item) => ({
+            invoiceId: existing.id,
+            policyId: item.policyId,
+            policyPremiumId: item.policyPremiumId,
+            lineKey: item.lineKey,
+            amountCents: item.amountCents,
+            gainCents: item.gainCents,
+            description: item.description,
+          })),
+        );
+      }
+
+      // Always recalculate total and fix schedule linkage
+      const correctTotal = items.reduce((s, it) => s + it.amountCents, 0);
+      const updates: Record<string, unknown> = { totalAmountCents: correctTotal };
+      if (!existing.scheduleId && agentScheduleId) {
+        updates.scheduleId = agentScheduleId;
+        updates.status = isReceipt ? "paid" : "statement_created";
+      }
+      await tx.update(accountingInvoices)
+        .set(updates)
+        .where(eq(accountingInvoices.id, existing.id));
+
       return;
     }
 
@@ -277,10 +283,11 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
         paidAmountCents: 0,
         currency: premiums[0]?.currency ?? "HKD",
         invoiceDate: new Date().toISOString().split("T")[0],
-        status: isReceipt ? "paid" : "pending",
-        notes: hasAgent
-          ? `Agent Premium · Agent: ${agentName || "—"}`
-          : `Client Premium`,
+        status: isReceipt ? "paid" : (agentScheduleId ? "statement_created" : "pending"),
+        scheduleId: agentScheduleId,
+        notes: hasMultipleLines
+          ? items.map((it) => it.description).join(" + ")
+          : (hasAgent ? `Agent Premium · Agent: ${agentName || "—"}` : `Client Premium`),
         createdBy: userId,
       })
       .returning();
