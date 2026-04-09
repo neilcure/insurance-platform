@@ -429,8 +429,9 @@ async function buildPreviewFromScheduledInvoices(
   policyIds: number[],
 ) {
   const allSchedIds = [...new Set(scheduleIds)];
+  const shouldScopeToPolicy = audience === "client";
   const scopedPolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
-  if (allSchedIds.length === 0 || scopedPolicyIds.length === 0) return null;
+  if (allSchedIds.length === 0 || (shouldScopeToPolicy && scopedPolicyIds.length === 0)) return null;
 
   const linkedInvs = await db
     .select({
@@ -466,7 +467,9 @@ async function buildPreviewFromScheduledInvoices(
            "description", coalesce("status", 'active') AS "status"
     FROM "accounting_invoice_items"
     WHERE "invoice_id" IN (${sql.join(linkedInvIds.map((id) => sql`${id}`), sql`,`)})
-      AND "policy_id" IN (${sql.join(scopedPolicyIds.map((id) => sql`${id}`), sql`,`)})
+      ${shouldScopeToPolicy
+        ? sql`AND "policy_id" IN (${sql.join(scopedPolicyIds.map((id) => sql`${id}`), sql`,`)})`
+        : sql``}
     ORDER BY "id"
   `);
   const linkedRows = Array.isArray(linkedItemsRaw)
@@ -900,8 +903,11 @@ export async function GET(
       description: r.description,
       status: r.status,
     }));
-    const items = allStatementItems.filter((it) => allPolicyIds.includes(it.policyId));
-    const isPolicyScopedView = items.length !== allStatementItems.length;
+    const shouldScopeToPolicy = audience === "client";
+    const items = shouldScopeToPolicy
+      ? allStatementItems.filter((it) => allPolicyIds.includes(it.policyId))
+      : allStatementItems;
+    const isPolicyScopedView = shouldScopeToPolicy && items.length !== allStatementItems.length;
 
     // Enrich descriptions with policy numbers + line suffix (a)/(b) for multi-line
     const formalItemPolicyIds = [...new Set(items.map((it) => it.policyId))];
@@ -979,7 +985,7 @@ export async function GET(
       }
     }
 
-    if (stmtScheduleId) {
+    if (stmtScheduleId && shouldScopeToPolicy) {
       const existingPolicyIds = new Set(items.map((it) => it.policyId));
       const missingPolicyIds = allPolicyIds.filter((id) => !existingPolicyIds.has(id));
 
