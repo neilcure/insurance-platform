@@ -8,6 +8,7 @@ import {
 import { policyPremiums } from "@/db/schema/premiums";
 import { policies } from "@/db/schema/insurance";
 import { cars } from "@/db/schema/insurance";
+import { clients } from "@/db/schema/core";
 import { eq, and, or, sql, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { loadAccountingFields } from "@/lib/accounting-fields";
@@ -84,6 +85,518 @@ type ItemResult = {
   status: string;
 };
 
+type ResolvedParties = {
+  organisationId: number | null;
+  clientId: number | null;
+  agentId: number | null;
+  clientPolicyRecordId: number | null;
+};
+
+function readSnapshotClientId(extra: Record<string, unknown> | null | undefined): number | null {
+  if (!extra) return null;
+  const direct = Number(extra.clientId);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+
+  const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
+  for (const entry of Object.values(pkgs)) {
+    if (!entry || typeof entry !== "object") continue;
+    const vals = ("values" in (entry as Record<string, unknown>)
+      ? (entry as { values?: Record<string, unknown> }).values
+      : entry) as Record<string, unknown> | undefined;
+    if (!vals) continue;
+    const raw = vals.clientId ?? vals.client_id ?? vals.clientID ?? vals.ClientID;
+    const id = Number(raw);
+    if (Number.isFinite(id) && id > 0) return id;
+  }
+
+  return null;
+}
+
+function readSnapshotClientNumber(extra: Record<string, unknown> | null | undefined): string | null {
+  if (!extra) return null;
+  const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
+  for (const entry of Object.values(pkgs)) {
+    if (!entry || typeof entry !== "object") continue;
+    const vals = ("values" in (entry as Record<string, unknown>)
+      ? (entry as { values?: Record<string, unknown> }).values
+      : entry) as Record<string, unknown> | undefined;
+    if (!vals) continue;
+    const raw = vals.clientNumber ?? vals.client_no ?? vals.clientNo ?? vals.ClientNumber ?? vals.ClientNo;
+    if (typeof raw === "string" && raw.trim()) return raw.trim();
+  }
+  return null;
+}
+
+async function resolvePolicyParties(policyId: number): Promise<ResolvedParties> {
+  const [base] = await db
+    .select({
+      organisationId: policies.organisationId,
+      clientId: policies.clientId,
+      agentId: policies.agentId,
+      extra: cars.extraAttributes,
+    })
+    .from(policies)
+    .leftJoin(cars, eq(cars.policyId, policies.id))
+    .where(eq(policies.id, policyId))
+    .limit(1);
+
+  if (!base) return { organisationId: null, clientId: null, agentId: null, clientPolicyRecordId: null };
+
+  let clientId = base.clientId ?? null;
+  let agentId = base.agentId ?? null;
+  const extra = (base.extra ?? {}) as Record<string, unknown>;
+  let clientPolicyRecordId = Number((extra.insuredSnapshot as Record<string, unknown> | undefined)?.clientPolicyId ?? extra.clientPolicyId ?? 0);
+  if (!(Number.isFinite(clientPolicyRecordId) && clientPolicyRecordId > 0)) clientPolicyRecordId = 0;
+
+  if (!clientId) clientId = readSnapshotClientId(extra);
+
+  const parentId = Number(extra.linkedPolicyId ?? 0);
+  if ((!clientId || !agentId) && Number.isFinite(parentId) && parentId > 0) {
+    const [parent] = await db
+      .select({
+        clientId: policies.clientId,
+        agentId: policies.agentId,
+        extra: cars.extraAttributes,
+      })
+      .from(policies)
+      .leftJoin(cars, eq(cars.policyId, policies.id))
+      .where(eq(policies.id, parentId))
+      .limit(1);
+
+    if (parent) {
+      if (!clientId) {
+        clientId = parent.clientId ?? readSnapshotClientId((parent.extra ?? {}) as Record<string, unknown>);
+      }
+      if (!agentId) agentId = parent.agentId ?? null;
+    }
+  }
+
+  const resolveClientFromPolicyRecord = async (recordId: number) => {
+    const [policyRow] = await db
+      .select({
+        clientId: policies.clientId,
+        extra: cars.extraAttributes,
+      })
+      .from(policies)
+      .leftJoin(cars, eq(cars.policyId, policies.id))
+      .where(eq(policies.id, recordId))
+      .limit(1);
+    if (!policyRow) return null;
+    if (policyRow.clientId) return policyRow.clientId;
+
+    const pExtra = (policyRow.extra ?? {}) as Record<string, unknown>;
+    const fromSnapshot = readSnapshotClientId(pExtra);
+    if (fromSnapshot) return fromSnapshot;
+
+    const clientNumber = readSnapshotClientNumber(pExtra);
+    if (clientNumber) {
+      const [client] = await db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.clientNumber, clientNumber))
+        .limit(1);
+      if (client) return client.id;
+    }
+
+    const insured = (pExtra.insuredSnapshot ?? {}) as Record<string, unknown>;
+    const categoryRaw = String(insured.insured__category ?? insured.insured_category ?? "").toLowerCase();
+    const category = categoryRaw === "company" ? "company" : categoryRaw === "personal" ? "personal" : null;
+    const primaryId = String(
+      insured.insured__idNumber
+      ?? insured.insured__idnumber
+      ?? insured.insured_idnumber
+      ?? insured.insured_idNumber
+      ?? insured.insured__brNumber
+      ?? insured.insured_brNumber
+      ?? "",
+    ).trim();
+    if (category && primaryId) {
+      const [client] = await db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.category, category), eq(clients.primaryId, primaryId)))
+        .limit(1);
+      if (client) return client.id;
+    }
+
+    return null;
+  };
+
+  if (!clientId && clientPolicyRecordId > 0) {
+    clientId = await resolveClientFromPolicyRecord(clientPolicyRecordId);
+  }
+
+  if (!clientId) {
+    const clientPolicyNumber = String((extra.insuredSnapshot as Record<string, unknown> | undefined)?.clientPolicyNumber ?? "").trim();
+    if (clientPolicyNumber) {
+      const [clientPolicy] = await db
+        .select({ id: policies.id })
+        .from(policies)
+        .where(eq(policies.policyNumber, clientPolicyNumber))
+        .limit(1);
+      if (clientPolicy) {
+        clientPolicyRecordId = clientPolicy.id;
+        clientId = await resolveClientFromPolicyRecord(clientPolicy.id);
+      }
+    }
+  }
+
+  if (!clientId) {
+    const clientNumber = readSnapshotClientNumber(extra);
+    if (clientNumber) {
+      const [client] = await db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.clientNumber, clientNumber))
+        .limit(1);
+      if (client) clientId = client.id;
+    }
+  }
+
+  if (!clientId) {
+    const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
+    const categoryRaw = String(insured.insured__category ?? insured.insured_category ?? "").toLowerCase();
+    const category = categoryRaw === "company" ? "company" : categoryRaw === "personal" ? "personal" : null;
+    const primaryId = String(
+      insured.insured__idNumber
+      ?? insured.insured__idnumber
+      ?? insured.insured_idnumber
+      ?? insured.insured_idNumber
+      ?? insured.insured__brNumber
+      ?? insured.insured_brNumber
+      ?? "",
+    ).trim();
+    if (category && primaryId) {
+      const [client] = await db
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.category, category), eq(clients.primaryId, primaryId)))
+        .limit(1);
+      if (client) clientId = client.id;
+    }
+  }
+
+  return {
+    organisationId: base.organisationId ?? null,
+    clientId,
+    agentId,
+    clientPolicyRecordId: clientPolicyRecordId > 0 ? clientPolicyRecordId : null,
+  };
+}
+
+function resolveDisplayedItemAmountCents(
+  item: ItemResult,
+  entityType: string,
+  premiumRoleTotals: Map<number, { clientCents: number; agentCents: number }>,
+  direction?: string | null,
+) {
+  if (direction === "payable") return item.amountCents;
+  if (!item.policyPremiumId) return item.amountCents;
+  const totals = premiumRoleTotals.get(item.policyPremiumId);
+  if (entityType === "agent") return totals?.agentCents ?? item.amountCents;
+  if (entityType === "client") return totals?.clientCents ?? item.amountCents;
+  return item.amountCents;
+}
+
+type PolicyStatementMeta = {
+  isEndorsement: boolean;
+};
+
+async function loadPolicyStatementMeta(policyIds: number[]) {
+  const ids = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  const map = new Map<number, PolicyStatementMeta>();
+  if (ids.length === 0) return map;
+
+  const rows = await db
+    .select({
+      id: policies.id,
+      flowKey: policies.flowKey,
+      extra: cars.extraAttributes,
+    })
+    .from(policies)
+    .leftJoin(cars, eq(cars.policyId, policies.id))
+    .where(inArray(policies.id, ids));
+
+  for (const row of rows) {
+    const extra = (row.extra ?? {}) as Record<string, unknown>;
+    const linkedPolicyId = Number(extra.linkedPolicyId ?? 0);
+    const flowKey = String(row.flowKey ?? extra.flowKey ?? "").trim().toLowerCase();
+    map.set(row.id, {
+      isEndorsement: linkedPolicyId > 0 || flowKey.includes("endorse"),
+    });
+  }
+
+  return map;
+}
+
+function isCreditStatementItem(item: ItemResult) {
+  const desc = String(item.description ?? "").trim().toLowerCase();
+  return desc.startsWith("credit:");
+}
+
+function isCommissionStatementItem(item: ItemResult) {
+  const desc = String(item.description ?? "").trim().toLowerCase();
+  return desc.startsWith("commission:");
+}
+
+function buildStatementSummaryTotals(
+  items: ItemResult[],
+  entityType: string,
+  premiumRoleTotals: Map<number, { clientCents: number; agentCents: number }>,
+  policyMetaById: Map<number, PolicyStatementMeta>,
+  commissionTotalCents: number,
+  direction?: string | null,
+) {
+  const totals: Record<string, number> = {};
+  let policyPremiumTotal = 0;
+  let endorsementPremiumTotal = 0;
+  let creditTotal = 0;
+  let commissionLineTotal = 0;
+  let hasPolicyPremium = false;
+  let hasEndorsementPremium = false;
+  let hasCredit = false;
+  let hasCommission = false;
+
+  for (const item of items) {
+    if (item.status !== "active") continue;
+
+    const amountCents = resolveDisplayedItemAmountCents(item, entityType, premiumRoleTotals, direction);
+    if (Number.isFinite(amountCents) && amountCents !== 0) {
+      if (isCreditStatementItem(item)) {
+        creditTotal += amountCents;
+        hasCredit = true;
+      } else if (isCommissionStatementItem(item)) {
+        commissionLineTotal += amountCents;
+        hasCommission = true;
+      } else if (policyMetaById.get(item.policyId)?.isEndorsement) {
+        endorsementPremiumTotal += amountCents;
+        hasEndorsementPremium = true;
+      } else {
+        policyPremiumTotal += amountCents;
+        hasPolicyPremium = true;
+      }
+    }
+  }
+
+  if (hasPolicyPremium) totals.policyPremiumTotal = policyPremiumTotal;
+  if (hasEndorsementPremium) totals.endorsementPremiumTotal = endorsementPremiumTotal;
+  if (hasCredit) totals.creditTotal = creditTotal;
+  if (commissionTotalCents > 0 || hasCommission) {
+    totals.commissionTotal = Math.max(commissionTotalCents, commissionLineTotal);
+  }
+
+  return totals;
+}
+
+async function loadCommissionTotalCents(
+  policyIds: number[],
+  scheduleIds: number[],
+  entityType: string,
+) {
+  if (entityType !== "agent") return 0;
+
+  const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (uniquePolicyIds.length === 0) return 0;
+
+  const scheduleFilter = scheduleIds.length > 0
+    ? sql`and ai.schedule_id in (${sql.join(scheduleIds.map((id) => sql`${id}`), sql`,`)})`
+    : sql``;
+
+  const result = await db.execute(sql`
+    select coalesce(sum(ii.amount_cents), 0) as total
+    from accounting_invoice_items ii
+    inner join accounting_invoices ai on ai.id = ii.invoice_id
+    where ii.policy_id in (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
+      and ai.direction = 'payable'
+      and ai.entity_type = 'agent'
+      and ai.status <> 'cancelled'
+      and coalesce(ii.status, 'active') = 'active'
+      and (
+        lower(coalesce(ii.description, '')) like 'commission:%'
+        or lower(coalesce(ai.notes, '')) like 'agent commission%'
+      )
+      ${scheduleFilter}
+  `);
+
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
+  const total = Number((rows[0] as { total?: unknown } | undefined)?.total ?? 0);
+  return Number.isFinite(total) ? total : 0;
+}
+
+async function buildPreviewFromScheduledInvoices(
+  scheduleIds: number[],
+  audience: string | null,
+  policyIds: number[],
+) {
+  const allSchedIds = [...new Set(scheduleIds)];
+  const scopedPolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (allSchedIds.length === 0 || scopedPolicyIds.length === 0) return null;
+
+  const linkedInvs = await db
+    .select({
+      id: accountingInvoices.id,
+      invoiceNumber: accountingInvoices.invoiceNumber,
+      status: accountingInvoices.status,
+      totalAmountCents: accountingInvoices.totalAmountCents,
+      paidAmountCents: accountingInvoices.paidAmountCents,
+      currency: accountingInvoices.currency,
+      entityType: accountingInvoices.entityType,
+      entityName: accountingInvoices.entityName,
+      invoiceDate: accountingInvoices.invoiceDate,
+      premiumType: accountingInvoices.premiumType,
+      direction: accountingInvoices.direction,
+    })
+    .from(accountingInvoices)
+    .where(
+      and(
+        inArray(accountingInvoices.scheduleId, allSchedIds),
+        eq(accountingInvoices.invoiceType, "individual"),
+        inArray(accountingInvoices.status, ["statement_created", "active"]),
+        audience ? eq(accountingInvoices.entityType, audience) : undefined,
+      ),
+    );
+
+  if (linkedInvs.length === 0) return null;
+
+  const first = linkedInvs[0];
+  const linkedInvIds = linkedInvs.map((i) => i.id);
+
+  const linkedItemsRaw = await db.execute(sql`
+    SELECT "id", "policy_id", "policy_premium_id", "amount_cents",
+           "description", coalesce("status", 'active') AS "status"
+    FROM "accounting_invoice_items"
+    WHERE "invoice_id" IN (${sql.join(linkedInvIds.map((id) => sql`${id}`), sql`,`)})
+      AND "policy_id" IN (${sql.join(scopedPolicyIds.map((id) => sql`${id}`), sql`,`)})
+    ORDER BY "id"
+  `);
+  const linkedRows = Array.isArray(linkedItemsRaw)
+    ? linkedItemsRaw
+    : (linkedItemsRaw as { rows?: unknown[] }).rows ?? [];
+
+  const synthItems: ItemResult[] = (linkedRows as {
+    id: number; policy_id: number; policy_premium_id: number | null;
+    amount_cents: number; description: string | null; status: string;
+  }[]).map((r) => ({
+    id: r.id, policyId: r.policy_id, policyPremiumId: r.policy_premium_id,
+    amountCents: r.amount_cents, description: r.description, status: r.status,
+  }));
+
+  if (synthItems.length === 0) return null;
+
+  const itemPolicyIds = [...new Set(synthItems.map((it) => it.policyId))];
+  if (itemPolicyIds.length > 0) {
+    const polRows = await db
+      .select({ id: policies.id, policyNumber: policies.policyNumber })
+      .from(policies)
+      .where(inArray(policies.id, itemPolicyIds));
+    const polNumMap = new Map(polRows.map((p) => [p.id, p.policyNumber]));
+
+    const premIdSet = [...new Set(synthItems.map((it) => it.policyPremiumId).filter(Boolean))] as number[];
+    const premSuffixMap = new Map<number, string>();
+    if (premIdSet.length > 0) {
+      const premLines = await db
+        .select({ id: policyPremiums.id, policyId: policyPremiums.policyId, lineKey: policyPremiums.lineKey })
+        .from(policyPremiums)
+        .where(inArray(policyPremiums.id, premIdSet))
+        .orderBy(policyPremiums.createdAt);
+
+      const linesByPolicy = new Map<number, { id: number; lineKey: string }[]>();
+      for (const pl of premLines) {
+        const arr = linesByPolicy.get(pl.policyId) ?? [];
+        arr.push({ id: pl.id, lineKey: pl.lineKey });
+        linesByPolicy.set(pl.policyId, arr);
+      }
+      for (const [, lines] of linesByPolicy) {
+        if (lines.length < 2) continue;
+        lines.forEach((l, idx) => {
+          premSuffixMap.set(l.id, `(${String.fromCharCode(97 + idx)})`);
+        });
+      }
+    }
+
+    for (const it of synthItems) {
+      const polNum = polNumMap.get(it.policyId) ?? "";
+      const suffix = it.policyPremiumId ? (premSuffixMap.get(it.policyPremiumId) ?? "") : "";
+      const fullPolNum = `${polNum}${suffix}`;
+      const desc = it.description ?? "";
+      const isGeneric = !desc || desc === "main" || desc.toLowerCase() === "premium";
+      if (fullPolNum && isGeneric) {
+        it.description = fullPolNum;
+      } else if (polNum && !desc.includes(polNum)) {
+        it.description = `${fullPolNum} · ${desc}`;
+      }
+    }
+  }
+
+  const premiumTotals: Record<string, number> = {};
+  const itemPremiumMap = new Map<number, Record<string, number>>();
+  const premiumRoleTotals = new Map<number, { clientCents: number; agentCents: number }>();
+  const premiumIds = [...new Set(synthItems.map((it) => it.policyPremiumId).filter(Boolean))] as number[];
+  if (premiumIds.length > 0) {
+    const premRows = await db.select().from(policyPremiums).where(inArray(policyPremiums.id, premiumIds));
+    const acctFields = await loadAccountingFields();
+    const { buildFieldColumnMap, getColumnType } = await import("@/lib/accounting-fields");
+    const colMap = buildFieldColumnMap(acctFields);
+    for (const row of premRows) {
+      const rowValues: Record<string, number> = {};
+      premiumRoleTotals.set(row.id, {
+        clientCents: resolvePremiumByRole(row as Record<string, unknown>, "client", acctFields),
+        agentCents: resolvePremiumByRole(row as Record<string, unknown>, "agent", acctFields),
+      });
+      for (const f of acctFields) {
+        const mappedCol = colMap[f.key];
+        let val: number | null = null;
+        if (mappedCol) {
+          const rawVal = (row as Record<string, unknown>)[mappedCol];
+          if (rawVal != null) val = getColumnType(mappedCol) === "cents" ? Number(rawVal) / 100 : Number(rawVal);
+        } else {
+          const extra = (row.extraValues ?? {}) as Record<string, unknown>;
+          if (extra[f.key] != null) val = Number(extra[f.key]);
+        }
+        if (val != null && Number.isFinite(val)) {
+          premiumTotals[f.key] = (premiumTotals[f.key] ?? 0) + val;
+          rowValues[f.key] = val;
+        }
+      }
+      itemPremiumMap.set(row.id, rowValues);
+    }
+  }
+
+  const enrichedItems = synthItems.map((it) => ({
+    ...it,
+    premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
+  }));
+  const policyMetaById = await loadPolicyStatementMeta(itemPolicyIds);
+  const commissionTotalCents = await loadCommissionTotalCents(itemPolicyIds, allSchedIds, first.entityType);
+  const activeTotal = synthItems
+    .filter((it) => it.status === "active")
+    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, first.entityType, premiumRoleTotals, first.direction), 0);
+  const paidIndividuallyTotal = synthItems
+    .filter((it) => it.status === "paid_individually")
+    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, first.entityType, premiumRoleTotals, first.direction), 0);
+  const totalCents = activeTotal + paidIndividuallyTotal;
+  const paidCents = paidIndividuallyTotal;
+  const summaryTotals = buildStatementSummaryTotals(
+    synthItems,
+    first.entityType,
+    premiumRoleTotals,
+    policyMetaById,
+    commissionTotalCents,
+    first.direction,
+  );
+
+  return {
+    first,
+    totalCents,
+    paidCents,
+    enrichedItems,
+    premiumTotals,
+    summaryTotals,
+    activeTotal,
+    paidIndividuallyTotal,
+  };
+}
+
 export async function GET(
   request: Request,
   ctx: { params: Promise<{ policyId: string }> },
@@ -105,7 +618,43 @@ export async function GET(
       .where(inArray(accountingInvoiceItems.policyId, allPolicyIds));
 
     if (policyItemRows.length === 0) {
-      return NextResponse.json({ statement: null });
+      const pol = await resolvePolicyParties(pid);
+      if (!pol.organisationId) {
+        return NextResponse.json({ statement: null, hasSchedule: false });
+      }
+
+      const entityConds = [];
+      if (pol.clientId && (!audience || audience === "client")) {
+        entityConds.push(
+          and(eq(accountingPaymentSchedules.entityType, "client"), eq(accountingPaymentSchedules.clientId, pol.clientId)),
+        );
+      } else if (pol.clientPolicyRecordId && (!audience || audience === "client")) {
+        entityConds.push(
+          and(eq(accountingPaymentSchedules.entityType, "client"), eq(accountingPaymentSchedules.entityPolicyId, pol.clientPolicyRecordId)),
+        );
+      }
+      if (pol.agentId && (!audience || audience === "agent")) {
+        entityConds.push(
+          and(eq(accountingPaymentSchedules.entityType, "agent"), eq(accountingPaymentSchedules.agentId, pol.agentId)),
+        );
+      }
+
+      if (entityConds.length === 0) {
+        return NextResponse.json({ statement: null, hasSchedule: false });
+      }
+
+      const directSchedules = await db
+        .select({ id: accountingPaymentSchedules.id })
+        .from(accountingPaymentSchedules)
+        .where(
+          and(
+            eq(accountingPaymentSchedules.organisationId, pol.organisationId),
+            eq(accountingPaymentSchedules.isActive, true),
+            entityConds.length === 1 ? entityConds[0] : or(...entityConds),
+          ),
+        );
+
+      return NextResponse.json({ statement: null, hasSchedule: directSchedules.length > 0 });
     }
 
     const invoiceIds = policyItemRows.map((r) => r.invoiceId);
@@ -116,13 +665,15 @@ export async function GET(
         scheduleId: accountingInvoices.scheduleId,
         invoiceType: accountingInvoices.invoiceType,
         entityType: accountingInvoices.entityType,
+      direction: accountingInvoices.direction,
       })
       .from(accountingInvoices)
       .where(inArray(accountingInvoices.id, invoiceIds));
 
+    const relevantInvoiceRows = invoiceRows.filter((r) => !audience || r.entityType === audience);
     const scheduleIds = [
       ...new Set(
-        invoiceRows
+        relevantInvoiceRows
           .filter((r) => r.scheduleId != null)
           .map((r) => r.scheduleId as number),
       ),
@@ -139,6 +690,7 @@ export async function GET(
       entityName: string | null;
       invoiceDate: string | null;
       premiumType: string;
+      direction: string;
     } | null = null;
 
     if (scheduleIds.length > 0) {
@@ -168,6 +720,7 @@ export async function GET(
           entityName: accountingInvoices.entityName,
           invoiceDate: accountingInvoices.invoiceDate,
           premiumType: accountingInvoices.premiumType,
+          direction: accountingInvoices.direction,
         })
         .from(accountingInvoices)
         .where(and(...conditions))
@@ -195,6 +748,7 @@ export async function GET(
             entityName: accountingInvoices.entityName,
             invoiceDate: accountingInvoices.invoiceDate,
             premiumType: accountingInvoices.premiumType,
+            direction: accountingInvoices.direction,
           })
           .from(accountingInvoices)
           .where(eq(accountingInvoices.id, directStmt.id))
@@ -206,17 +760,17 @@ export async function GET(
     let hasSchedule = scheduleIds.length > 0;
 
     if (!stmt) {
-      const [pol] = await db
-        .select({ clientId: policies.clientId, agentId: policies.agentId, organisationId: policies.organisationId })
-        .from(policies)
-        .where(eq(policies.id, pid))
-        .limit(1);
+      const pol = await resolvePolicyParties(pid);
 
-      if (pol?.organisationId) {
+      if (pol.organisationId) {
         const entityConds = [];
         if (pol.clientId && (!audience || audience === "client")) {
           entityConds.push(
             and(eq(accountingPaymentSchedules.entityType, "client"), eq(accountingPaymentSchedules.clientId, pol.clientId)),
+          );
+        } else if (pol.clientPolicyRecordId && (!audience || audience === "client")) {
+          entityConds.push(
+            and(eq(accountingPaymentSchedules.entityType, "client"), eq(accountingPaymentSchedules.entityPolicyId, pol.clientPolicyRecordId)),
           );
         }
         if (pol.agentId && (!audience || audience === "agent")) {
@@ -261,6 +815,7 @@ export async function GET(
                 entityName: accountingInvoices.entityName,
                 invoiceDate: accountingInvoices.invoiceDate,
                 premiumType: accountingInvoices.premiumType,
+                direction: accountingInvoices.direction,
               })
               .from(accountingInvoices)
               .where(and(...stmtConds))
@@ -275,145 +830,9 @@ export async function GET(
       // No formal statement invoice yet, but invoices ARE on a schedule.
       // Build preview data from the schedule-linked invoices so the
       // statement document template can render.
-      const allSchedIds = [...new Set(scheduleIds)];
-
-      if (allSchedIds.length > 0) {
-        // Find individual invoices that have been placed on this schedule
-        const linkedInvs = await db
-          .select({
-            id: accountingInvoices.id,
-            invoiceNumber: accountingInvoices.invoiceNumber,
-            status: accountingInvoices.status,
-            totalAmountCents: accountingInvoices.totalAmountCents,
-            paidAmountCents: accountingInvoices.paidAmountCents,
-            currency: accountingInvoices.currency,
-            entityType: accountingInvoices.entityType,
-            entityName: accountingInvoices.entityName,
-            invoiceDate: accountingInvoices.invoiceDate,
-            premiumType: accountingInvoices.premiumType,
-          })
-          .from(accountingInvoices)
-          .where(
-            and(
-              inArray(accountingInvoices.scheduleId, allSchedIds),
-              eq(accountingInvoices.invoiceType, "individual"),
-              inArray(accountingInvoices.status, ["statement_created", "active"]),
-              audience ? eq(accountingInvoices.entityType, audience) : undefined,
-            ),
-          );
-
-        if (linkedInvs.length > 0) {
-          const totalCents = linkedInvs.reduce((s, i) => s + i.totalAmountCents, 0);
-          const paidCents = linkedInvs.reduce((s, i) => s + i.paidAmountCents, 0);
-          const first = linkedInvs[0];
-          const linkedInvIds = linkedInvs.map((i) => i.id);
-
-          // Get items from those invoices
-          const linkedItemsRaw = await db.execute(sql`
-            SELECT "id", "policy_id", "policy_premium_id", "amount_cents",
-                   "description", coalesce("status", 'active') AS "status"
-            FROM "accounting_invoice_items"
-            WHERE "invoice_id" IN (${sql.join(linkedInvIds.map((id) => sql`${id}`), sql`,`)})
-            ORDER BY "id"
-          `);
-          const linkedRows = Array.isArray(linkedItemsRaw)
-            ? linkedItemsRaw
-            : (linkedItemsRaw as { rows?: unknown[] }).rows ?? [];
-
-          const synthItems: ItemResult[] = (linkedRows as {
-            id: number; policy_id: number; policy_premium_id: number | null;
-            amount_cents: number; description: string | null; status: string;
-          }[]).map((r) => ({
-            id: r.id, policyId: r.policy_id, policyPremiumId: r.policy_premium_id,
-            amountCents: r.amount_cents, description: r.description, status: r.status,
-          }));
-
-          // Enrich descriptions with policy numbers + line suffix (a)/(b) for multi-line
-          const itemPolicyIds = [...new Set(synthItems.map((it) => it.policyId))];
-          if (itemPolicyIds.length > 0) {
-            const polRows = await db
-              .select({ id: policies.id, policyNumber: policies.policyNumber })
-              .from(policies)
-              .where(inArray(policies.id, itemPolicyIds));
-            const polNumMap = new Map(polRows.map((p) => [p.id, p.policyNumber]));
-
-            // Look up premium lines per policy to determine (a)/(b) suffixes
-            const premIdSet = [...new Set(synthItems.map((it) => it.policyPremiumId).filter(Boolean))] as number[];
-            const premSuffixMap = new Map<number, string>();
-            if (premIdSet.length > 0) {
-              const premLines = await db
-                .select({ id: policyPremiums.id, policyId: policyPremiums.policyId, lineKey: policyPremiums.lineKey })
-                .from(policyPremiums)
-                .where(inArray(policyPremiums.id, premIdSet))
-                .orderBy(policyPremiums.createdAt);
-
-              // Group by policy, assign suffix only when 2+ lines exist for the same policy
-              const linesByPolicy = new Map<number, { id: number; lineKey: string }[]>();
-              for (const pl of premLines) {
-                const arr = linesByPolicy.get(pl.policyId) ?? [];
-                arr.push({ id: pl.id, lineKey: pl.lineKey });
-                linesByPolicy.set(pl.policyId, arr);
-              }
-              for (const [, lines] of linesByPolicy) {
-                if (lines.length < 2) continue;
-                lines.forEach((l, idx) => {
-                  premSuffixMap.set(l.id, `(${String.fromCharCode(97 + idx)})`);
-                });
-              }
-            }
-
-            for (const it of synthItems) {
-              const polNum = polNumMap.get(it.policyId) ?? "";
-              const suffix = it.policyPremiumId ? (premSuffixMap.get(it.policyPremiumId) ?? "") : "";
-              const fullPolNum = `${polNum}${suffix}`;
-              const desc = it.description ?? "";
-              const isGeneric = !desc || desc === "main" || desc.toLowerCase() === "premium";
-              if (fullPolNum && isGeneric) {
-                it.description = fullPolNum;
-              } else if (polNum && !desc.includes(polNum)) {
-                it.description = `${fullPolNum} · ${desc}`;
-              }
-            }
-          }
-
-          // Build premium breakdowns
-          const premiumTotals: Record<string, number> = {};
-          const itemPremiumMap = new Map<number, Record<string, number>>();
-          const premiumIds = [...new Set(synthItems.map((it) => it.policyPremiumId).filter(Boolean))] as number[];
-          if (premiumIds.length > 0) {
-            try {
-              const premRows = await db.select().from(policyPremiums).where(inArray(policyPremiums.id, premiumIds));
-              const acctFields = await loadAccountingFields();
-              const { buildFieldColumnMap, getColumnType } = await import("@/lib/accounting-fields");
-              const colMap = buildFieldColumnMap(acctFields);
-              for (const row of premRows) {
-                const rowValues: Record<string, number> = {};
-                for (const f of acctFields) {
-                  const mappedCol = colMap[f.key];
-                  let val: number | null = null;
-                  if (mappedCol) {
-                    const rawVal = (row as Record<string, unknown>)[mappedCol];
-                    if (rawVal != null) val = getColumnType(mappedCol) === "cents" ? Number(rawVal) / 100 : Number(rawVal);
-                  } else {
-                    const extra = (row.extraValues ?? {}) as Record<string, unknown>;
-                    if (extra[f.key] != null) val = Number(extra[f.key]);
-                  }
-                  if (val != null && Number.isFinite(val)) {
-                    premiumTotals[f.key] = (premiumTotals[f.key] ?? 0) + val;
-                    rowValues[f.key] = val;
-                  }
-                }
-                itemPremiumMap.set(row.id, rowValues);
-              }
-            } catch { /* non-fatal */ }
-          }
-
-          const enrichedItems = synthItems.map((it) => ({
-            ...it,
-            premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
-          }));
-          const activeTotal = synthItems.filter((it) => it.status === "active").reduce((s, it) => s + it.amountCents, 0);
-
+      const preview = await buildPreviewFromScheduledInvoices(scheduleIds, audience, allPolicyIds);
+      if (preview) {
+        const { first, totalCents, paidCents, enrichedItems, activeTotal, paidIndividuallyTotal, premiumTotals, summaryTotals } = preview;
           return NextResponse.json({
             statement: {
               statementNumber: "",
@@ -426,14 +845,14 @@ export async function GET(
               entityName: first.entityName,
               items: enrichedItems,
               activeTotal,
-              paidIndividuallyTotal: 0,
+              paidIndividuallyTotal,
               premiumTotals,
+              summaryTotals,
             },
             hasSchedule: true,
           });
         }
       }
-    }
 
     if (!stmt) {
       return NextResponse.json({ statement: null, hasSchedule });
@@ -464,7 +883,7 @@ export async function GET(
       ? rawItems
       : (rawItems as { rows?: unknown[] }).rows ?? [];
 
-    const items: ItemResult[] = (
+    const allStatementItems: ItemResult[] = (
       rawRows as {
         id: number;
         policy_id: number;
@@ -481,6 +900,8 @@ export async function GET(
       description: r.description,
       status: r.status,
     }));
+    const items = allStatementItems.filter((it) => allPolicyIds.includes(it.policyId));
+    const isPolicyScopedView = items.length !== allStatementItems.length;
 
     // Enrich descriptions with policy numbers + line suffix (a)/(b) for multi-line
     const formalItemPolicyIds = [...new Set(items.map((it) => it.policyId))];
@@ -535,12 +956,35 @@ export async function GET(
       .limit(1)
       .then((r) => r[0]?.scheduleId ?? null);
 
+    if (stmtScheduleId && items.length === 0) {
+      const preview = await buildPreviewFromScheduledInvoices([stmtScheduleId], audience, allPolicyIds);
+      if (preview) {
+        return NextResponse.json({
+          statement: {
+            statementNumber: stmt.invoiceNumber,
+            statementDate: stmt.invoiceDate,
+            statementStatus: stmt.status,
+            totalAmountCents: stmt.totalAmountCents > 0 ? stmt.totalAmountCents : preview.totalCents,
+            paidAmountCents: stmt.paidAmountCents > 0 ? stmt.paidAmountCents : preview.paidCents,
+            currency: stmt.currency,
+            entityType: stmt.entityType,
+            entityName: stmt.entityName,
+            items: preview.enrichedItems,
+            activeTotal: preview.activeTotal,
+            paidIndividuallyTotal: preview.paidIndividuallyTotal,
+            premiumTotals: preview.premiumTotals,
+            summaryTotals: preview.summaryTotals,
+          },
+        });
+      }
+    }
+
     if (stmtScheduleId) {
       const existingPolicyIds = new Set(items.map((it) => it.policyId));
       const missingPolicyIds = allPolicyIds.filter((id) => !existingPolicyIds.has(id));
 
       if (missingPolicyIds.length > 0) {
-        const role = PREMIUM_ROLE_MAP[stmt.premiumType] ?? null;
+        const role = stmt.direction === "payable" ? null : (PREMIUM_ROLE_MAP[stmt.premiumType] ?? null);
         const accountingFields = role ? await loadAccountingFields() : null;
 
         // Get policy numbers for the missing policies
@@ -559,6 +1003,7 @@ export async function GET(
             and(
               eq(accountingInvoices.scheduleId, stmtScheduleId),
               eq(accountingInvoices.invoiceType, "individual"),
+              eq(accountingInvoices.entityType, stmt.entityType),
               inArray(accountingInvoices.status, [
                 "draft", "pending", "partial", "settled", "active", "statement_created",
               ]),
@@ -628,16 +1073,10 @@ export async function GET(
       }
     }
 
-    const activeTotal = items
-      .filter((it) => it.status === "active")
-      .reduce((sum, it) => sum + it.amountCents, 0);
-    const paidIndividuallyTotal = items
-      .filter((it) => it.status === "paid_individually")
-      .reduce((sum, it) => sum + it.amountCents, 0);
-
     // Build premium totals + per-item breakdowns from the actual policy_premiums rows
     const premiumTotals: Record<string, number> = {};
     const itemPremiumMap = new Map<number, Record<string, number>>();
+    const premiumRoleTotals = new Map<number, { clientCents: number; agentCents: number }>();
     const premiumIds = [...new Set(items.map((it) => it.policyPremiumId).filter(Boolean))] as number[];
     if (premiumIds.length > 0) {
       try {
@@ -647,6 +1086,10 @@ export async function GET(
         const colMap = buildFieldColumnMap(accountingFields);
         for (const row of premRows) {
           const rowValues: Record<string, number> = {};
+          premiumRoleTotals.set(row.id, {
+            clientCents: resolvePremiumByRole(row as Record<string, unknown>, "client", accountingFields),
+            agentCents: resolvePremiumByRole(row as Record<string, unknown>, "agent", accountingFields),
+          });
           for (const f of accountingFields) {
             const mappedCol = colMap[f.key];
             let val: number | null = null;
@@ -673,14 +1116,38 @@ export async function GET(
       ...it,
       premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
     }));
+    const policyMetaById = await loadPolicyStatementMeta(items.map((it) => it.policyId));
+    const commissionTotalCents = await loadCommissionTotalCents(
+      items.map((it) => it.policyId),
+      stmtScheduleId ? [stmtScheduleId] : scheduleIds,
+      stmt.entityType,
+    );
+    const activeTotal = items
+      .filter((it) => it.status === "active")
+      .reduce((sum, it) => sum + resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction), 0);
+    const paidIndividuallyTotal = items
+      .filter((it) => it.status === "paid_individually")
+      .reduce((sum, it) => sum + resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction), 0);
+    const summaryTotals = buildStatementSummaryTotals(
+      items,
+      stmt.entityType,
+      premiumRoleTotals,
+      policyMetaById,
+      commissionTotalCents,
+      stmt.direction,
+    );
+
+    if (items.length === 0) {
+      return NextResponse.json({ statement: null, hasSchedule });
+    }
 
     return NextResponse.json({
       statement: {
         statementNumber: stmt.invoiceNumber,
         statementDate: stmt.invoiceDate,
         statementStatus: stmt.status,
-        totalAmountCents: stmt.totalAmountCents,
-        paidAmountCents: stmt.paidAmountCents,
+        totalAmountCents: isPolicyScopedView ? activeTotal + paidIndividuallyTotal : stmt.totalAmountCents,
+        paidAmountCents: isPolicyScopedView ? paidIndividuallyTotal : stmt.paidAmountCents,
         currency: stmt.currency,
         entityType: stmt.entityType,
         entityName: stmt.entityName,
@@ -688,6 +1155,7 @@ export async function GET(
         activeTotal,
         paidIndividuallyTotal,
         premiumTotals,
+        summaryTotals,
       },
     });
   } catch (err) {

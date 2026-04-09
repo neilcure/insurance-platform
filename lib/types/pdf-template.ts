@@ -170,6 +170,7 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
   accounting: [
     "grossPremium", "netPremium", "clientPremium", "agentPremium",
     "agentCommission", "creditPremium", "levy", "stampDuty", "discount",
+    "policyPremiumTotal", "endorsementPremiumTotal", "creditTotal", "commissionTotal",
     "commissionRate", "currency", "margin", "lineLabel",
     "insurerName", "insurerContactName", "insurerContactEmail", "insurerContactPhone",
     "insurerAddress",
@@ -194,6 +195,7 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
     "entityName", "entityType",
     "activeTotal", "paidIndividuallyTotal", "totalAmountCents",
     "paidAmountCents", "currency",
+    "policyPremiumTotal", "endorsementPremiumTotal", "creditTotal", "commissionTotal",
     "itemCount", "activeItemCount", "paidIndividuallyItemCount",
     "itemDescriptions", "itemAmounts", "itemStatuses",
   ],

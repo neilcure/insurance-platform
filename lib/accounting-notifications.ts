@@ -27,7 +27,7 @@ type PaymentNotificationInput = {
 function premiumTypeLabel(type: string): string {
   const map: Record<string, string> = {
     net_premium: "Net Premium",
-    agent_premium: "Agent Premium",
+    agent_premium: "Agent Settlement",
     client_premium: "Client Premium",
   };
   return map[type] || type;

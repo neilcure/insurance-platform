@@ -182,15 +182,16 @@ export default function DocumentTemplatesManager() {
     if (source === "package" && packageName) {
       return pkgFieldsCache[packageName] ?? [];
     }
-    if (source === "accounting") {
-      return pkgFieldsCache["premiumRecord"] ?? [];
-    }
-    const hints = (FIELD_KEY_HINTS as Record<string, string[]>)[source];
-    if (!hints) return [];
+    const hints = (FIELD_KEY_HINTS as Record<string, string[]>)[source] ?? [];
     const base = hints.map((k) => ({
       key: k,
       label: k.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()).trim(),
     }));
+    if (source === "accounting") {
+      const merged = [...base, ...(pkgFieldsCache["premiumRecord"] ?? [])];
+      return merged.filter((field, idx, arr) => arr.findIndex((f) => f.key === field.key) === idx);
+    }
+    if (base.length === 0) return [];
     if (source === "statement") {
       const premFields = pkgFieldsCache["premiumRecord"] ?? [];
       for (const pf of premFields) {
@@ -684,6 +685,7 @@ export default function DocumentTemplatesManager() {
             <p className="text-xs text-neutral-400 ml-6">
               Mark this as an agent copy. Document numbers will automatically have <strong>(A)</strong> appended (e.g. INV-2026-3847(A)).
               Use this for agent-facing versions with agent-specific premium fields (Agent Premium, Agent Commission, etc.).
+              For statement documents, create a separate client billing template and a separate agent settlement template.
             </p>
           </div>
 
@@ -702,6 +704,7 @@ export default function DocumentTemplatesManager() {
             <p className="text-xs text-neutral-400 ml-6">
               When enabled, this document will only display for audiences (client/agent) that are assigned to a Payment Schedule with an active statement.
               If no statement exists for the audience, the document sections and footer will be hidden.
+              This is audience-specific, so a client statement and an agent statement should usually be separate templates.
             </p>
           </div>
 

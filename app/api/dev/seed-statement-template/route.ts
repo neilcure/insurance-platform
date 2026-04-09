@@ -57,9 +57,9 @@ const STATEMENT_SECTIONS = [
     source: "accounting",
     audience: "client",
     fields: [
-      { key: "clientPremium", label: "Premium", format: "currency", currencyCode: "HKD" },
-      { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
-      { key: "stampDuty", label: "Stamp Duty", format: "currency", currencyCode: "HKD" },
+      { key: "policyPremiumTotal", label: "Policy Premium", format: "currency", currencyCode: "HKD" },
+      { key: "endorsementPremiumTotal", label: "Endorsement Premium", format: "currency", currencyCode: "HKD" },
+      { key: "creditTotal", label: "Credit Total", format: "currency", currencyCode: "HKD" },
     ],
   },
   {
@@ -68,10 +68,10 @@ const STATEMENT_SECTIONS = [
     source: "accounting",
     audience: "agent",
     fields: [
-      { key: "clientPremium", label: "Client Premium", format: "currency", currencyCode: "HKD" },
-      { key: "agentPremium", label: "Agent Premium", format: "currency", currencyCode: "HKD" },
-      { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
-      { key: "stampDuty", label: "Stamp Duty", format: "currency", currencyCode: "HKD" },
+      { key: "policyPremiumTotal", label: "Policy Premium", format: "currency", currencyCode: "HKD" },
+      { key: "endorsementPremiumTotal", label: "Endorsement Premium", format: "currency", currencyCode: "HKD" },
+      { key: "creditTotal", label: "Credit Total", format: "currency", currencyCode: "HKD" },
+      { key: "commissionTotal", label: "Commission Total", format: "currency", currencyCode: "HKD" },
     ],
   },
   {

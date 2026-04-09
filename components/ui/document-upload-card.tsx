@@ -312,7 +312,8 @@ export function DocumentUploadCard({
   }
 
   async function handleStatementToggle(addToStatement: boolean) {
-    const schedule = agentSchedule || clientSchedule;
+    // Premium billing should prefer the client-facing schedule.
+    const schedule = clientSchedule || agentSchedule;
     if (!schedule) return;
     setTogglingStatement(true);
     try {
@@ -709,9 +710,9 @@ export function DocumentUploadCard({
             .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
             .reduce((sum, p) => sum + p.amountCents, 0);
 
-          const policyPremium = hasAgent
-            ? (premiumBreakdown?.agentPremiumCents ?? 0)
-            : (premiumBreakdown?.clientPremiumCents ?? 0);
+          const policyPremium = premiumBreakdown?.clientPremiumCents
+            ?? premiumBreakdown?.agentPremiumCents
+            ?? 0;
           const isSettled = policyPremium > 0 && verifiedTotal >= policyPremium;
 
           return (
@@ -758,19 +759,14 @@ export function DocumentUploadCard({
         {(canUpload || (displayStatus === "uploaded" && isAdmin)) && needsPayment && premiumBreakdown ? (
           <div className="space-y-2.5">
             {(() => {
-              const anySchedule = agentSchedule || clientSchedule;
-              const onStatement = !!anySchedule && !payIndividually;
+              const billingSchedule = clientSchedule || agentSchedule;
+              const onStatement = !!billingSchedule && !payIndividually;
 
               if (onStatement) {
-                const schedulesToShow = [
-                  ...(agentSchedule ? [{ schedule: agentSchedule, label: premiumBreakdown.agentName || "Agent", amount: premiumBreakdown.agentPremiumCents, type: "agent" as const }] : []),
-                  ...(clientSchedule ? [{ schedule: clientSchedule, label: "Client", amount: premiumBreakdown.clientPremiumCents, type: "client" as const }] : []),
-                ];
-
                 return (
                   <div className="space-y-2.5">
-                    {schedulesToShow.map(({ schedule, label, amount, type }) => (
-                      <div key={type} className="rounded-md border-2 border-indigo-300 bg-indigo-50 dark:border-indigo-700 dark:bg-indigo-950/40 p-3">
+                    {billingSchedule && (
+                      <div className="rounded-md border-2 border-indigo-300 bg-indigo-50 dark:border-indigo-700 dark:bg-indigo-950/40 p-3">
                         <div className="flex items-center gap-2 mb-1.5">
                           <CalendarClock className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
                           <span className="text-xs font-semibold text-indigo-800 dark:text-indigo-200">
@@ -779,17 +775,17 @@ export function DocumentUploadCard({
                         </div>
                         <div className="text-[11px] text-indigo-700 dark:text-indigo-300 space-y-0.5">
                           <div>
-                            <span className="font-semibold">{label}</span> premium of{" "}
-                            <span className="font-bold">{formatCurrency(amount)}</span>{" "}
+                            <span className="font-semibold">Client</span> premium of{" "}
+                            <span className="font-bold">{formatCurrency(premiumBreakdown.clientPremiumCents)}</span>{" "}
                             will be collected via periodic statement.
                           </div>
                           <div className="text-indigo-600 dark:text-indigo-400">
-                            {schedule.frequency?.charAt(0).toUpperCase()}{schedule.frequency?.slice(1)} billing
-                            {schedule.billingDay ? ` · Day ${schedule.billingDay}` : ""}
+                            {billingSchedule.frequency?.charAt(0).toUpperCase()}{billingSchedule.frequency?.slice(1)} billing
+                            {billingSchedule.billingDay ? ` · Day ${billingSchedule.billingDay}` : ""}
                           </div>
                         </div>
                       </div>
-                    ))}
+                    )}
                     <button
                       type="button"
                       disabled={togglingStatement}
@@ -809,7 +805,7 @@ export function DocumentUploadCard({
               return (
                 <>
                   {/* Back to statement option — shown when released */}
-                  {anySchedule && payIndividually && (
+                  {billingSchedule && payIndividually && (
                     <button
                       type="button"
                       disabled={togglingStatement}
@@ -825,11 +821,14 @@ export function DocumentUploadCard({
                     </button>
                   )}
 
-                  {/* Payer selection (when agent exists) */}
+                  {/* Payment source selection (when agent exists) */}
                   {hasAgent && (
                     <div>
                       <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1.5">
-                        Who is making this payment?
+                        Payment received from
+                      </div>
+                      <div className="mb-1.5 text-[10px] text-neutral-400 dark:text-neutral-500">
+                        Choose who remitted this amount to admin so settlement and commission can be recorded correctly.
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <button
@@ -844,7 +843,7 @@ export function DocumentUploadCard({
                               : "border-neutral-200 hover:border-blue-300 dark:border-neutral-700 dark:hover:border-blue-700"
                           }`}
                         >
-                          <div className="text-[10px] font-semibold text-blue-800 dark:text-blue-300">Client</div>
+                          <div className="text-[10px] font-semibold text-blue-800 dark:text-blue-300">Client Direct Payment</div>
                           <div className="text-sm font-bold text-blue-900 dark:text-blue-200">
                             {formatCurrency(premiumBreakdown.clientPremiumCents)}
                           </div>
@@ -862,7 +861,7 @@ export function DocumentUploadCard({
                           }`}
                         >
                           <div className="text-[10px] font-semibold text-amber-800 dark:text-amber-300">
-                            {premiumBreakdown.agentName || "Agent"}
+                            {premiumBreakdown.agentName || "Agent"} Remittance
                           </div>
                           <div className="text-sm font-bold text-amber-900 dark:text-amber-200">
                             {formatCurrency(premiumBreakdown.agentPremiumCents)}

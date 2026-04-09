@@ -103,9 +103,23 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
   }
 
   const hasAgent = !!effectiveAgentId;
-  // With agent: admin collects agentPremium (net) from agent; agent keeps commission
-  // Without agent: admin collects clientPremium directly from client
-  const receivableRole = hasAgent ? "agent" : "client";
+
+  let clientScheduleId: number | null = null;
+  if (policy.clientId && organisationId) {
+    const [row] = await db
+      .select({ id: accountingPaymentSchedules.id })
+      .from(accountingPaymentSchedules)
+      .where(
+        and(
+          eq(accountingPaymentSchedules.organisationId, organisationId),
+          eq(accountingPaymentSchedules.entityType, "client"),
+          eq(accountingPaymentSchedules.clientId, policy.clientId),
+          eq(accountingPaymentSchedules.isActive, true),
+        ),
+      )
+      .limit(1);
+    clientScheduleId = row?.id ?? null;
+  }
 
   let agentScheduleId: number | null = null;
   if (hasAgent && organisationId) {
@@ -129,7 +143,18 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
   const nonMainPremiums = premiums.filter((p) => p.lineKey !== "main");
   const activePremiums = nonMainPremiums.length >= 2 ? nonMainPremiums : premiums;
 
-  const eligiblePremiums = activePremiums.filter((p) => resolvePremiumByRole(p as Record<string, unknown>, receivableRole, accountingFields) > 0);
+  const clientEligiblePremiums = activePremiums.filter(
+    (p) => resolvePremiumByRole(p as Record<string, unknown>, "client", accountingFields) > 0,
+  );
+  const agentEligiblePremiums = hasAgent
+    ? activePremiums.filter((p) => resolvePremiumByRole(p as Record<string, unknown>, "agent", accountingFields) > 0)
+    : [];
+  const receivableRole: "client" | "agent" = clientEligiblePremiums.length > 0
+    ? "client"
+    : hasAgent && agentEligiblePremiums.length > 0
+      ? "agent"
+      : "client";
+  const eligiblePremiums = receivableRole === "client" ? clientEligiblePremiums : agentEligiblePremiums;
   if (eligiblePremiums.length === 0) return;
 
   let clientName: string | null = null;
@@ -152,7 +177,14 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     agentName = a?.name || a?.email || null;
   }
 
-  const entityName = clientName || agentName;
+  const billingEntityType = receivableRole === "agent" ? "agent" : "client";
+  const billingEntityName = billingEntityType === "agent"
+    ? (agentName || clientName)
+    : (clientName || agentName);
+  const billingScheduleId = billingEntityType === "agent" ? agentScheduleId : clientScheduleId;
+  const billingNote = billingEntityType === "agent"
+    ? `Agent Settlement · Agent: ${agentName || "—"}`
+    : "Client Premium";
 
   // Always ONE invoice per policy with all premium lines as items — quotation,
   // invoice, and receipt documents show both (a) and (b) in a single document,
@@ -198,7 +230,12 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${policyId})`);
 
     const [existing] = await tx
-      .select({ id: accountingInvoices.id, invoiceNumber: accountingInvoices.invoiceNumber, scheduleId: accountingInvoices.scheduleId })
+      .select({
+        id: accountingInvoices.id,
+        invoiceNumber: accountingInvoices.invoiceNumber,
+        scheduleId: accountingInvoices.scheduleId,
+        status: accountingInvoices.status,
+      })
       .from(accountingInvoices)
       .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
       .where(
@@ -257,9 +294,17 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
       // Always recalculate total and fix schedule linkage
       const correctTotal = items.reduce((s, it) => s + it.amountCents, 0);
       const updates: Record<string, unknown> = { totalAmountCents: correctTotal };
-      if (!existing.scheduleId && agentScheduleId) {
-        updates.scheduleId = agentScheduleId;
-        updates.status = isReceipt ? "paid" : "statement_created";
+      updates.premiumType = billingEntityType === "agent" ? "agent_premium" : "client_premium";
+      updates.entityType = billingEntityType;
+      updates.entityName = billingEntityName;
+      updates.scheduleId = billingScheduleId;
+      updates.notes = hasMultipleLines
+        ? items.map((it) => it.description).join(" + ")
+        : billingNote;
+      if (isReceipt) {
+        updates.status = "paid";
+      } else if (existing.status === "draft" || existing.status === "pending" || existing.status === "statement_created") {
+        updates.status = billingScheduleId ? "statement_created" : "pending";
       }
       await tx.update(accountingInvoices)
         .set(updates)
@@ -275,19 +320,19 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
         invoiceNumber,
         invoiceType: "individual",
         direction: "receivable",
-        premiumType: hasAgent ? "agent_premium" : "client_premium",
+        premiumType: billingEntityType === "agent" ? "agent_premium" : "client_premium",
         entityPolicyId: policyId,
-        entityType: hasAgent ? "agent" : "client",
-        entityName: hasAgent ? (agentName || entityName) : entityName,
+        entityType: billingEntityType,
+        entityName: billingEntityName,
         totalAmountCents,
         paidAmountCents: 0,
         currency: premiums[0]?.currency ?? "HKD",
         invoiceDate: new Date().toISOString().split("T")[0],
-        status: isReceipt ? "paid" : (agentScheduleId ? "statement_created" : "pending"),
-        scheduleId: agentScheduleId,
+        status: isReceipt ? "paid" : (billingScheduleId ? "statement_created" : "pending"),
+        scheduleId: billingScheduleId,
         notes: hasMultipleLines
           ? items.map((it) => it.description).join(" + ")
-          : (hasAgent ? `Agent Premium · Agent: ${agentName || "—"}` : `Client Premium`),
+          : billingNote,
         createdBy: userId,
       })
       .returning();

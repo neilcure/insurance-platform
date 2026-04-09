@@ -3,23 +3,18 @@
 import * as React from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   PAYMENT_METHOD_OPTIONS,
   PAYMENT_STATUS_LABELS,
   INVOICE_STATUS_LABELS,
   SCHEDULE_FREQUENCY_LABELS,
-  type PaymentMethod,
   type PaymentStatus,
   type InvoiceStatus,
   type ScheduleFrequency,
 } from "@/lib/types/accounting";
 import {
-  DollarSign,
   Check,
   X,
-  Clock,
   AlertCircle,
   ChevronDown,
   ChevronUp,
@@ -144,16 +139,8 @@ export function PaymentSection({
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [expandedInvoice, setExpandedInvoice] = React.useState<number | null>(null);
-  const [showPaymentForm, setShowPaymentForm] = React.useState<number | null>(null);
-  const [submitting, setSubmitting] = React.useState(false);
   const [verifyingId, setVerifyingId] = React.useState<number | null>(null);
   const [refreshKey, setRefreshKey] = React.useState(0);
-
-  const [paymentMethod, setPaymentMethod] = React.useState<PaymentMethod>("bank_transfer");
-  const [paymentAmount, setPaymentAmount] = React.useState("");
-  const [paymentDate, setPaymentDate] = React.useState(() => new Date().toISOString().split("T")[0]);
-  const [referenceNumber, setReferenceNumber] = React.useState("");
-  const [paymentNotes, setPaymentNotes] = React.useState("");
   const [rejectionNote, setRejectionNote] = React.useState("");
 
   type ScheduleInfo = {
@@ -306,45 +293,6 @@ export function PaymentSection({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [policyId, refreshKey, externalRefreshKey, endorsementPolicyIds?.join(",")]);
 
-  const resetForm = () => {
-    setPaymentMethod("bank_transfer");
-    setPaymentAmount("");
-    setPaymentDate(new Date().toISOString().split("T")[0]);
-    setReferenceNumber("");
-    setPaymentNotes("");
-    setShowPaymentForm(null);
-  };
-
-  const handleRecordPayment = async (invoiceId: number) => {
-    const cents = Math.round(Number(paymentAmount) * 100);
-    if (!cents || cents <= 0) return;
-
-    setSubmitting(true);
-    try {
-      const res = await fetch(`/api/accounting/invoices/${invoiceId}/payments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amountCents: cents,
-          paymentDate: paymentDate || null,
-          paymentMethod,
-          referenceNumber: referenceNumber.trim() || null,
-          notes: paymentNotes.trim() || null,
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error((err as { error?: string }).error || "Failed to record payment");
-      }
-      resetForm();
-      setRefreshKey((k) => k + 1);
-    } catch (err) {
-      alert((err as Error).message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const handleVerify = async (invoiceId: number, paymentId: number, action: "verify" | "reject") => {
     setVerifyingId(paymentId);
     try {
@@ -422,8 +370,12 @@ export function PaymentSection({
     const receivableOnStatement = onStatementInvs.filter((inv) => inv.direction === "receivable");
     const payableOnStatement = onStatementInvs.filter((inv) => inv.direction === "payable");
 
-    const totalReceivable = stmt ? stmt.activeTotal : receivableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
-    const totalPayable = payableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
+    const totalReceivable = stmt && s.entityType !== "agent"
+      ? stmt.activeTotal
+      : receivableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
+    const totalPayable = stmt && s.entityType === "agent"
+      ? stmt.activeTotal
+      : payableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
     const netDue = totalReceivable - totalPayable;
 
     const hasItems = stmt ? stmt.items.length > 0 : onStatementInvs.length > 0;
@@ -631,8 +583,7 @@ export function PaymentSection({
 
   return (
     <div className="space-y-3">
-      {/* Client schedule card — only when no agent schedule (agent schedule takes over receivables) */}
-      {clientSchedule && !agentSchedule && scheduleCard(clientSchedule, "Client Statement Billing", invoices)}
+      {clientSchedule && scheduleCard(clientSchedule, "Client Statement Billing", invoices)}
 
       {/* No invoices message */}
       {!hideInvoiceCards && invoices.length === 0 && (
@@ -711,7 +662,7 @@ export function PaymentSection({
 
                 {/* Statement toggle */}
                 {(() => {
-                  const matchingSchedule = inv.direction === "receivable" ? (agentSchedule ?? clientSchedule) : agentSchedule;
+                  const matchingSchedule = inv.direction === "receivable" ? clientSchedule : agentSchedule;
                   if (inv.scheduleId) {
                     return (
                       <div className="flex items-center justify-between rounded-md bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2">
@@ -847,10 +798,10 @@ export function PaymentSection({
         );
       })}
 
-      {/* Agent Premium Payables — only show when there are payables or invoices manually added to the agent statement */}
+      {/* Agent settlement payables — only show when there are payables or invoices manually added to the agent statement */}
       {(() => {
-        const hasInvsOnAgentStatement = agentSchedule && [...invoices, ...payables].some(
-          (inv) => inv.scheduleId && allScheduleIds.has(inv.scheduleId),
+        const hasInvsOnAgentStatement = !!agentSchedule && [...invoices, ...payables].some(
+          (inv) => inv.scheduleId === agentSchedule.id,
         );
         const showAgentSection = payables.length > 0 || hasInvsOnAgentStatement;
         if (!showAgentSection) return null;
@@ -859,11 +810,11 @@ export function PaymentSection({
           <div className="mb-2 flex items-center gap-2">
             <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
             <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
-              Agent Premium
+              Agent Settlement
             </span>
             <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
           </div>
-          {hasInvsOnAgentStatement && agentSchedule && scheduleCard(agentSchedule, "Agent Statement Billing", [...invoices, ...payables], true)}
+          {hasInvsOnAgentStatement && agentSchedule && scheduleCard(agentSchedule, "Agent Statement Billing", [...invoices, ...payables])}
           {!hideInvoiceCards && payables.map((inv) => {
             const isExpanded = expandedInvoice === inv.id;
             return (

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
-import { accountingPaymentSchedules, accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
+import { accountingPaymentSchedules, accountingInvoices } from "@/db/schema/accounting";
 import { policies } from "@/db/schema/insurance";
 import { eq, desc, and, isNull, ne } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
@@ -52,7 +52,6 @@ export async function GET(
     let eligibleInvoices: typeof linkedInvoices = [];
     if (includeEligible) {
       const direction = schedule.entityType === "agent" ? "payable" : "receivable";
-      const entityField = schedule.entityType === "agent" ? "agent" : "client";
       eligibleInvoices = await db
         .select({
           id: accountingInvoices.id,
@@ -73,11 +72,17 @@ export async function GET(
         .where(
           and(
             eq(accountingInvoices.direction, direction),
-            eq(accountingInvoices.entityType, entityField),
+            eq(accountingInvoices.entityType, schedule.entityType),
             eq(accountingInvoices.invoiceType, "individual"),
             isNull(accountingInvoices.scheduleId),
             ne(accountingInvoices.status, "paid"),
             ne(accountingInvoices.status, "cancelled"),
+            schedule.entityType === "agent" && schedule.agentId
+              ? eq(policies.agentId, schedule.agentId)
+              : undefined,
+            schedule.entityType === "client" && schedule.clientId
+              ? eq(policies.clientId, schedule.clientId)
+              : undefined,
           ),
         )
         .orderBy(desc(accountingInvoices.createdAt));

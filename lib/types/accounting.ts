@@ -44,7 +44,7 @@ export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
 
 export const PREMIUM_TYPE_LABELS: Record<PremiumType, string> = {
   net_premium: "Net Premium",
-  agent_premium: "Agent Premium",
+  agent_premium: "Agent Settlement",
   client_premium: "Client Premium",
 };
 

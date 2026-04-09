@@ -5,6 +5,7 @@ import {
   accountingInvoiceItems,
   accountingPayments,
   accountingDocuments,
+  accountingPaymentSchedules,
 } from "@/db/schema/accounting";
 import { policies, cars } from "@/db/schema/insurance";
 import { users, clients } from "@/db/schema/core";
@@ -271,6 +272,34 @@ export async function PATCH(
       if (allowedFields[key]) {
         updates[key] = value;
       }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, "scheduleId") && updates.scheduleId != null) {
+      const scheduleId = Number(updates.scheduleId);
+      const [invoice] = await db
+        .select({ id: accountingInvoices.id, entityType: accountingInvoices.entityType })
+        .from(accountingInvoices)
+        .where(eq(accountingInvoices.id, invoiceId))
+        .limit(1);
+      if (!invoice) {
+        return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
+      }
+
+      const [schedule] = await db
+        .select({ id: accountingPaymentSchedules.id, entityType: accountingPaymentSchedules.entityType })
+        .from(accountingPaymentSchedules)
+        .where(eq(accountingPaymentSchedules.id, scheduleId))
+        .limit(1);
+      if (!schedule) {
+        return NextResponse.json({ error: "Schedule not found" }, { status: 404 });
+      }
+      if (schedule.entityType !== invoice.entityType) {
+        return NextResponse.json(
+          { error: `Cannot attach ${invoice.entityType} invoice to ${schedule.entityType} schedule` },
+          { status: 400 },
+        );
+      }
+      updates.scheduleId = scheduleId;
     }
 
     const [updated] = await db

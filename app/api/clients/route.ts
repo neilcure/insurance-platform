@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { and, eq, asc, sql } from "drizzle-orm";
 import { clients, appSettings, clientAgentAssignments } from "@/db/schema/core";
+import { policies, cars } from "@/db/schema/insurance";
 import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
+import { getInsuredPrimaryId, getInsuredType } from "@/lib/field-resolver";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -336,6 +338,27 @@ export async function GET(request: Request) {
       }
       return pickStr(m, "insured_brnumber", "insured_idnumber");
     };
+    const loadClientProfileMap = async () => {
+      const rows = await db
+        .select({
+          policyNumber: policies.policyNumber,
+          extra: cars.extraAttributes,
+        })
+        .from(policies)
+        .leftJoin(cars, eq(cars.policyId, policies.id))
+        .where(sql`${cars.extraAttributes}->>'flowKey' = 'clientSet'`);
+
+      const map = new Map<string, string>();
+      for (const row of rows) {
+        const extra = toExtraObject(row.extra);
+        const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
+        const category = (getInsuredType(insured) || "").trim().toLowerCase();
+        const primaryId = (getInsuredPrimaryId(insured) || "").trim();
+        if (!category || !primaryId) continue;
+        map.set(`${category}::${primaryId}`, row.policyNumber);
+      }
+      return map;
+    };
     const toExtraObject = (raw: unknown): Record<string, unknown> => {
       if (!raw) return {};
       if (typeof raw === "object") {
@@ -470,6 +493,7 @@ export async function GET(request: Request) {
       }
       // Ensure the list reflects the latest dynamic insured/contact data even if legacy writes
       // didn't keep core columns in sync.
+      const clientProfileMap = await loadClientProfileMap();
       const mapped = (Array.isArray(rows) ? rows : []).map((r: any) => {
         const extraRaw =
           r?.extraAttributes ??
@@ -509,6 +533,7 @@ export async function GET(request: Request) {
           contactPhone: phoneExplicit ? derivedPhone : (derivedPhone || (r?.contactPhone ?? r?.contact_phone ?? null)),
           isActive: Boolean(r?.isActive ?? r?.is_active ?? true),
           createdAt: String(r?.createdAt ?? r?.created_at ?? ""),
+          profilePolicyNumber: clientProfileMap.get(`${String(r?.category ?? "").trim().toLowerCase()}::${(primaryExplicit ? derivedPrimary : (derivedPrimary || String(r?.primaryId ?? r?.primary_id ?? ""))).trim()}`) ?? null,
         };
       });
       return NextResponse.json(mapped, {
@@ -533,6 +558,7 @@ export async function GET(request: Request) {
         .from(clients);
       // In legacy DBs (no created_by), avoid data leakage: agents see none until migration applied
       const rows = me.userType === "agent" ? [] : await base.orderBy(asc(clients.id));
+      const clientProfileMap = await loadClientProfileMap();
       const mapped = rows.map((r) => ({
         ...((): {
           id: number;
@@ -543,20 +569,23 @@ export async function GET(request: Request) {
           contactPhone: string | null;
           createdAt: string;
           isActive: boolean;
+          profilePolicyNumber: string | null;
         } => {
           const extraObj = toExtraObject((r as any).extra);
           const resolved = resolveDynamic(extraObj);
           const cat = String(r.category ?? "");
+          const primaryId = derivePrimaryId(cat, resolved) || r.primaryId;
           return {
             id: r.id,
             clientNumber: r.clientNumber,
             category: r.category,
             displayName: deriveDisplayName(cat, resolved) || r.displayName,
-            primaryId: derivePrimaryId(cat, resolved) || r.primaryId,
+            primaryId,
             contactPhone: deriveContactPhone(resolved) || r.contactPhone,
             createdAt: r.createdAt,
             isActive:
               (extraObj as unknown as { shadow_is_active?: boolean } | null)?.shadow_is_active ?? true,
+            profilePolicyNumber: clientProfileMap.get(`${String(r.category ?? "").trim().toLowerCase()}::${String(primaryId ?? "").trim()}`) ?? null,
           };
         })(),
         isActive:

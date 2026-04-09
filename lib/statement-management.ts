@@ -138,7 +138,7 @@ export async function findOrCreateDraftStatement(
 
   const directionMap: Record<string, string> = {
     collaborator: "payable",
-    agent: "receivable",
+    agent: "payable",
     client: "receivable",
   };
   const premiumTypeMap: Record<string, string> = {
@@ -184,7 +184,10 @@ export async function addInvoiceToStatement(
   await ensureItemStatusColumn();
 
   const [stmt] = await db
-    .select({ premiumType: accountingInvoices.premiumType })
+    .select({
+      premiumType: accountingInvoices.premiumType,
+      direction: accountingInvoices.direction,
+    })
     .from(accountingInvoices)
     .where(eq(accountingInvoices.id, statementId))
     .limit(1);
@@ -192,6 +195,7 @@ export async function addInvoiceToStatement(
   const [inv] = await db
     .select({
       id: accountingInvoices.id,
+      direction: accountingInvoices.direction,
       totalAmountCents: accountingInvoices.totalAmountCents,
       paidAmountCents: accountingInvoices.paidAmountCents,
       notes: accountingInvoices.notes,
@@ -243,6 +247,7 @@ export async function addInvoiceToStatement(
   const accountingFields = stmtRole ? await loadAccountingFields() : null;
 
   async function resolveAmount(it: { policyPremiumId: number | null; amountCents: number }): Promise<number> {
+    if (stmt?.direction === "payable" || inv.direction === "payable") return it.amountCents;
     if (!stmtRole || !accountingFields || !it.policyPremiumId) return it.amountCents;
     const [premium] = await db
       .select()

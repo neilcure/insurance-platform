@@ -614,7 +614,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
     if (fk.includes("collaborator") || fk === "collaboratorset") return { label: "Premium Payable", context: "collaborator" as const };
     if (fk.includes("insurance") || fk === "insuranceset") return { label: "Insurer Premium", context: "insurer" as const };
     if (fk.includes("client")) return { label: "Client Premium", context: "client" as const };
-    if (fk.includes("agent")) return { label: "Agent Premium", context: "agent" as const };
+    if (fk.includes("agent")) return { label: "Agent Settlement", context: "agent" as const };
     return null;
   }, [detailFlowKey]);
 

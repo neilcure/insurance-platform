@@ -19,6 +19,7 @@ import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
   TemplateSection,
+  TemplateFieldMapping,
 } from "@/lib/types/document-template";
 import type { PolicyDetail } from "@/lib/types/policy";
 import {
@@ -61,6 +62,7 @@ type StatementDataForPreview = {
     premiums?: Record<string, number>;
   }[];
   premiumTotals?: Record<string, number>;
+  summaryTotals?: Record<string, number>;
 };
 
 type AccountingLineForPreview = {
@@ -143,6 +145,84 @@ function getItemFieldValue(
       }
       return null;
   }
+}
+
+function hasRenderableItemValue(value: unknown): boolean {
+  if (value === null || value === undefined || value === "") return false;
+  if (typeof value === "number") return value !== 0;
+  const n = Number(value);
+  if (Number.isFinite(n)) return n !== 0;
+  return true;
+}
+
+function buildStatementItemPairs(fields: TemplateFieldMapping[]) {
+  const ordered: Array<{
+    groupLabel: string;
+    agentField?: TemplateFieldMapping;
+    clientField?: TemplateFieldMapping;
+  }> = [];
+  const pairMap = new Map<string, {
+    groupLabel: string;
+    agentField?: TemplateFieldMapping;
+    clientField?: TemplateFieldMapping;
+  }>();
+
+  for (const field of fields) {
+    if (!field.key.startsWith("item_")) continue;
+    if (field.key === "itemDescriptions" || field.key === "itemAmounts" || field.key === "itemStatuses") continue;
+
+    const isAgent = /^agent\b/i.test(field.label);
+    const isClient = /^client\b/i.test(field.label);
+    if (!isAgent && !isClient) continue;
+
+    const groupLabel = field.label.replace(/^agent\s+/i, "").replace(/^client\s+/i, "").trim();
+    const existing = pairMap.get(groupLabel) ?? { groupLabel };
+    if (!pairMap.has(groupLabel)) {
+      pairMap.set(groupLabel, existing);
+      ordered.push(existing);
+    }
+    if (isAgent) existing.agentField = field;
+    if (isClient) existing.clientField = field;
+  }
+
+  return ordered;
+}
+
+function groupStatementItems(items: StatementDataForPreview["items"]) {
+  const groups: Array<{ policyId: number; items: StatementDataForPreview["items"] }> = [];
+  const byPolicy = new Map<number, StatementDataForPreview["items"]>();
+
+  for (const item of items) {
+    const existing = byPolicy.get(item.policyId);
+    if (existing) {
+      existing.push(item);
+      continue;
+    }
+    const grouped = [item];
+    byPolicy.set(item.policyId, grouped);
+    groups.push({ policyId: item.policyId, items: grouped });
+  }
+
+  return groups;
+}
+
+function getStatementGroupTitle(
+  group: { policyId: number; items: StatementDataForPreview["items"] },
+  detailPolicyNumber: string,
+) {
+  const firstDesc = group.items[0]?.description ?? "";
+  const bracketMatch = firstDesc.match(/\[([^\]]+)\]/);
+  const candidate = (bracketMatch?.[1] ?? firstDesc).trim();
+  const stripped = candidate.replace(/\([a-z]\)\s*$/i, "").trim();
+  if (stripped) return stripped;
+  return detailPolicyNumber;
+}
+
+function isCurrentStatementGroup(
+  group: { policyId: number; items: StatementDataForPreview["items"] },
+  detailPolicyId: number,
+) {
+  return group.policyId === detailPolicyId;
 }
 
 function needsConfirmation(meta: DocumentTemplateMeta): boolean {
@@ -340,7 +420,43 @@ function DocumentPreview({
           }
         }
 
-        if (tableCols.length > 0 && items.length > 0) {
+        if (section.id === "line_items" && items.length > 0) {
+          const descField = tableCols.find((f) => f.key === "itemDescriptions");
+          const itemPairs = buildStatementItemPairs(tableCols);
+          const itemGroups = groupStatementItems(items);
+
+          for (const group of itemGroups) {
+            if (group.items.length > 1) {
+              lines.push(`  [${getStatementGroupTitle(group, detail.policyNumber)}]`);
+            }
+
+            for (const item of group.items) {
+              const title = formatValue(
+                getItemFieldValue(item, descField?.key ?? "itemDescriptions"),
+                descField?.format,
+                descField?.currencyCode,
+              );
+              lines.push(`  ${title}`);
+
+              for (const pair of itemPairs) {
+                const agentRaw = pair.agentField ? getItemFieldValue(item, pair.agentField.key) : null;
+                const clientRaw = pair.clientField ? getItemFieldValue(item, pair.clientField.key) : null;
+                if (!hasRenderableItemValue(agentRaw) && !hasRenderableItemValue(clientRaw)) continue;
+
+                const label = pair.groupLabel || "Premium";
+                const agentText = pair.agentField
+                  ? formatValue(agentRaw, pair.agentField.format, pair.agentField.currencyCode)
+                  : "—";
+                const clientText = pair.clientField
+                  ? formatValue(clientRaw, pair.clientField.format, pair.clientField.currencyCode)
+                  : "—";
+                lines.push(`    ${label}: Agent ${agentText} | Client ${clientText}`);
+              }
+
+              lines.push("");
+            }
+          }
+        } else if (tableCols.length > 0 && items.length > 0) {
           const colWidths = tableCols.map((col) => {
             const headerLen = col.label.length;
             const maxVal = Math.max(
@@ -490,9 +606,13 @@ function DocumentPreview({
         {!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData) && filteredSections.map((section) => {
           const isAgentField = (f: { key: string; label: string }) =>
             /agent/i.test(f.label) || /agent/i.test(f.key);
+          const isClientField = (f: { key: string; label: string }) =>
+            /client/i.test(f.label) || /client/i.test(f.key);
           const visibleFields = section.fields.filter((f) => {
             if (!hasAudienceSections) return true;
+            if (section.id === "line_items") return true;
             if (viewAudience === "client" && isAgentField(f)) return false;
+            if (viewAudience === "agent" && isClientField(f)) return false;
             return true;
           });
 
@@ -537,7 +657,114 @@ function DocumentPreview({
                   </div>
                 )}
 
-                {tableCols.length > 0 && items.length > 0 && (
+                {section.id === "line_items" && items.length > 0 && (() => {
+                  const descField = tableCols.find((f) => f.key === "itemDescriptions");
+                  const itemPairs = buildStatementItemPairs(tableCols);
+                  const itemGroups = groupStatementItems(items);
+                  return (
+                    <div className="space-y-2">
+                      {itemGroups.map((group, groupIdx) => (
+                        <div
+                          key={`policy-group-${group.policyId}-${groupIdx}`}
+                          className={cn(
+                            "rounded-lg border p-2 sm:p-3",
+                            isCurrentStatementGroup(group, detail.policyId)
+                              ? "border-amber-300 bg-amber-50/80"
+                              : group.items.length > 1
+                                ? "border-neutral-300 bg-neutral-100/80"
+                                : "border-neutral-200 bg-neutral-50/60",
+                          )}
+                        >
+                          {(group.items.length > 1 || isCurrentStatementGroup(group, detail.policyId)) && (
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                              <div className="text-[11px] sm:text-[13px] font-semibold text-neutral-900">
+                                {getStatementGroupTitle(group, detail.policyNumber)}
+                              </div>
+                              {isCurrentStatementGroup(group, detail.policyId) && (
+                                <div className="rounded border border-amber-300 bg-white px-2 py-0.5 text-[10px] sm:text-[11px] font-medium text-amber-700">
+                                  Current Policy
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="space-y-2">
+                            {group.items.map((item, idx) => {
+                              const title = formatValue(
+                                getItemFieldValue(item, descField?.key ?? "itemDescriptions"),
+                                descField?.format,
+                                descField?.currencyCode,
+                              );
+                              const visiblePairs = itemPairs.filter((pair) => {
+                                const agentRaw = pair.agentField ? getItemFieldValue(item, pair.agentField.key) : null;
+                                const clientRaw = pair.clientField ? getItemFieldValue(item, pair.clientField.key) : null;
+                                if (viewAudience === "client") return hasRenderableItemValue(clientRaw);
+                                return hasRenderableItemValue(agentRaw) || hasRenderableItemValue(clientRaw);
+                              });
+                              if (visiblePairs.length === 0) return null;
+
+                              return (
+                                <div key={`${title}-${idx}`} className="rounded-md border border-neutral-200 bg-white px-2 py-2 sm:p-3">
+                                  <div className="mb-2 text-[11px] sm:text-[13px] font-semibold text-neutral-900">
+                                    {title}
+                                  </div>
+                                  <div className="space-y-1.5">
+                                    {visiblePairs.map((pair) => {
+                                      const agentRaw = pair.agentField ? getItemFieldValue(item, pair.agentField.key) : null;
+                                      const clientRaw = pair.clientField ? getItemFieldValue(item, pair.clientField.key) : null;
+                                      const showAgentColumn = viewAudience !== "client";
+                                      const showClientAsInfo = viewAudience === "agent";
+                                      return (
+                                        <div key={pair.groupLabel} className="rounded border border-neutral-200 bg-neutral-50 px-2 py-2">
+                                          <div className="mb-1 text-[10px] sm:text-[11px] font-medium uppercase tracking-wide text-neutral-500">
+                                            {pair.groupLabel || "Premium"}
+                                          </div>
+                                          <div className={`grid gap-2 ${showAgentColumn ? "grid-cols-2" : "grid-cols-1"}`}>
+                                            <div className={cn(
+                                              "rounded border px-2 py-1.5",
+                                              showClientAsInfo
+                                                ? "border-sky-100 bg-sky-50/60"
+                                                : "border-neutral-100 bg-white",
+                                            )}>
+                                              <div className={cn(
+                                                "text-[10px] sm:text-[11px]",
+                                                showClientAsInfo ? "text-sky-600" : "text-neutral-500",
+                                              )}>Client Premium</div>
+                                              <div className={cn(
+                                                "text-xs sm:text-[13px] font-semibold",
+                                                showClientAsInfo ? "text-sky-700" : "text-neutral-900",
+                                              )}>
+                                                {pair.clientField
+                                                  ? formatValue(clientRaw, pair.clientField.format, pair.clientField.currencyCode)
+                                                  : "—"}
+                                              </div>
+                                            </div>
+                                            {showAgentColumn && (
+                                              <div className="rounded border border-neutral-100 bg-white px-2 py-1.5">
+                                                <div className="text-[10px] sm:text-[11px] text-neutral-500">Agent Settlement</div>
+                                                <div className="text-xs sm:text-[13px] font-semibold text-neutral-900">
+                                                  {pair.agentField
+                                                    ? formatValue(agentRaw, pair.agentField.format, pair.agentField.currencyCode)
+                                                    : "—"}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {section.id !== "line_items" && tableCols.length > 0 && items.length > 0 && (
                   <div className="overflow-x-auto">
                     <table className="w-full text-[11px] sm:text-[13px] border-collapse">
                       <thead>
@@ -1111,7 +1338,7 @@ function SendEmailDialog({
         setSelectedIds(new Set(pdfTemplates.map((t) => t.id)));
       }
     }
-  }, [open, policyNumber, preSelectedId, pdfTemplates]);
+  }, [open, policyNumber, preSelectedId, pdfTemplates, defaultEmail]);
 
   function toggleId(id: number) {
     setSelectedIds((prev) => {
@@ -1331,14 +1558,14 @@ export function DocumentsTab({
         toast.warning(`Status rolled back to: ${data.statusRolledBack.replace(/_/g, " ")}`);
         onStatusAutoAdvanced?.();
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (action !== "prepare") {
-        toast.error(err.message || "Failed to update");
+        toast.error(err instanceof Error ? err.message : "Failed to update");
       }
     } finally {
       setTrackingUpdating(false);
     }
-  }, [detail.policyId, onStatusAutoAdvanced]);
+  }, [detail.policyId, onStatusAutoAdvanced, pdfTemplates, templates]);
 
   const handleConfirmWithProof = React.useCallback(async (
     docType: string,
@@ -1386,8 +1613,8 @@ export function DocumentsTab({
         toast.info(`Status auto-advanced to: ${data.statusAdvanced.replace(/_/g, " ")}`);
         onStatusAutoAdvanced?.();
       }
-    } catch (err: any) {
-      toast.error(err.message || "Failed to confirm");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to confirm");
     } finally {
       setTrackingUpdating(false);
     }
@@ -1477,12 +1704,12 @@ export function DocumentsTab({
           await handleTrackingAction(trackKey, "send", htmlEmailTo.trim(), selected.meta?.documentPrefix || undefined, isAgent ? "(A)" : undefined, selected.meta?.documentSetGroup || undefined, selected.meta?.type);
         }
       }
-    } catch (err: any) {
-      toast.error(err.message || "Failed to send email");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to send email");
     } finally {
       setHtmlEmailSending(false);
     }
-  }, [htmlEmailTo, htmlEmailSubject, htmlEmailHtml, htmlEmailPlain, detail.policyId, selected, tracking, handleTrackingAction]);
+  }, [htmlEmailTo, htmlEmailSubject, htmlEmailHtml, htmlEmailPlain, detail.policyId, selected, selectedAudience, tracking, handleTrackingAction]);
 
   const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
   const [policyLineKeys, setPolicyLineKeys] = React.useState<Set<string>>(new Set());
@@ -1596,10 +1823,8 @@ export function DocumentsTab({
     if (loading || templates.length === 0) return;
 
     const hasAgent = !!detail.agent;
-    const hasAudienceTpls = templates.some((t) =>
-      t.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent"),
-    );
-    const showBoth = hasAgent && hasAudienceTpls;
+    const templateHasAudienceSections = (tpl: DocumentTemplateRow) =>
+      !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
 
     const toProcess: { key: string; prefix: string; suffix?: string; group?: string; tplType?: string }[] = [];
 
@@ -1608,12 +1833,13 @@ export function DocumentsTab({
       if (!prefix) continue;
       const group = tpl.meta?.documentSetGroup;
       const tplType = tpl.meta?.type;
+      const canRenderAgentCopy = hasAgent && (templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate);
 
       const baseKey = toTrackingKey(tpl.label);
       if (!tracking[baseKey]?.documentNumber && !autoPrepared.has(baseKey)) {
         toProcess.push({ key: baseKey, prefix, group, tplType });
       }
-      if (showBoth) {
+      if (canRenderAgentCopy) {
         const agentKey = baseKey + "_agent";
         if (!tracking[agentKey]?.documentNumber && !autoPrepared.has(agentKey)) {
           toProcess.push({ key: agentKey, prefix, suffix: "(A)", group, tplType });
@@ -1851,12 +2077,26 @@ export function DocumentsTab({
   }
 
   const policyHasAgent = !!detail.agent;
-  const anyTemplateHasAudience = templates.some((tpl) =>
-    tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent"),
+  const templateHasAudienceSections = (tpl: DocumentTemplateRow) =>
+    !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
+  const isStatementTemplate = (tpl: DocumentTemplateRow) => tpl.meta?.type === "statement";
+  // Statements are separate business documents for client billing vs agent
+  // settlement, so only explicit agent statement templates belong in the
+  // agent group. Other documents can still share a template via audience
+  // sections when needed.
+  const clientTemplates = templates.filter((tpl) =>
+    isStatementTemplate(tpl)
+      ? !tpl.meta?.isAgentTemplate
+      : (!tpl.meta?.isAgentTemplate || templateHasAudienceSections(tpl)),
   );
-  const showGrouped = policyHasAgent && anyTemplateHasAudience;
+  const agentTemplates = templates.filter((tpl) =>
+    isStatementTemplate(tpl)
+      ? !!tpl.meta?.isAgentTemplate
+      : (templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate),
+  );
+  const showGrouped = policyHasAgent && agentTemplates.length > 0;
 
-  function renderTemplateButton(tpl: DocumentTemplateRow, aud: "client" | "agent", showBadge: boolean) {
+  function renderTemplateButton(tpl: DocumentTemplateRow, aud: "client" | "agent") {
     const isAgent = aud === "agent";
     const tKey = isAgent ? toTrackingKey(tpl.label) + "_agent" : toTrackingKey(tpl.label);
     const tEntry = tracking[tKey];
@@ -1913,7 +2153,7 @@ export function DocumentsTab({
               <span className="text-xs font-semibold text-blue-700 dark:text-blue-300 uppercase tracking-wide">Client Documents</span>
             </div>
             <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
-              {templates.map((tpl) => renderTemplateButton(tpl, "client", false))}
+              {clientTemplates.map((tpl) => renderTemplateButton(tpl, "client"))}
             </div>
           </div>
 
@@ -1927,14 +2167,14 @@ export function DocumentsTab({
               )}
             </div>
             <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
-              {templates.map((tpl) => renderTemplateButton(tpl, "agent", false))}
+              {agentTemplates.map((tpl) => renderTemplateButton(tpl, "agent"))}
             </div>
           </div>
         </>
       ) : templates.length > 0 ? (
         <>
           <div className="text-sm font-medium">Document Templates</div>
-          {templates.map((tpl) => renderTemplateButton(tpl, "client", false))}
+          {clientTemplates.map((tpl) => renderTemplateButton(tpl, "client"))}
         </>
       ) : null}
 

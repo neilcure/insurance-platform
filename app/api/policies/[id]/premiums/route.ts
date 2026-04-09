@@ -738,9 +738,27 @@ export async function GET(request: Request, ctx: Ctx) {
             }
 
             if (lines.length > 0) {
+              const isPdField = (field: FieldDef) => {
+                const key = field.key.toLowerCase();
+                const label = field.label.toLowerCase();
+                return label.includes("(pd)") || label.includes("(od)")
+                  || key.endsWith("pd") || key.endsWith("od")
+                  || key.includes("owndamage") || key.includes("ownvehicle");
+              };
+              const isOwnDamageLine = (line: LineData) => {
+                const sig = `${line.lineKey} ${line.lineLabel}`.toLowerCase().replace(/[^a-z]/g, "");
+                return sig.includes("owndamage") || sig.includes("ownvehicle") || sig.endsWith("od");
+              };
+              const hasSplitLines = lines.length >= 2 && lines.some((line) => isOwnDamageLine(line));
+
               for (const line of lines) {
+                const lineIsOwnDamage = hasSplitLines && isOwnDamageLine(line);
                 for (const f of fields) {
                   if (line.values[f.key] === null || line.values[f.key] === undefined || line.values[f.key] === "") {
+                    if (hasSplitLines) {
+                      const fieldIsPd = isPdField(f);
+                      if ((fieldIsPd && !lineIsOwnDamage) || (!fieldIsPd && lineIsOwnDamage)) continue;
+                    }
                     const snapVal = snapMap.get(f.key);
                     if (snapVal !== undefined && snapVal !== null && snapVal !== "") {
                       line.values[f.key] = snapVal;

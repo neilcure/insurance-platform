@@ -10,6 +10,11 @@ import { policyPremiums } from "@/db/schema/premiums";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { generateDocumentNumber } from "@/lib/document-number";
 import { resolveDocPrefix } from "@/lib/resolve-prefix";
+import {
+  addInvoiceToStatement,
+  findOrCreateDraftStatement,
+  getStatementForSchedule,
+} from "@/lib/statement-management";
 import { and, desc, eq, notInArray, sql, type SQLWrapper } from "drizzle-orm";
 
 type PaymentScheduleRow = typeof accountingPaymentSchedules.$inferSelect;
@@ -154,7 +159,7 @@ function buildPolicyDateExpr() {
   )::date`;
 }
 
-async function nextStatementNumber(_organisationId: number) {
+async function nextStatementNumber() {
   const prefix = await resolveDocPrefix("statement", "ST");
   return generateDocumentNumber(prefix);
 }
@@ -186,6 +191,69 @@ export async function generateStatementInvoice({
   }
   if (schedule.entityType === "collaborator" && !target.collaboratorPolicyId) {
     throw new Error("Collaborator schedule must target a collaborator policy");
+  }
+
+  if (schedule.entityType === "agent") {
+    const linkedInvoices = await db
+      .select({
+        id: accountingInvoices.id,
+      })
+      .from(accountingInvoices)
+      .innerJoin(policies, eq(policies.id, accountingInvoices.entityPolicyId))
+      .where(
+        and(
+          eq(accountingInvoices.scheduleId, schedule.id),
+          eq(accountingInvoices.invoiceType, "individual"),
+          eq(accountingInvoices.direction, "payable"),
+          eq(accountingInvoices.entityType, "agent"),
+          target.agentId ? eq(policies.agentId, target.agentId) : undefined,
+          sql`${accountingInvoices.status} <> 'paid'`,
+          sql`${accountingInvoices.status} <> 'cancelled'`,
+        ),
+      )
+      .orderBy(desc(accountingInvoices.createdAt));
+
+    if (linkedInvoices.length === 0) {
+      return {
+        statement: null,
+        itemCount: 0,
+        skipped: true,
+        reason: "No outstanding agent settlements found for this schedule",
+      };
+    }
+
+    const stmt = await findOrCreateDraftStatement(schedule.id, userId ?? schedule.createdBy ?? null);
+    for (const inv of linkedInvoices) {
+      await addInvoiceToStatement(stmt.statementId, inv.id);
+    }
+
+    if (markScheduleGenerated) {
+      await db
+        .update(accountingPaymentSchedules)
+        .set({
+          agentId: target.agentId,
+          clientId: target.clientId,
+          entityName: target.entityName ?? schedule.entityName,
+          lastGeneratedAt: new Date().toISOString(),
+          lastPeriodStart: periodStart || null,
+          lastPeriodEnd: periodEnd || null,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(accountingPaymentSchedules.id, schedule.id));
+    }
+
+    const detail = await getStatementForSchedule(schedule.id);
+    const [statement] = await db
+      .select()
+      .from(accountingInvoices)
+      .where(eq(accountingInvoices.id, stmt.statementId))
+      .limit(1);
+
+    return {
+      statement: statement ?? null,
+      itemCount: detail?.items.length ?? linkedInvoices.length,
+      skipped: false,
+    };
   }
 
   const premiumTypeMap: Record<string, string> = {
@@ -301,7 +369,7 @@ export async function generateStatementInvoice({
   }
 
   const totalAmountCents = rows.reduce((sum, row) => sum + (row.amountCents ?? 0), 0);
-  const invoiceNumber = await nextStatementNumber(schedule.organisationId);
+  const invoiceNumber = await nextStatementNumber();
 
   const result = await db.transaction(async (tx) => {
     const [statement] = await tx

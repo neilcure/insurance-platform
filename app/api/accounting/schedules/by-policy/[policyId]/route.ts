@@ -66,6 +66,11 @@ export async function GET(
         ),
       );
 
+    rows.sort((a, b) => {
+      const rank = (type: string) => (type === "client" ? 0 : type === "agent" ? 1 : 2);
+      return rank(a.entityType) - rank(b.entityType);
+    });
+
     return NextResponse.json({ schedules: rows });
   } catch (err) {
     console.error("GET schedule by-policy error:", err);

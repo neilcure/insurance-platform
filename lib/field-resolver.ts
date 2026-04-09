@@ -67,6 +67,7 @@ export type StatementCtx = {
     premiums?: Record<string, number>;
   }[];
   premiumTotals?: Record<string, number>;
+  summaryTotals?: Record<string, number>;
 };
 
 /** Unified reference to a field in any data source. */
@@ -376,11 +377,16 @@ function resolveAccounting(
   lineKey: string | undefined,
   fieldKey: string,
   premiumTotals?: Record<string, number>,
+  summaryTotals?: Record<string, number>,
   policyNumber?: string,
   isTpoWithOd?: boolean,
 ): unknown {
   if (premiumTotals && fieldKey in premiumTotals) {
     return premiumTotals[fieldKey] ?? "";
+  }
+  if (summaryTotals && fieldKey in summaryTotals) {
+    const v = summaryTotals[fieldKey];
+    return typeof v === "number" ? v / 100 : "";
   }
 
   if (!lines?.length) return "";
@@ -475,6 +481,13 @@ function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: strin
     case "totalAmountCents": return stmt.totalAmountCents / 100;
     case "paidAmountCents": return stmt.paidAmountCents / 100;
     case "currency": return stmt.currency;
+    case "policyPremiumTotal":
+    case "endorsementPremiumTotal":
+    case "creditTotal":
+    case "commissionTotal": {
+      const v = stmt.summaryTotals?.[fieldKey];
+      return typeof v === "number" ? v / 100 : "";
+    }
     case "itemCount": return stmt.items.length;
     case "activeItemCount": return activeItems.length;
     case "paidIndividuallyItemCount": return paidItems.length;
@@ -535,6 +548,7 @@ export function resolveRawValue(ref: FieldRef, ctx: ResolveContext): unknown {
         ref.lineKey,
         ref.fieldKey,
         ctx.statementData?.premiumTotals,
+        ctx.statementData?.summaryTotals,
         ctx.policyNumber,
         ctx.isTpoWithOd,
       );
