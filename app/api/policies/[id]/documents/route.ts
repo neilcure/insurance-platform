@@ -11,6 +11,7 @@ import { validateFile, saveFile } from "@/lib/storage";
 import { appendPolicyAudit } from "@/lib/audit";
 import { syncInvoicePaymentStatus, crossSettlePolicyInvoices } from "@/lib/accounting-invoices";
 import { createAgentCommissionPayable } from "@/lib/agent-commission";
+import { markAgentPolicyItemsPaidIndividually } from "@/lib/statement-management";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -303,6 +304,14 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
                 await createAgentCommissionPayable(policyId, Number(user.id));
               } catch (commErr) {
                 console.error("Agent commission creation failed (non-fatal):", commErr);
+              }
+
+              if (isAdmin) {
+                try {
+                  await markAgentPolicyItemsPaidIndividually(policyId);
+                } catch (stmtErr) {
+                  console.error("Mark paid individually failed (non-fatal):", stmtErr);
+                }
               }
             }
 

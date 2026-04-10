@@ -7,6 +7,7 @@ import { requireUser } from "@/lib/auth/require-user";
 import { sendPaymentStatusEmail } from "@/lib/accounting-notifications";
 import { getBaseUrlFromRequestUrl } from "@/lib/email";
 import { syncInvoicePaymentStatus, crossSettlePolicyInvoices } from "@/lib/accounting-invoices";
+import { markAgentPolicyItemsPaidIndividually } from "@/lib/statement-management";
 
 export const dynamic = "force-dynamic";
 
@@ -78,6 +79,11 @@ export async function POST(
         .limit(1);
 
       if (inv?.entityPolicyId) {
+        if (!payment.payer || payment.payer === "client") {
+          try {
+            await markAgentPolicyItemsPaidIndividually(inv.entityPolicyId);
+          } catch {}
+        }
         try {
           await crossSettlePolicyInvoices(inv.entityPolicyId, payment.payer || null);
         } catch {}

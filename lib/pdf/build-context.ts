@@ -281,7 +281,7 @@ export async function buildMergeContext(policyId: number): Promise<{
             and(
               eq(accountingInvoices.scheduleId, sched.id),
               eq(accountingInvoices.invoiceType, "statement"),
-              inArray(accountingInvoices.status, ["draft", "pending", "partial", "settled"]),
+              inArray(accountingInvoices.status, ["draft", "pending", "partial", "settled", "active", "statement_created"]),
             ),
           )
           .limit(1);

@@ -35,6 +35,20 @@ function toTrackingKey(label: string): string {
   return label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 }
 
+const FALLBACK_POLICY_STATUS_ORDER = [
+  "quotation_prepared",
+  "quotation_sent",
+  "quotation_confirmed",
+  "invoice_prepared",
+  "invoice_sent",
+  "pending_payment",
+  "payment_received",
+  "confirmed",
+  "bound",
+  "active",
+  "completed",
+] as const;
+
 type ExtraDocContext = {
   statementData?: StatementDataForPreview | null;
   hasSchedule?: boolean;
@@ -422,6 +436,7 @@ function DocumentPreview({
 
         if (section.id === "line_items" && items.length > 0) {
           const descField = tableCols.find((f) => f.key === "itemDescriptions");
+          const amountField = tableCols.find((f) => f.key === "itemAmounts");
           const itemPairs = buildStatementItemPairs(tableCols);
           const itemGroups = groupStatementItems(items);
 
@@ -437,6 +452,19 @@ function DocumentPreview({
                 descField?.currencyCode,
               );
               lines.push(`  ${title}`);
+
+              if (itemPairs.length === 0) {
+                const amountText = amountField
+                  ? formatValue(
+                      getItemFieldValue(item, amountField.key),
+                      amountField.format,
+                      amountField.currencyCode,
+                    )
+                  : "";
+                if (amountText) lines.push(`    Amount: ${amountText}`);
+                lines.push("");
+                continue;
+              }
 
               for (const pair of itemPairs) {
                 const agentRaw = pair.agentField ? getItemFieldValue(item, pair.agentField.key) : null;
@@ -659,6 +687,7 @@ function DocumentPreview({
 
                 {section.id === "line_items" && items.length > 0 && (() => {
                   const descField = tableCols.find((f) => f.key === "itemDescriptions");
+                  const amountField = tableCols.find((f) => f.key === "itemAmounts");
                   const itemPairs = buildStatementItemPairs(tableCols);
                   const itemGroups = groupStatementItems(items);
                   return (
@@ -701,7 +730,28 @@ function DocumentPreview({
                                 if (viewAudience === "client") return hasRenderableItemValue(clientRaw);
                                 return hasRenderableItemValue(agentRaw) || hasRenderableItemValue(clientRaw);
                               });
-                              if (visiblePairs.length === 0) return null;
+                              if (visiblePairs.length === 0) {
+                                const amountText = amountField
+                                  ? formatValue(
+                                      getItemFieldValue(item, amountField.key),
+                                      amountField.format,
+                                      amountField.currencyCode,
+                                    )
+                                  : "";
+                                return (
+                                  <div key={`${title}-${idx}`} className="rounded-md border border-neutral-200 bg-white px-2 py-2 sm:p-3">
+                                    <div className="mb-1 text-[11px] sm:text-[13px] font-semibold text-neutral-900">
+                                      {title || "Premium"}
+                                    </div>
+                                    {amountText && (
+                                      <div className="flex items-center justify-between text-[11px] sm:text-[13px]">
+                                        <span className="text-neutral-500">Amount</span>
+                                        <span className="font-semibold text-neutral-900">{amountText}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              }
 
                               return (
                                 <div key={`${title}-${idx}`} className="rounded-md border border-neutral-200 bg-white px-2 py-2 sm:p-3">
@@ -1477,7 +1527,7 @@ export function DocumentsTab({
   currentStatus?: string;
   onStatusAutoAdvanced?: () => void;
 }) {
-  const { sortedValues: statusOrder } = usePolicyStatuses();
+  const { sortedValues: statusOrder, loading: statusesLoading } = usePolicyStatuses();
   const [templates, setTemplates] = React.useState<DocumentTemplateRow[]>([]);
   const [pdfTemplates, setPdfTemplates] = React.useState<PdfTemplateRow[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -1712,7 +1762,7 @@ export function DocumentsTab({
   }, [htmlEmailTo, htmlEmailSubject, htmlEmailHtml, htmlEmailPlain, detail.policyId, selected, selectedAudience, tracking, handleTrackingAction]);
 
   const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
-  const [policyLineKeys, setPolicyLineKeys] = React.useState<Set<string>>(new Set());
+  const [policyLineKeys, setPolicyLineKeys] = React.useState<Set<string> | null>(null);
 
   React.useEffect(() => {
     fetch(`/api/policies/${detail.policyId}/linked-insurers`, { cache: "no-store" })
@@ -1728,15 +1778,19 @@ export function DocumentsTab({
         const keys = new Set((data.lines ?? []).map((l) => l.lineKey ?? "").filter(Boolean));
         setPolicyLineKeys(keys);
       })
-      .catch(() => {});
+      .catch(() => setPolicyLineKeys(new Set()));
   }, [detail.policyId]);
 
   React.useEffect(() => {
-    if (policyInsurerIds === null) return;
+    if (policyInsurerIds === null || policyLineKeys === null || statusesLoading) return;
     let cancelled = false;
     setLoading(true);
 
     const status = currentStatus || "quotation_prepared";
+    const effectiveStatusOrder = Array.from(new Set([
+      ...statusOrder,
+      ...FALLBACK_POLICY_STATUS_ORDER,
+    ]));
 
     const matchingIds = [...new Set([detail.policyId, ...policyInsurerIds])];
 
@@ -1747,9 +1801,9 @@ export function DocumentsTab({
 
     const matchesStatus = (sws: string[] | undefined) => {
       if (!sws || sws.length === 0) return true;
-      const currentIdx = statusOrder.indexOf(status);
+      const currentIdx = effectiveStatusOrder.indexOf(status);
       const earliestIdx = Math.min(
-        ...sws.map((s) => statusOrder.indexOf(s)).filter((i) => i >= 0),
+        ...sws.map((s) => effectiveStatusOrder.indexOf(s)).filter((i) => i >= 0),
       );
       if (currentIdx < 0 || earliestIdx === Infinity) {
         return sws.includes(status);
@@ -1815,7 +1869,7 @@ export function DocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [flowKey, currentStatus, policyInsurerIds, policyLineKeys, detail.policyId, statusOrder]);
+  }, [flowKey, currentStatus, policyInsurerIds, policyLineKeys, detail.policyId, statusOrder, statusesLoading]);
 
   // Auto-prepare: assign document numbers when templates become visible
   const [autoPrepared, setAutoPrepared] = React.useState<Set<string>>(new Set());

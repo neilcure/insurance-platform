@@ -8,6 +8,7 @@ import { deleteFile } from "@/lib/storage";
 import { appendPolicyAudit } from "@/lib/audit";
 import { syncInvoicePaymentStatus, crossSettlePolicyInvoices } from "@/lib/accounting-invoices";
 import { createAgentCommissionPayable } from "@/lib/agent-commission";
+import { markAgentPolicyItemsPaidIndividually } from "@/lib/statement-management";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -154,6 +155,9 @@ export async function PATCH(
                 if (!meta.payer || meta.payer === "client") {
                   try {
                     await createAgentCommissionPayable(existing.policyId, Number(user.id));
+                  } catch {}
+                  try {
+                    await markAgentPolicyItemsPaidIndividually(existing.policyId);
                   } catch {}
                 }
 

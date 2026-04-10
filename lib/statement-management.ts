@@ -246,8 +246,7 @@ export async function addInvoiceToStatement(
   const stmtRole = premiumRoleMap[stmt?.premiumType ?? ""] ?? null;
   const accountingFields = stmtRole ? await loadAccountingFields() : null;
 
-  async function resolveAmount(it: { policyPremiumId: number | null; amountCents: number }): Promise<number> {
-    if (stmt?.direction === "payable" || inv.direction === "payable") return it.amountCents;
+  async function resolveAmount(it: { policyPremiumId: number | null; amountCents: number; description?: string | null }): Promise<number> {
     if (!stmtRole || !accountingFields || !it.policyPremiumId) return it.amountCents;
     const [premium] = await db
       .select()
@@ -312,6 +311,53 @@ export async function markItemPaidIndividually(
   await recalcStatementTotal(statementId);
 }
 
+export async function markAgentPolicyItemsPaidIndividually(
+  policyId: number,
+): Promise<void> {
+  await ensureItemStatusColumn();
+
+  const touched = await db
+    .select({
+      invoiceId: accountingInvoiceItems.invoiceId,
+      invoiceType: accountingInvoices.invoiceType,
+    })
+    .from(accountingInvoiceItems)
+    .innerJoin(accountingInvoices, eq(accountingInvoices.id, accountingInvoiceItems.invoiceId))
+    .where(
+      and(
+        eq(accountingInvoiceItems.policyId, policyId),
+        eq(accountingInvoices.direction, "payable"),
+        eq(accountingInvoices.entityType, "agent"),
+        sql`${accountingInvoices.status} <> 'cancelled'`,
+        sql`coalesce("accounting_invoice_items"."status", 'active') = 'active'`,
+      ),
+    );
+
+  if (touched.length === 0) return;
+
+  await db.execute(sql`
+    UPDATE "accounting_invoice_items" ii
+    SET "status" = 'paid_individually'
+    FROM "accounting_invoices" ai
+    WHERE ii."invoice_id" = ai."id"
+      AND ii."policy_id" = ${policyId}
+      AND ai."direction" = 'payable'
+      AND ai."entity_type" = 'agent'
+      AND ai."status" <> 'cancelled'
+      AND coalesce(ii."status", 'active') = 'active'
+  `);
+
+  const statementIds = [...new Set(
+    touched
+      .filter((row) => row.invoiceType === "statement")
+      .map((row) => row.invoiceId),
+  )];
+
+  for (const statementId of statementIds) {
+    await recalcStatementTotal(statementId);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Reactivate a previously paid-individually item back to active
 // ---------------------------------------------------------------------------
@@ -372,39 +418,52 @@ export async function removeItemFromStatement(
 // Recalculate statement total from active items only
 // ---------------------------------------------------------------------------
 export async function recalcStatementTotal(statementId: number): Promise<number> {
-  const result = await db.execute(sql`
-    SELECT coalesce(sum("amount_cents"), 0)::int AS total
-    FROM "accounting_invoice_items"
-    WHERE "invoice_id" = ${statementId}
-      AND coalesce("status", 'active') = 'active'
-  `);
-
-  const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
-  const total = ((rows[0] as { total: number } | undefined)?.total) ?? 0;
-
-  await db
-    .update(accountingInvoices)
-    .set({
-      totalAmountCents: total,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(accountingInvoices.id, statementId));
+  const [stmt] = await db
+    .select({ status: accountingInvoices.status })
+    .from(accountingInvoices)
+    .where(eq(accountingInvoices.id, statementId))
+    .limit(1);
 
   const allItems = await db.execute(sql`
-    SELECT coalesce("status", 'active') AS status
+    SELECT coalesce("status", 'active') AS status, "amount_cents"
     FROM "accounting_invoice_items"
     WHERE "invoice_id" = ${statementId}
   `);
   const allRows = Array.isArray(allItems) ? allItems : (allItems as { rows?: unknown[] }).rows ?? [];
-  const statuses = (allRows as { status: string }[]).map((r) => r.status);
-  if (statuses.length > 0 && statuses.every((s) => s === "paid_individually")) {
-    await db
-      .update(accountingInvoices)
-      .set({ status: "settled", updatedAt: new Date().toISOString() })
-      .where(eq(accountingInvoices.id, statementId));
-  }
+  const items = allRows as { status: string; amount_cents: number }[];
 
-  return total;
+  const activeTotal = items
+    .filter((row) => row.status === "active")
+    .reduce((sum, row) => sum + (row.amount_cents ?? 0), 0);
+  const paidIndividuallyTotal = items
+    .filter((row) => row.status === "paid_individually")
+    .reduce((sum, row) => sum + (row.amount_cents ?? 0), 0);
+  const statuses = items.map((row) => row.status);
+
+  const nextStatus = (() => {
+    if (statuses.length > 0 && statuses.every((status) => status === "paid_individually")) {
+      return "settled";
+    }
+    if (paidIndividuallyTotal > 0 && activeTotal > 0) {
+      return "partial";
+    }
+    if ((stmt?.status === "settled" || stmt?.status === "partial") && activeTotal > 0) {
+      return "pending";
+    }
+    return stmt?.status;
+  })();
+
+  await db
+    .update(accountingInvoices)
+    .set({
+      totalAmountCents: activeTotal,
+      paidAmountCents: paidIndividuallyTotal,
+      status: nextStatus,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(accountingInvoices.id, statementId));
+
+  return activeTotal;
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +515,7 @@ export async function getStatementForSchedule(
       and(
         eq(accountingInvoices.scheduleId, scheduleId),
         eq(accountingInvoices.invoiceType, "statement"),
-        inArray(accountingInvoices.status, ["draft", "pending", "partial", "settled"]),
+        inArray(accountingInvoices.status, ["draft", "pending", "partial", "settled", "active", "statement_created"]),
       ),
     )
     .limit(1);

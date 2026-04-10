@@ -3,6 +3,7 @@ import { db } from "@/db/client";
 import {
   accountingInvoices,
   accountingInvoiceItems,
+  accountingPayments,
   accountingPaymentSchedules,
 } from "@/db/schema/accounting";
 import { policyPremiums } from "@/db/schema/premiums";
@@ -15,6 +16,7 @@ import { loadAccountingFields } from "@/lib/accounting-fields";
 import { resolvePremiumByRole } from "@/lib/resolve-policy-agent";
 import { generateDocumentNumber } from "@/lib/document-number";
 import { resolveDocPrefix } from "@/lib/resolve-prefix";
+import { markAgentPolicyItemsPaidIndividually } from "@/lib/statement-management";
 
 export const dynamic = "force-dynamic";
 
@@ -68,6 +70,32 @@ async function findRelatedPolicyIds(mainPolicyId: number): Promise<number[]> {
   }
 
   return ids;
+}
+
+async function syncPaidIndividuallyFromVerifiedClientPayments(policyIds: number[], audience: string | null) {
+  if (audience !== "agent") return;
+  const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (uniquePolicyIds.length === 0) return;
+
+  const rows = await db.execute(sql`
+    select distinct ai.entity_policy_id as policy_id
+    from accounting_invoices ai
+    inner join accounting_payments ap on ap.invoice_id = ai.id
+    where ai.invoice_type = 'individual'
+      and ai.direction = 'receivable'
+      and ai.status = 'paid'
+      and ai.entity_policy_id in (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
+      and ap.status in ('verified', 'confirmed', 'recorded')
+      and coalesce(ap.payer, 'client') = 'client'
+  `);
+  const list = Array.isArray(rows) ? rows : (rows as { rows?: unknown[] }).rows ?? [];
+  const paidPolicyIds = (list as { policy_id: number | null }[])
+    .map((r) => Number(r.policy_id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  for (const paidPolicyId of paidPolicyIds) {
+    await markAgentPolicyItemsPaidIndividually(paidPolicyId);
+  }
 }
 
 const PREMIUM_ROLE_MAP: Record<string, "client" | "agent" | "net"> = {
@@ -290,7 +318,6 @@ function resolveDisplayedItemAmountCents(
   premiumRoleTotals: Map<number, { clientCents: number; agentCents: number }>,
   direction?: string | null,
 ) {
-  if (direction === "payable") return item.amountCents;
   if (!item.policyPremiumId) return item.amountCents;
   const totals = premiumRoleTotals.get(item.policyPremiumId);
   if (entityType === "agent") return totals?.agentCents ?? item.amountCents;
@@ -331,12 +358,58 @@ async function loadPolicyStatementMeta(policyIds: number[]) {
 
 function isCreditStatementItem(item: ItemResult) {
   const desc = String(item.description ?? "").trim().toLowerCase();
-  return desc.startsWith("credit:");
+  return desc.includes("credit:");
 }
 
 function isCommissionStatementItem(item: ItemResult) {
   const desc = String(item.description ?? "").trim().toLowerCase();
-  return desc.startsWith("commission:");
+  return desc.includes("commission:");
+}
+
+function applyStatementItemPremiumAliases(
+  target: Record<string, number>,
+  field: { key: string; label: string; premiumRole?: string },
+  value: number,
+) {
+  const setAlias = (alias: string, nextValue: number) => {
+    const existing = target[alias];
+    if (
+      existing === undefined
+      || existing === null
+      || (Number(existing) === 0 && Number(nextValue) !== 0)
+    ) {
+      target[alias] = nextValue;
+    }
+  };
+
+  const roleAliasMap: Record<string, string> = {
+    client: "clientPremium",
+    agent: "agentPremium",
+    net: "netPremium",
+    commission: "agentCommission",
+  };
+  const labelAliasMap: Record<string, string> = {
+    client_premium: "clientPremium",
+    agent_premium: "agentPremium",
+    net_premium: "netPremium",
+    gross: "grossPremium",
+    credit: "creditPremium",
+    levy: "levy",
+    stamp: "stampDuty",
+    discount: "discount",
+    currency: "currency",
+    commission_rate: "commissionRate",
+  };
+
+  if (field.premiumRole && roleAliasMap[field.premiumRole]) {
+    setAlias(roleAliasMap[field.premiumRole], value);
+  }
+  const lbl = String(field.label ?? "").toLowerCase().replace(/\s+/g, "_");
+  for (const [pattern, alias] of Object.entries(labelAliasMap)) {
+    if (lbl.includes(pattern)) {
+      setAlias(alias, value);
+    }
+  }
 }
 
 function buildStatementSummaryTotals(
@@ -361,12 +434,13 @@ function buildStatementSummaryTotals(
     if (item.status !== "active") continue;
 
     const amountCents = resolveDisplayedItemAmountCents(item, entityType, premiumRoleTotals, direction);
+    const rawAmountCents = item.amountCents ?? 0;
     if (Number.isFinite(amountCents) && amountCents !== 0) {
       if (isCreditStatementItem(item)) {
-        creditTotal += amountCents;
+        creditTotal += rawAmountCents;
         hasCredit = true;
       } else if (isCommissionStatementItem(item)) {
-        commissionLineTotal += amountCents;
+        commissionLineTotal += rawAmountCents;
         hasCommission = true;
       } else if (policyMetaById.get(item.policyId)?.isEndorsement) {
         endorsementPremiumTotal += amountCents;
@@ -418,6 +492,35 @@ async function loadCommissionTotalCents(
       ${scheduleFilter}
   `);
 
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
+  const total = Number((rows[0] as { total?: unknown } | undefined)?.total ?? 0);
+  return Number.isFinite(total) ? total : 0;
+}
+
+async function loadPaidIndividuallyTotalFromPayments(
+  policyIds: number[],
+  entityType: string,
+) {
+  if (entityType !== "agent") return 0;
+  const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (uniquePolicyIds.length === 0) return 0;
+
+  const result = await db.execute(sql`
+    select coalesce(sum(ap.amount_cents), 0) as total
+    from accounting_payments ap
+    inner join accounting_invoices ai on ai.id = ap.invoice_id
+    where ai.direction = 'receivable'
+      and ai.invoice_type = 'individual'
+      and ai.status <> 'cancelled'
+      and ap.status in ('verified', 'confirmed', 'recorded')
+      and coalesce(ap.payer, 'client') = 'client'
+      and exists (
+        select 1
+        from accounting_invoice_items ii
+        where ii.invoice_id = ai.id
+          and ii.policy_id in (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
+      )
+  `);
   const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
   const total = Number((rows[0] as { total?: unknown } | undefined)?.total ?? 0);
   return Number.isFinite(total) ? total : 0;
@@ -559,6 +662,7 @@ async function buildPreviewFromScheduledInvoices(
         if (val != null && Number.isFinite(val)) {
           premiumTotals[f.key] = (premiumTotals[f.key] ?? 0) + val;
           rowValues[f.key] = val;
+          applyStatementItemPremiumAliases(rowValues, f, val);
         }
       }
       itemPremiumMap.set(row.id, rowValues);
@@ -574,9 +678,11 @@ async function buildPreviewFromScheduledInvoices(
   const activeTotal = synthItems
     .filter((it) => it.status === "active")
     .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, first.entityType, premiumRoleTotals, first.direction), 0);
-  const paidIndividuallyTotal = synthItems
+  const paidByItemStatus = synthItems
     .filter((it) => it.status === "paid_individually")
     .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, first.entityType, premiumRoleTotals, first.direction), 0);
+  const paidByVerifiedPayments = await loadPaidIndividuallyTotalFromPayments(itemPolicyIds, first.entityType);
+  const paidIndividuallyTotal = Math.max(paidByItemStatus, paidByVerifiedPayments);
   const totalCents = activeTotal + paidIndividuallyTotal;
   const paidCents = paidIndividuallyTotal;
   const summaryTotals = buildStatementSummaryTotals(
@@ -614,6 +720,11 @@ export async function GET(
     await ensureStatusCol();
 
     const allPolicyIds = await findRelatedPolicyIds(pid);
+    try {
+      await syncPaidIndividuallyFromVerifiedClientPayments(allPolicyIds, audience);
+    } catch (err) {
+      console.error("sync paid-individually fallback failed:", err);
+    }
 
     const policyItemRows = await db
       .selectDistinct({ invoiceId: accountingInvoiceItems.invoiceId })
@@ -1111,6 +1222,7 @@ export async function GET(
             if (val != null && Number.isFinite(val)) {
               premiumTotals[f.key] = (premiumTotals[f.key] ?? 0) + val;
               rowValues[f.key] = val;
+              applyStatementItemPremiumAliases(rowValues, f, val);
             }
           }
           itemPremiumMap.set(row.id, rowValues);
@@ -1131,9 +1243,14 @@ export async function GET(
     const activeTotal = items
       .filter((it) => it.status === "active")
       .reduce((sum, it) => sum + resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction), 0);
-    const paidIndividuallyTotal = items
+    const paidByItemStatus = items
       .filter((it) => it.status === "paid_individually")
       .reduce((sum, it) => sum + resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction), 0);
+    const paidByVerifiedPayments = await loadPaidIndividuallyTotalFromPayments(
+      items.map((it) => it.policyId),
+      stmt.entityType,
+    );
+    const paidIndividuallyTotal = Math.max(paidByItemStatus, paidByVerifiedPayments);
     const summaryTotals = buildStatementSummaryTotals(
       items,
       stmt.entityType,
