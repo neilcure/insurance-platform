@@ -50,6 +50,8 @@ export type RecordDetailsDrawerProps = {
   passthrough?: boolean;
   /** Which side the drawer opens from */
   side?: "left" | "right";
+  /** Initial tab id when function tabs are enabled (defaults to "overview") */
+  initialTabId?: string;
   children: React.ReactNode;
 };
 
@@ -111,10 +113,16 @@ export function RecordDetailsDrawer({
   zClass,
   passthrough,
   side,
+  initialTabId,
   children,
 }: RecordDetailsDrawerProps) {
   const [auditOpen, setAuditOpen] = React.useState(false);
   const [auditDrawerOpen, setAuditDrawerOpen] = React.useState(false);
+  const [nowMs, setNowMs] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    setNowMs(Date.now());
+  }, [extraAttributes?._lastEditedAt]);
 
   function openAudit() {
     setAuditOpen(true);
@@ -126,12 +134,13 @@ export function RecordDetailsDrawer({
   }
 
   const hasRecentEdit = React.useMemo(() => {
+    if (nowMs === null) return false;
     const ts = extraAttributes?._lastEditedAt;
     if (!ts) return false;
     const d = new Date(String(ts));
-    const diffMs = Date.now() - d.getTime();
+    const diffMs = nowMs - d.getTime();
     return diffMs >= 0 && diffMs < 7 * 24 * 60 * 60 * 1000;
-  }, [extraAttributes?._lastEditedAt]);
+  }, [extraAttributes?._lastEditedAt, nowMs]);
 
   const overviewContent = (
     <>
@@ -195,7 +204,7 @@ export function RecordDetailsDrawer({
   );
 
   const wrappedDrawer = hasFunctionTabs ? (
-    <DrawerTabsProvider tabs={allTabs} defaultTab="overview">
+    <DrawerTabsProvider tabs={allTabs} defaultTab={initialTabId || "overview"}>
       <SlideDrawer
         open={drawerOpen}
         onClose={onClose}

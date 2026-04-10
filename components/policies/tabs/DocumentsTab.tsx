@@ -14,13 +14,14 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DocumentStatusMap, DocumentStatusEntry } from "@/lib/types/accounting";
-import type { PdfTemplateRow, PdfTemplateMeta } from "@/lib/types/pdf-template";
+import { resolvePdfTemplateShowOn, type PdfTemplateRow, type PdfTemplateMeta } from "@/lib/types/pdf-template";
 import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
   TemplateSection,
   TemplateFieldMapping,
 } from "@/lib/types/document-template";
+import { resolveDocumentTemplateShowOn } from "@/lib/types/document-template";
 import type { PolicyDetail } from "@/lib/types/policy";
 import {
   resolveRawValue,
@@ -43,6 +44,14 @@ const FALLBACK_POLICY_STATUS_ORDER = [
   "invoice_sent",
   "pending_payment",
   "payment_received",
+  "commission_pending",
+  "statement_created",
+  "statement_sent",
+  "statement_confirmed",
+  "credit_advice_prepared",
+  "credit_advice_sent",
+  "credit_advice_confirmed",
+  "commission_settled",
   "confirmed",
   "bound",
   "active",
@@ -55,6 +64,11 @@ type ExtraDocContext = {
   accountingLines?: AccountingLineForPreview[];
   clientData?: Record<string, unknown> | null;
   organisationData?: Record<string, unknown> | null;
+  paymentData?: {
+    latestClientPaidAmount?: number;
+    latestClientPaidDate?: string | null;
+    latestClientPaymentRef?: string | null;
+  } | null;
 };
 
 type StatementDataForPreview = {
@@ -108,6 +122,7 @@ function buildResolveContext(
     organisation: extra?.organisationData,
     accountingLines: extra?.accountingLines,
     statementData: extra?.statementData,
+    paymentData: extra?.paymentData,
     documentTracking: tracking,
     currentDocTrackingKey,
   };
@@ -297,7 +312,7 @@ function DocumentPreview({
   const meta = template.meta!;
   const printRef = React.useRef<HTMLDivElement>(null);
 
-  const needsExtraContext = meta.type === "statement" || meta.sections.some(
+  const needsExtraContext = meta.type === "statement" || meta.type === "receipt" || meta.sections.some(
     (s) => s.source === "statement" || s.source === "accounting" || s.source === "client" || s.source === "organisation",
   );
 
@@ -355,6 +370,46 @@ function DocumentPreview({
               collaboratorName: ln.collaboratorName ?? null,
             };
           });
+        }
+
+        // Latest verified/recorded client payment (for receipt amount/date/reference fields)
+        const invRes = await fetch(`/api/accounting/invoices/by-policy/${detail.policyId}?_t=${Date.now()}`, { cache: "no-store" });
+        if (invRes.ok) {
+          const invoices = await invRes.json() as Array<{
+            direction?: string;
+            payments?: Array<{
+              amountCents?: number;
+              amount_cents?: number;
+              status?: string | null;
+              payer?: string | null;
+              paymentDate?: string | null;
+              payment_date?: string | null;
+              referenceNumber?: string | null;
+              reference_number?: string | null;
+              createdAt?: string | null;
+              created_at?: string | null;
+            }>;
+          }>;
+          const paymentRows = invoices
+            .filter((inv) => inv.direction === "receivable")
+            .flatMap((inv) => inv.payments ?? [])
+            .filter((p) =>
+              ["verified", "confirmed", "recorded"].includes(String(p.status ?? "").toLowerCase())
+              && String(p.payer ?? "client").toLowerCase() === "client",
+            )
+            .sort((a, b) =>
+              String(b.paymentDate ?? b.payment_date ?? b.createdAt ?? b.created_at ?? "")
+                .localeCompare(String(a.paymentDate ?? a.payment_date ?? a.createdAt ?? a.created_at ?? "")),
+            );
+          const latest = paymentRows[0];
+          if (latest) {
+            const cents = Number(latest.amountCents ?? latest.amount_cents ?? 0);
+            ctx.paymentData = {
+              latestClientPaidAmount: Number.isFinite(cents) ? cents / 100 : undefined,
+              latestClientPaidDate: String(latest.paymentDate ?? latest.payment_date ?? "") || null,
+              latestClientPaymentRef: String(latest.referenceNumber ?? latest.reference_number ?? "") || null,
+            };
+          }
         }
 
         if (detail.clientId) {
@@ -1094,6 +1149,7 @@ function DocumentPreview({
 // --- Status badge for document tracking ---
 
 const STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> = {
+  prepared:  { bg: "bg-sky-100 dark:bg-sky-900/50",      text: "text-sky-700 dark:text-sky-300",       label: "Prepared" },
   sent:      { bg: "bg-orange-100 dark:bg-orange-900/50", text: "text-orange-700 dark:text-orange-300", label: "Sent" },
   confirmed: { bg: "bg-green-100 dark:bg-green-900/50",  text: "text-green-700 dark:text-green-300",   label: "Confirmed" },
   rejected:  { bg: "bg-red-100 dark:bg-red-900/50",      text: "text-red-700 dark:text-red-300",       label: "Rejected" },
@@ -1641,11 +1697,23 @@ export function DocumentsTab({
   detail,
   flowKey,
   currentStatus,
+  currentStatusClient,
+  currentStatusAgent,
+  initialTemplateValue,
+  initialAudience,
+  onlyTemplateValue,
+  hidePdfTemplates = false,
   onStatusAutoAdvanced,
 }: {
   detail: PolicyDetail;
   flowKey?: string;
   currentStatus?: string;
+  currentStatusClient?: string;
+  currentStatusAgent?: string;
+  initialTemplateValue?: string;
+  initialAudience?: "client" | "agent";
+  onlyTemplateValue?: string;
+  hidePdfTemplates?: boolean;
   onStatusAutoAdvanced?: () => void;
 }) {
   const { sortedValues: statusOrder, loading: statusesLoading } = usePolicyStatuses();
@@ -1654,6 +1722,7 @@ export function DocumentsTab({
   const [loading, setLoading] = React.useState(true);
   const [selected, setSelected] = React.useState<DocumentTemplateRow | null>(null);
   const [selectedAudience, setSelectedAudience] = React.useState<"client" | "agent">("client");
+  const [initialSelectionApplied, setInitialSelectionApplied] = React.useState(false);
   const [emailDialogOpen, setEmailDialogOpen] = React.useState(false);
   const [emailPreSelectedId, setEmailPreSelectedId] = React.useState<number | undefined>();
 
@@ -1662,6 +1731,8 @@ export function DocumentsTab({
   const [trackingUpdating, setTrackingUpdating] = React.useState(false);
 
   const snapshot = (detail.extraAttributes ?? {}) as SnapshotData;
+  const statusClient = currentStatusClient ?? currentStatus ?? "quotation_prepared";
+  const statusAgent = currentStatusAgent ?? statusClient;
 
   // Load tracking data
   React.useEffect(() => {
@@ -1884,6 +1955,27 @@ export function DocumentsTab({
 
   const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
   const [policyLineKeys, setPolicyLineKeys] = React.useState<Set<string> | null>(null);
+  const [policyInvoiceTypes, setPolicyInvoiceTypes] = React.useState<Set<string>>(new Set());
+
+  React.useEffect(() => {
+    setInitialSelectionApplied(false);
+  }, [initialTemplateValue, initialAudience, detail.policyId]);
+
+  React.useEffect(() => {
+    if (!initialTemplateValue) return;
+    if (loading) return;
+    if (selected) return;
+    if (initialSelectionApplied) return;
+    const matched = templates.find((t) => t.value === initialTemplateValue)
+      ?? templates.find((t) => toTrackingKey(t.label) === toTrackingKey(initialTemplateValue));
+    if (!matched) {
+      setInitialSelectionApplied(true);
+      return;
+    }
+    setSelected(matched);
+    setSelectedAudience(initialAudience === "agent" ? "agent" : "client");
+    setInitialSelectionApplied(true);
+  }, [initialTemplateValue, initialAudience, loading, selected, templates, initialSelectionApplied]);
 
   React.useEffect(() => {
     fetch(`/api/policies/${detail.policyId}/linked-insurers`, { cache: "no-store" })
@@ -1900,6 +1992,22 @@ export function DocumentsTab({
         setPolicyLineKeys(keys);
       })
       .catch(() => setPolicyLineKeys(new Set()));
+
+    fetch(`/api/accounting/invoices/by-policy/${detail.policyId}?_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: Array<{ invoiceType?: string }> | unknown) => {
+        if (!Array.isArray(rows)) {
+          setPolicyInvoiceTypes(new Set());
+          return;
+        }
+        const types = new Set(
+          rows
+            .map((row) => String(row?.invoiceType ?? "").toLowerCase())
+            .filter(Boolean),
+        );
+        setPolicyInvoiceTypes(types);
+      })
+      .catch(() => setPolicyInvoiceTypes(new Set()));
   }, [detail.policyId]);
 
   React.useEffect(() => {
@@ -1907,7 +2015,6 @@ export function DocumentsTab({
     let cancelled = false;
     setLoading(true);
 
-    const status = currentStatus || "quotation_prepared";
     const effectiveStatusOrder = Array.from(new Set([
       ...statusOrder,
       ...FALLBACK_POLICY_STATUS_ORDER,
@@ -1920,8 +2027,11 @@ export function DocumentsTab({
       return matchingIds.some((pid) => tplInsurerIds.includes(pid));
     };
 
-    const matchesStatus = (sws: string[] | undefined) => {
+    const getStatusForAudience = (audience: "client" | "agent") =>
+      audience === "agent" ? statusAgent : statusClient;
+    const matchesStatus = (sws: string[] | undefined, audience: "client" | "agent") => {
       if (!sws || sws.length === 0) return true;
+      const status = getStatusForAudience(audience);
       const currentIdx = effectiveStatusOrder.indexOf(status);
       const earliestIdx = Math.min(
         ...sws.map((s) => effectiveStatusOrder.indexOf(s)).filter((i) => i >= 0),
@@ -1930,6 +2040,24 @@ export function DocumentsTab({
         return sws.includes(status);
       }
       return currentIdx >= earliestIdx;
+    };
+    const matchesStatusForAudience = (
+      meta: Pick<DocumentTemplateMeta, "showWhenStatus" | "showWhenStatusClient" | "showWhenStatusAgent">,
+      audience: "client" | "agent",
+    ) => {
+      const audienceRule = audience === "agent" ? meta.showWhenStatusAgent : meta.showWhenStatusClient;
+      const rule = audienceRule && audienceRule.length > 0 ? audienceRule : meta.showWhenStatus;
+      return matchesStatus(rule, audience);
+    };
+    const matchesTemplateStatus = (meta: DocumentTemplateMeta) => {
+      const hasAudienceSections = !!meta.sections?.some((s) => s.audience === "client" || s.audience === "agent");
+      if (meta.isAgentTemplate && !hasAudienceSections) {
+        return matchesStatusForAudience(meta, "agent");
+      }
+      if (!hasAudienceSections) {
+        return matchesStatusForAudience(meta, "client");
+      }
+      return matchesStatusForAudience(meta, "client") || matchesStatusForAudience(meta, "agent");
     };
 
     const matchesLineKey = (key: string | undefined) => {
@@ -1943,6 +2071,13 @@ export function DocumentsTab({
         if (cancelled) return;
         const applicable = rows.filter((r) => {
           if (!r.meta) return false;
+          if (onlyTemplateValue) {
+            // Agent-side "open specific statement" must render exactly the selected
+            // template, even if normal policy visibility rules would hide it.
+            return r.value === onlyTemplateValue;
+          }
+          const placements = resolveDocumentTemplateShowOn(r.meta);
+          if (!placements.includes("policy")) return false;
           const hasInsurerRestriction = r.meta.insurerPolicyIds && r.meta.insurerPolicyIds.length > 0;
           if (!hasInsurerRestriction) {
             const flows = r.meta.flows;
@@ -1952,7 +2087,7 @@ export function DocumentsTab({
           } else {
             if (!matchesInsurer(r.meta.insurerPolicyIds)) return false;
           }
-          if (!matchesStatus(r.meta.showWhenStatus)) return false;
+          if (!matchesTemplateStatus(r.meta)) return false;
           if (!matchesLineKey(r.meta.accountingLineKey)) return false;
           return true;
         });
@@ -1967,6 +2102,8 @@ export function DocumentsTab({
         const applicable = rows.filter((r) => {
           const meta = r.meta as unknown as PdfTemplateMeta | null;
           if (!meta) return false;
+          const placements = resolvePdfTemplateShowOn(meta);
+          if (!placements.includes("policy")) return false;
           if (!meta.fields?.length && !meta.pages?.length) return false;
           const hasInsurerRestriction = meta.insurerPolicyIds && meta.insurerPolicyIds.length > 0;
           if (!hasInsurerRestriction) {
@@ -1977,7 +2114,7 @@ export function DocumentsTab({
           } else {
             if (!matchesInsurer(meta.insurerPolicyIds)) return false;
           }
-          if (!matchesStatus(meta.showWhenStatus)) return false;
+          if (!matchesStatus(meta.showWhenStatus, "client")) return false;
           if (!matchesLineKey(meta.accountingLineKey)) return false;
           return true;
         });
@@ -1990,7 +2127,7 @@ export function DocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [flowKey, currentStatus, policyInsurerIds, policyLineKeys, detail.policyId, statusOrder, statusesLoading]);
+  }, [flowKey, statusClient, statusAgent, policyInsurerIds, policyLineKeys, detail.policyId, statusOrder, statusesLoading, onlyTemplateValue]);
 
   // Auto-prepare: assign document numbers when templates become visible
   const [autoPrepared, setAutoPrepared] = React.useState<Set<string>>(new Set());
@@ -2000,6 +2137,29 @@ export function DocumentsTab({
     const hasAgent = !!detail.agent;
     const templateHasAudienceSections = (tpl: DocumentTemplateRow) =>
       !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
+    const effectiveStatusOrder = Array.from(new Set([
+      ...statusOrder,
+      ...FALLBACK_POLICY_STATUS_ORDER,
+    ]));
+    const getStatusForAudience = (audience: "client" | "agent") =>
+      audience === "agent" ? statusAgent : statusClient;
+    const matchesStatus = (sws: string[] | undefined, audience: "client" | "agent") => {
+      if (!sws || sws.length === 0) return true;
+      const status = getStatusForAudience(audience);
+      const currentIdx = effectiveStatusOrder.indexOf(status);
+      const earliestIdx = Math.min(
+        ...sws.map((s) => effectiveStatusOrder.indexOf(s)).filter((i) => i >= 0),
+      );
+      if (currentIdx < 0 || earliestIdx === Infinity) return sws.includes(status);
+      return currentIdx >= earliestIdx;
+    };
+    const matchesStatusForAudience = (tpl: DocumentTemplateRow, audience: "client" | "agent") => {
+      const audienceRule = audience === "agent"
+        ? tpl.meta?.showWhenStatusAgent
+        : tpl.meta?.showWhenStatusClient;
+      const rule = audienceRule && audienceRule.length > 0 ? audienceRule : tpl.meta?.showWhenStatus;
+      return matchesStatus(rule, audience);
+    };
 
     const toProcess: { key: string; prefix: string; suffix?: string; group?: string; tplType?: string }[] = [];
 
@@ -2008,13 +2168,18 @@ export function DocumentsTab({
       if (!prefix) continue;
       const group = tpl.meta?.documentSetGroup;
       const tplType = tpl.meta?.type;
+      if (tplType === "credit_note" || tplType === "debit_note") continue;
       const canRenderAgentCopy = hasAgent && (templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate);
 
       const baseKey = toTrackingKey(tpl.label);
-      if (!tracking[baseKey]?.documentNumber && !autoPrepared.has(baseKey)) {
+      if (
+        matchesStatusForAudience(tpl, "client")
+        && !tracking[baseKey]?.documentNumber
+        && !autoPrepared.has(baseKey)
+      ) {
         toProcess.push({ key: baseKey, prefix, group, tplType });
       }
-      if (canRenderAgentCopy) {
+      if (canRenderAgentCopy && matchesStatusForAudience(tpl, "agent")) {
         const agentKey = baseKey + "_agent";
         if (!tracking[agentKey]?.documentNumber && !autoPrepared.has(agentKey)) {
           toProcess.push({ key: agentKey, prefix, suffix: "(A)", group, tplType });
@@ -2045,7 +2210,7 @@ export function DocumentsTab({
         await handleTrackingAction(key, "prepare", undefined, prefix, suffix, group, tplType);
       }
     })();
-  }, [loading, templates, pdfTemplates, tracking, detail.agent, autoPrepared, handleTrackingAction]);
+  }, [loading, templates, pdfTemplates, tracking, detail.agent, autoPrepared, handleTrackingAction, statusClient, statusAgent, statusOrder]);
 
   if (loading) {
     return (
@@ -2234,7 +2399,49 @@ export function DocumentsTab({
     );
   }
 
-  const hasAny = templates.length > 0 || pdfTemplates.length > 0;
+  const effectiveStatusOrder = Array.from(new Set([
+    ...statusOrder,
+    ...FALLBACK_POLICY_STATUS_ORDER,
+  ]));
+  const matchesStatusRule = (rule: string[] | undefined, aud: "client" | "agent") => {
+    if (!rule || rule.length === 0) return true;
+    const status = aud === "agent" ? statusAgent : statusClient;
+    const currentIdx = effectiveStatusOrder.indexOf(status);
+    const earliestIdx = Math.min(
+      ...rule.map((s) => effectiveStatusOrder.indexOf(s)).filter((i) => i >= 0),
+    );
+    if (currentIdx < 0 || earliestIdx === Infinity) return rule.includes(status);
+    return currentIdx >= earliestIdx;
+  };
+  const templateMatchesAudienceStatus = (tpl: DocumentTemplateRow, aud: "client" | "agent") => {
+    const audienceRule = aud === "agent"
+      ? tpl.meta?.showWhenStatusAgent
+      : tpl.meta?.showWhenStatusClient;
+    const rule = audienceRule && audienceRule.length > 0 ? audienceRule : tpl.meta?.showWhenStatus;
+    return matchesStatusRule(rule, aud);
+  };
+  const hasRealTrackingActionForAudience = (tpl: DocumentTemplateRow, aud: "client" | "agent") => {
+    const key = aud === "agent" ? `${toTrackingKey(tpl.label)}_agent` : toTrackingKey(tpl.label);
+    const status = tracking[key]?.status;
+    return status === "sent" || status === "confirmed";
+  };
+  const isActionGatedTemplateVisibleForAudience = (tpl: DocumentTemplateRow, aud: "client" | "agent") => {
+    const docType = tpl.meta?.type;
+    if (docType === "credit_note") {
+      return hasRealTrackingActionForAudience(tpl, aud) || policyInvoiceTypes.has("credit_note");
+    }
+    if (docType === "debit_note") {
+      return hasRealTrackingActionForAudience(tpl, aud) || policyInvoiceTypes.has("debit_note");
+    }
+    return true;
+  };
+  const showPdfMergeTemplates = !hidePdfTemplates && !onlyTemplateValue;
+  const hasAny = templates.some((tpl) =>
+    (templateMatchesAudienceStatus(tpl, "client") && isActionGatedTemplateVisibleForAudience(tpl, "client"))
+    || (detail.agent
+      ? (templateMatchesAudienceStatus(tpl, "agent") && isActionGatedTemplateVisibleForAudience(tpl, "agent"))
+      : false),
+  ) || (showPdfMergeTemplates && pdfTemplates.length > 0);
 
   if (!hasAny) {
     return (
@@ -2252,6 +2459,15 @@ export function DocumentsTab({
   }
 
   const policyHasAgent = !!detail.agent;
+  const visibleForClient = (tpl: DocumentTemplateRow) =>
+    templateMatchesAudienceStatus(tpl, "client")
+    && isActionGatedTemplateVisibleForAudience(tpl, "client");
+  const visibleForAgent = (tpl: DocumentTemplateRow) =>
+    templateMatchesAudienceStatus(tpl, "agent")
+    && isActionGatedTemplateVisibleForAudience(tpl, "agent");
+  const visibleTemplates = templates.filter((tpl) =>
+    visibleForClient(tpl) || (policyHasAgent && visibleForAgent(tpl)),
+  );
   const templateHasAudienceSections = (tpl: DocumentTemplateRow) =>
     !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
   const isStatementTemplate = (tpl: DocumentTemplateRow) => tpl.meta?.type === "statement";
@@ -2259,15 +2475,19 @@ export function DocumentsTab({
   // settlement, so only explicit agent statement templates belong in the
   // agent group. Other documents can still share a template via audience
   // sections when needed.
-  const clientTemplates = templates.filter((tpl) =>
-    isStatementTemplate(tpl)
-      ? !tpl.meta?.isAgentTemplate
-      : (!tpl.meta?.isAgentTemplate || templateHasAudienceSections(tpl)),
+  const clientTemplates = visibleTemplates.filter((tpl) =>
+    visibleForClient(tpl) && (
+      isStatementTemplate(tpl)
+        ? !tpl.meta?.isAgentTemplate
+        : (!tpl.meta?.isAgentTemplate || templateHasAudienceSections(tpl))
+    )
   );
-  const agentTemplates = templates.filter((tpl) =>
-    isStatementTemplate(tpl)
-      ? !!tpl.meta?.isAgentTemplate
-      : (templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate),
+  const agentTemplates = visibleTemplates.filter((tpl) =>
+    visibleForAgent(tpl) && (
+      isStatementTemplate(tpl)
+        ? !!tpl.meta?.isAgentTemplate
+        : (templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate)
+    )
   );
   const showGrouped = policyHasAgent && agentTemplates.length > 0;
 
@@ -2319,7 +2539,7 @@ export function DocumentsTab({
 
   return (
     <div className="space-y-3">
-      {templates.length > 0 && showGrouped ? (
+      {visibleTemplates.length > 0 && showGrouped ? (
         <>
           {/* Client Documents Group */}
           <div className="rounded-lg border-2 border-blue-200 dark:border-blue-800 overflow-hidden">
@@ -2346,16 +2566,16 @@ export function DocumentsTab({
             </div>
           </div>
         </>
-      ) : templates.length > 0 ? (
+      ) : visibleTemplates.length > 0 ? (
         <>
           <div className="text-sm font-medium">Document Templates</div>
           {clientTemplates.map((tpl) => renderTemplateButton(tpl, "client"))}
         </>
       ) : null}
 
-      {pdfTemplates.length > 0 && (
+      {showPdfMergeTemplates && pdfTemplates.length > 0 && (
         <>
-          {templates.length > 0 && <div className="border-t border-neutral-200 dark:border-neutral-800 pt-1" />}
+          {visibleTemplates.length > 0 && <div className="border-t border-neutral-200 dark:border-neutral-800 pt-1" />}
           {pdfTemplates.map((tpl) => {
             const key = toTrackingKey(tpl.label);
             return (

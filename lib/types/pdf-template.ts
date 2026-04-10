@@ -113,10 +113,20 @@ export type PdfTemplateMeta = {
   documentSetGroup?: string;
   /** Mark as agent template — auto-appends (A) to document numbers */
   isAgentTemplate?: boolean;
+  /** Where this template should be listed/rendered */
+  showOn?: ("policy" | "agent")[];
   /** Restrict to a specific accounting line key (e.g. "tpo", "od"). Only shows when the policy has a premium line with this key. Empty = all. */
   accountingLineKey?: string;
   description?: string;
 };
+
+export function resolvePdfTemplateShowOn(
+  meta: PdfTemplateMeta | null | undefined,
+): ("policy" | "agent")[] {
+  const configured = meta?.showOn?.filter((v): v is "policy" | "agent" => v === "policy" || v === "agent") ?? [];
+  if (configured.length > 0) return [...new Set(configured)];
+  return ["policy"];
+}
 
 export type PdfTemplateRow = {
   id: number;
@@ -154,6 +164,8 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
     "linkedPolicyId", "linkedPolicyNumber",
     "endorsementType", "endorsementReason",
     "effectiveDate", "expiryDate",
+    "paymentAmount", "paymentDate", "paymentReference",
+    "latestClientPaidAmount", "latestClientPaidDate", "latestClientPaymentRef",
   ],
   insured: [
     "displayName", "primaryId",

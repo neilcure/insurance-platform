@@ -14,6 +14,7 @@ const STATUS_ORDER = [
 ] as const;
 
 export type PolicyStatusKey = (typeof STATUS_ORDER)[number];
+export type PolicyStatusTrack = "client" | "agent";
 
 /**
  * When a status is reached, automatically chain to the next status.
@@ -34,6 +35,7 @@ export async function advancePolicyStatus(
   targetStatus: string,
   changedBy: string,
   note: string,
+  track: PolicyStatusTrack = "client",
 ): Promise<string | null> {
   const [carRow] = await db
     .select({ id: cars.id, extraAttributes: cars.extraAttributes })
@@ -43,7 +45,9 @@ export async function advancePolicyStatus(
   if (!carRow) return null;
 
   const existing = (carRow.extraAttributes ?? {}) as Record<string, unknown>;
-  const currentStatus = (existing.status as string) ?? "quotation_prepared";
+  const statusKey = track === "agent" ? "statusAgent" : "statusClient";
+  const historyKey = track === "agent" ? "statusHistoryAgent" : "statusHistoryClient";
+  const currentStatus = String(existing[statusKey] ?? existing.statusClient ?? existing.status ?? "quotation_prepared");
 
   const currentIdx = STATUS_ORDER.indexOf(currentStatus as PolicyStatusKey);
   const targetIdx = STATUS_ORDER.indexOf(targetStatus as PolicyStatusKey);
@@ -51,8 +55,10 @@ export async function advancePolicyStatus(
   if (targetIdx >= 0 && currentIdx >= targetIdx) return null;
 
   let finalStatus = targetStatus;
-  const historyArr = Array.isArray(existing.statusHistory)
-    ? [...(existing.statusHistory as unknown[])]
+  const historyArr = Array.isArray(existing[historyKey])
+    ? [...(existing[historyKey] as unknown[])]
+    : Array.isArray(existing.statusHistory)
+      ? [...(existing.statusHistory as unknown[])]
     : [];
 
   historyArr.push({
@@ -78,10 +84,14 @@ export async function advancePolicyStatus(
 
   const updated: Record<string, unknown> = {
     ...existing,
-    status: finalStatus,
-    statusHistory: historyArr,
+    [statusKey]: finalStatus,
+    [historyKey]: historyArr,
     _lastEditedAt: new Date().toISOString(),
   };
+  if (track === "client") {
+    updated.status = finalStatus;
+    updated.statusHistory = historyArr;
+  }
 
   await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
   return finalStatus;
@@ -98,6 +108,7 @@ export async function recalculatePolicyStatus(
   policyId: number,
   changedBy: string,
   reason: string,
+  track: PolicyStatusTrack = "client",
 ): Promise<string | null> {
   const [[carRow], [policyRow]] = await Promise.all([
     db.select({ id: cars.id, extraAttributes: cars.extraAttributes })
@@ -108,7 +119,9 @@ export async function recalculatePolicyStatus(
   if (!carRow) return null;
 
   const existing = (carRow.extraAttributes ?? {}) as Record<string, unknown>;
-  const currentStatus = (existing.status as string) ?? "quotation_prepared";
+  const statusKey = track === "agent" ? "statusAgent" : "statusClient";
+  const historyKey = track === "agent" ? "statusHistoryAgent" : "statusHistoryClient";
+  const currentStatus = String(existing[statusKey] ?? existing.statusClient ?? existing.status ?? "quotation_prepared");
 
   if (currentStatus === "completed") return null;
 
@@ -154,8 +167,10 @@ export async function recalculatePolicyStatus(
 
   if (correctStatus === currentStatus) return null;
 
-  const historyArr = Array.isArray(existing.statusHistory)
-    ? [...(existing.statusHistory as unknown[])]
+  const historyArr = Array.isArray(existing[historyKey])
+    ? [...(existing[historyKey] as unknown[])]
+    : Array.isArray(existing.statusHistory)
+      ? [...(existing.statusHistory as unknown[])]
     : [];
   historyArr.push({
     status: correctStatus,
@@ -166,10 +181,14 @@ export async function recalculatePolicyStatus(
 
   const updated: Record<string, unknown> = {
     ...existing,
-    status: correctStatus,
-    statusHistory: historyArr,
+    [statusKey]: correctStatus,
+    [historyKey]: historyArr,
     _lastEditedAt: new Date().toISOString(),
   };
+  if (track === "client") {
+    updated.status = correctStatus;
+    updated.statusHistory = historyArr;
+  }
 
   await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
   return correctStatus;

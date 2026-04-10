@@ -77,7 +77,7 @@ export const PAYMENT_METHOD_OPTIONS = [
 
 export type PaymentMethod = typeof PAYMENT_METHOD_OPTIONS[number]["value"];
 
-export type DocLifecycleStatus = "generated" | "sent" | "confirmed" | "rejected";
+export type DocLifecycleStatus = "generated" | "prepared" | "sent" | "confirmed" | "rejected";
 
 export type DocumentStatusEntry = {
   status: DocLifecycleStatus;
@@ -109,6 +109,7 @@ export type DocumentTrackingData = DocumentStatusMap & {
 
 export const DOC_LIFECYCLE_LABELS: Record<DocLifecycleStatus, string> = {
   generated: "Generated",
+  prepared: "Prepared",
   sent: "Sent",
   confirmed: "Confirmed",
   rejected: "Rejected",

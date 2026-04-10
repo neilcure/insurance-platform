@@ -25,6 +25,10 @@ export type DocumentTemplateMeta = {
   flows?: string[];
   /** Only show this document when policy status matches (empty = always) */
   showWhenStatus?: string[];
+  /** Client-specific status visibility (fallback to showWhenStatus when empty) */
+  showWhenStatusClient?: string[];
+  /** Agent-specific status visibility (fallback to showWhenStatus when empty) */
+  showWhenStatusAgent?: string[];
   /** Restrict to specific insurance companies by their policy record IDs (empty = all) */
   insurerPolicyIds?: number[];
   /** Whether this document requires client confirmation after sending (default: true for quotation, false for others) */
@@ -35,6 +39,8 @@ export type DocumentTemplateMeta = {
   documentSetGroup?: string;
   /** Mark as agent template — auto-appends (A) to document numbers */
   isAgentTemplate?: boolean;
+  /** Where this template should be listed/rendered */
+  showOn?: ("policy" | "agent")[];
   /** When true, hides the document if no statement exists for this audience (requires Payment Schedule) */
   requiresStatement?: boolean;
   /** Restrict to a specific accounting line key (e.g. "tpo", "od"). Only shows when the policy has a premium line with this key. Empty = all. */
@@ -51,6 +57,15 @@ export type DocumentTemplateMeta = {
     showSignature?: boolean;
   };
 };
+
+export function resolveDocumentTemplateShowOn(
+  meta: DocumentTemplateMeta | null | undefined,
+): ("policy" | "agent")[] {
+  const configured = meta?.showOn?.filter((v): v is "policy" | "agent" => v === "policy" || v === "agent") ?? [];
+  if (configured.length > 0) return [...new Set(configured)];
+  if (meta?.type === "statement" && meta?.isAgentTemplate) return ["agent"];
+  return ["policy"];
+}
 
 export type DocumentTemplateRow = {
   id: number;

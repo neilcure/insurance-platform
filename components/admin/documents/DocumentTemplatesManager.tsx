@@ -13,16 +13,20 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
-import { Plus, Trash2, CheckSquare, Square, ArrowLeft, Copy, Pencil, EyeOff, Eye, FlaskConical, Loader2, CheckCircle2 } from "lucide-react";
+import { Plus, Trash2, CheckSquare, Square, ArrowLeft, Copy, Pencil, EyeOff, Eye, FlaskConical, Loader2, CheckCircle2, ChevronUp, ChevronDown } from "lucide-react";
 import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
   TemplateSection,
   TemplateFieldMapping,
 } from "@/lib/types/document-template";
+import { resolveDocumentTemplateShowOn } from "@/lib/types/document-template";
 import { FIELD_KEY_HINTS } from "@/lib/types/pdf-template";
 
 const GROUP_KEY = "document_templates";
+const EXTRA_DOCUMENT_FLOWS: { label: string; value: string }[] = [
+  { label: "Agents", value: "agent" },
+];
 
 const TEMPLATE_TYPES: { value: DocumentTemplateMeta["type"]; label: string }[] =
   [
@@ -240,12 +244,17 @@ export default function DocumentTemplatesManager() {
         value: p.value,
       })),
     );
-    setFlows(
-      (flowRes as { label: string; value: string }[]).map((f) => ({
+    const flowOptions = [
+      ...(flowRes as { label: string; value: string }[]).map((f) => ({
         label: f.label,
         value: f.value,
       })),
+      ...EXTRA_DOCUMENT_FLOWS,
+    ];
+    const dedupedFlowOptions = flowOptions.filter(
+      (f, i, arr) => arr.findIndex((x) => x.value.toLowerCase() === f.value.toLowerCase()) === i,
     );
+    setFlows(dedupedFlowOptions);
     setStatusOptions(
       Array.isArray(statusRes) ? (statusRes as { label: string; value: string }[]).map((s) => ({ label: s.label, value: s.value })) : [],
     );
@@ -396,6 +405,17 @@ export default function DocumentTemplatesManager() {
     }));
   }
 
+  function moveSection(idx: number, dir: -1 | 1) {
+    setMeta((m) => {
+      const to = idx + dir;
+      if (to < 0 || to >= m.sections.length) return m;
+      const next = [...m.sections];
+      const [moved] = next.splice(idx, 1);
+      next.splice(to, 0, moved);
+      return { ...m, sections: next };
+    });
+  }
+
   function addField(sectionIdx: number) {
     setMeta((m) => ({
       ...m,
@@ -433,6 +453,21 @@ export default function DocumentTemplatesManager() {
           ? { ...s, fields: s.fields.filter((_, fi) => fi !== fieldIdx) }
           : s,
       ),
+    }));
+  }
+
+  function moveField(sectionIdx: number, fieldIdx: number, dir: -1 | 1) {
+    setMeta((m) => ({
+      ...m,
+      sections: m.sections.map((s, si) => {
+        if (si !== sectionIdx) return s;
+        const to = fieldIdx + dir;
+        if (to < 0 || to >= s.fields.length) return s;
+        const nextFields = [...s.fields];
+        const [moved] = nextFields.splice(fieldIdx, 1);
+        nextFields.splice(to, 0, moved);
+        return { ...s, fields: nextFields };
+      }),
     }));
   }
 
@@ -596,6 +631,71 @@ export default function DocumentTemplatesManager() {
                   </label>
                 ))}
               </div>
+              <p className="text-xs text-neutral-400">
+                Default status rule used for both audiences unless overridden below.
+              </p>
+            </div>
+          )}
+
+          {statusOptions.length > 0 && (
+            <div className="grid gap-1">
+              <Label>
+                Show When Status (Client Override){" "}
+                <span className="text-xs text-neutral-400">(optional)</span>
+              </Label>
+              <div className="flex flex-wrap gap-3">
+                {statusOptions.map((s) => (
+                  <label key={`client-${s.value}`} className="flex items-center gap-1.5 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={meta.showWhenStatusClient?.includes(s.value) ?? false}
+                      onChange={(e) =>
+                        setMeta((m) => ({
+                          ...m,
+                          showWhenStatusClient: e.target.checked
+                            ? [...(m.showWhenStatusClient ?? []), s.value]
+                            : (m.showWhenStatusClient ?? []).filter((v) => v !== s.value),
+                        }))
+                      }
+                    />
+                    {s.label}
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-neutral-400">
+                When set, this overrides default status visibility for client documents only.
+              </p>
+            </div>
+          )}
+
+          {statusOptions.length > 0 && (
+            <div className="grid gap-1">
+              <Label>
+                Show When Status (Agent Override){" "}
+                <span className="text-xs text-neutral-400">(optional)</span>
+              </Label>
+              <div className="flex flex-wrap gap-3">
+                {statusOptions.map((s) => (
+                  <label key={`agent-${s.value}`} className="flex items-center gap-1.5 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={meta.showWhenStatusAgent?.includes(s.value) ?? false}
+                      onChange={(e) =>
+                        setMeta((m) => ({
+                          ...m,
+                          showWhenStatusAgent: e.target.checked
+                            ? [...(m.showWhenStatusAgent ?? []), s.value]
+                            : (m.showWhenStatusAgent ?? []).filter((v) => v !== s.value),
+                        }))
+                      }
+                    />
+                    {s.label}
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-neutral-400">
+                When set, this overrides default status visibility for agent documents only.
+              </p>
             </div>
           )}
 
@@ -686,6 +786,50 @@ export default function DocumentTemplatesManager() {
               Mark this as an agent copy. Document numbers will automatically have <strong>(A)</strong> appended (e.g. INV-2026-3847(A)).
               Use this for agent-facing versions with agent-specific premium fields (Agent Premium, Agent Commission, etc.).
               For statement documents, create a separate client billing template and a separate agent settlement template.
+            </p>
+          </div>
+
+          {/* Placement */}
+          <div className="grid gap-1">
+            <Label>Show On</Label>
+            {(() => {
+              const placements = resolveDocumentTemplateShowOn(meta);
+              const hasPolicy = placements.includes("policy");
+              const hasAgent = placements.includes("agent");
+              const togglePlacement = (placement: "policy" | "agent", checked: boolean) => {
+                const current = new Set(resolveDocumentTemplateShowOn(meta));
+                if (checked) current.add(placement);
+                else current.delete(placement);
+                const next = [...current];
+                setMeta((m) => ({
+                  ...m,
+                  showOn: next.length > 0 ? next : ["policy"],
+                }));
+              };
+              return (
+                <div className="ml-1 space-y-1 text-sm">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={hasPolicy}
+                      onChange={(e) => togglePlacement("policy", e.target.checked)}
+                    />
+                    <span>Policy Details</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={hasAgent}
+                      onChange={(e) => togglePlacement("agent", e.target.checked)}
+                    />
+                    <span>Agent Details</span>
+                  </label>
+                </div>
+              );
+            })()}
+            <p className="text-xs text-neutral-400">
+              Controls where this template is listed. Existing templates remain backward-compatible:
+              agent statements default to Agent Details, others default to Policy Details.
             </p>
           </div>
 
@@ -883,9 +1027,9 @@ export default function DocumentTemplatesManager() {
                     key={section.id}
                     className={`rounded-lg border p-4 ${audienceColor}`}
                   >
-                    <div className="mb-3 flex items-center gap-3">
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
                       <Input
-                        className="h-9 flex-1 text-sm"
+                        className="h-9 min-w-[220px] flex-1 text-sm"
                         placeholder="Section title"
                         value={section.title}
                         onChange={(e) =>
@@ -893,7 +1037,7 @@ export default function DocumentTemplatesManager() {
                         }
                       />
                       <select
-                        className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                        className="h-9 min-w-[120px] rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                         value={section.source}
                         onChange={(e) => {
                           updateSection(sIdx, {
@@ -909,7 +1053,7 @@ export default function DocumentTemplatesManager() {
                         ))}
                       </select>
                       <select
-                        className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                        className="h-9 min-w-[110px] rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                         value={section.audience ?? "all"}
                         onChange={(e) =>
                           updateSection(sIdx, {
@@ -924,7 +1068,7 @@ export default function DocumentTemplatesManager() {
                       </select>
                       {section.source === "package" && (
                         <select
-                          className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                          className="h-9 min-w-[160px] rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                           value={section.packageName ?? ""}
                           onChange={(e) => {
                             updateSection(sIdx, {
@@ -942,6 +1086,26 @@ export default function DocumentTemplatesManager() {
                           ))}
                         </select>
                       )}
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => moveSection(sIdx, -1)}
+                        className="h-9 w-9 shrink-0"
+                        aria-label="Move section up"
+                        disabled={sIdx === 0}
+                      >
+                        <ChevronUp className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => moveSection(sIdx, 1)}
+                        className="h-9 w-9 shrink-0"
+                        aria-label="Move section down"
+                        disabled={sIdx === meta.sections.length - 1}
+                      >
+                        <ChevronDown className="h-4 w-4" />
+                      </Button>
                       <Button
                         size="icon"
                         variant="ghost"
@@ -1024,18 +1188,18 @@ export default function DocumentTemplatesManager() {
 
                         {/* Selected fields - editable labels */}
                         {section.fields.length > 0 && (
-                          <div className="mt-3 rounded-md border border-neutral-200 dark:border-neutral-700">
-                            <div className="flex items-center gap-2 border-b border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-medium text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800/50 dark:text-neutral-400">
+                          <div className="mt-3 rounded-md border border-neutral-200 dark:border-neutral-700 overflow-x-auto">
+                            <div className="min-w-[680px] flex items-center gap-2 border-b border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-medium text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800/50 dark:text-neutral-400">
                               {validationResult && <span className="w-5" />}
-                              <span className="w-40">Field Key</span>
+                              <span className="w-32">Field Key</span>
                               <span className="flex-1">Display Label (editable)</span>
-                              <span className="w-24">Format</span>
-                              <span className="w-8" />
+                              <span className="w-20">Format</span>
+                              <span className="w-24 text-center">Actions</span>
                             </div>
                             {section.fields.map((field, fIdx) => {
                               const vr = validationResult?.results.find((r) => r.id === `${section.id}-${fIdx}`);
                               return (
-                              <div key={field.key} className="flex items-center gap-2 border-b border-neutral-100 px-3 py-1 last:border-b-0 dark:border-neutral-800">
+                              <div key={field.key} className="min-w-[680px] flex items-center gap-2 border-b border-neutral-100 px-3 py-1 last:border-b-0 dark:border-neutral-800">
                                 {validationResult && (
                                   <span className="w-5 shrink-0 flex items-center justify-center" title={
                                     vr?.status === "ok" ? `Resolved: ${String(vr.resolved)}` : "Empty for this policy"
@@ -1047,14 +1211,14 @@ export default function DocumentTemplatesManager() {
                                     ) : null}
                                   </span>
                                 )}
-                                <span className="w-40 shrink-0 text-xs font-mono text-neutral-400">{field.key}</span>
+                                <span className="w-32 shrink-0 text-xs font-mono text-neutral-400">{field.key}</span>
                                 <Input
                                   className="h-7 flex-1 text-sm"
                                   value={field.label}
                                   onChange={(e) => updateField(sIdx, fIdx, { label: e.target.value })}
                                 />
                                 <select
-                                  className="h-7 w-24 shrink-0 rounded border border-neutral-300 bg-white px-1 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                                  className="h-7 w-20 shrink-0 rounded border border-neutral-300 bg-white px-1 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                                   value={field.format ?? "text"}
                                   onChange={(e) =>
                                     updateField(sIdx, fIdx, {
@@ -1066,14 +1230,36 @@ export default function DocumentTemplatesManager() {
                                     <option key={fo.value} value={fo.value}>{fo.label}</option>
                                   ))}
                                 </select>
-                                <Button
-                                  size="iconCompact"
-                                  variant="ghost"
-                                  onClick={() => removeField(sIdx, fIdx)}
-                                  className="h-6 w-6 shrink-0 text-red-500"
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                </Button>
+                                <div className="w-24 shrink-0 flex items-center justify-end gap-1">
+                                  <Button
+                                    size="iconCompact"
+                                    variant="ghost"
+                                    onClick={() => moveField(sIdx, fIdx, -1)}
+                                    className="h-6 w-6 shrink-0"
+                                    disabled={fIdx === 0}
+                                    aria-label="Move field up"
+                                  >
+                                    <ChevronUp className="h-3 w-3" />
+                                  </Button>
+                                  <Button
+                                    size="iconCompact"
+                                    variant="ghost"
+                                    onClick={() => moveField(sIdx, fIdx, 1)}
+                                    className="h-6 w-6 shrink-0"
+                                    disabled={fIdx === section.fields.length - 1}
+                                    aria-label="Move field down"
+                                  >
+                                    <ChevronDown className="h-3 w-3" />
+                                  </Button>
+                                  <Button
+                                    size="iconCompact"
+                                    variant="ghost"
+                                    onClick={() => removeField(sIdx, fIdx)}
+                                    className="h-6 w-6 shrink-0 text-red-500"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </Button>
+                                </div>
                               </div>
                               );
                             })}
@@ -1101,6 +1287,26 @@ export default function DocumentTemplatesManager() {
                               value={field.label}
                               onChange={(e) => updateField(sIdx, fIdx, { label: e.target.value })}
                             />
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              onClick={() => moveField(sIdx, fIdx, -1)}
+                              className="h-8 w-8 shrink-0"
+                              disabled={fIdx === 0}
+                              aria-label="Move field up"
+                            >
+                              <ChevronUp className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              onClick={() => moveField(sIdx, fIdx, 1)}
+                              className="h-8 w-8 shrink-0"
+                              disabled={fIdx === section.fields.length - 1}
+                              aria-label="Move field down"
+                            >
+                              <ChevronDown className="h-4 w-4" />
+                            </Button>
                             <Button
                               size="icon"
                               variant="ghost"

@@ -13,6 +13,20 @@ import type {
   DocumentRequirement,
 } from "@/lib/types/upload-document";
 
+const FALLBACK_POLICY_STATUS_ORDER = [
+  "quotation_prepared",
+  "quotation_sent",
+  "quotation_confirmed",
+  "invoice_prepared",
+  "invoice_sent",
+  "pending_payment",
+  "payment_received",
+  "confirmed",
+  "bound",
+  "active",
+  "completed",
+] as const;
+
 function computeDisplayStatus(uploads: PolicyDocumentRow[]): DocumentStatus {
   if (uploads.length === 0) return "outstanding";
   if (uploads.some((u) => u.status === "verified")) return "verified";
@@ -141,8 +155,10 @@ export function UploadDocumentsTab({
       if (cancelled) return;
       setTotalConfigured(types.length);
 
-      const statusOrder = new Map<string, number>();
-      for (const s of statusOptionsFromHook) statusOrder.set(s.value, s.sortOrder ?? 0);
+      const effectiveStatusOrder = Array.from(new Set([
+        ...statusOptionsFromHook.map((s) => s.value),
+        ...FALLBACK_POLICY_STATUS_ORDER,
+      ]));
 
       const applicable = types.filter((t) => {
         const hasInsurerRestriction = t.meta?.insurerPolicyIds && t.meta.insurerPolicyIds.length > 0;
@@ -160,12 +176,14 @@ export function UploadDocumentsTab({
           const status = currentStatus || "quotation_prepared";
           const hasUploadsForType = uploads.some((u) => u.documentTypeKey === t.value);
           if (!hasUploadsForType) {
-            const curOrder = statusOrder.get(status);
-            const earliestOrder = Math.min(...sws.map((s) => statusOrder.get(s) ?? Infinity));
-            if (curOrder != null && earliestOrder !== Infinity) {
-              if (curOrder < earliestOrder) return false;
-            } else {
+            const curIdx = effectiveStatusOrder.indexOf(status);
+            const earliestIdx = Math.min(
+              ...sws.map((s) => effectiveStatusOrder.indexOf(s)).filter((i) => i >= 0),
+            );
+            if (curIdx < 0 || earliestIdx === Infinity) {
               if (!sws.includes(status)) return false;
+            } else if (curIdx < earliestIdx) {
+              return false;
             }
           }
         }

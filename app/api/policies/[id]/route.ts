@@ -382,6 +382,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       deleteNoteIndex?: number;
       status?: string;
       statusNote?: string;
+      statusTarget?: "client" | "agent";
     };
 
     // Handle isActive toggle on the policies table
@@ -458,9 +459,14 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
 
     // Handle status change
     if (body.status) {
-      const oldStatus = (existing.status as string) ?? "quotation_prepared";
-      const historyArr = Array.isArray(existing.statusHistory)
-        ? [...(existing.statusHistory as unknown[])]
+      const statusTarget = body.statusTarget === "agent" ? "agent" : "client";
+      const statusKey = statusTarget === "agent" ? "statusAgent" : "statusClient";
+      const historyKey = statusTarget === "agent" ? "statusHistoryAgent" : "statusHistoryClient";
+      const oldStatus = String(existing[statusKey] ?? existing.status ?? "quotation_prepared");
+      const historyArr = Array.isArray(existing[historyKey])
+        ? [...(existing[historyKey] as unknown[])]
+        : Array.isArray(existing.statusHistory)
+          ? [...(existing.statusHistory as unknown[])]
         : [];
       historyArr.push({
         status: body.status,
@@ -478,11 +484,16 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       const base = ((refreshed?.extraAttributes ?? existing) as Record<string, unknown>);
       const updated: Record<string, unknown> = {
         ...base,
-        status: body.status,
-        statusHistory: historyArr,
+        [statusKey]: body.status,
+        [historyKey]: historyArr,
         _audit: appendAudit(base, [{ key: "status", from: oldStatus, to: body.status }]),
         _lastEditedAt: new Date().toISOString(),
       };
+      if (statusTarget === "client") {
+        // Backward compatibility for existing readers.
+        updated.status = body.status;
+        updated.statusHistory = historyArr;
+      }
       await db.update(cars).set({ extraAttributes: updated }).where(eq(cars.id, carRow.id));
 
       // Process onEnter hooks for the new status
@@ -518,7 +529,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       const shouldTrigger = statusTriggersInvoice !== undefined
         ? statusTriggersInvoice
         : fallbackTriggerStatuses.some((s) => normalizedStatus.includes(s));
-      if (shouldTrigger) {
+      if (shouldTrigger && statusTarget === "client") {
         try {
           await syncPremiumSnapshotToTable(id, Number(user.id));
           await autoCreateAccountingInvoices(id, `status_change:${body.status}`, Number(user.id));
@@ -526,7 +537,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       }
 
       if (!body.packages && !body.insured) {
-        return NextResponse.json({ ok: true, policyId: id, recordId: id, status: body.status, previousStatus: oldStatus, hooks: hooksExecuted }, { status: 200 });
+        return NextResponse.json({ ok: true, policyId: id, recordId: id, status: body.status, statusTarget, previousStatus: oldStatus, hooks: hooksExecuted }, { status: 200 });
       }
     }
 

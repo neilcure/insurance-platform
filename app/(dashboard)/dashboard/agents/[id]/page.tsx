@@ -6,6 +6,15 @@ import { formatDDMMYYYYHHMM } from "@/lib/format/date";
 import { serverFetch } from "@/lib/auth/server-fetch";
 
 type Agent = AgentDetail;
+type AgentStatementRow = {
+  id: number;
+  invoiceNumber: string;
+  status: string;
+  totalAmountCents: number;
+  paidAmountCents: number;
+  currency: string;
+  policyNumbers: string;
+};
 
 async function fetchAgent(id: number): Promise<Agent | null> {
   const res = await serverFetch(`/api/agents/${id}`);
@@ -13,10 +22,20 @@ async function fetchAgent(id: number): Promise<Agent | null> {
   return (await res.json()) as Agent;
 }
 
+async function fetchAgentStatements(id: number): Promise<AgentStatementRow[]> {
+  const res = await serverFetch(`/api/agents/${id}/statements`);
+  if (!res.ok) return [];
+  const rows = (await res.json()) as AgentStatementRow[];
+  return Array.isArray(rows) ? rows : [];
+}
+
 export default async function AgentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const agentId = Number(id);
   const agent = await fetchAgent(agentId);
+  const statements = await fetchAgentStatements(agentId);
+  const fmtMoney = (cents: number, ccy: string) =>
+    new Intl.NumberFormat("en-HK", { style: "currency", currency: ccy || "HKD", minimumFractionDigits: 2 }).format((Number(cents) || 0) / 100);
 
   return (
     <main className="mx-auto max-w-4xl">
@@ -74,6 +93,34 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
             </>
           ) : (
             <div className="text-neutral-600 dark:text-neutral-400">Not found or no access.</div>
+          )}
+        </CardContent>
+      </Card>
+      <Card className="mt-4">
+        <CardHeader>
+          <CardTitle>Agent Statements</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          {statements.length === 0 ? (
+            <div className="text-neutral-600 dark:text-neutral-400">No agent statements yet.</div>
+          ) : (
+            statements.map((s) => (
+              <div key={s.id} className="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="font-mono text-xs">{s.invoiceNumber}</div>
+                  <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                    {String(s.status || "").replace(/_/g, " ")}
+                  </span>
+                </div>
+                <div className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  {s.policyNumbers || "—"}
+                </div>
+                <div className="mt-1 text-xs">
+                  {fmtMoney(s.totalAmountCents, s.currency)} total
+                  {s.paidAmountCents > 0 ? ` · ${fmtMoney(s.paidAmountCents, s.currency)} paid` : ""}
+                </div>
+              </div>
+            ))
           )}
         </CardContent>
       </Card>

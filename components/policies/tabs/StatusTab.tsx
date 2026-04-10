@@ -19,12 +19,14 @@ export function StatusTab({
   statusHistory,
   onStatusChange,
   flowKey,
+  audience = "client",
 }: {
   policyId: number;
   currentStatus?: string;
   statusHistory?: StatusEntry[];
   onStatusChange?: (newStatus: string) => void;
   flowKey?: string;
+  audience?: "client" | "agent";
 }) {
   const { options, getLabel } = usePolicyStatuses(flowKey);
   const [selected, setSelected] = React.useState(currentStatus || "quotation_prepared");
@@ -55,6 +57,7 @@ export function StatusTab({
         body: JSON.stringify({
           status: selected,
           statusNote: `Admin override: ${reason.trim()}`,
+          statusTarget: audience,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -77,7 +80,9 @@ export function StatusTab({
   return (
     <div className="space-y-3">
       <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
-        Status updates automatically based on document actions (prepare, send, confirm) and payment verification.
+        {audience === "agent"
+          ? "Agent status track. Use for agent-side workflow visibility and communication."
+          : "Client status track. Updates automatically based on document actions and payment verification."}
       </p>
 
       {recentHistory.length > 0 && (

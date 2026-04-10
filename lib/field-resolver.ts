@@ -106,6 +106,12 @@ export type ResolveContext = {
   documentTracking?: Record<string, DocTrackingEntry> | null;
   /** The current template's tracking key — determines which documentNumber is resolved. */
   currentDocTrackingKey?: string;
+  /** Latest verified/recorded client payment info for this policy (used by receipts). */
+  paymentData?: {
+    latestClientPaidAmount?: number;
+    latestClientPaidDate?: string | null;
+    latestClientPaymentRef?: string | null;
+  } | null;
 };
 
 export type FormatOptions = {
@@ -279,6 +285,7 @@ function resolvePackage(
   snapshot: SnapshotData,
   packageName: string,
   key: string,
+  ctx?: ResolveContext,
 ): unknown {
   const pkgs = (snapshot.packagesSnapshot ?? {}) as Record<string, unknown>;
   const pkg = pkgs[packageName];
@@ -286,12 +293,45 @@ function resolvePackage(
   const obj = pkg as Record<string, unknown>;
   const vals =
     "values" in obj ? ((obj.values as Record<string, unknown>) ?? {}) : obj;
-  return (
+
+  // For multi-cover motor policies, a single snapshot key like policyinfo__coverType
+  // may only hold one option ("tpo") while accounting lines contain the full set ("tpo"+"pd").
+  // Prefer accounting line labels (human-readable) when available.
+  if (packageName.toLowerCase() === "policyinfo" && key.toLowerCase() === "covertype") {
+    const lines = (ctx?.accountingLines ?? [])
+      .map((l) => ({
+        key: String(l.lineKey ?? "").trim().toLowerCase(),
+        label: String(l.lineLabel ?? "").trim(),
+      }))
+      .filter((l) => l.key && l.key !== "total");
+    const seen = new Set<string>();
+    const unique = lines.filter((l) => {
+      if (seen.has(l.key)) return false;
+      seen.add(l.key);
+      return true;
+    });
+    const names = unique
+      .map((l) => l.label || l.key.toUpperCase())
+      .filter(Boolean);
+    if (names.length > 0) {
+      return names.join(" + ");
+    }
+  }
+
+  const direct = (
     fuzzyGet(vals, key) ??
     fuzzyGet(vals, `${packageName}__${key}`) ??
-    fuzzyGet(vals, `${packageName}_${key}`) ??
-    ""
+    fuzzyGet(vals, `${packageName}_${key}`)
   );
+  if (direct !== undefined && direct !== null && direct !== "") return direct;
+
+  // Backward-compatible receipt fallback:
+  // Some existing templates use package.policyinfo.premium while paid amount is stored in accounting payments.
+  if (packageName.toLowerCase() === "policyinfo" && key.toLowerCase() === "premium") {
+    const paid = ctx?.paymentData?.latestClientPaidAmount;
+    if (typeof paid === "number" && Number.isFinite(paid)) return paid;
+  }
+  return "";
 }
 
 function resolveDocTracking(ctx: ResolveContext, key: string): unknown {
@@ -327,6 +367,12 @@ function resolvePolicy(ctx: ResolveContext, key: string): unknown {
     endorsementReason: ext.endorsementReason ?? "",
     effectiveDate: ext.effectiveDate ?? "",
     expiryDate: ext.expiryDate ?? "",
+    latestClientPaidAmount: ctx.paymentData?.latestClientPaidAmount ?? "",
+    latestClientPaidDate: ctx.paymentData?.latestClientPaidDate ?? "",
+    latestClientPaymentRef: ctx.paymentData?.latestClientPaymentRef ?? "",
+    paymentAmount: ctx.paymentData?.latestClientPaidAmount ?? "",
+    paymentDate: ctx.paymentData?.latestClientPaidDate ?? "",
+    paymentReference: ctx.paymentData?.latestClientPaymentRef ?? "",
   };
   return map[key] ?? ext[key] ?? ctx.snapshot[key] ?? "";
 }
@@ -568,7 +614,7 @@ export function resolveRawValue(ref: FieldRef, ctx: ResolveContext): unknown {
       return resolveContact(ctx.snapshot, ref.fieldKey);
 
     case "package":
-      return resolvePackage(ctx.snapshot, ref.packageName ?? "", ref.fieldKey);
+      return resolvePackage(ctx.snapshot, ref.packageName ?? "", ref.fieldKey, ctx);
 
     case "agent":
       return ctx.agent ? fuzzyGet(ctx.agent, ref.fieldKey) ?? "" : "";

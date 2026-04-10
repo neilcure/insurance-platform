@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
-import { cars, policies } from "@/db/schema/insurance";
+import { policies } from "@/db/schema/insurance";
+import { accountingInvoices } from "@/db/schema/accounting";
 import { and, eq, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
@@ -107,6 +108,8 @@ export async function POST(
     const entry: DocumentStatusEntry = existing[docType] ?? ({} as DocumentStatusEntry);
     const now = new Date().toISOString();
     const userName = (user as unknown as { name?: string; email?: string }).name || (user as unknown as { email?: string }).email || `User #${user.id}`;
+    const userEmail = (user as unknown as { name?: string; email?: string }).email || `user:${user.id}`;
+    const isAgentDoc = isAgentTrackingDocType(docType);
 
     let newStatus: DocLifecycleStatus;
 
@@ -159,11 +162,22 @@ export async function POST(
         }
         const prepEntry: DocumentStatusEntry = {
           ...entry,
+          status: "prepared",
+          generatedAt: now,
           documentNumber: prepDocNumber,
         };
         const prepMap = { ...existing, [docType]: prepEntry };
         await db.update(policies).set({ documentTracking: prepMap }).where(eq(policies.id, policyId));
-        return NextResponse.json({ documentTracking: prepMap });
+        let statusAdvanced: string | null = null;
+        if (isAgentDoc) {
+          statusAdvanced = await syncAgentStatus(policyId, prepMap, userEmail, `${docType.replace(/_/g, " ")} prepared`);
+        } else {
+          statusAdvanced = await autoAdvancePolicyStatus(policyId, docType, action, userEmail, templateType, "client");
+        }
+        return NextResponse.json({
+          documentTracking: prepMap,
+          ...(statusAdvanced ? { statusAdvanced } : {}),
+        });
       }
       case "reset": {
         const updated = { ...existing };
@@ -171,9 +185,12 @@ export async function POST(
         await db.update(policies).set({ documentTracking: updated }).where(eq(policies.id, policyId));
         let statusRolledBack: string | null = null;
         try {
-          const { recalculatePolicyStatus } = await import("@/lib/auto-advance-status");
-          const userEmail = (user as unknown as { email?: string }).email || `user:${user.id}`;
-          statusRolledBack = await recalculatePolicyStatus(policyId, userEmail, `${docType.replace(/_/g, " ")} tracking reset`);
+          if (isAgentDoc) {
+            statusRolledBack = await syncAgentStatus(policyId, updated, userEmail, `${docType.replace(/_/g, " ")} tracking reset`);
+          } else {
+            const { recalculatePolicyStatus } = await import("@/lib/auto-advance-status");
+            statusRolledBack = await recalculatePolicyStatus(policyId, userEmail, `${docType.replace(/_/g, " ")} tracking reset`);
+          }
         } catch (err) {
           console.error("Status recalculate on reset failed (non-fatal):", err);
         }
@@ -253,29 +270,29 @@ export async function POST(
       .set({ documentTracking: updatedMap })
       .where(eq(policies.id, policyId));
 
-    const userEmail = (user as unknown as { name?: string; email?: string }).email || `user:${user.id}`;
-
     // On reject: recalculate status (may roll back if the rejected doc caused an advance)
     let autoStatusAdvanced: string | null = null;
     let statusRolledBack: string | null = null;
 
     if (action === "reject") {
       try {
-        const { recalculatePolicyStatus } = await import("@/lib/auto-advance-status");
-        statusRolledBack = await recalculatePolicyStatus(policyId, userEmail, `${docType.replace(/_/g, " ")} rejected`);
+        if (isAgentDoc) {
+          statusRolledBack = await syncAgentStatus(policyId, updatedMap, userEmail, `${docType.replace(/_/g, " ")} rejected`);
+        } else {
+          const { recalculatePolicyStatus } = await import("@/lib/auto-advance-status");
+          statusRolledBack = await recalculatePolicyStatus(policyId, userEmail, `${docType.replace(/_/g, " ")} rejected`);
+        }
       } catch (err) {
         console.error("Status recalculate on reject failed (non-fatal):", err);
       }
     } else {
       // Auto-advance policy status based on document tracking action
       try {
-        autoStatusAdvanced = await autoAdvancePolicyStatus(
-          policyId,
-          docType,
-          action,
-          userEmail,
-          templateType,
-        );
+        if (isAgentDoc) {
+          autoStatusAdvanced = await syncAgentStatus(policyId, updatedMap, userEmail, `${docType.replace(/_/g, " ")} ${action}`);
+        } else {
+          autoStatusAdvanced = await autoAdvancePolicyStatus(policyId, docType, action, userEmail, templateType, "client");
+        }
       } catch (err) {
         console.error("Auto-advance status error (non-fatal):", err);
       }
@@ -358,6 +375,7 @@ async function autoAdvancePolicyStatus(
   action: string,
   changedBy: string,
   templateType?: string,
+  track: "client" | "agent" = "client",
 ): Promise<string | null> {
   if (action !== "send" && action !== "confirm" && action !== "prepare") return null;
 
@@ -384,7 +402,89 @@ async function autoAdvancePolicyStatus(
     targetStatus,
     changedBy,
     `Auto: ${docType.replace(/_/g, " ")} ${noteLabel}`,
+    track,
   );
 }
 
 // autoCreateAccountingInvoices is imported from @/lib/auto-create-invoices
+
+function isAgentTrackingDocType(docType: string): boolean {
+  return docType.toLowerCase().endsWith("_agent");
+}
+
+async function syncAgentStatus(
+  policyId: number,
+  tracking: DocumentTrackingData,
+  changedBy: string,
+  note: string,
+): Promise<string | null> {
+  const [[policyRow], commissionRows] = await Promise.all([
+    db
+      .select({
+        agentId: policies.agentId,
+      })
+      .from(policies)
+      .where(eq(policies.id, policyId))
+      .limit(1),
+    db
+      .select({
+        status: accountingInvoices.status,
+      })
+      .from(accountingInvoices)
+      .where(
+        and(
+          eq(accountingInvoices.entityPolicyId, policyId),
+          eq(accountingInvoices.entityType, "agent"),
+          eq(accountingInvoices.direction, "payable"),
+          eq(accountingInvoices.premiumType, "agent_premium"),
+          sql`${accountingInvoices.status} <> 'cancelled'`,
+        ),
+      ),
+  ]);
+
+  if (!policyRow?.agentId) return null;
+
+  const entries = Object.entries(tracking).filter(([k]) => !k.startsWith("_") && k.endsWith("_agent"));
+  const hasStatus = (keywords: string[], statuses: Array<"prepared" | "sent" | "confirmed">) =>
+    entries.some(([k, v]) =>
+      keywords.some((kw) => k.toLowerCase().includes(kw))
+      && !!v?.status
+      && statuses.includes(v.status as "prepared" | "sent" | "confirmed"),
+    );
+  const hasPreparedDocNumber = (keywords: string[]) =>
+    entries.some(([k, v]) =>
+      keywords.some((kw) => k.toLowerCase().includes(kw))
+      && !!v?.documentNumber
+      && (!v?.status || v.status === "prepared"),
+    );
+
+  const hasStatementCreated = commissionRows.some((r) => String(r.status).toLowerCase() === "statement_created");
+  const hasSettled = commissionRows.some((r) => ["paid", "verified", "settled"].includes(String(r.status).toLowerCase()));
+  const hasAnyCommission = commissionRows.length > 0;
+
+  const statementKeywords = ["statement"];
+  const creditKeywords = ["credit", "commission_credit", "credit_advice", "advice"];
+
+  let targetStatus: string | null = null;
+  if (hasSettled) {
+    targetStatus = "commission_settled";
+  } else if (hasStatus(creditKeywords, ["confirmed"])) {
+    targetStatus = "credit_advice_confirmed";
+  } else if (hasStatus(creditKeywords, ["sent"])) {
+    targetStatus = "credit_advice_sent";
+  } else if (hasPreparedDocNumber(creditKeywords)) {
+    targetStatus = "credit_advice_prepared";
+  } else if (hasStatus(statementKeywords, ["confirmed"])) {
+    targetStatus = "statement_confirmed";
+  } else if (hasStatus(statementKeywords, ["sent"])) {
+    targetStatus = "statement_sent";
+  } else if (hasPreparedDocNumber(statementKeywords) || hasStatementCreated) {
+    targetStatus = "statement_created";
+  } else if (hasAnyCommission) {
+    targetStatus = "commission_pending";
+  }
+
+  if (!targetStatus) return null;
+  const { advancePolicyStatus } = await import("@/lib/auto-advance-status");
+  return advancePolicyStatus(policyId, targetStatus, changedBy, `Auto agent sync: ${note}`, "agent");
+}

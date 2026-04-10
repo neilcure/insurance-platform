@@ -32,6 +32,36 @@ const STALE_MS = 30_000;
 let globalCache: CacheEntry | null = null;
 let inflight: Promise<PolicyStatusOption[]> | null = null;
 
+const STATUS_LABEL_FALLBACKS: Record<string, string> = {
+  commission_pending: "Commission Pending",
+  statement_created: "Statement Created",
+  statement_sent: "Statement Sent",
+  statement_confirmed: "Statement Confirmed",
+  credit_advice_prepared: "Credit Advice Prepared",
+  credit_advice_sent: "Credit Advice Sent",
+  credit_advice_confirmed: "Credit Advice Confirmed",
+  commission_settled: "Commission Settled",
+};
+
+const STATUS_COLOR_FALLBACKS: Record<string, string> = {
+  commission_pending: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
+  statement_created: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200",
+  statement_sent: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+  statement_confirmed: "bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-200",
+  credit_advice_prepared: "bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-200",
+  credit_advice_sent: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
+  credit_advice_confirmed: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+  commission_settled: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200",
+};
+
+function toTitleCaseStatus(value: string): string {
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+    .join(" ");
+}
+
 function parseRows(rows: RawRow[]): PolicyStatusOption[] {
   return rows
     .map((r) => ({
@@ -108,17 +138,28 @@ export function usePolicyStatuses(flowKey?: string) {
   }, [allOptions]);
 
   const getLabel = React.useCallback(
-    (value: string) => statusMap.get(value)?.label ?? value,
+    (value: string) => statusMap.get(value)?.label ?? STATUS_LABEL_FALLBACKS[value] ?? toTitleCaseStatus(value),
     [statusMap],
   );
 
   const getColor = React.useCallback(
-    (value: string) => statusMap.get(value)?.color ?? "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200",
+    (value: string) =>
+      statusMap.get(value)?.color
+      ?? STATUS_COLOR_FALLBACKS[value]
+      ?? "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200",
     [statusMap],
   );
 
   const getOption = React.useCallback(
-    (value: string) => statusMap.get(value) ?? null,
+    (value: string) =>
+      statusMap.get(value) ?? {
+        value,
+        label: STATUS_LABEL_FALLBACKS[value] ?? toTitleCaseStatus(value),
+        color: STATUS_COLOR_FALLBACKS[value] ?? "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200",
+        sortOrder: Number.MAX_SAFE_INTEGER,
+        flows: [],
+        triggersInvoice: false,
+      },
     [statusMap],
   );
 

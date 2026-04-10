@@ -35,6 +35,9 @@ export function WorkflowTab({
   statusHistory,
   isAdmin,
   onRefresh,
+  initialSection,
+  initialDocTemplateValue,
+  initialDocAudience,
 }: {
   detail: PolicyDetail;
   flowKey?: string;
@@ -42,13 +45,25 @@ export function WorkflowTab({
   statusHistory?: Array<{ status: string; changedAt: string; changedBy?: string; note?: string }>;
   isAdmin?: boolean;
   onRefresh?: () => void;
+  initialSection?: string;
+  initialDocTemplateValue?: string;
+  initialDocAudience?: "client" | "agent";
 }) {
-  const { getLabel, getColor, getOption } = usePolicyStatuses(flowKey);
-  const [expandedSection, setExpandedSection] = React.useState<string | null>(null);
+  const { getLabel } = usePolicyStatuses(flowKey);
+  const [expandedSection, setExpandedSection] = React.useState<string | null>(initialSection ?? null);
+  React.useEffect(() => {
+    if (initialSection) setExpandedSection(initialSection);
+  }, [initialSection]);
 
-  const curStatus = currentStatus || "quotation_prepared";
-  const currentDef = getOption(curStatus);
-  const history = statusHistory ?? [];
+  const statusExtra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
+  const curStatusClient = String(statusExtra.statusClient ?? currentStatus ?? "quotation_prepared");
+  const curStatusAgent = String(statusExtra.statusAgent ?? statusExtra.statusClient ?? currentStatus ?? "quotation_prepared");
+  const historyClient = Array.isArray(statusExtra.statusHistoryClient)
+    ? (statusExtra.statusHistoryClient as Array<{ status: string; changedAt: string; changedBy?: string; note?: string }>)
+    : (statusHistory ?? []);
+  const historyAgent = Array.isArray(statusExtra.statusHistoryAgent)
+    ? (statusExtra.statusHistoryAgent as Array<{ status: string; changedAt: string; changedBy?: string; note?: string }>)
+    : [];
 
   const { insuredType, hasNcb } = React.useMemo(() => {
     const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
@@ -122,8 +137,11 @@ export function WorkflowTab({
           .map((r) => ({
             policyId: (r.policyId ?? r.id) as number,
             policyNumber: (r.policyNumber ?? r.policy_number ?? "") as string,
-            status: ((r.extraAttributes as Record<string, unknown> | undefined)?.status ??
-              (r.carExtra as Record<string, unknown> | undefined)?.status ?? "quotation_prepared") as string,
+            status: ((r.extraAttributes as Record<string, unknown> | undefined)?.statusClient ??
+              (r.extraAttributes as Record<string, unknown> | undefined)?.status ??
+              (r.carExtra as Record<string, unknown> | undefined)?.statusClient ??
+              (r.carExtra as Record<string, unknown> | undefined)?.status ??
+              "quotation_prepared") as string,
           }));
         setLinkedEndorsements(mapped);
       })
@@ -137,7 +155,11 @@ export function WorkflowTab({
 
   const combinedUploadSummary = React.useMemo(() => {
     const base = uploadSummary ?? { total: 0, verified: 0, pending: 0, outstanding: 0, rejected: 0 };
-    let total = base.total, verified = base.verified, pending = base.pending, outstanding = base.outstanding, rejected = base.rejected;
+    let total = base.total;
+    let verified = base.verified;
+    const pending = base.pending;
+    let outstanding = base.outstanding;
+    const rejected = base.rejected;
     for (const s of Object.values(endorsementSummaries)) {
       total += s.total;
       verified += s.verified;
@@ -164,27 +186,58 @@ export function WorkflowTab({
         >
           <span>Current Status</span>
           <span className="flex items-center gap-2">
-            <Badge variant={currentDef?.color ? "custom" : "secondary"} className={currentDef?.color ?? ""}>
-              {currentDef?.label ?? curStatus}
+            <Badge
+              variant="custom"
+              className="bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
+            >
+              Client: {getLabel(curStatusClient)}
             </Badge>
+            {detail.agent && (
+              <Badge
+                variant="custom"
+                className="bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+              >
+                Agent: {getLabel(curStatusAgent)}
+              </Badge>
+            )}
             {isAdmin && (
               <ChevronRight className={`h-4 w-4 shrink-0 text-neutral-400 transition-transform ${showOverride ? "rotate-90" : ""}`} />
             )}
           </span>
         </button>
         {showOverride && isAdmin && (
-          <div className="border-t border-neutral-200 p-3 dark:border-neutral-800">
+          <div className="border-t border-neutral-200 p-3 dark:border-neutral-800 space-y-3">
             <React.Suspense fallback={<div className="py-2 text-center text-xs text-neutral-400">Loading...</div>}>
-              <StatusTab
-                policyId={detail.policyId}
-                currentStatus={curStatus}
-                statusHistory={history}
-                onStatusChange={(newStatus) => {
-                  setShowOverride(false);
-                  onRefresh?.();
-                }}
-                flowKey={flowKey}
-              />
+              <div className="rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">Client Status</div>
+                <StatusTab
+                  policyId={detail.policyId}
+                  currentStatus={curStatusClient}
+                  statusHistory={historyClient}
+                  onStatusChange={() => {
+                    setShowOverride(false);
+                    onRefresh?.();
+                  }}
+                  flowKey={flowKey}
+                  audience="client"
+                />
+              </div>
+              {detail.agent && (
+                <div className="rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">Agent Status</div>
+                  <StatusTab
+                    policyId={detail.policyId}
+                    currentStatus={curStatusAgent}
+                    statusHistory={historyAgent}
+                    onStatusChange={() => {
+                      setShowOverride(false);
+                      onRefresh?.();
+                    }}
+                    flowKey={flowKey}
+                    audience="agent"
+                  />
+                </div>
+              )}
             </React.Suspense>
           </div>
         )}
@@ -281,7 +334,7 @@ export function WorkflowTab({
                     policyId={detail.policyId}
                     flowKey={flowKey}
                     isAdmin={isAdmin ?? false}
-                    currentStatus={curStatus}
+                    currentStatus={curStatusClient}
                     insuredType={insuredType}
                     hasNcb={hasNcb}
                     onSummaryChange={setUploadSummary}
@@ -327,7 +380,7 @@ export function WorkflowTab({
                     policyId={detail.policyId}
                     flowKey={flowKey}
                     isAdmin={isAdmin ?? false}
-                    currentStatus={curStatus}
+                    currentStatus={curStatusClient}
                     insuredType={insuredType}
                     hasNcb={hasNcb}
                     parentSchedules={parentSchedules}
@@ -372,7 +425,11 @@ export function WorkflowTab({
                   <DocumentsTab
                     detail={detail}
                     flowKey={flowKey}
-                    currentStatus={curStatus}
+                    currentStatus={curStatusClient}
+                    currentStatusClient={curStatusClient}
+                    currentStatusAgent={curStatusAgent}
+                    initialTemplateValue={initialDocTemplateValue}
+                    initialAudience={initialDocAudience}
                     onStatusAutoAdvanced={onRefresh}
                   />
                 )}
@@ -383,7 +440,7 @@ export function WorkflowTab({
                     detail={detail}
                     currentAgent={detail.agent}
                     flowKey={flowKey}
-                    currentStatus={curStatus}
+                    currentStatus={curStatusClient}
                     onActionComplete={onRefresh}
                   />
                 )}

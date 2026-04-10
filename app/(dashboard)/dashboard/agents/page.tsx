@@ -36,7 +36,7 @@ export default async function AgentsPage() {
           <div className="flex items-center justify-between gap-4">
             <CardTitle>All Agents</CardTitle>
             <Link href="/admin/users">
-              <Button>Invite Agent</Button>
+              <Button>Create / Edit Agent</Button>
             </Link>
           </div>
         </CardHeader>

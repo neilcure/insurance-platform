@@ -143,6 +143,9 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
   const [rows, setRows] = React.useState<Row[]>(initialRows);
   const [query, setQuery] = React.useState("");
   const [openId, setOpenId] = React.useState<number | null>(null);
+  const [deepLinkSection, setDeepLinkSection] = React.useState<string | undefined>(undefined);
+  const [deepLinkDocTemplate, setDeepLinkDocTemplate] = React.useState<string | undefined>(undefined);
+  const [deepLinkDocAudience, setDeepLinkDocAudience] = React.useState<"client" | "agent" | undefined>(undefined);
   const [detail, setDetail] = React.useState<PolicyDetail | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
@@ -795,8 +798,17 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
     try {
       const sp = new URLSearchParams(window.location.search);
       const raw = sp.get("policyId") ?? sp.get("open") ?? sp.get("id");
+      const openSection = sp.get("openSection") ?? undefined;
+      const docTemplate = sp.get("docTemplate") ?? undefined;
+      const docAudienceRaw = sp.get("docAudience");
+      const docAudience = docAudienceRaw === "agent" || docAudienceRaw === "client"
+        ? docAudienceRaw
+        : undefined;
       const id = Number(raw);
       if (Number.isFinite(id) && id > 0) {
+        setDeepLinkSection(openSection);
+        setDeepLinkDocTemplate(docTemplate);
+        setDeepLinkDocAudience(docAudience);
         void openDetails(id);
       }
     } catch {
@@ -990,6 +1002,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
         drawerOpen={drawerOpen}
         onClose={closeDrawer}
         title={`${label} Details`}
+        initialTabId={deepLinkSection || deepLinkDocTemplate ? "workflow" : undefined}
         loading={loading}
         extraAttributes={detail?.extraAttributes as Record<string, unknown> | undefined}
         onRefresh={refreshCurrent}
@@ -1018,6 +1031,9 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
                 }
                 isAdmin={!isClientUser}
                 onRefresh={refreshCurrent}
+                initialSection={deepLinkSection}
+                initialDocTemplateValue={deepLinkDocTemplate}
+                initialDocAudience={deepLinkDocAudience}
               />
             ),
           },

@@ -135,4 +135,18 @@ export async function createAgentCommissionPayable(
       })),
     );
   });
+
+  // Keep agent status track aligned with commission settlement lifecycle.
+  try {
+    const { advancePolicyStatus } = await import("@/lib/auto-advance-status");
+    await advancePolicyStatus(
+      policyId,
+      agentSchedule ? "statement_created" : "commission_pending",
+      `user:${userId}`,
+      "Auto: agent commission payable created",
+      "agent",
+    );
+  } catch {
+    // non-fatal
+  }
 }
