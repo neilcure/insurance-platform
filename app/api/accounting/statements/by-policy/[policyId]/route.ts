@@ -358,12 +358,14 @@ async function loadPolicyStatementMeta(policyIds: number[]) {
 
 function isCreditStatementItem(item: ItemResult) {
   const desc = String(item.description ?? "").trim().toLowerCase();
-  return desc.includes("credit:");
+  if (item.policyPremiumId) return false;
+  return desc.startsWith("credit:");
 }
 
 function isCommissionStatementItem(item: ItemResult) {
   const desc = String(item.description ?? "").trim().toLowerCase();
-  return desc.includes("commission:");
+  if (item.policyPremiumId) return false;
+  return desc.startsWith("commission:");
 }
 
 function applyStatementItemPremiumAliases(
@@ -431,8 +433,6 @@ function buildStatementSummaryTotals(
   let hasCommission = false;
 
   for (const item of items) {
-    if (item.status !== "active") continue;
-
     const amountCents = resolveDisplayedItemAmountCents(item, entityType, premiumRoleTotals, direction);
     const rawAmountCents = item.amountCents ?? 0;
     if (Number.isFinite(amountCents) && amountCents !== 0) {
@@ -484,7 +484,6 @@ async function loadCommissionTotalCents(
       and ai.direction = 'payable'
       and ai.entity_type = 'agent'
       and ai.status <> 'cancelled'
-      and coalesce(ii.status, 'active') = 'active'
       and (
         lower(coalesce(ii.description, '')) like 'commission:%'
         or lower(coalesce(ai.notes, '')) like 'agent commission%'
@@ -555,7 +554,14 @@ async function buildPreviewFromScheduledInvoices(
       and(
         inArray(accountingInvoices.scheduleId, allSchedIds),
         eq(accountingInvoices.invoiceType, "individual"),
-        inArray(accountingInvoices.status, ["statement_created", "active"]),
+        inArray(accountingInvoices.status, [
+          "draft",
+          "pending",
+          "partial",
+          "settled",
+          "active",
+          "statement_created",
+        ]),
         audience ? eq(accountingInvoices.entityType, audience) : undefined,
       ),
     );
@@ -1096,9 +1102,27 @@ export async function GET(
       }
     }
 
-    if (stmtScheduleId && shouldScopeToPolicy) {
+    if (stmtScheduleId) {
       const existingPolicyIds = new Set(items.map((it) => it.policyId));
-      const missingPolicyIds = allPolicyIds.filter((id) => !existingPolicyIds.has(id));
+      let candidatePolicyIds: number[] = allPolicyIds;
+      if (!shouldScopeToPolicy) {
+        const schedulePolicyRowsRes = await db.execute(sql`
+          SELECT DISTINCT ii."policy_id"
+          FROM "accounting_invoice_items" ii
+          INNER JOIN "accounting_invoices" ai ON ai."id" = ii."invoice_id"
+          WHERE ai."schedule_id" = ${stmtScheduleId}
+            AND ai."invoice_type" = 'individual'
+            AND ai."entity_type" = ${stmt.entityType}
+            AND ai."status" IN ('draft', 'pending', 'partial', 'settled', 'active', 'statement_created')
+        `);
+        const schedulePolicyRows = Array.isArray(schedulePolicyRowsRes)
+          ? schedulePolicyRowsRes
+          : (schedulePolicyRowsRes as { rows?: unknown[] }).rows ?? [];
+        candidatePolicyIds = (schedulePolicyRows as { policy_id: number }[])
+          .map((r) => Number(r.policy_id))
+          .filter((id) => Number.isFinite(id) && id > 0);
+      }
+      const missingPolicyIds = candidatePolicyIds.filter((id) => !existingPolicyIds.has(id));
 
       if (missingPolicyIds.length > 0) {
         const role = stmt.direction === "payable" ? null : (PREMIUM_ROLE_MAP[stmt.premiumType] ?? null);

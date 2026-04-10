@@ -461,6 +461,41 @@ function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: strin
   if (!stmt) return "";
   const activeItems = stmt.items.filter((it) => it.status === "active");
   const paidItems = stmt.items.filter((it) => it.status === "paid_individually");
+  const billableStatuses = new Set(["active", "paid_individually"]);
+  const statementBillableItems = stmt.items.filter((it) => billableStatuses.has(it.status));
+  const hasPremiumBreakdown = (it: StatementCtx["items"][number]) => {
+    const p = it.premiums ?? {};
+    return Number(p.agentPremium ?? 0) !== 0
+      || Number(p.clientPremium ?? 0) !== 0
+      || Number(p.netPremium ?? 0) !== 0;
+  };
+  const isCommissionItem = (it: StatementCtx["items"][number]) => {
+    if (hasPremiumBreakdown(it)) return false;
+    return String(it.description ?? "").trim().toLowerCase().startsWith("commission:");
+  };
+  const isCreditItem = (it: StatementCtx["items"][number]) => {
+    if (hasPremiumBreakdown(it)) return false;
+    return String(it.description ?? "").trim().toLowerCase().startsWith("credit:");
+  };
+  const computedTotalDueFromItemsCents = statementBillableItems
+    .filter((it) => !isCommissionItem(it) && !isCreditItem(it))
+    .reduce((sum, it) => sum + Number(it.amountCents ?? 0), 0);
+  const computedCommissionFromItemsCents = statementBillableItems
+    .filter((it) => isCommissionItem(it))
+    .reduce((sum, it) => sum + Number(it.amountCents ?? 0), 0);
+  const policyPremiumTotalCents = Number(stmt.summaryTotals?.policyPremiumTotal ?? 0);
+  const endorsementPremiumTotalCents = Number(stmt.summaryTotals?.endorsementPremiumTotal ?? 0);
+  const summaryCommissionTotalCents = Number(stmt.summaryTotals?.commissionTotal ?? 0);
+  const commissionTotalCents = summaryCommissionTotalCents > 0
+    ? summaryCommissionTotalCents
+    : Math.max(computedCommissionFromItemsCents, 0);
+  const totalDueCents = (policyPremiumTotalCents + endorsementPremiumTotalCents) > 0
+    ? (policyPremiumTotalCents + endorsementPremiumTotalCents)
+    : (
+      computedTotalDueFromItemsCents > 0
+        ? computedTotalDueFromItemsCents
+        : stmt.activeTotal
+    );
 
   switch (fieldKey) {
     case "statementNumber": {
@@ -476,10 +511,14 @@ function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: strin
     case "statementStatus": return stmt.statementStatus;
     case "entityName": return stmt.entityName ?? "";
     case "entityType": return stmt.entityType;
-    case "activeTotal": return stmt.activeTotal / 100;
+    case "activeTotal": return totalDueCents / 100;
     case "paidIndividuallyTotal": return stmt.paidIndividuallyTotal / 100;
     case "totalAmountCents": return stmt.totalAmountCents / 100;
     case "paidAmountCents": return stmt.paidAmountCents / 100;
+    case "outstandingTotal": {
+      const outstanding = totalDueCents - stmt.paidIndividuallyTotal - commissionTotalCents;
+      return Math.max(outstanding, 0) / 100;
+    }
     case "currency": return stmt.currency;
     case "policyPremiumTotal":
     case "endorsementPremiumTotal":

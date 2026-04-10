@@ -143,6 +143,35 @@ function isPerItemField(key: string): boolean {
   return key === "itemDescriptions" || key === "itemAmounts" || key === "itemStatuses" || key.startsWith("item_");
 }
 
+const STATEMENT_TOTAL_ORDER = ["activeTotal", "paidIndividuallyTotal", "commissionTotal", "outstandingTotal"] as const;
+const STATEMENT_TOTAL_LABELS: Record<string, string> = {
+  activeTotal: "Total Due",
+  paidIndividuallyTotal: "Paid Individually",
+  commissionTotal: "commission",
+  outstandingTotal: "Outstanding",
+};
+const STATEMENT_TOTAL_SIDE: Record<string, "credit" | "debit"> = {
+  activeTotal: "debit",
+  paidIndividuallyTotal: "credit",
+  commissionTotal: "credit",
+  outstandingTotal: "debit",
+};
+
+function normalizeStatementTotalFields(fields: TemplateFieldMapping[]): TemplateFieldMapping[] {
+  const byKey = new Map(fields.map((f) => [f.key, f]));
+  return STATEMENT_TOTAL_ORDER
+    .map((key) => byKey.get(key))
+    .filter((f): f is TemplateFieldMapping => Boolean(f))
+    .map((f) => ({
+      ...f,
+      label: STATEMENT_TOTAL_LABELS[f.key] ?? f.label,
+    }));
+}
+
+function getStatementTotalSide(fieldKey: string): "credit" | "debit" | null {
+  return STATEMENT_TOTAL_SIDE[fieldKey] ?? null;
+}
+
 function getItemFieldValue(
   item: StatementDataForPreview["items"][0],
   fieldKey: string,
@@ -402,18 +431,23 @@ function DocumentPreview({
     for (const section of filteredSections) {
       const isAgentFld = (f: { key: string; label: string }) =>
         /agent/i.test(f.label) || /agent/i.test(f.key);
-      const visibleFlds = section.fields.filter((f) => {
+      const rawVisibleFields = section.fields.filter((f) => {
         if (!hasAudienceSections) return true;
         if (viewAudience === "client" && isAgentFld(f)) return false;
         return true;
       });
+      const visibleFlds = section.id === "totals"
+        ? normalizeStatementTotalFields(rawVisibleFields)
+        : rawVisibleFields;
 
       const useTable =
         (section.layout === "table" || section.id === "line_items") &&
         extraCtx.statementData?.items?.length;
 
       if (useTable) {
-        const items = extraCtx.statementData!.items.filter((it) => it.status === "active");
+        const items = extraCtx.statementData!.items.filter(
+          (it) => it.status === "active" || it.status === "paid_individually",
+        );
         const tableCols = visibleFlds.filter((f) => isPerItemField(f.key));
         const scalarFlds = visibleFlds
           .filter((f) => !isPerItemField(f.key))
@@ -428,9 +462,33 @@ function DocumentPreview({
         lines.push(`▸ ${section.title}`);
 
         if (scalarFlds.length > 0) {
-          const maxLbl = Math.max(...scalarFlds.map((f) => f.label.length));
-          for (const f of scalarFlds) {
-            lines.push(`  ${f.label.padEnd(maxLbl)}  ${formatValue(f.resolved, f.format, f.currencyCode)}`);
+          if (section.id === "totals") {
+            const maxLbl = Math.max(...scalarFlds.map((f) => f.label.length));
+            const maxCredit = Math.max(
+              "credit".length,
+              ...scalarFlds
+                .filter((f) => getStatementTotalSide(f.key) === "credit")
+                .map((f) => formatValue(f.resolved, f.format, f.currencyCode).length),
+            );
+            const maxDebit = Math.max(
+              "debit".length,
+              ...scalarFlds
+                .filter((f) => getStatementTotalSide(f.key) === "debit")
+                .map((f) => formatValue(f.resolved, f.format, f.currencyCode).length),
+            );
+            lines.push(`  ${"".padEnd(maxLbl)}  ${"credit".padStart(maxCredit)}  ${"debit".padStart(maxDebit)}`);
+            for (const f of scalarFlds) {
+              const side = getStatementTotalSide(f.key);
+              const value = formatValue(f.resolved, f.format, f.currencyCode);
+              const credit = side === "credit" ? value : "";
+              const debit = side === "debit" ? value : "";
+              lines.push(`  ${f.label.padEnd(maxLbl)}  ${credit.padStart(maxCredit)}  ${debit.padStart(maxDebit)}`);
+            }
+          } else {
+            const maxLbl = Math.max(...scalarFlds.map((f) => f.label.length));
+            for (const f of scalarFlds) {
+              lines.push(`  ${f.label.padEnd(maxLbl)}  ${formatValue(f.resolved, f.format, f.currencyCode)}`);
+            }
           }
         }
 
@@ -636,20 +694,25 @@ function DocumentPreview({
             /agent/i.test(f.label) || /agent/i.test(f.key);
           const isClientField = (f: { key: string; label: string }) =>
             /client/i.test(f.label) || /client/i.test(f.key);
-          const visibleFields = section.fields.filter((f) => {
+          const rawVisibleFields = section.fields.filter((f) => {
             if (!hasAudienceSections) return true;
             if (section.id === "line_items") return true;
             if (viewAudience === "client" && isAgentField(f)) return false;
             if (viewAudience === "agent" && isClientField(f)) return false;
             return true;
           });
+          const visibleFields = section.id === "totals"
+            ? normalizeStatementTotalFields(rawVisibleFields)
+            : rawVisibleFields;
 
           const useTable =
             (section.layout === "table" || section.id === "line_items") &&
             extraCtx.statementData?.items?.length;
 
           if (useTable) {
-            const items = extraCtx.statementData!.items.filter((it) => it.status === "active");
+            const items = extraCtx.statementData!.items.filter(
+              (it) => it.status === "active" || it.status === "paid_individually",
+            );
             const tableCols = visibleFields.filter((f) => isPerItemField(f.key));
             const scalarFields = visibleFields
               .filter((f) => !isPerItemField(f.key))
@@ -669,7 +732,36 @@ function DocumentPreview({
 
                 {scalarFields.length > 0 && (
                   <div className="mb-2">
-                    {scalarFields.map((f, idx) => (
+                    {section.id === "totals" ? (
+                      <div className="space-y-1">
+                        <div className="grid grid-cols-[1fr_100px_100px] gap-2 border-b border-neutral-200 pb-1">
+                          <span />
+                          <span className="text-[11px] sm:text-[12px] font-medium text-neutral-500 text-right">credit</span>
+                          <span className="text-[11px] sm:text-[12px] font-medium text-neutral-500 text-right">debit</span>
+                        </div>
+                        {scalarFields.map((f, idx) => {
+                          const side = getStatementTotalSide(f.key);
+                          const value = formatValue(f.resolved, f.format, f.currencyCode);
+                          const isOutstanding = f.key === "outstandingTotal";
+                          return (
+                            <div
+                              key={f.key}
+                              className={`grid grid-cols-[1fr_100px_100px] gap-2 py-1 sm:py-1.5 ${idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                            >
+                              <span className={`text-[11px] sm:text-[13px] ${isOutstanding ? "font-bold text-neutral-900" : "text-neutral-500 font-medium"}`}>
+                                {f.label}
+                              </span>
+                              <span className={`text-xs sm:text-[13px] text-right ${isOutstanding ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                                {side === "credit" ? value : ""}
+                              </span>
+                              <span className={`text-xs sm:text-[13px] text-right ${isOutstanding ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                                {side === "debit" ? value : ""}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : scalarFields.map((f, idx) => (
                       <div
                         key={f.key}
                         className={`flex justify-between gap-3 py-1 sm:py-1.5 ${idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
@@ -885,7 +977,36 @@ function DocumentPreview({
                 {section.title}
               </div>
               <div>
-                {fields.map((f, idx) => (
+                {section.id === "totals" ? (
+                  <div className="space-y-1">
+                    <div className="grid grid-cols-[1fr_100px_100px] gap-2 border-b border-neutral-200 pb-1">
+                      <span />
+                      <span className="text-[11px] sm:text-[12px] font-medium text-neutral-500 text-right">credit</span>
+                      <span className="text-[11px] sm:text-[12px] font-medium text-neutral-500 text-right">debit</span>
+                    </div>
+                    {fields.map((f, idx) => {
+                      const side = getStatementTotalSide(f.key);
+                      const value = formatValue(f.resolved, f.format, f.currencyCode);
+                      const isOutstanding = f.key === "outstandingTotal";
+                      return (
+                        <div
+                          key={f.key}
+                          className={`grid grid-cols-[1fr_100px_100px] gap-2 py-1 sm:py-1.5 ${idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                        >
+                          <span className={`text-[11px] sm:text-[13px] ${isOutstanding ? "font-bold text-neutral-900" : "text-neutral-500 font-medium"}`}>
+                            {f.label}
+                          </span>
+                          <span className={`text-xs sm:text-[13px] text-right ${isOutstanding ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                            {side === "credit" ? value : ""}
+                          </span>
+                          <span className={`text-xs sm:text-[13px] text-right ${isOutstanding ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                            {side === "debit" ? value : ""}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : fields.map((f, idx) => (
                   <div
                     key={f.key}
                     className={`flex justify-between gap-3 py-1 sm:py-1.5 ${idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}

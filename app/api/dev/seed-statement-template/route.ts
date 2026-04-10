@@ -49,6 +49,7 @@ const STATEMENT_SECTIONS = [
       { key: "itemDescriptions", label: "Description" },
       { key: "itemAmounts", label: "Amount", format: "currency", currencyCode: "HKD" },
       { key: "item_clientPremium", label: "Client Premium", format: "currency", currencyCode: "HKD" },
+      { key: "item_agentPremium", label: "Agent Premium", format: "currency", currencyCode: "HKD" },
     ],
   },
   {
@@ -71,7 +72,6 @@ const STATEMENT_SECTIONS = [
       { key: "policyPremiumTotal", label: "Policy Premium", format: "currency", currencyCode: "HKD" },
       { key: "endorsementPremiumTotal", label: "Endorsement Premium", format: "currency", currencyCode: "HKD" },
       { key: "creditTotal", label: "Credit Total", format: "currency", currencyCode: "HKD" },
-      { key: "commissionTotal", label: "Commission Total", format: "currency", currencyCode: "HKD" },
     ],
   },
   {
@@ -81,7 +81,8 @@ const STATEMENT_SECTIONS = [
     fields: [
       { key: "activeTotal", label: "Total Due", format: "currency", currencyCode: "HKD" },
       { key: "paidIndividuallyTotal", label: "Paid Individually", format: "currency", currencyCode: "HKD" },
-      { key: "paidAmountCents", label: "Paid Amount", format: "currency", currencyCode: "HKD" },
+      { key: "commissionTotal", label: "commission", format: "currency", currencyCode: "HKD" },
+      { key: "outstandingTotal", label: "Outstanding", format: "currency", currencyCode: "HKD" },
     ],
   },
 ];

@@ -330,6 +330,8 @@ export async function markAgentPolicyItemsPaidIndividually(
         eq(accountingInvoices.entityType, "agent"),
         sql`${accountingInvoices.status} <> 'cancelled'`,
         sql`coalesce("accounting_invoice_items"."status", 'active') = 'active'`,
+        sql`lower(coalesce("accounting_invoice_items"."description", '')) not like 'commission:%'`,
+        sql`lower(coalesce("accounting_invoice_items"."description", '')) not like 'credit:%'`,
       ),
     );
 
@@ -345,6 +347,8 @@ export async function markAgentPolicyItemsPaidIndividually(
       AND ai."entity_type" = 'agent'
       AND ai."status" <> 'cancelled'
       AND coalesce(ii."status", 'active') = 'active'
+      AND lower(coalesce(ii."description", '')) NOT LIKE 'commission:%'
+      AND lower(coalesce(ii."description", '')) NOT LIKE 'credit:%'
   `);
 
   const statementIds = [...new Set(
