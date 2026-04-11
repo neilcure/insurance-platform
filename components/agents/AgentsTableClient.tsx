@@ -25,7 +25,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ArrowUpDown, Ban, CheckCircle2, ChevronRight, CreditCard, FileText, Settings2, Trash2 } from "lucide-react";
+import { ArrowUpDown, Ban, CheckCircle2, ChevronRight, CreditCard, DollarSign, FileText, Settings2, Trash2 } from "lucide-react";
+import { InlinePaymentForm } from "@/components/ui/inline-payment-form";
 
 type Row = {
   id: number;
@@ -352,6 +353,8 @@ function AgentPaymentsPanel({ agentId }: { agentId: number }) {
   const [rows, setRows] = React.useState<AgentStatementRow[] | null>(null);
   const [stmtData, setStmtData] = React.useState<ByPolicyStatementData | null>(null);
   const [loaded, setLoaded] = React.useState(false);
+  const [refreshKey, setRefreshKey] = React.useState(0);
+  const [expandedPayment, setExpandedPayment] = React.useState<number | null>(null);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -364,7 +367,7 @@ function AgentPaymentsPanel({ agentId }: { agentId: number }) {
       })
       .catch(() => { if (!cancelled) setRows([]); });
     return () => { cancelled = true; };
-  }, [agentId]);
+  }, [agentId, refreshKey]);
 
   React.useEffect(() => {
     if (rows === null) return;
@@ -483,6 +486,14 @@ function AgentPaymentsPanel({ agentId }: { agentId: number }) {
         const commissionRows = individualRows.filter((r) => String(r.direction || "") === "payable");
         const resolvedAmt = (it: StmtItem) => Number(it.displayAmountCents ?? it.amountCents) || 0;
 
+        const receivableByPolicy = new Map<number, AgentStatementRow>();
+        for (const row of individualRows) {
+          const polId = Number(row.policyId);
+          if (polId > 0 && String(row.direction || "") === "receivable") {
+            receivableByPolicy.set(polId, row);
+          }
+        }
+
         const byClient = new Map<string, { clientName: string; policies: Map<number, { policyNumber: string; items: StmtItem[] }> }>();
         for (const item of premiumItems) {
           const info = (stmtData.policyClients ?? {})[item.policyId];
@@ -507,6 +518,10 @@ function AgentPaymentsPanel({ agentId }: { agentId: number }) {
                 {[...group.policies.entries()].map(([polId, pol]) => {
                   const isPaid = paidSet.has(polId) || pol.items.every((it) => it.status === "paid_individually");
                   const polTotal = pol.items.reduce((s, it) => s + resolvedAmt(it), 0);
+                  const invoice = receivableByPolicy.get(polId);
+                  const remaining = invoice ? Math.max(0, (Number(invoice.totalAmountCents) || 0) - (Number(invoice.paidAmountCents) || 0)) : 0;
+                  const canPay = !isPaid && invoice && remaining > 0;
+                  const isPaymentOpen = expandedPayment === polId;
                   return (
                     <div
                       key={polId}
@@ -528,9 +543,20 @@ function AgentPaymentsPanel({ agentId }: { agentId: number }) {
                             </span>
                           )}
                         </div>
-                        <span className={`shrink-0 font-semibold ${isPaid ? "text-green-600 dark:text-green-400" : "text-indigo-700 dark:text-indigo-300"}`}>
-                          {fmtMoney(polTotal)}
-                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className={`font-semibold ${isPaid ? "text-green-600 dark:text-green-400" : "text-indigo-700 dark:text-indigo-300"}`}>
+                            {fmtMoney(polTotal)}
+                          </span>
+                          {canPay && !isPaymentOpen && (
+                            <button
+                              type="button"
+                              onClick={() => setExpandedPayment(polId)}
+                              className="rounded bg-indigo-100 px-1.5 py-0.5 text-[9px] font-medium text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/40 dark:text-indigo-300 dark:hover:bg-indigo-800/60 transition-colors"
+                            >
+                              <DollarSign className="h-2.5 w-2.5 inline -mt-px mr-0.5" />Pay
+                            </button>
+                          )}
+                        </div>
                       </div>
                       {pol.items.length > 1 && (
                         <div className={`mt-1 space-y-0.5 pl-[18px] ${isPaid ? "text-green-600/70 dark:text-green-500/60" : "text-neutral-500 dark:text-neutral-400"}`}>
@@ -543,6 +569,20 @@ function AgentPaymentsPanel({ agentId }: { agentId: number }) {
                               </div>
                             );
                           })}
+                        </div>
+                      )}
+                      {canPay && isPaymentOpen && invoice && (
+                        <div className="mt-2">
+                          <InlinePaymentForm
+                            invoiceId={invoice.id}
+                            remainingCents={remaining}
+                            currency={currency}
+                            onSuccess={() => {
+                              setExpandedPayment(null);
+                              setRefreshKey((k) => k + 1);
+                              toast.success("Payment recorded");
+                            }}
+                          />
                         </div>
                       )}
                     </div>
