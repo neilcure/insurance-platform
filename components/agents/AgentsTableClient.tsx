@@ -15,9 +15,8 @@ import { toast } from "sonner";
 import { useSession } from "next-auth/react";
 import { resolveDocumentTemplateShowOn, type DocumentTemplateMeta } from "@/lib/types/document-template";
 import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
-import dynamic from "next/dynamic";
-import type { PolicyDetail } from "@/lib/types/policy";
 import { CompactSelect } from "@/components/ui/compact-select";
+import { AgentDocumentsTab, type AgentDocumentPreviewState } from "@/components/agents/AgentDocumentsTab";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -27,10 +26,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ArrowUpDown, Ban, CheckCircle2, ChevronRight, CreditCard, FileText, Settings2, Trash2 } from "lucide-react";
-const DocumentsTab = dynamic(
-  () => import("@/components/policies/tabs/DocumentsTab").then((m) => m.DocumentsTab),
-  { loading: () => <div className="py-3 text-xs text-neutral-500 dark:text-neutral-400">Loading template preview...</div> },
-);
 
 type Row = {
   id: number;
@@ -44,10 +39,13 @@ type Row = {
 type LogEntry = { at: string; type: string; message: string; meta?: Record<string, unknown> };
 type AgentStatementRow = {
   id: number;
+  scheduleId?: number | null;
   policyId?: number | null;
   flowKey?: string | null;
   invoiceNumber: string;
+  docNumber?: string | null;
   invoiceType: string;
+  direction?: string | null;
   status: string;
   totalAmountCents: number;
   paidAmountCents: number;
@@ -67,10 +65,18 @@ type AgentPolicyContext = {
   statusAgent: string;
   statusClient: string;
   flowKey: string;
-  tracking: Record<string, unknown>;
 };
 function toTrackingKey(label: string): string {
   return label.trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+function scoreStatementRow(row: AgentStatementRow): number {
+  let score = 0;
+  if (String(row.invoiceType || "").toLowerCase() === "statement") score += 4;
+  if (String(row.docNumber || "").trim()) score += 3;
+  const st = String(row.status || "").toLowerCase();
+  if (st === "statement_created" || st === "statement_sent" || st === "statement_confirmed") score += 2;
+  return score;
 }
 
 function AgentLogPanel({ agentId }: { agentId: number }) {
@@ -120,25 +126,16 @@ function AgentStatementsPanel({
   const [rows, setRows] = React.useState<AgentStatementRow[] | null>(null);
   const [statementTemplates, setStatementTemplates] = React.useState<AgentTemplateRow[]>([]);
   const [policyContextById, setPolicyContextById] = React.useState<Record<number, AgentPolicyContext>>({});
-  const [preparingKeys, setPreparingKeys] = React.useState<Set<string>>(new Set());
-  const [attemptedPrepareKeys, setAttemptedPrepareKeys] = React.useState<Set<string>>(new Set());
-  const [openPreview, setOpenPreview] = React.useState<{
-    policyId: number;
-    templateValue?: string;
-    autoSelect?: boolean;
-    flowKey?: string;
-    statusAgent?: string;
-    statusClient?: string;
-  } | null>(null);
-  const [previewDetail, setPreviewDetail] = React.useState<PolicyDetail | null>(null);
-  const [previewLoading, setPreviewLoading] = React.useState(false);
-  const [autoEnteredTemplateView, setAutoEnteredTemplateView] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
     fetch(`/api/agents/${agentId}/statements`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((j) => { if (!cancelled) setRows(Array.isArray(j) ? (j as AgentStatementRow[]) : []); })
+      .then((r) => (r.ok ? r.json() : { rows: [] }))
+      .then((j) => {
+        if (cancelled) return;
+        const parsed = Array.isArray(j) ? j : (j as { rows?: unknown[] }).rows ?? [];
+        setRows(Array.isArray(parsed) ? (parsed as AgentStatementRow[]) : []);
+      })
       .catch(() => { if (!cancelled) setRows([]); });
     return () => { cancelled = true; };
   }, [agentId]);
@@ -177,20 +174,14 @@ function AgentStatementsPanel({
       const policyIds = [...new Set(rows.map((r) => Number(r.policyId)).filter((id) => Number.isFinite(id) && id > 0))];
       const entries = await Promise.all(policyIds.map(async (policyId): Promise<[number, AgentPolicyContext | null]> => {
         try {
-          const [detailRes, trackingRes] = await Promise.all([
-            fetch(`/api/policies/${policyId}?_t=${Date.now()}`, { cache: "no-store" }),
-            fetch(`/api/policies/${policyId}/document-tracking?_t=${Date.now()}`, { cache: "no-store" }),
-          ]);
+          const detailRes = await fetch(`/api/policies/${policyId}?_t=${Date.now()}`, { cache: "no-store" });
           if (!detailRes.ok) return [policyId, null];
           const detail = (await detailRes.json()) as { flowKey?: string; extraAttributes?: Record<string, unknown> };
           const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
           const flowKey = String(detail.flowKey ?? extra.flowKey ?? "").toLowerCase();
           const statusClient = String(extra.statusClient ?? extra.status ?? "quotation_prepared").toLowerCase();
           const statusAgent = String(extra.statusAgent ?? statusClient ?? "quotation_prepared").toLowerCase();
-          const tracking = trackingRes.ok
-            ? ((await trackingRes.json()) as Record<string, unknown>)
-            : {};
-          return [policyId, { statusAgent, statusClient, flowKey, tracking }];
+          return [policyId, { statusAgent, statusClient, flowKey }];
         } catch {
           return [policyId, null];
         }
@@ -206,7 +197,10 @@ function AgentStatementsPanel({
     return () => { cancelled = true; };
   }, [rows]);
 
-  const rowsSafe = rows ?? [];
+  const rowsSafe = React.useMemo(
+    () => [...(rows ?? [])].sort((a, b) => scoreStatementRow(b) - scoreStatementRow(a)),
+    [rows],
+  );
 
   const effectiveStatusOrder = Array.from(new Set([
     ...statusOrder,
@@ -262,178 +256,29 @@ function AgentStatementsPanel({
     return matchesStatusRule(rule, ctx.statusAgent);
   };
 
-  const resolveLinkedDocNumber = (tpl: AgentTemplateRow, row: AgentStatementRow) => {
-    if (!row.policyId) return "";
-    const ctx = policyContextById[Number(row.policyId)];
-    if (!ctx) return "";
-    const key = `${toTrackingKey(tpl.label)}_agent`;
-    const entry = ctx.tracking[key] as Record<string, unknown> | undefined;
-    return entry?.documentNumber ? String(entry.documentNumber) : "";
-  };
-
   const displayRows = rowsSafe
     .map((row) => {
       const matchedTemplate = statementTemplates.find((tpl) => matchesTemplateForRow(tpl, row));
       if (!matchedTemplate) return null;
-      const docNumber = resolveLinkedDocNumber(matchedTemplate, row);
-      return { row, matchedTemplate, docNumber };
+      return { row, matchedTemplate };
     })
-    .filter((v): v is { row: AgentStatementRow; matchedTemplate: AgentTemplateRow; docNumber: string } => !!v);
+    .filter((v): v is { row: AgentStatementRow; matchedTemplate: AgentTemplateRow } => !!v);
 
-  React.useEffect(() => {
-    if (displayRows.length === 0) return;
-    const toPrepare = displayRows
-      .map(({ row, matchedTemplate, docNumber }) => {
-        const policyId = Number(row.policyId);
-        const trackingKey = `${toTrackingKey(matchedTemplate.label)}_agent`;
-        const prepId = `${policyId}:${trackingKey}`;
-        if (!Number.isFinite(policyId) || policyId <= 0) return null;
-        if (docNumber) return null;
-        if (!matchedTemplate.meta?.documentPrefix) return null;
-        if (preparingKeys.has(prepId)) return null;
-        if (attemptedPrepareKeys.has(prepId)) return null;
-        return { policyId, trackingKey, prepId, tpl: matchedTemplate };
-      })
-      .filter((v): v is { policyId: number; trackingKey: string; prepId: string; tpl: AgentTemplateRow } => !!v);
-    if (toPrepare.length === 0) return;
-
-    setPreparingKeys((prev) => {
-      const next = new Set(prev);
-      toPrepare.forEach((p) => next.add(p.prepId));
-      return next;
-    });
-    setAttemptedPrepareKeys((prev) => {
-      const next = new Set(prev);
-      toPrepare.forEach((p) => next.add(p.prepId));
-      return next;
-    });
-
-    let cancelled = false;
-    (async () => {
-      for (const item of toPrepare) {
-        try {
-          const res = await fetch(`/api/policies/${item.policyId}/document-tracking`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              docType: item.trackingKey,
-              action: "prepare",
-              templateType: item.tpl.meta?.type,
-              documentPrefix: item.tpl.meta?.documentPrefix,
-              documentSuffix: "(A)",
-              documentSetGroup: item.tpl.meta?.documentSetGroup,
-            }),
-          });
-          if (!res.ok) continue;
-          const data = await res.json() as { documentTracking?: Record<string, unknown> };
-          if (cancelled || !data.documentTracking) continue;
-          setPolicyContextById((prev) => {
-            const current = prev[item.policyId];
-            if (!current) return prev;
-            return {
-              ...prev,
-              [item.policyId]: {
-                ...current,
-                tracking: data.documentTracking ?? current.tracking,
-              },
-            };
-          });
-        } catch {
-          // ignore
-        } finally {
-          setPreparingKeys((prev) => {
-            const next = new Set(prev);
-            next.delete(item.prepId);
-            return next;
-          });
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [displayRows, preparingKeys, attemptedPrepareKeys]);
-
-  const fmtMoney = (cents: number, ccy: string) =>
-    new Intl.NumberFormat("en-HK", { style: "currency", currency: ccy || "HKD", minimumFractionDigits: 2 }).format((Number(cents) || 0) / 100);
-
-  const openTemplatePreview = async (
-    policyId: number,
-    templateValue?: string,
-    autoSelect = true,
-    context?: { flowKey?: string; statusAgent?: string; statusClient?: string },
-  ) => {
-    if (!Number.isFinite(policyId) || policyId <= 0) return;
-    setOpenPreview({
-      policyId,
-      templateValue,
-      autoSelect,
-      flowKey: context?.flowKey,
-      statusAgent: context?.statusAgent,
-      statusClient: context?.statusClient,
-    });
-    setPreviewDetail(null);
-    setPreviewLoading(true);
-    try {
-      const res = await fetch(`/api/policies/${policyId}?_t=${Date.now()}`, { cache: "no-store" });
-      if (!res.ok) throw new Error("Failed to load policy");
-      const detail = (await res.json()) as PolicyDetail;
-      setPreviewDetail(detail);
-    } catch {
-      toast.error("Unable to open statement template.");
-      setOpenPreview(null);
-    } finally {
-      setPreviewLoading(false);
-    }
-  };
-
-  React.useEffect(() => {
-    setAutoEnteredTemplateView(false);
-    setOpenPreview(null);
-    setPreviewDetail(null);
-    setPreviewLoading(false);
-  }, [agentId]);
-
-  React.useEffect(() => {
-    if (autoEnteredTemplateView) return;
-    if (openPreview) return;
-    const first = displayRows[0];
-    if (!first) return;
-    const policyId = Number(first.row.policyId);
-    if (!Number.isFinite(policyId) || policyId <= 0) return;
-    const ctx = policyContextById[policyId];
-    void openTemplatePreview(policyId, first.matchedTemplate.value, false, ctx ? {
-      flowKey: ctx.flowKey,
-      statusAgent: ctx.statusAgent,
-      statusClient: ctx.statusClient,
-    } : undefined);
-    setAutoEnteredTemplateView(true);
-  }, [autoEnteredTemplateView, openPreview, displayRows, policyContextById]);
-
-  const refreshOpenPreviewPolicy = async () => {
-    if (!openPreview) return;
-    const policyId = Number(openPreview.policyId);
-    if (!Number.isFinite(policyId) || policyId <= 0) return;
-    try {
-      const [detailRes, trackingRes] = await Promise.all([
-        fetch(`/api/policies/${policyId}?_t=${Date.now()}`, { cache: "no-store" }),
-        fetch(`/api/policies/${policyId}/document-tracking?_t=${Date.now()}`, { cache: "no-store" }),
-      ]);
-      if (!detailRes.ok) return;
-      const detail = (await detailRes.json()) as PolicyDetail;
-      setPreviewDetail(detail);
-      const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
-      const flowKey = String((detail as unknown as { flowKey?: string }).flowKey ?? extra.flowKey ?? "").toLowerCase();
-      const statusClient = String(extra.statusClient ?? extra.status ?? "quotation_prepared").toLowerCase();
-      const statusAgent = String(extra.statusAgent ?? statusClient ?? "quotation_prepared").toLowerCase();
-      setOpenPreview((prev) => prev ? { ...prev, flowKey, statusAgent, statusClient } : prev);
-      const tracking = trackingRes.ok ? ((await trackingRes.json()) as Record<string, unknown>) : {};
-      setPolicyContextById((prev) => ({
-        ...prev,
-        [policyId]: { statusAgent, statusClient, flowKey, tracking },
-      }));
-    } catch {
-      // non-fatal refresh
-    }
-  };
+  const handlePolicyContextRefresh = React.useCallback((payload: {
+    policyId: number;
+    flowKey: string;
+    statusClient: string;
+    statusAgent: string;
+  }) => {
+    setPolicyContextById((prev) => ({
+      ...prev,
+      [payload.policyId]: {
+        flowKey: payload.flowKey,
+        statusClient: payload.statusClient,
+        statusAgent: payload.statusAgent,
+      },
+    }));
+  }, []);
 
   if (!rows) {
     return <div className="text-xs text-neutral-500 dark:text-neutral-400">Loading statements...</div>;
@@ -452,140 +297,283 @@ function AgentStatementsPanel({
     return <div className="text-xs text-neutral-500 dark:text-neutral-400">No linked agent documents found for current template settings.</div>;
   }
 
-  if (openPreview) {
+  const first = displayRows[0];
+  const firstPolicyId = Number(first?.row.policyId);
+  const firstCtx = Number.isFinite(firstPolicyId) && firstPolicyId > 0 ? policyContextById[firstPolicyId] : undefined;
+  const activePreview: AgentDocumentPreviewState | null = first && Number.isFinite(firstPolicyId) && firstPolicyId > 0
+    ? {
+      statementInvoiceId: first.row.id,
+      policyId: firstPolicyId,
+      templateValue: first.matchedTemplate.value,
+      autoSelect: false,
+      flowKey: firstCtx?.flowKey,
+      statusAgent: firstCtx?.statusAgent,
+      statusClient: firstCtx?.statusClient,
+    }
+    : null;
+
+  if (activePreview) {
     return (
       <div className="space-y-2">
-        {previewLoading && (
-          <div className="py-3 text-xs text-neutral-500 dark:text-neutral-400">Loading statement template...</div>
-        )}
-        {!previewLoading && previewDetail && (
-          <div className="max-h-[70vh] overflow-auto">
-            <DocumentsTab
-              detail={previewDetail}
-              flowKey={String(
-                openPreview.flowKey
-                ?? (previewDetail as unknown as { flowKey?: string }).flowKey
-                ?? ((previewDetail.extraAttributes ?? {}) as Record<string, unknown>).flowKey
-                ?? "",
-              )}
-              currentStatusClient={String(
-                openPreview.statusClient
-                ?? ((previewDetail.extraAttributes ?? {}) as Record<string, unknown>).statusClient
-                ?? ((previewDetail.extraAttributes ?? {}) as Record<string, unknown>).status
-                ?? "quotation_prepared",
-              )}
-              currentStatusAgent={String(
-                openPreview.statusAgent
-                ?? ((previewDetail.extraAttributes ?? {}) as Record<string, unknown>).statusAgent
-                ?? ((previewDetail.extraAttributes ?? {}) as Record<string, unknown>).statusClient
-                ?? ((previewDetail.extraAttributes ?? {}) as Record<string, unknown>).status
-                ?? "quotation_prepared",
-              )}
-              initialTemplateValue={openPreview.autoSelect ? openPreview.templateValue : undefined}
-              initialAudience="agent"
-              onlyTemplateValue={openPreview.templateValue}
-              hidePdfTemplates
-              onStatusAutoAdvanced={() => { void refreshOpenPreviewPolicy(); }}
-            />
-          </div>
-        )}
+        <AgentDocumentsTab
+          preview={activePreview}
+          onPolicyContextRefresh={handlePolicyContextRefresh}
+        />
       </div>
     );
   }
-  return (
-    <div className="space-y-2">
-      {displayRows.map(({ row: r, matchedTemplate, docNumber }) => {
-        const policyId = Number(r.policyId);
-        const trackingKey = `${toTrackingKey(matchedTemplate.label)}_agent`;
-        const isPreparing = preparingKeys.has(`${policyId}:${trackingKey}`);
-        return (
-        <div
-          key={r.id}
-          role="button"
-          tabIndex={Number.isFinite(policyId) && policyId > 0 ? 0 : -1}
-          className="cursor-pointer rounded-md border border-neutral-200 p-2 transition-colors hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900/40"
-          onClick={() => {
-            if (!Number.isFinite(policyId) || policyId <= 0) return;
-            const ctx = policyContextById[policyId];
-            void openTemplatePreview(policyId, matchedTemplate.value, true, ctx ? {
-              flowKey: ctx.flowKey,
-              statusAgent: ctx.statusAgent,
-                  statusClient: ctx.statusClient,
-            } : undefined);
-          }}
-          onKeyDown={(e) => {
-            if (e.key !== "Enter" && e.key !== " ") return;
-            e.preventDefault();
-            if (!Number.isFinite(policyId) || policyId <= 0) return;
-            const ctx = policyContextById[policyId];
-            void openTemplatePreview(policyId, matchedTemplate.value, true, ctx ? {
-              flowKey: ctx.flowKey,
-              statusAgent: ctx.statusAgent,
-              statusClient: ctx.statusClient,
-            } : undefined);
-          }}
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="text-xs font-mono">{docNumber || r.invoiceNumber || (isPreparing ? "Preparing document number..." : "No document number yet")}</div>
-            <div className="flex items-center gap-2">
-              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
-                {String(r.status || "").replace(/_/g, " ")}
-              </span>
-            </div>
-          </div>
-          <div className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400">
-            Template: {matchedTemplate.label}
-          </div>
-          <div className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-            {r.policyNumbers || "—"}
-          </div>
-          <div className="mt-1 text-xs">
-            {fmtMoney(r.totalAmountCents, r.currency)} total
-            {r.paidAmountCents > 0 ? ` · ${fmtMoney(r.paidAmountCents, r.currency)} paid` : ""}
-          </div>
-        </div>
-      );
-      })}
-    </div>
-  );
+  return <div className="text-xs text-neutral-500 dark:text-neutral-400">No openable statement document found.</div>;
 }
+
+type StmtItem = {
+  id: number;
+  policyId: number;
+  policyPremiumId?: number | null;
+  description: string | null;
+  amountCents: number;
+  displayAmountCents?: number;
+  status: string;
+};
+type PolicyClientInfo = { policyNumber: string; clientName: string };
+type ByPolicyStatementData = {
+  statementNumber: string;
+  statementStatus: string;
+  activeTotal: number;
+  paidIndividuallyTotal: number;
+  commissionTotal: number;
+  outstandingTotal: number;
+  currency: string;
+  items: StmtItem[];
+  policyClients: Record<number, PolicyClientInfo>;
+  clientPaidPolicyIds: number[];
+};
 
 function AgentPaymentsPanel({ agentId }: { agentId: number }) {
   const [rows, setRows] = React.useState<AgentStatementRow[] | null>(null);
+  const [stmtData, setStmtData] = React.useState<ByPolicyStatementData | null>(null);
+  const [loaded, setLoaded] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
     fetch(`/api/agents/${agentId}/statements`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((j) => { if (!cancelled) setRows(Array.isArray(j) ? (j as AgentStatementRow[]) : []); })
+      .then((r) => (r.ok ? r.json() : { rows: [] }))
+      .then((j) => {
+        if (cancelled) return;
+        const parsed = Array.isArray(j) ? j : (j as { rows?: unknown[] }).rows ?? [];
+        setRows(Array.isArray(parsed) ? (parsed as AgentStatementRow[]) : []);
+      })
       .catch(() => { if (!cancelled) setRows([]); });
     return () => { cancelled = true; };
   }, [agentId]);
 
-  if (!rows) return <div className="text-xs text-neutral-500 dark:text-neutral-400">Loading payments...</div>;
-  if (rows.length === 0) return <div className="text-xs text-neutral-500 dark:text-neutral-400">No payment records yet.</div>;
+  React.useEffect(() => {
+    if (rows === null) return;
+    const individualRows = rows.filter((r) => String(r.invoiceType || "") !== "statement");
+    const firstPolicyId = individualRows.find((r) => Number(r.policyId) > 0)?.policyId;
+    if (!firstPolicyId) {
+      setLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/accounting/statements/by-policy/${firstPolicyId}?audience=agent&_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (cancelled || !j) { if (!cancelled) setLoaded(true); return; }
+        const s = j.statement;
+        if (!s) { setLoaded(true); return; }
+        const activeTotal = Number(s.activeTotal) || 0;
+        const paidIndividuallyTotal = Number(s.paidIndividuallyTotal) || 0;
+        const summaryTotals = (s.summaryTotals ?? {}) as Record<string, number>;
+        const commissionTotal = Number(summaryTotals.commissionTotal) || 0;
+        const totalDue = activeTotal + paidIndividuallyTotal;
+        setStmtData({
+          statementNumber: String(s.statementNumber ?? "").trim(),
+          statementStatus: String(s.statementStatus ?? s.status ?? "draft").trim(),
+          activeTotal,
+          paidIndividuallyTotal,
+          commissionTotal,
+          outstandingTotal: totalDue - paidIndividuallyTotal - commissionTotal,
+          currency: String(s.currency ?? "HKD"),
+          items: Array.isArray(s.items) ? s.items : [],
+          policyClients: (s.policyClients ?? {}) as Record<number, PolicyClientInfo>,
+          clientPaidPolicyIds: Array.isArray(s.clientPaidPolicyIds) ? s.clientPaidPolicyIds : [],
+        });
+        setLoaded(true);
+      })
+      .catch(() => { if (!cancelled) setLoaded(true); });
+    return () => { cancelled = true; };
+  }, [rows]);
 
-  const currency = rows[0]?.currency || "HKD";
-  const totalCents = rows.reduce((sum, r) => sum + (Number(r.totalAmountCents) || 0), 0);
-  const paidCents = rows.reduce((sum, r) => sum + (Number(r.paidAmountCents) || 0), 0);
-  const outstandingCents = totalCents - paidCents;
+  if (!rows || !loaded) return <div className="text-xs text-neutral-500 dark:text-neutral-400">Loading payments...</div>;
+
+  const individualRows = rows.filter((r) => String(r.invoiceType || "") !== "statement");
+  if (individualRows.length === 0 && !stmtData) {
+    return <div className="text-xs text-neutral-500 dark:text-neutral-400">No payment records yet.</div>;
+  }
+
+  const currency = stmtData?.currency || rows[0]?.currency || "HKD";
   const fmtMoney = (cents: number) =>
     new Intl.NumberFormat("en-HK", { style: "currency", currency, minimumFractionDigits: 2 }).format((Number(cents) || 0) / 100);
 
+  const stmtRow = rows.find((r) => String(r.invoiceType || "") === "statement");
+  const docNumber = stmtRow?.docNumber || stmtData?.statementNumber || stmtRow?.invoiceNumber || "";
+  const bestStatus = stmtData?.statementStatus || stmtRow?.status || "draft";
+
+  const totalDue = stmtData ? (stmtData.activeTotal + stmtData.paidIndividuallyTotal) : 0;
+  const paidInd = stmtData?.paidIndividuallyTotal ?? 0;
+  const commission = stmtData?.commissionTotal ?? 0;
+  const outstanding = stmtData?.outstandingTotal ?? (totalDue - paidInd - commission);
+
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-      <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-        <div className="text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Total</div>
-        <div className="mt-1 text-sm font-semibold">{fmtMoney(totalCents)}</div>
+    <div className="space-y-3">
+      <div className="rounded-md border border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30 overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2">
+          <div className="text-xs font-medium text-indigo-800 dark:text-indigo-200">
+            {docNumber || "Agent Statement"}
+          </div>
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+            {bestStatus.replace(/_/g, " ")}
+          </span>
+        </div>
+        {stmtData && totalDue > 0 && (
+          <div className="border-t border-indigo-200 dark:border-indigo-800 px-3 py-2 space-y-1">
+            <div className="space-y-0.5 text-xs">
+              <div className="flex items-center justify-between text-indigo-600 dark:text-indigo-400">
+                <span>Total Due</span>
+                <span className="font-semibold">{fmtMoney(totalDue)}</span>
+              </div>
+              {paidInd > 0 && (
+                <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400">
+                  <span>Paid Individually</span>
+                  <span>−{fmtMoney(paidInd)}</span>
+                </div>
+              )}
+              {commission > 0 && (
+                <div className="flex items-center justify-between text-amber-600 dark:text-amber-400">
+                  <span>Less commission</span>
+                  <span>−{fmtMoney(commission)}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between font-medium pt-1 border-t border-indigo-200/60 dark:border-indigo-700/60">
+                {outstanding > 0 ? (
+                  <>
+                    <span className="text-indigo-600 dark:text-indigo-400">Outstanding</span>
+                    <span className="font-bold text-indigo-800 dark:text-indigo-200">{fmtMoney(outstanding)}</span>
+                  </>
+                ) : outstanding < 0 ? (
+                  <>
+                    <span className="text-amber-600 dark:text-amber-400">Credit to agent</span>
+                    <span className="font-bold text-amber-700 dark:text-amber-300">{fmtMoney(Math.abs(outstanding))}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-green-600 dark:text-green-400">Settled</span>
+                    <span className="font-bold text-green-700 dark:text-green-300">{fmtMoney(0)}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
-      <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-        <div className="text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Paid</div>
-        <div className="mt-1 text-sm font-semibold">{fmtMoney(paidCents)}</div>
-      </div>
-      <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-        <div className="text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Outstanding</div>
-        <div className="mt-1 text-sm font-semibold">{fmtMoney(outstandingCents)}</div>
-      </div>
+
+      {stmtData && stmtData.items.length > 0 && (() => {
+        const paidSet = new Set((stmtData.clientPaidPolicyIds ?? []).map(Number));
+        const premiumItems = stmtData.items.filter((it) => it.policyPremiumId);
+        const commissionRows = individualRows.filter((r) => String(r.direction || "") === "payable");
+        const resolvedAmt = (it: StmtItem) => Number(it.displayAmountCents ?? it.amountCents) || 0;
+
+        const byClient = new Map<string, { clientName: string; policies: Map<number, { policyNumber: string; items: StmtItem[] }> }>();
+        for (const item of premiumItems) {
+          const info = (stmtData.policyClients ?? {})[item.policyId];
+          const clientName = info?.clientName || "—";
+          const policyNumber = info?.policyNumber || `Policy #${item.policyId}`;
+          if (!byClient.has(clientName)) byClient.set(clientName, { clientName, policies: new Map() });
+          const clientGroup = byClient.get(clientName)!;
+          if (!clientGroup.policies.has(item.policyId)) clientGroup.policies.set(item.policyId, { policyNumber, items: [] });
+          clientGroup.policies.get(item.policyId)!.items.push(item);
+        }
+
+        return (
+          <div className="space-y-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+              Line Items ({premiumItems.length})
+            </div>
+            {[...byClient.values()].map((group) => (
+              <div key={group.clientName} className="space-y-1">
+                <div className="text-[10px] font-medium text-neutral-500 dark:text-neutral-400 px-1">
+                  {group.clientName}
+                </div>
+                {[...group.policies.entries()].map(([polId, pol]) => {
+                  const isPaid = paidSet.has(polId) || pol.items.every((it) => it.status === "paid_individually");
+                  const polTotal = pol.items.reduce((s, it) => s + resolvedAmt(it), 0);
+                  return (
+                    <div
+                      key={polId}
+                      className={`rounded px-2 py-1.5 text-xs border ${
+                        isPaid
+                          ? "border-green-200/60 dark:border-green-800/30"
+                          : "bg-white/60 dark:bg-indigo-900/10 border-neutral-100 dark:border-neutral-800"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <FileText className={`h-3 w-3 shrink-0 ${isPaid ? "text-green-400 dark:text-green-500" : "text-indigo-400"}`} />
+                          <span className={`font-mono text-[11px] font-medium truncate ${isPaid ? "text-green-700 dark:text-green-400" : "text-indigo-800 dark:text-indigo-200"}`}>
+                            {pol.policyNumber}
+                          </span>
+                          {isPaid && (
+                            <span className="rounded bg-green-100 px-1 py-0.5 text-[9px] font-medium text-green-700 dark:bg-green-900/40 dark:text-green-300 shrink-0">
+                              client premium paid directly
+                            </span>
+                          )}
+                        </div>
+                        <span className={`shrink-0 font-semibold ${isPaid ? "text-green-600 dark:text-green-400" : "text-indigo-700 dark:text-indigo-300"}`}>
+                          {fmtMoney(polTotal)}
+                        </span>
+                      </div>
+                      {pol.items.length > 1 && (
+                        <div className={`mt-1 space-y-0.5 pl-[18px] ${isPaid ? "text-green-600/70 dark:text-green-500/60" : "text-neutral-500 dark:text-neutral-400"}`}>
+                          {pol.items.map((it) => {
+                            const label = String(it.description ?? "").replace(/^[^·]*·\s*/, "").trim() || "Premium";
+                            return (
+                              <div key={it.id} className="flex items-center justify-between text-[10px]">
+                                <span className="truncate">{label}</span>
+                                <span>{fmtMoney(resolvedAmt(it))}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+            {commissionRows.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-[10px] font-medium text-neutral-500 dark:text-neutral-400 px-1">
+                  Commission
+                </div>
+                {commissionRows.map((row) => (
+                  <div key={row.id} className="flex items-center justify-between gap-2 rounded bg-amber-50/60 dark:bg-amber-900/10 px-2 py-1.5 text-xs border border-amber-100 dark:border-amber-800/40">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <FileText className="h-3 w-3 shrink-0 text-amber-500" />
+                      <span className="font-medium text-amber-800 dark:text-amber-200 truncate">{row.invoiceNumber}</span>
+                      {row.policyNumbers && (
+                        <span className="text-amber-500/70 dark:text-amber-400/60 truncate max-w-[120px]">· {row.policyNumbers}</span>
+                      )}
+                    </div>
+                    <span className="shrink-0 font-semibold text-amber-700 dark:text-amber-300">
+                      −{fmtMoney(Number(row.totalAmountCents) || 0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

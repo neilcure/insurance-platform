@@ -1702,7 +1702,9 @@ export function DocumentsTab({
   initialTemplateValue,
   initialAudience,
   onlyTemplateValue,
-  hidePdfTemplates = false,
+  renderMode = "policy",
+  trackingScope = "policy",
+  trackingInvoiceId,
   onStatusAutoAdvanced,
 }: {
   detail: PolicyDetail;
@@ -1713,13 +1715,16 @@ export function DocumentsTab({
   initialTemplateValue?: string;
   initialAudience?: "client" | "agent";
   onlyTemplateValue?: string;
-  hidePdfTemplates?: boolean;
+  renderMode?: "policy" | "agent_statement";
+  trackingScope?: "policy" | "invoice";
+  trackingInvoiceId?: number;
   onStatusAutoAdvanced?: () => void;
 }) {
   const { sortedValues: statusOrder, loading: statusesLoading } = usePolicyStatuses();
   const [templates, setTemplates] = React.useState<DocumentTemplateRow[]>([]);
   const [pdfTemplates, setPdfTemplates] = React.useState<PdfTemplateRow[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [hasLoadedOnce, setHasLoadedOnce] = React.useState(false);
   const [selected, setSelected] = React.useState<DocumentTemplateRow | null>(null);
   const [selectedAudience, setSelectedAudience] = React.useState<"client" | "agent">("client");
   const [initialSelectionApplied, setInitialSelectionApplied] = React.useState(false);
@@ -1733,14 +1738,17 @@ export function DocumentsTab({
   const snapshot = (detail.extraAttributes ?? {}) as SnapshotData;
   const statusClient = currentStatusClient ?? currentStatus ?? "quotation_prepared";
   const statusAgent = currentStatusAgent ?? statusClient;
+  const trackingEndpoint = (trackingScope === "invoice" && Number.isFinite(trackingInvoiceId) && Number(trackingInvoiceId) > 0)
+    ? `/api/accounting/invoices/${Number(trackingInvoiceId)}/document-tracking`
+    : `/api/policies/${detail.policyId}/document-tracking`;
 
   // Load tracking data
   React.useEffect(() => {
-    fetch(`/api/policies/${detail.policyId}/document-tracking`, { cache: "no-store" })
+    fetch(trackingEndpoint, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : {}))
       .then((data: DocumentStatusMap) => setTracking(data))
       .catch(() => {});
-  }, [detail.policyId]);
+  }, [trackingEndpoint]);
 
   const handleTrackingAction = React.useCallback(async (
     docType: string,
@@ -1777,7 +1785,7 @@ export function DocumentsTab({
         body.groupSiblingKeys = siblingKeys;
       }
 
-      const res = await fetch(`/api/policies/${detail.policyId}/document-tracking`, {
+      const res = await fetch(trackingEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -1827,12 +1835,12 @@ export function DocumentsTab({
         if (note) formData.append("confirmNote", note);
         if (templateType) formData.append("templateType", templateType);
         formData.append("proofFile", file);
-        res = await fetch(`/api/policies/${detail.policyId}/document-tracking`, {
+        res = await fetch(trackingEndpoint, {
           method: "POST",
           body: formData,
         });
       } else {
-        res = await fetch(`/api/policies/${detail.policyId}/document-tracking`, {
+        res = await fetch(trackingEndpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1860,7 +1868,7 @@ export function DocumentsTab({
     } finally {
       setTrackingUpdating(false);
     }
-  }, [detail.policyId, onStatusAutoAdvanced]);
+  }, [onStatusAutoAdvanced, trackingEndpoint]);
 
   function handleEmailClick(tpl: PdfTemplateRow) {
     setEmailPreSelectedId(tpl.id);
@@ -1976,6 +1984,7 @@ export function DocumentsTab({
     setSelectedAudience(initialAudience === "agent" ? "agent" : "client");
     setInitialSelectionApplied(true);
   }, [initialTemplateValue, initialAudience, loading, selected, templates, initialSelectionApplied]);
+
 
   React.useEffect(() => {
     fetch(`/api/policies/${detail.policyId}/linked-insurers`, { cache: "no-store" })
@@ -2123,7 +2132,10 @@ export function DocumentsTab({
       .catch(() => {});
 
     Promise.all([loadHtml, loadPdf]).finally(() => {
-      if (!cancelled) setLoading(false);
+      if (!cancelled) {
+        setLoading(false);
+        setHasLoadedOnce(true);
+      }
     });
 
     return () => { cancelled = true; };
@@ -2212,7 +2224,7 @@ export function DocumentsTab({
     })();
   }, [loading, templates, pdfTemplates, tracking, detail.agent, autoPrepared, handleTrackingAction, statusClient, statusAgent, statusOrder]);
 
-  if (loading) {
+  if (loading && !hasLoadedOnce) {
     return (
       <div className="py-8 text-center text-xs text-neutral-500 dark:text-neutral-400">
         Loading templates...
@@ -2435,7 +2447,7 @@ export function DocumentsTab({
     }
     return true;
   };
-  const showPdfMergeTemplates = !hidePdfTemplates && !onlyTemplateValue;
+  const showPdfMergeTemplates = renderMode === "policy" && !onlyTemplateValue;
   const hasAny = templates.some((tpl) =>
     (templateMatchesAudienceStatus(tpl, "client") && isActionGatedTemplateVisibleForAudience(tpl, "client"))
     || (detail.agent

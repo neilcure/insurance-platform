@@ -519,7 +519,10 @@ export async function getStatementForSchedule(
       and(
         eq(accountingInvoices.scheduleId, scheduleId),
         eq(accountingInvoices.invoiceType, "statement"),
-        inArray(accountingInvoices.status, ["draft", "pending", "partial", "settled", "active", "statement_created"]),
+        inArray(accountingInvoices.status, [
+          "draft", "pending", "partial", "settled", "active",
+          "statement_created", "statement_sent", "statement_confirmed",
+        ]),
       ),
     )
     .limit(1);

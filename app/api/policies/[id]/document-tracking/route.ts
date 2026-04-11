@@ -7,6 +7,7 @@ import { requireUser } from "@/lib/auth/require-user";
 import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
 import { generateDocumentNumber, generateDocumentNumberWithCode, extractSetCodeFromDocNumber } from "@/lib/document-number";
 import type { DocumentStatusMap, DocumentStatusEntry, DocLifecycleStatus, DocumentTrackingData } from "@/lib/types/accounting";
+import { canAccessPolicy } from "@/lib/policy-access";
 
 export const dynamic = "force-dynamic";
 
@@ -15,13 +16,19 @@ export async function GET(
   ctx: { params: Promise<{ id: string }> },
 ) {
   try {
-    await requireUser();
+    const user = await requireUser();
     const { id } = await ctx.params;
+    const policyId = Number(id);
+    if (!Number.isFinite(policyId) || policyId <= 0) {
+      return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+    }
+    const hasAccess = await canAccessPolicy({ id: Number(user.id), userType: user.userType }, policyId);
+    if (!hasAccess) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     const [policy] = await db
       .select({ documentTracking: policies.documentTracking })
       .from(policies)
-      .where(eq(policies.id, Number(id)))
+      .where(eq(policies.id, policyId))
       .limit(1);
 
     if (!policy) {
@@ -43,6 +50,11 @@ export async function POST(
     const user = await requireUser();
     const { id } = await ctx.params;
     const policyId = Number(id);
+    if (!Number.isFinite(policyId) || policyId <= 0) {
+      return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+    }
+    const hasAccess = await canAccessPolicy({ id: Number(user.id), userType: user.userType }, policyId);
+    if (!hasAccess) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     // Parse body — supports JSON or multipart (for file upload proof)
     let docType: string;

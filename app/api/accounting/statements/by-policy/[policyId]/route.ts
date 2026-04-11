@@ -17,6 +17,7 @@ import { resolvePremiumByRole } from "@/lib/resolve-policy-agent";
 import { generateDocumentNumber } from "@/lib/document-number";
 import { resolveDocPrefix } from "@/lib/resolve-prefix";
 import { markAgentPolicyItemsPaidIndividually } from "@/lib/statement-management";
+import { canAccessPolicy } from "@/lib/policy-access";
 
 export const dynamic = "force-dynamic";
 
@@ -496,33 +497,93 @@ async function loadCommissionTotalCents(
   return Number.isFinite(total) ? total : 0;
 }
 
-async function loadPaidIndividuallyTotalFromPayments(
+async function loadClientPaidPolicyIds(
   policyIds: number[],
-  entityType: string,
-) {
-  if (entityType !== "agent") return 0;
+): Promise<Set<number>> {
   const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
-  if (uniquePolicyIds.length === 0) return 0;
+  if (uniquePolicyIds.length === 0) return new Set();
 
   const result = await db.execute(sql`
-    select coalesce(sum(ap.amount_cents), 0) as total
+    select distinct ii.policy_id
     from accounting_payments ap
     inner join accounting_invoices ai on ai.id = ap.invoice_id
+    inner join accounting_invoice_items ii on ii.invoice_id = ai.id
     where ai.direction = 'receivable'
       and ai.invoice_type = 'individual'
       and ai.status <> 'cancelled'
       and ap.status in ('verified', 'confirmed', 'recorded')
       and coalesce(ap.payer, 'client') = 'client'
-      and exists (
-        select 1
-        from accounting_invoice_items ii
-        where ii.invoice_id = ai.id
-          and ii.policy_id in (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
-      )
+      and ii.policy_id in (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
   `);
   const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
-  const total = Number((rows[0] as { total?: unknown } | undefined)?.total ?? 0);
-  return Number.isFinite(total) ? total : 0;
+  return new Set(
+    (rows as { policy_id: number }[])
+      .map((r) => Number(r.policy_id))
+      .filter((id) => Number.isFinite(id) && id > 0),
+  );
+}
+
+function computePaidIndividuallyTotal(
+  items: ItemResult[],
+  entityType: string,
+  premiumRoleTotals: Map<number, { clientCents: number; agentCents: number }>,
+  clientPaidPolicyIds: Set<number>,
+  direction?: string | null,
+): number {
+  const paidByItemStatus = items
+    .filter((it) => it.status === "paid_individually")
+    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, entityType, premiumRoleTotals, direction), 0);
+
+  if (entityType !== "agent" || clientPaidPolicyIds.size === 0) return paidByItemStatus;
+
+  const paidByPolicyMatch = items
+    .filter((it) => it.policyPremiumId && clientPaidPolicyIds.has(it.policyId))
+    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, entityType, premiumRoleTotals, direction), 0);
+
+  return Math.max(paidByItemStatus, paidByPolicyMatch);
+}
+
+async function loadPolicyClientMap(policyIds: number[]): Promise<Record<number, { policyNumber: string; clientName: string }>> {
+  const ids = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (ids.length === 0) return {};
+
+  const rows = await db
+    .select({
+      id: policies.id,
+      policyNumber: policies.policyNumber,
+      clientId: policies.clientId,
+      extra: cars.extraAttributes,
+    })
+    .from(policies)
+    .leftJoin(cars, eq(cars.policyId, policies.id))
+    .where(inArray(policies.id, ids));
+
+  const clientIds = [...new Set(
+    rows.map((r) => r.clientId).filter((id): id is number => id != null && id > 0),
+  )];
+  const clientNameMap = new Map<number, string>();
+  if (clientIds.length > 0) {
+    const clientRows = await db
+      .select({ id: clients.id, displayName: clients.displayName })
+      .from(clients)
+      .where(inArray(clients.id, clientIds));
+    for (const c of clientRows) {
+      if (c.displayName) clientNameMap.set(c.id, c.displayName);
+    }
+  }
+
+  const result: Record<number, { policyNumber: string; clientName: string }> = {};
+  for (const row of rows) {
+    let clientName = row.clientId ? (clientNameMap.get(row.clientId) ?? "") : "";
+    if (!clientName) {
+      const extra = (row.extra ?? {}) as Record<string, unknown>;
+      const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
+      const { getInsuredDisplayName } = await import("@/lib/field-resolver");
+      clientName = getInsuredDisplayName(insured) || "";
+    }
+    result[row.id] = { policyNumber: row.policyNumber, clientName };
+  }
+  return result;
 }
 
 async function buildPreviewFromScheduledInvoices(
@@ -561,6 +622,8 @@ async function buildPreviewFromScheduledInvoices(
           "settled",
           "active",
           "statement_created",
+          "statement_sent",
+          "statement_confirmed",
         ]),
         audience ? eq(accountingInvoices.entityType, audience) : undefined,
       ),
@@ -678,17 +741,17 @@ async function buildPreviewFromScheduledInvoices(
   const enrichedItems = synthItems.map((it) => ({
     ...it,
     premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
+    displayAmountCents: resolveDisplayedItemAmountCents(it, first.entityType, premiumRoleTotals, first.direction),
   }));
   const policyMetaById = await loadPolicyStatementMeta(itemPolicyIds);
   const commissionTotalCents = await loadCommissionTotalCents(itemPolicyIds, allSchedIds, first.entityType);
   const activeTotal = synthItems
     .filter((it) => it.status === "active")
     .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, first.entityType, premiumRoleTotals, first.direction), 0);
-  const paidByItemStatus = synthItems
-    .filter((it) => it.status === "paid_individually")
-    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, first.entityType, premiumRoleTotals, first.direction), 0);
-  const paidByVerifiedPayments = await loadPaidIndividuallyTotalFromPayments(itemPolicyIds, first.entityType);
-  const paidIndividuallyTotal = Math.max(paidByItemStatus, paidByVerifiedPayments);
+  const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
+  const paidIndividuallyTotal = computePaidIndividuallyTotal(
+    synthItems, first.entityType, premiumRoleTotals, clientPaidPolicyIds, first.direction,
+  );
   const totalCents = activeTotal + paidIndividuallyTotal;
   const paidCents = paidIndividuallyTotal;
   const summaryTotals = buildStatementSummaryTotals(
@@ -700,6 +763,8 @@ async function buildPreviewFromScheduledInvoices(
     first.direction,
   );
 
+  const policyClients = await loadPolicyClientMap(itemPolicyIds);
+
   return {
     first,
     totalCents,
@@ -709,6 +774,8 @@ async function buildPreviewFromScheduledInvoices(
     summaryTotals,
     activeTotal,
     paidIndividuallyTotal,
+    policyClients,
+    clientPaidPolicyIds: [...clientPaidPolicyIds],
   };
 }
 
@@ -717,9 +784,14 @@ export async function GET(
   ctx: { params: Promise<{ policyId: string }> },
 ) {
   try {
-    await requireUser();
+    const user = await requireUser();
     const { policyId } = await ctx.params;
     const pid = Number(policyId);
+    if (!Number.isFinite(pid) || pid <= 0) {
+      return NextResponse.json({ error: "Invalid policy id" }, { status: 400 });
+    }
+    const hasAccess = await canAccessPolicy({ id: Number(user.id), userType: user.userType }, pid);
+    if (!hasAccess) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     const url = new URL(request.url);
     const audience = url.searchParams.get("audience");
 
@@ -818,7 +890,8 @@ export async function GET(
         inArray(accountingInvoices.scheduleId, scheduleIds),
         eq(accountingInvoices.invoiceType, "statement"),
         inArray(accountingInvoices.status, [
-          "draft", "pending", "partial", "settled", "active", "statement_created",
+          "draft", "pending", "partial", "settled", "active",
+          "statement_created", "statement_sent", "statement_confirmed",
         ]),
       ];
 
@@ -918,7 +991,10 @@ export async function GET(
             const stmtConds = [
               inArray(accountingInvoices.scheduleId, directSchedIds),
               eq(accountingInvoices.invoiceType, "statement"),
-              inArray(accountingInvoices.status, ["draft", "pending", "partial", "settled", "active", "statement_created"]),
+              inArray(accountingInvoices.status, [
+                "draft", "pending", "partial", "settled", "active",
+                "statement_created", "statement_sent", "statement_confirmed",
+              ]),
             ];
             if (audience === "agent") stmtConds.push(eq(accountingInvoices.entityType, "agent"));
             else if (audience === "client") stmtConds.push(eq(accountingInvoices.entityType, "client"));
@@ -952,7 +1028,7 @@ export async function GET(
       // statement document template can render.
       const preview = await buildPreviewFromScheduledInvoices(scheduleIds, audience, allPolicyIds);
       if (preview) {
-        const { first, totalCents, paidCents, enrichedItems, activeTotal, paidIndividuallyTotal, premiumTotals, summaryTotals } = preview;
+        const { first, totalCents, paidCents, enrichedItems, activeTotal, paidIndividuallyTotal, premiumTotals, summaryTotals, policyClients, clientPaidPolicyIds: paidIds } = preview;
           return NextResponse.json({
             statement: {
               statementNumber: "",
@@ -968,6 +1044,8 @@ export async function GET(
               paidIndividuallyTotal,
               premiumTotals,
               summaryTotals,
+              policyClients,
+              clientPaidPolicyIds: paidIds,
             },
             hasSchedule: true,
           });
@@ -1097,6 +1175,8 @@ export async function GET(
             paidIndividuallyTotal: preview.paidIndividuallyTotal,
             premiumTotals: preview.premiumTotals,
             summaryTotals: preview.summaryTotals,
+            policyClients: preview.policyClients,
+            clientPaidPolicyIds: preview.clientPaidPolicyIds,
           },
         });
       }
@@ -1113,7 +1193,7 @@ export async function GET(
           WHERE ai."schedule_id" = ${stmtScheduleId}
             AND ai."invoice_type" = 'individual'
             AND ai."entity_type" = ${stmt.entityType}
-            AND ai."status" IN ('draft', 'pending', 'partial', 'settled', 'active', 'statement_created')
+            AND ai."status" IN ('draft', 'pending', 'partial', 'settled', 'active', 'statement_created', 'statement_sent', 'statement_confirmed')
         `);
         const schedulePolicyRows = Array.isArray(schedulePolicyRowsRes)
           ? schedulePolicyRowsRes
@@ -1146,7 +1226,8 @@ export async function GET(
               eq(accountingInvoices.invoiceType, "individual"),
               eq(accountingInvoices.entityType, stmt.entityType),
               inArray(accountingInvoices.status, [
-                "draft", "pending", "partial", "settled", "active", "statement_created",
+                "draft", "pending", "partial", "settled", "active",
+                "statement_created", "statement_sent", "statement_confirmed",
               ]),
             ),
           );
@@ -1257,6 +1338,7 @@ export async function GET(
     const enrichedItems = items.map((it) => ({
       ...it,
       premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
+      displayAmountCents: resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction),
     }));
     const policyMetaById = await loadPolicyStatementMeta(items.map((it) => it.policyId));
     const commissionTotalCents = await loadCommissionTotalCents(
@@ -1267,14 +1349,10 @@ export async function GET(
     const activeTotal = items
       .filter((it) => it.status === "active")
       .reduce((sum, it) => sum + resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction), 0);
-    const paidByItemStatus = items
-      .filter((it) => it.status === "paid_individually")
-      .reduce((sum, it) => sum + resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction), 0);
-    const paidByVerifiedPayments = await loadPaidIndividuallyTotalFromPayments(
-      items.map((it) => it.policyId),
-      stmt.entityType,
+    const clientPaidPolicyIds2 = await loadClientPaidPolicyIds(items.map((it) => it.policyId));
+    const paidIndividuallyTotal = computePaidIndividuallyTotal(
+      items, stmt.entityType, premiumRoleTotals, clientPaidPolicyIds2, stmt.direction,
     );
-    const paidIndividuallyTotal = Math.max(paidByItemStatus, paidByVerifiedPayments);
     const summaryTotals = buildStatementSummaryTotals(
       items,
       stmt.entityType,
@@ -1287,6 +1365,8 @@ export async function GET(
     if (items.length === 0) {
       return NextResponse.json({ statement: null, hasSchedule });
     }
+
+    const formalPolicyClients = await loadPolicyClientMap(items.map((it) => it.policyId));
 
     return NextResponse.json({
       statement: {
@@ -1303,6 +1383,8 @@ export async function GET(
         paidIndividuallyTotal,
         premiumTotals,
         summaryTotals,
+        policyClients: formalPolicyClients,
+        clientPaidPolicyIds: [...clientPaidPolicyIds2],
       },
     });
   } catch (err) {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth/require-user";
 import { sendEmail } from "@/lib/email";
+import { canAccessPolicy } from "@/lib/policy-access";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,10 @@ export async function POST(
     const policyId = Number(idParam);
     if (!Number.isFinite(policyId) || policyId <= 0) {
       return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+    }
+    const hasAccess = await canAccessPolicy({ id: Number(user.id), userType: user.userType }, policyId);
+    if (!hasAccess) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const body = await request.json();
