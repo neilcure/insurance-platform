@@ -317,6 +317,27 @@ export async function buildMergeContext(policyId: number): Promise<{
             .filter((it) => it.status === "paid_individually")
             .reduce((sum, it) => sum + it.amountCents, 0);
 
+          let agentPaidTotal = 0;
+          if (stmt.entityType === "agent") {
+            const itemPolicyIds = [...new Set(items.map((it) => it.policyId).filter((id) => id > 0))];
+            if (itemPolicyIds.length > 0) {
+              const agentPaidResult = await db.execute(sql`
+                SELECT coalesce(sum(ap.amount_cents), 0)::int AS total
+                FROM accounting_payments ap
+                INNER JOIN accounting_invoices ai ON ai.id = ap.invoice_id
+                INNER JOIN accounting_invoice_items aii ON aii.invoice_id = ai.id
+                WHERE aii.policy_id IN (${sql.join(itemPolicyIds.map((id) => sql`${id}`), sql`,`)})
+                  AND ai.direction = 'receivable'
+                  AND ai.entity_type = 'agent'
+                  AND ai.invoice_type <> 'statement'
+                  AND ap.payer = 'agent'
+                  AND ap.status IN ('recorded', 'verified', 'confirmed')
+              `);
+              const agentPaidRows = Array.isArray(agentPaidResult) ? agentPaidResult : (agentPaidResult as { rows?: unknown[] }).rows ?? [];
+              agentPaidTotal = (agentPaidRows[0] as { total?: number })?.total ?? 0;
+            }
+          }
+
           statementData = {
             statementNumber: stmt.invoiceNumber,
             statementDate: stmt.invoiceDate,
@@ -329,6 +350,7 @@ export async function buildMergeContext(policyId: number): Promise<{
             paidAmountCents: stmt.paidAmountCents,
             currency: stmt.currency,
             items,
+            agentPaidTotal,
           };
           break;
         }

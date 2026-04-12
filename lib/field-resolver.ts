@@ -68,6 +68,7 @@ export type StatementCtx = {
   }[];
   premiumTotals?: Record<string, number>;
   summaryTotals?: Record<string, number>;
+  agentPaidTotal?: number;
 };
 
 /** Unified reference to a field in any data source. */
@@ -561,8 +562,10 @@ function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: strin
     case "paidIndividuallyTotal": return stmt.paidIndividuallyTotal / 100;
     case "totalAmountCents": return stmt.totalAmountCents / 100;
     case "paidAmountCents": return stmt.paidAmountCents / 100;
+    case "agentPaidTotal": return (stmt.agentPaidTotal ?? 0) / 100;
     case "outstandingTotal": {
-      const outstanding = totalDueCents - stmt.paidIndividuallyTotal - commissionTotalCents;
+      const agentPaid = stmt.agentPaidTotal ?? 0;
+      const outstanding = totalDueCents - stmt.paidIndividuallyTotal - commissionTotalCents - agentPaid;
       return Math.max(outstanding, 0) / 100;
     }
     case "currency": return stmt.currency;

@@ -18,11 +18,13 @@ export function InlinePaymentForm({
   invoiceId,
   remainingCents,
   currency = "HKD",
+  defaultPayer,
   onSuccess,
 }: {
   invoiceId: number;
   remainingCents: number;
   currency?: string;
+  defaultPayer?: string;
   onSuccess: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
@@ -56,6 +58,7 @@ export function InlinePaymentForm({
           paymentMethod: method,
           referenceNumber: ref.trim() || null,
           notes: notes.trim() || null,
+          ...(defaultPayer ? { payer: defaultPayer } : {}),
         }),
       });
       if (!res.ok) {

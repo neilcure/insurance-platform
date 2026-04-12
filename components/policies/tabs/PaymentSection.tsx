@@ -31,6 +31,7 @@ type InvoicePayment = {
   paymentDate: string | null;
   paymentMethod: string | null;
   referenceNumber: string | null;
+  payer: string | null;
   status: PaymentStatus;
   notes: string | null;
   submittedBy: number | null;
@@ -49,6 +50,7 @@ type InvoiceWithPayments = {
   premiumType: string;
   entityType: string;
   entityName: string | null;
+  entityPolicyId?: number | null;
   totalAmountCents: number;
   paidAmountCents: number;
   currency: string;
@@ -117,8 +119,30 @@ function invoiceStatusClass(status: InvoiceStatus): string {
   }
 }
 
+type AgentStmtItem = {
+  id: number;
+  policyId: number;
+  policyPremiumId?: number | null;
+  description: string | null;
+  amountCents: number;
+  displayAmountCents?: number;
+  status: string;
+};
+type AgentStmtData = {
+  statementNumber: string;
+  statementStatus: string;
+  activeTotal: number;
+  paidIndividuallyTotal: number;
+  commissionTotal: number;
+  currency: string;
+  items: AgentStmtItem[];
+  policyClients: Record<number, { policyNumber: string; clientName: string }>;
+  clientPaidPolicyIds: number[];
+};
+
 export function PaymentSection({
   policyId,
+  agentId,
   isAdmin,
   onSummaryChange,
   externalRefreshKey,
@@ -126,7 +150,8 @@ export function PaymentSection({
   hideInvoiceCards,
   initialSchedules,
 }: {
-  policyId: number;
+  policyId?: number;
+  agentId?: number;
   isAdmin: boolean;
   onSummaryChange?: (summary: PaymentSummary) => void;
   externalRefreshKey?: number;
@@ -134,6 +159,7 @@ export function PaymentSection({
   hideInvoiceCards?: boolean;
   initialSchedules?: { id: number; entityType: string; frequency?: string | null; entityName?: string | null; billingDay?: number | null; isActive?: boolean }[];
 }) {
+  const isAgentMode = !!agentId && !policyId;
   const [invoices, setInvoices] = React.useState<InvoiceWithPayments[]>([]);
   const [payables, setPayables] = React.useState<InvoiceWithPayments[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -182,17 +208,76 @@ export function PaymentSection({
   const [statementsBySchedule, setStatementsBySchedule] = React.useState<Record<number, StatementData | null>>({});
   const [itemActionBusy, setItemActionBusy] = React.useState<number | null>(null);
 
+  const [agentStmtData, setAgentStmtData] = React.useState<AgentStmtData | null>(null);
+  const [agentStmtLoaded, setAgentStmtLoaded] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!isAgentMode) return;
+    const agentSched = schedules?.find((s) => s.entityType === "agent");
+    if (!agentSched) {
+      if (schedules !== undefined) setAgentStmtLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/accounting/statements/by-schedule/${agentSched.id}?audience=agent&_t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (cancelled || !j) { if (!cancelled) setAgentStmtLoaded(true); return; }
+        const s = j.statement;
+        if (!s) { setAgentStmtLoaded(true); return; }
+        const activeTotal = Number(s.activeTotal) || 0;
+        const paidIndividuallyTotal = Number(s.paidIndividuallyTotal) || 0;
+        const commissionTotal = Number(s.commissionTotal) || 0;
+        setAgentStmtData({
+          statementNumber: String(s.statementNumber ?? "").trim(),
+          statementStatus: String(s.statementStatus ?? s.status ?? "draft").trim(),
+          activeTotal,
+          paidIndividuallyTotal,
+          commissionTotal,
+          currency: String(s.currency ?? "HKD"),
+          items: Array.isArray(s.items) ? s.items : [],
+          policyClients: (s.policyClients ?? {}) as Record<number, { policyNumber: string; clientName: string }>,
+          clientPaidPolicyIds: Array.isArray(s.clientPaidPolicyIds) ? s.clientPaidPolicyIds : [],
+        });
+        setAgentStmtLoaded(true);
+        if (j.invoicesCreated) setRefreshKey((k) => k + 1);
+      })
+      .catch(() => { if (!cancelled) setAgentStmtLoaded(true); });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAgentMode, schedules, refreshKey]);
+
   const skipInitialScheduleFetch = React.useRef(!!initialSchedules);
   React.useEffect(() => {
     if (skipInitialScheduleFetch.current) { skipInitialScheduleFetch.current = false; return; }
-    fetch(`/api/accounting/schedules/by-policy/${policyId}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : { schedules: [] }))
-      .then((data) => {
-        const arr = data.schedules ?? (data.schedule ? [data.schedule] : []);
-        setSchedules(arr);
-      })
-      .catch(() => setSchedules([]));
-  }, [policyId, refreshKey, externalRefreshKey]);
+    if (isAgentMode) {
+      fetch(`/api/agents/${agentId}/statements`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : { agentScheduleIds: [] }))
+        .then((data) => {
+          const schedIds: number[] = data.agentScheduleIds ?? [];
+          if (schedIds.length === 0) { setSchedules([]); return; }
+          Promise.all(
+            schedIds.map((sid) =>
+              fetch(`/api/accounting/schedules/${sid}`, { cache: "no-store" })
+                .then((r) => (r.ok ? r.json() : null))
+                .catch(() => null),
+            ),
+          ).then((results) => {
+            const arr = results.filter(Boolean).map((s) => s.schedule ?? s).filter((s) => s?.id);
+            setSchedules(arr);
+          });
+        })
+        .catch(() => setSchedules([]));
+    } else if (policyId) {
+      fetch(`/api/accounting/schedules/by-policy/${policyId}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : { schedules: [] }))
+        .then((data) => {
+          const arr = data.schedules ?? (data.schedule ? [data.schedule] : []);
+          setSchedules(arr);
+        })
+        .catch(() => setSchedules([]));
+    }
+  }, [policyId, agentId, isAgentMode, refreshKey, externalRefreshKey]);
 
   React.useEffect(() => {
     if (!schedules || schedules.length === 0) return;
@@ -235,18 +320,26 @@ export function PaymentSection({
     setLoading(true);
     setError(null);
 
-    const allIds = [policyId, ...(endorsementPolicyIds ?? [])];
-    const fetches = allIds.map((id) =>
-      fetch(`/api/accounting/invoices/by-policy/${id}?_t=${Date.now()}`, { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : []))
-        .then((data: InvoiceWithPayments[]) => data)
-        .catch(() => [] as InvoiceWithPayments[]),
-    );
+    const fetchPromise = isAgentMode
+      ? fetch(`/api/accounting/invoices/by-agent/${agentId}?_t=${Date.now()}`, { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : []))
+          .then((data: InvoiceWithPayments[]) => data)
+          .catch(() => [] as InvoiceWithPayments[])
+      : (() => {
+          const allIds = [policyId!, ...(endorsementPolicyIds ?? [])];
+          return Promise.all(
+            allIds.map((id) =>
+              fetch(`/api/accounting/invoices/by-policy/${id}?_t=${Date.now()}`, { cache: "no-store" })
+                .then((r) => (r.ok ? r.json() : []))
+                .then((data: InvoiceWithPayments[]) => data)
+                .catch(() => [] as InvoiceWithPayments[]),
+            ),
+          ).then((results) => results.flat());
+        })();
 
-    Promise.all(fetches)
-      .then((results) => {
+    fetchPromise
+      .then((data) => {
         if (cancelled) return;
-        const data = results.flat();
         const receivable = data.filter((inv) => inv.direction === "receivable" && inv.invoiceType !== "statement");
         const payableInvs = data.filter((inv) => inv.direction === "payable" && inv.invoiceType !== "statement");
         setInvoices(receivable);
@@ -291,7 +384,7 @@ export function PaymentSection({
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [policyId, refreshKey, externalRefreshKey, endorsementPolicyIds?.join(",")]);
+  }, [policyId, agentId, isAgentMode, refreshKey, externalRefreshKey, endorsementPolicyIds?.join(",")]);
 
   const handleVerify = async (invoiceId: number, paymentId: number, action: "verify" | "reject") => {
     setVerifyingId(paymentId);
@@ -580,6 +673,278 @@ export function PaymentSection({
       </div>
     );
   };
+
+  if (isAgentMode) {
+    const allInvs = [...invoices, ...payables];
+    const agentSched = agentSchedule ?? schedules?.find((s) => s.entityType === "agent") ?? null;
+
+    if (allInvs.length === 0 && !agentSched && agentStmtLoaded) {
+      return <div className="text-xs text-neutral-500 dark:text-neutral-400">No payment records yet.</div>;
+    }
+
+    if (!agentStmtLoaded) {
+      return <div className="text-xs text-neutral-500 dark:text-neutral-400">Loading payments...</div>;
+    }
+
+    const onStatementReceivables = invoices.filter((inv) =>
+      agentSched ? inv.scheduleId === agentSched.id : !!inv.scheduleId,
+    );
+    const commissionInvs = payables.filter((inv) =>
+      agentSched ? inv.scheduleId === agentSched.id : !!inv.scheduleId,
+    );
+
+    const agentPaidTotal = onStatementReceivables.reduce((sum, inv) => {
+      const agentPayments = inv.payments
+        .filter((p) => (p.status === "recorded" || p.status === "verified" || p.status === "confirmed") && (!p.payer || p.payer === "agent"))
+        .reduce((s, p) => s + p.amountCents, 0);
+      return sum + agentPayments;
+    }, 0);
+
+    const receivableByPolicy = new Map<number, InvoiceWithPayments>();
+    for (const inv of onStatementReceivables) {
+      if (inv.entityPolicyId) receivableByPolicy.set(inv.entityPolicyId, inv);
+    }
+
+    const stmtCurrency = agentStmtData?.currency || onStatementReceivables[0]?.currency || "HKD";
+    const stmtNumber = agentStmtData?.statementNumber || "";
+    const stmtStatus = agentStmtData?.statementStatus || "draft";
+
+    const totalDue = agentStmtData ? (agentStmtData.activeTotal + agentStmtData.paidIndividuallyTotal) : 0;
+    const paidInd = agentStmtData?.paidIndividuallyTotal ?? 0;
+    const commission = agentStmtData?.commissionTotal ?? 0;
+    const outstanding = totalDue - paidInd - commission - agentPaidTotal;
+
+    const paidSet = new Set((agentStmtData?.clientPaidPolicyIds ?? []).map(Number));
+    const premiumItems = (agentStmtData?.items ?? []).filter((it) => it.policyPremiumId);
+    const resolvedAmt = (it: AgentStmtItem) => Number(it.displayAmountCents ?? it.amountCents) || 0;
+
+    const byClient = new Map<string, { clientName: string; policies: Map<number, { policyNumber: string; items: AgentStmtItem[] }> }>();
+    for (const item of premiumItems) {
+      const info = (agentStmtData?.policyClients ?? {})[item.policyId];
+      const clientName = info?.clientName || "—";
+      const policyNumber = info?.policyNumber || `Policy #${item.policyId}`;
+      if (!byClient.has(clientName)) byClient.set(clientName, { clientName, policies: new Map() });
+      const clientGroup = byClient.get(clientName)!;
+      if (!clientGroup.policies.has(item.policyId)) clientGroup.policies.set(item.policyId, { policyNumber, items: [] });
+      clientGroup.policies.get(item.policyId)!.items.push(item);
+    }
+
+    return (
+      <div className="space-y-3">
+        {/* Statement header */}
+        <div className="rounded-md border border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30 overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2">
+            <div className="text-xs font-medium text-indigo-800 dark:text-indigo-200">
+              {stmtNumber || "Agent Statement"}
+            </div>
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+              {stmtStatus.replace(/_/g, " ")}
+            </span>
+          </div>
+          {agentStmtData && totalDue > 0 && (
+            <div className="border-t border-indigo-200 dark:border-indigo-800 px-3 py-2 space-y-1">
+              <div className="space-y-0.5 text-xs">
+                <div className="flex items-center justify-between text-indigo-600 dark:text-indigo-400">
+                  <span>Total Due</span>
+                  <span className="font-semibold">{formatCurrency(totalDue, stmtCurrency)}</span>
+                </div>
+                {paidInd > 0 && (
+                  <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400">
+                    <span>Paid Individually</span>
+                    <span>−{formatCurrency(paidInd, stmtCurrency)}</span>
+                  </div>
+                )}
+                {commission > 0 && (
+                  <div className="flex items-center justify-between text-amber-600 dark:text-amber-400">
+                    <span>Less commission</span>
+                    <span>−{formatCurrency(commission, stmtCurrency)}</span>
+                  </div>
+                )}
+                {agentPaidTotal > 0 && (
+                  <div className="flex items-center justify-between text-green-600 dark:text-green-400">
+                    <span>Agent Paid</span>
+                    <span>−{formatCurrency(agentPaidTotal, stmtCurrency)}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between font-medium pt-1 border-t border-indigo-200/60 dark:border-indigo-700/60">
+                  {outstanding > 0 ? (
+                    <>
+                      <span className="text-indigo-600 dark:text-indigo-400">Outstanding</span>
+                      <span className="font-bold text-indigo-800 dark:text-indigo-200">{formatCurrency(outstanding, stmtCurrency)}</span>
+                    </>
+                  ) : outstanding < 0 ? (
+                    <>
+                      <span className="text-amber-600 dark:text-amber-400">Credit to agent</span>
+                      <span className="font-bold text-amber-700 dark:text-amber-300">{formatCurrency(Math.abs(outstanding), stmtCurrency)}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-green-600 dark:text-green-400">Settled</span>
+                      <span className="font-bold text-green-700 dark:text-green-300">{formatCurrency(0, stmtCurrency)}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Line items grouped by client → policy */}
+        {premiumItems.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+              Line Items ({premiumItems.length})
+            </div>
+            {[...byClient.values()].map((group) => (
+              <div key={group.clientName} className="space-y-1">
+                <div className="text-[10px] font-medium text-neutral-500 dark:text-neutral-400 px-1">
+                  {group.clientName}
+                </div>
+                {[...group.policies.entries()].map(([polId, pol]) => {
+                  const isPaid = paidSet.has(polId) || pol.items.every((it) => it.status === "paid_individually");
+                  const polTotal = pol.items.reduce((s, it) => s + resolvedAmt(it), 0);
+                  const invoice = receivableByPolicy.get(polId);
+                  const invRemaining = invoice ? invoice.totalAmountCents - invoice.paidAmountCents : 0;
+                  const isExpanded = expandedInvoice === polId;
+
+                  return (
+                    <div
+                      key={polId}
+                      className={`rounded text-xs border overflow-hidden ${
+                        isPaid
+                          ? "border-green-200/60 dark:border-green-800/30"
+                          : "bg-white/60 dark:bg-indigo-900/10 border-neutral-100 dark:border-neutral-800"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => invoice && setExpandedInvoice(isExpanded ? null : polId)}
+                        className={`w-full px-2 py-1.5 text-left ${invoice ? "cursor-pointer hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30" : ""}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <FileText className={`h-3 w-3 shrink-0 ${isPaid ? "text-green-400 dark:text-green-500" : "text-indigo-400"}`} />
+                            <span className={`font-mono text-[11px] font-medium truncate ${isPaid ? "text-green-700 dark:text-green-400" : "text-indigo-800 dark:text-indigo-200"}`}>
+                              {pol.policyNumber}
+                            </span>
+                            {isPaid && (
+                              <span className="rounded bg-green-100 px-1 py-0.5 text-[9px] font-medium text-green-700 dark:bg-green-900/40 dark:text-green-300 shrink-0">
+                                client premium paid directly
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className={`font-semibold ${isPaid ? "text-green-600 dark:text-green-400" : "text-indigo-700 dark:text-indigo-300"}`}>
+                              {formatCurrency(polTotal, stmtCurrency)}
+                            </span>
+                            {invoice && (
+                              isExpanded ? <ChevronUp className="h-3 w-3 text-neutral-400" /> : <ChevronDown className="h-3 w-3 text-neutral-400" />
+                            )}
+                          </div>
+                        </div>
+                        {pol.items.length > 1 && (
+                          <div className={`mt-1 space-y-0.5 pl-[18px] ${isPaid ? "text-green-600/70 dark:text-green-500/60" : "text-neutral-500 dark:text-neutral-400"}`}>
+                            {pol.items.map((it) => {
+                              const label = String(it.description ?? "").replace(/^[^·]*·\s*/, "").trim() || "Premium";
+                              return (
+                                <div key={it.id} className="flex items-center justify-between text-[10px]">
+                                  <span className="truncate">{label}</span>
+                                  <span>{formatCurrency(resolvedAmt(it), stmtCurrency)}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </button>
+
+                      {isExpanded && invoice && (
+                        <div className="border-t border-neutral-200 dark:border-neutral-700 px-2 py-2 space-y-2">
+                          <div className="grid grid-cols-3 gap-2 text-xs">
+                            <div className="rounded bg-neutral-50 dark:bg-neutral-800/50 p-1.5">
+                              <div className="text-[10px] text-neutral-500 dark:text-neutral-400">Invoice</div>
+                              <div className="font-medium text-[11px]">{invoice.invoiceNumber}</div>
+                            </div>
+                            <div className="rounded bg-green-50 dark:bg-green-900/20 p-1.5">
+                              <div className="text-[10px] text-green-600 dark:text-green-400">Paid</div>
+                              <div className="font-semibold text-green-700 dark:text-green-300">{formatCurrency(invoice.paidAmountCents, invoice.currency)}</div>
+                            </div>
+                            <div className={`rounded p-1.5 ${invRemaining > 0 ? "bg-orange-50 dark:bg-orange-900/20" : "bg-green-50 dark:bg-green-900/20"}`}>
+                              <div className={`text-[10px] ${invRemaining > 0 ? "text-orange-600 dark:text-orange-400" : "text-green-600 dark:text-green-400"}`}>Remaining</div>
+                              <div className={`font-semibold ${invRemaining > 0 ? "text-orange-700 dark:text-orange-300" : "text-green-700 dark:text-green-300"}`}>
+                                {formatCurrency(invRemaining, invoice.currency)}
+                              </div>
+                            </div>
+                          </div>
+
+                          {invoice.payments.length > 0 && (
+                            <div className="space-y-1">
+                              <div className="text-[10px] font-medium text-neutral-500 dark:text-neutral-400">Payments</div>
+                              {invoice.payments.map((p) => (
+                                <div key={p.id} className="flex items-center justify-between gap-2 rounded border border-neutral-100 dark:border-neutral-700 p-1.5 text-[11px]">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-medium">{formatCurrency(p.amountCents, p.currency)}</span>
+                                    <Badge variant="custom" className={`text-[9px] ${statusBadgeClass(p.status)}`}>
+                                      {PAYMENT_STATUS_LABELS[p.status] ?? p.status}
+                                    </Badge>
+                                  </div>
+                                  {isAdmin && p.status === "submitted" && (
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px] text-green-600" disabled={verifyingId === p.id} onClick={() => handleVerify(invoice.id, p.id, "verify")}>
+                                        <Check className="h-3 w-3 mr-0.5" />Verify
+                                      </Button>
+                                      <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px] text-red-600" disabled={verifyingId === p.id} onClick={() => {
+                                        const note = prompt("Rejection reason (optional):");
+                                        if (note !== null) { setRejectionNote(note); handleVerify(invoice.id, p.id, "reject"); }
+                                      }}>
+                                        <X className="h-3 w-3 mr-0.5" />Reject
+                                      </Button>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {invRemaining > 0 && !isPaid && (
+                            <InlinePaymentForm
+                              invoiceId={invoice.id}
+                              remainingCents={invRemaining}
+                              currency={invoice.currency}
+                              defaultPayer="agent"
+                              onSuccess={() => setRefreshKey((k) => k + 1)}
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+
+            {commissionInvs.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-[10px] font-medium text-neutral-500 dark:text-neutral-400 px-1">
+                  Commission
+                </div>
+                {commissionInvs.map((inv) => (
+                  <div key={inv.id} className="flex items-center justify-between gap-2 rounded bg-amber-50/60 dark:bg-amber-900/10 px-2 py-1.5 text-xs border border-amber-100 dark:border-amber-800/40">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <FileText className="h-3 w-3 shrink-0 text-amber-500" />
+                      <span className="font-medium text-amber-800 dark:text-amber-200 truncate">{inv.invoiceNumber}</span>
+                    </div>
+                    <span className="shrink-0 font-semibold text-amber-700 dark:text-amber-300">
+                      −{formatCurrency(inv.totalAmountCents, inv.currency)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">

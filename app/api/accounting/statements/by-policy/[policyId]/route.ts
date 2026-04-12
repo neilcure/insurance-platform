@@ -625,13 +625,15 @@ async function buildPreviewFromScheduledInvoices(
           "statement_sent",
           "statement_confirmed",
         ]),
-        audience ? eq(accountingInvoices.entityType, audience) : undefined,
+        audience === "client" ? eq(accountingInvoices.entityType, "client") : undefined,
       ),
     );
 
   if (linkedInvs.length === 0) return null;
 
   const first = linkedInvs[0];
+  const effectiveEntityType = audience ?? first.entityType;
+  const effectiveDirection = first.direction;
   const linkedInvIds = linkedInvs.map((i) => i.id);
 
   const linkedItemsRaw = await db.execute(sql`
@@ -648,13 +650,21 @@ async function buildPreviewFromScheduledInvoices(
     ? linkedItemsRaw
     : (linkedItemsRaw as { rows?: unknown[] }).rows ?? [];
 
-  const synthItems: ItemResult[] = (linkedRows as {
+  const rawSynthItems: ItemResult[] = (linkedRows as {
     id: number; policy_id: number; policy_premium_id: number | null;
     amount_cents: number; description: string | null; status: string;
   }[]).map((r) => ({
     id: r.id, policyId: r.policy_id, policyPremiumId: r.policy_premium_id,
     amountCents: r.amount_cents, description: r.description, status: r.status,
   }));
+
+  const seenPremiumIds = new Set<number>();
+  const synthItems = rawSynthItems.filter((it) => {
+    if (!it.policyPremiumId) return true;
+    if (seenPremiumIds.has(it.policyPremiumId)) return false;
+    seenPremiumIds.add(it.policyPremiumId);
+    return true;
+  });
 
   if (synthItems.length === 0) return null;
 
@@ -741,26 +751,26 @@ async function buildPreviewFromScheduledInvoices(
   const enrichedItems = synthItems.map((it) => ({
     ...it,
     premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
-    displayAmountCents: resolveDisplayedItemAmountCents(it, first.entityType, premiumRoleTotals, first.direction),
+    displayAmountCents: resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals, effectiveDirection),
   }));
   const policyMetaById = await loadPolicyStatementMeta(itemPolicyIds);
-  const commissionTotalCents = await loadCommissionTotalCents(itemPolicyIds, allSchedIds, first.entityType);
+  const commissionTotalCents = await loadCommissionTotalCents(itemPolicyIds, allSchedIds, effectiveEntityType);
   const activeTotal = synthItems
     .filter((it) => it.status === "active")
-    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, first.entityType, premiumRoleTotals, first.direction), 0);
+    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals, effectiveDirection), 0);
   const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
   const paidIndividuallyTotal = computePaidIndividuallyTotal(
-    synthItems, first.entityType, premiumRoleTotals, clientPaidPolicyIds, first.direction,
+    synthItems, effectiveEntityType, premiumRoleTotals, clientPaidPolicyIds, effectiveDirection,
   );
   const totalCents = activeTotal + paidIndividuallyTotal;
   const paidCents = paidIndividuallyTotal;
   const summaryTotals = buildStatementSummaryTotals(
     synthItems,
-    first.entityType,
+    effectiveEntityType,
     premiumRoleTotals,
     policyMetaById,
     commissionTotalCents,
-    first.direction,
+    effectiveDirection,
   );
 
   const policyClients = await loadPolicyClientMap(itemPolicyIds);
@@ -1192,7 +1202,6 @@ export async function GET(
           INNER JOIN "accounting_invoices" ai ON ai."id" = ii."invoice_id"
           WHERE ai."schedule_id" = ${stmtScheduleId}
             AND ai."invoice_type" = 'individual'
-            AND ai."entity_type" = ${stmt.entityType}
             AND ai."status" IN ('draft', 'pending', 'partial', 'settled', 'active', 'statement_created', 'statement_sent', 'statement_confirmed')
         `);
         const schedulePolicyRows = Array.isArray(schedulePolicyRowsRes)
@@ -1224,7 +1233,6 @@ export async function GET(
             and(
               eq(accountingInvoices.scheduleId, stmtScheduleId),
               eq(accountingInvoices.invoiceType, "individual"),
-              eq(accountingInvoices.entityType, stmt.entityType),
               inArray(accountingInvoices.status, [
                 "draft", "pending", "partial", "settled", "active",
                 "statement_created", "statement_sent", "statement_confirmed",

@@ -363,6 +363,54 @@ export async function markAgentPolicyItemsPaidIndividually(
 }
 
 // ---------------------------------------------------------------------------
+// When an agent pays a receivable invoice, mark the corresponding items
+// on the agent's schedule statement(s) as paid_individually.
+// This complements markAgentPolicyItemsPaidIndividually (which handles
+// client-pays → agent payable direction) by covering agent-pays → any
+// statement direction on agent-type schedules.
+// ---------------------------------------------------------------------------
+export async function markPolicyPaidOnAgentStatement(
+  policyId: number,
+): Promise<void> {
+  await ensureItemStatusColumn();
+
+  const touched = await db
+    .select({
+      invoiceId: accountingInvoiceItems.invoiceId,
+      invoiceType: accountingInvoices.invoiceType,
+    })
+    .from(accountingInvoiceItems)
+    .innerJoin(accountingInvoices, eq(accountingInvoices.id, accountingInvoiceItems.invoiceId))
+    .where(
+      and(
+        eq(accountingInvoiceItems.policyId, policyId),
+        eq(accountingInvoices.invoiceType, "statement"),
+        sql`${accountingInvoices.status} <> 'cancelled'`,
+        sql`coalesce("accounting_invoice_items"."status", 'active') = 'active'`,
+      ),
+    );
+
+  if (touched.length === 0) return;
+
+  const statementIds = [...new Set(touched.map((row) => row.invoiceId))];
+
+  await db.execute(sql`
+    UPDATE "accounting_invoice_items" ii
+    SET "status" = 'paid_individually'
+    FROM "accounting_invoices" ai
+    WHERE ii."invoice_id" = ai."id"
+      AND ii."policy_id" = ${policyId}
+      AND ai."invoice_type" = 'statement'
+      AND ai."status" <> 'cancelled'
+      AND coalesce(ii."status", 'active') = 'active'
+  `);
+
+  for (const statementId of statementIds) {
+    await recalcStatementTotal(statementId);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Reactivate a previously paid-individually item back to active
 // ---------------------------------------------------------------------------
 export async function reactivateItem(
