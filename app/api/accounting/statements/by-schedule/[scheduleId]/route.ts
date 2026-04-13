@@ -24,15 +24,21 @@ type ItemResult = {
   status: string;
 };
 
+function isCommissionOrCreditItem(item: ItemResult) {
+  const desc = String(item.description ?? "").trim().toLowerCase();
+  return desc.includes("commission:") || desc.includes("credit:");
+}
+
 function resolveDisplayedItemAmountCents(
   item: ItemResult,
   entityType: string,
   premiumRoleTotals: Map<number, { clientCents: number; agentCents: number }>,
 ) {
+  if (isCommissionOrCreditItem(item)) return item.amountCents;
   if (!item.policyPremiumId) return item.amountCents;
   const totals = premiumRoleTotals.get(item.policyPremiumId);
-  if (entityType === "agent") return totals?.agentCents ?? item.amountCents;
-  if (entityType === "client") return totals?.clientCents ?? item.amountCents;
+  if (entityType === "agent") return totals?.agentCents || item.amountCents;
+  if (entityType === "client") return totals?.clientCents || item.amountCents;
   return item.amountCents;
 }
 
@@ -112,7 +118,9 @@ export async function GET(
       }));
     }
 
-    const existingPolicyIds = new Set(stmtItems.map((it) => it.policyId));
+    const existingPremiumPolicyIds = new Set(
+      stmtItems.filter((it) => !isCommissionOrCreditItem(it)).map((it) => it.policyId),
+    );
 
     const schedInvs = await db
       .select({ id: accountingInvoices.id })
@@ -153,12 +161,27 @@ export async function GET(
 
     const seenPremiumIds = new Set<number>();
     for (const it of stmtItems) {
-      if (it.policyPremiumId) seenPremiumIds.add(it.policyPremiumId);
+      if (it.policyPremiumId && !isCommissionOrCreditItem(it)) {
+        seenPremiumIds.add(it.policyPremiumId);
+      }
+    }
+
+    const seenCommPremIds = new Set<number>();
+    for (const it of stmtItems) {
+      if (it.policyPremiumId && isCommissionOrCreditItem(it)) {
+        seenCommPremIds.add(it.policyPremiumId);
+      }
     }
 
     const allItems = [...stmtItems];
     for (const it of schedItems) {
-      if (existingPolicyIds.has(it.policyId)) continue;
+      if (isCommissionOrCreditItem(it)) {
+        if (it.policyPremiumId && seenCommPremIds.has(it.policyPremiumId)) continue;
+        if (it.policyPremiumId) seenCommPremIds.add(it.policyPremiumId);
+        allItems.push(it);
+        continue;
+      }
+      if (existingPremiumPolicyIds.has(it.policyId)) continue;
       if (it.policyPremiumId && seenPremiumIds.has(it.policyPremiumId)) continue;
       if (it.policyPremiumId) seenPremiumIds.add(it.policyPremiumId);
       allItems.push(it);
@@ -261,14 +284,19 @@ export async function GET(
       displayAmountCents: resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals),
     }));
 
-    const activeTotal = allItems
-      .filter((it) => it.status === "active")
-      .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals), 0);
-
     const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
     const paidIndividuallyTotal = computePaidIndividuallyTotal(
       allItems, effectiveEntityType, premiumRoleTotals, clientPaidPolicyIds,
     );
+
+    const activeTotal = allItems
+      .filter((it) => {
+        if (it.status !== "active") return false;
+        if (isCommissionOrCreditItem(it)) return false;
+        if (effectiveEntityType === "agent" && it.policyPremiumId && clientPaidPolicyIds.has(it.policyId)) return false;
+        return true;
+      })
+      .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals), 0);
 
     const commissionTotalCents = await loadCommissionTotalCents(itemPolicyIds, [sid], effectiveEntityType);
     const policyClients = await loadPolicyClientMap(itemPolicyIds);
@@ -333,7 +361,7 @@ function computePaidIndividuallyTotal(
   if (entityType !== "agent" || clientPaidPolicyIds.size === 0) return paidByItemStatus;
 
   const paidByPolicyMatch = items
-    .filter((it) => it.policyPremiumId && clientPaidPolicyIds.has(it.policyId))
+    .filter((it) => it.policyPremiumId && clientPaidPolicyIds.has(it.policyId) && !isCommissionOrCreditItem(it))
     .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, entityType, premiumRoleTotals), 0);
 
   return Math.max(paidByItemStatus, paidByPolicyMatch);
@@ -361,7 +389,7 @@ async function loadCommissionTotalCents(
       and ai.entity_type = 'agent'
       and ai.status <> 'cancelled'
       and (
-        lower(coalesce(ii.description, '')) like 'commission:%'
+        lower(coalesce(ii.description, '')) like '%commission:%'
         or lower(coalesce(ai.notes, '')) like 'agent commission%'
       )
       ${scheduleFilter}

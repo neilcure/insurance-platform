@@ -206,7 +206,7 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
     "statementNumber", "statementDate", "statementStatus",
     "entityName", "entityType",
     "activeTotal", "paidIndividuallyTotal", "totalAmountCents",
-    "paidAmountCents", "currency",
+    "paidAmountCents", "outstandingTotal", "agentPaidTotal", "currency",
     "policyPremiumTotal", "endorsementPremiumTotal", "creditTotal", "commissionTotal",
     "itemCount", "activeItemCount", "paidIndividuallyItemCount",
     "itemDescriptions", "itemAmounts", "itemStatuses",

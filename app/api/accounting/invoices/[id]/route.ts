@@ -14,6 +14,7 @@ import { and, eq, desc, inArray, sql } from "drizzle-orm";
 import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
 import { requireUser } from "@/lib/auth/require-user";
 import { loadAccountingFields, resolvePremiumTypeColumn, getColumnType } from "@/lib/accounting-fields";
+import { findOrCreateDraftStatement, addInvoiceToStatement } from "@/lib/statement-management";
 
 const CENTS_COLUMNS = [
   "grossPremiumCents", "netPremiumCents", "clientPremiumCents",
@@ -300,6 +301,58 @@ export async function PATCH(
         );
       }
       updates.scheduleId = scheduleId;
+
+      const [updated] = await db
+        .update(accountingInvoices)
+        .set(updates as any)
+        .where(eq(accountingInvoices.id, invoiceId))
+        .returning();
+
+      if (!updated) {
+        return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
+      }
+
+      try {
+        const { statementId } = await findOrCreateDraftStatement(scheduleId);
+        await addInvoiceToStatement(statementId, invoiceId);
+
+        // When adding a payable (commission) invoice to a schedule, also link
+        // any un-scheduled receivable invoices for the same policies.
+        const invItems = await db
+          .select({ policyId: accountingInvoiceItems.policyId })
+          .from(accountingInvoiceItems)
+          .where(eq(accountingInvoiceItems.invoiceId, invoiceId));
+        const invPolicyIds = [...new Set(invItems.map((i) => i.policyId).filter(Boolean))];
+
+        if (invPolicyIds.length > 0) {
+          const relatedInvs = await db
+            .select({ id: accountingInvoices.id })
+            .from(accountingInvoices)
+            .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
+            .where(
+              and(
+                inArray(accountingInvoiceItems.policyId, invPolicyIds as number[]),
+                eq(accountingInvoices.invoiceType, "individual"),
+                eq(accountingInvoices.entityType, invoice.entityType),
+                sql`${accountingInvoices.scheduleId} IS NULL`,
+                sql`${accountingInvoices.status} <> 'cancelled'`,
+              ),
+            );
+
+          const relatedIds = [...new Set(relatedInvs.map((r) => r.id))];
+          for (const relId of relatedIds) {
+            if (relId === invoiceId) continue;
+            await db.update(accountingInvoices)
+              .set({ scheduleId, updatedAt: new Date().toISOString() } as any)
+              .where(eq(accountingInvoices.id, relId));
+            await addInvoiceToStatement(statementId, relId);
+          }
+        }
+      } catch {
+        // non-fatal: statement auto-add is best-effort
+      }
+
+      return NextResponse.json(updated);
     }
 
     const [updated] = await db

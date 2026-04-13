@@ -113,6 +113,7 @@ export function WorkflowTab({
 
   const isParentPolicy = !flowKey || flowKey === "policyset" || flowKey === "";
   const [linkedEndorsements, setLinkedEndorsements] = React.useState<LinkedEndorsement[]>([]);
+  const [endorsementDetails, setEndorsementDetails] = React.useState<Record<number, PolicyDetail>>({});
   const [endorsementSummaries, setEndorsementSummaries] = React.useState<Record<number, { total: number; verified: number; outstanding: number }>>({});
 
   // Shared schedule data — fetched once, passed to all endorsement UploadDocumentsTab instances
@@ -148,6 +149,26 @@ export function WorkflowTab({
       .catch(() => {});
     return () => { cancelled = true; };
   }, [isParentPolicy, detail.policyId]);
+
+  React.useEffect(() => {
+    if (linkedEndorsements.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      linkedEndorsements.map((e) =>
+        fetch(`/api/policies/${e.policyId}?_t=${Date.now()}`, { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const map: Record<number, PolicyDetail> = {};
+      results.forEach((d, i) => {
+        if (d) map[linkedEndorsements[i].policyId] = d as PolicyDetail;
+      });
+      setEndorsementDetails(map);
+    });
+    return () => { cancelled = true; };
+  }, [linkedEndorsements]);
 
   const toggleSection = (id: string) => {
     setExpandedSection((prev) => (prev === id ? null : id));
@@ -431,6 +452,17 @@ export function WorkflowTab({
                     initialTemplateValue={initialDocTemplateValue}
                     initialAudience={initialDocAudience}
                     onStatusAutoAdvanced={onRefresh}
+                    endorsements={isParentPolicy ? linkedEndorsements.filter((e) => !!endorsementDetails[e.policyId]).map((e) => {
+                      const eDetail = endorsementDetails[e.policyId];
+                      const eExtra = (eDetail.extraAttributes ?? {}) as Record<string, unknown>;
+                      return {
+                        policyId: e.policyId,
+                        policyNumber: e.policyNumber,
+                        detail: eDetail,
+                        statusClient: String(eExtra.statusClient ?? e.status ?? "quotation_prepared"),
+                        statusAgent: String(eExtra.statusAgent ?? eExtra.statusClient ?? e.status ?? "quotation_prepared"),
+                      };
+                    }) : undefined}
                   />
                 )}
                 {sec.id === "actions" && (

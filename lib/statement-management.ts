@@ -213,28 +213,39 @@ export async function addInvoiceToStatement(
     .from(accountingInvoiceItems)
     .where(eq(accountingInvoiceItems.invoiceId, individualInvoiceId));
 
+  function isCommissionOrCreditDesc(desc: string | null | undefined): boolean {
+    const d = String(desc ?? "").toLowerCase();
+    return d.includes("commission:") || d.includes("credit:");
+  }
+
   if (invItems.length > 0) {
-    const alreadyOnStatement = await db
-      .select({ id: accountingInvoiceItems.id })
+    const existingStmtItems = await db
+      .select({
+        id: accountingInvoiceItems.id,
+        policyId: accountingInvoiceItems.policyId,
+        policyPremiumId: accountingInvoiceItems.policyPremiumId,
+        description: accountingInvoiceItems.description,
+      })
       .from(accountingInvoiceItems)
       .where(
         and(
           eq(accountingInvoiceItems.invoiceId, statementId),
-          sql`${accountingInvoiceItems.policyId} IN (${sql.join(
-            invItems.map((it) => sql`${it.policyId}`),
-            sql`,`,
-          )})`,
-          sql`coalesce(${accountingInvoiceItems.policyPremiumId}, 0) IN (${sql.join(
-            invItems.map((it) => sql`${it.policyPremiumId ?? 0}`),
-            sql`,`,
-          )})`,
-          sql`"status" = 'active'`,
+          sql`"status" IN ('active', 'paid_individually')`,
         ),
-      )
-      .limit(1);
+      );
 
-    if (alreadyOnStatement.length > 0) {
-      return { itemId: alreadyOnStatement[0].id };
+    const allExist = invItems.every((newItem) => {
+      const newIsComm = isCommissionOrCreditDesc(newItem.description);
+      return existingStmtItems.some((existing) => {
+        if (existing.policyId !== newItem.policyId) return false;
+        if ((existing.policyPremiumId ?? 0) !== (newItem.policyPremiumId ?? 0)) return false;
+        const existingIsComm = isCommissionOrCreditDesc(existing.description);
+        return newIsComm === existingIsComm;
+      });
+    });
+
+    if (allExist) {
+      return { itemId: existingStmtItems[0].id };
     }
   }
 
@@ -246,7 +257,13 @@ export async function addInvoiceToStatement(
   const stmtRole = premiumRoleMap[stmt?.premiumType ?? ""] ?? null;
   const accountingFields = stmtRole ? await loadAccountingFields() : null;
 
+  function isCommissionOrCredit(desc: string | null | undefined): boolean {
+    const d = String(desc ?? "").toLowerCase();
+    return d.includes("commission:") || d.includes("credit:");
+  }
+
   async function resolveAmount(it: { policyPremiumId: number | null; amountCents: number; description?: string | null }): Promise<number> {
+    if (isCommissionOrCredit(it.description)) return it.amountCents;
     if (!stmtRole || !accountingFields || !it.policyPremiumId) return it.amountCents;
     const [premium] = await db
       .select()
@@ -258,9 +275,31 @@ export async function addInvoiceToStatement(
     return resolved > 0 ? resolved : it.amountCents;
   }
 
+  const existingForDedup = await db
+    .select({
+      policyId: accountingInvoiceItems.policyId,
+      policyPremiumId: accountingInvoiceItems.policyPremiumId,
+      description: accountingInvoiceItems.description,
+    })
+    .from(accountingInvoiceItems)
+    .where(
+      and(
+        eq(accountingInvoiceItems.invoiceId, statementId),
+        sql`"status" IN ('active', 'paid_individually')`,
+      ),
+    );
+
   let itemId = 0;
   if (invItems.length > 0) {
     for (const it of invItems) {
+      const itIsComm = isCommissionOrCredit(it.description);
+      const alreadyExists = existingForDedup.some((e) =>
+        e.policyId === it.policyId
+        && (e.policyPremiumId ?? 0) === (it.policyPremiumId ?? 0)
+        && isCommissionOrCreditDesc(e.description) === itIsComm,
+      );
+      if (alreadyExists) continue;
+
       const amountCents = await resolveAmount(it);
       const [inserted] = await db
         .insert(accountingInvoiceItems)

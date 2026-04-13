@@ -212,7 +212,6 @@ export function PaymentSection({
   const [agentStmtLoaded, setAgentStmtLoaded] = React.useState(false);
 
   React.useEffect(() => {
-    if (!isAgentMode) return;
     const agentSched = schedules?.find((s) => s.entityType === "agent");
     if (!agentSched) {
       if (schedules !== undefined) setAgentStmtLoaded(true);
@@ -245,7 +244,7 @@ export function PaymentSection({
       .catch(() => { if (!cancelled) setAgentStmtLoaded(true); });
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAgentMode, schedules, refreshKey]);
+  }, [schedules, refreshKey]);
 
   const skipInitialScheduleFetch = React.useRef(!!initialSchedules);
   React.useEffect(() => {
@@ -457,21 +456,41 @@ export function PaymentSection({
       matchAllSchedules ? inv.scheduleId && allScheduleIds.has(inv.scheduleId) : inv.scheduleId === s.id,
     );
 
-    const activeItems = stmt?.items.filter((it) => it.status === "active") ?? [];
-    const paidIndItems = stmt?.items.filter((it) => it.status === "paid_individually") ?? [];
+    const useAgentStmtData = s.entityType === "agent" && agentStmtData;
 
-    const receivableOnStatement = onStatementInvs.filter((inv) => inv.direction === "receivable");
+    const activeItems = useAgentStmtData
+      ? agentStmtData.items.filter((it: any) => it.status === "active")
+      : stmt?.items.filter((it) => it.status === "active") ?? [];
+    const paidIndItems = useAgentStmtData
+      ? agentStmtData.items.filter((it: any) => it.status === "paid_individually")
+      : stmt?.items.filter((it) => it.status === "paid_individually") ?? [];
+
     const payableOnStatement = onStatementInvs.filter((inv) => inv.direction === "payable");
 
-    const totalReceivable = stmt && s.entityType !== "agent"
-      ? stmt.activeTotal
-      : receivableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
-    const totalPayable = stmt && s.entityType === "agent"
-      ? stmt.activeTotal
-      : payableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
-    const netDue = totalReceivable - totalPayable;
+    const receivableOnStatement = onStatementInvs.filter((inv) => inv.direction === "receivable");
 
-    const hasItems = stmt ? stmt.items.length > 0 : onStatementInvs.length > 0;
+    let totalDue: number;
+    let paidIndividuallyTotal: number;
+    let commissionTotal: number;
+    let outstanding: number;
+
+    if (useAgentStmtData) {
+      totalDue = agentStmtData.activeTotal + agentStmtData.paidIndividuallyTotal;
+      paidIndividuallyTotal = agentStmtData.paidIndividuallyTotal;
+      commissionTotal = agentStmtData.commissionTotal;
+      outstanding = totalDue - paidIndividuallyTotal - commissionTotal;
+    } else {
+      totalDue = stmt
+        ? stmt.activeTotal + (stmt.paidIndividuallyTotal ?? 0)
+        : receivableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
+      paidIndividuallyTotal = stmt?.paidIndividuallyTotal ?? 0;
+      commissionTotal = payableOnStatement.reduce((sum, inv) => sum + (inv.totalAmountCents - inv.paidAmountCents), 0);
+      outstanding = totalDue - paidIndividuallyTotal - commissionTotal;
+    }
+
+    const hasItems = useAgentStmtData
+      ? agentStmtData.items.length > 0
+      : stmt ? stmt.items.length > 0 : onStatementInvs.length > 0;
 
     return (
       <div className="rounded-md border border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30 overflow-hidden">
@@ -487,12 +506,11 @@ export function PaymentSection({
               {s.billingDay ? ` (day ${s.billingDay})` : ""}
             </div>
           </div>
-          {stmt && (
+          {(useAgentStmtData && agentStmtData.statementNumber) || stmt ? (
             <Badge variant="custom" className="text-[10px] bg-indigo-200 text-indigo-800 dark:bg-indigo-800 dark:text-indigo-200 font-mono">
-              {stmt.statementNumber}
+              {useAgentStmtData ? agentStmtData.statementNumber : stmt?.statementNumber}
             </Badge>
-          )}
-          {!stmt && (
+          ) : (
             <Badge variant="custom" className="text-[10px] bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">
               Period Pay
             </Badge>
@@ -502,13 +520,15 @@ export function PaymentSection({
         {hasItems && (
           <div className="border-t border-indigo-200 dark:border-indigo-800 px-3 py-2 space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-indigo-500 dark:text-indigo-400 mb-1">
-              {stmt ? `Items on ${stmt.statementNumber}` : `Policies on this statement`}
-              {" "}({stmt ? activeItems.length : onStatementInvs.length})
+              {(useAgentStmtData && agentStmtData.statementNumber) || stmt
+                ? `Items on ${useAgentStmtData ? agentStmtData.statementNumber : stmt?.statementNumber}`
+                : `Policies on this statement`}
+              {" "}({(useAgentStmtData || stmt) ? activeItems.length : onStatementInvs.length})
             </div>
 
-            {stmt ? (
+            {(useAgentStmtData || stmt) ? (
               <>
-                {activeItems.map((item) => (
+                {activeItems.map((item: any) => (
                   <div
                     key={item.id}
                     className="flex items-center justify-between gap-2 rounded bg-white/60 dark:bg-indigo-900/20 px-2 py-1.5 text-xs"
@@ -521,9 +541,9 @@ export function PaymentSection({
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <span className="font-semibold text-indigo-700 dark:text-indigo-300">
-                        {formatCurrency(item.amountCents)}
+                        {formatCurrency(item.displayAmountCents ?? item.amountCents)}
                       </span>
-                      {isAdmin && (
+                      {isAdmin && stmt && (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -544,7 +564,7 @@ export function PaymentSection({
                     <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 mt-2 mb-0.5">
                       Paid Individually ({paidIndItems.length})
                     </div>
-                    {paidIndItems.map((item) => (
+                    {paidIndItems.map((item: any) => (
                       <div
                         key={item.id}
                         className="flex items-center justify-between gap-2 rounded bg-neutral-100/60 dark:bg-neutral-800/30 px-2 py-1.5 text-xs opacity-60"
@@ -560,9 +580,9 @@ export function PaymentSection({
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
                           <span className="font-semibold text-neutral-400 line-through">
-                            {formatCurrency(item.amountCents)}
+                            {formatCurrency(item.displayAmountCents ?? item.amountCents)}
                           </span>
-                          {isAdmin && (
+                          {isAdmin && stmt && (
                             <Button
                               size="sm"
                               variant="ghost"
@@ -621,36 +641,32 @@ export function PaymentSection({
             ))}
 
             <div className="space-y-0.5 pt-1 border-t border-indigo-200/60 dark:border-indigo-700/60 mt-1 text-xs">
-              {totalPayable > 0 && (
-                <>
-                  <div className="flex items-center justify-between text-indigo-500 dark:text-indigo-400">
-                    <span>Receivable</span>
-                    <span>{formatCurrency(totalReceivable)}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-amber-600 dark:text-amber-400">
-                    <span>Less commission</span>
-                    <span>−{formatCurrency(totalPayable)}</span>
-                  </div>
-                </>
-              )}
-              {stmt && paidIndItems.length > 0 && (
+              <div className="flex items-center justify-between text-indigo-500 dark:text-indigo-400">
+                <span>Total Due</span>
+                <span>{formatCurrency(totalDue)}</span>
+              </div>
+              {paidIndividuallyTotal > 0 && (
                 <div className="flex items-center justify-between text-neutral-400 dark:text-neutral-500">
-                  <span>Paid individually</span>
-                  <span>−{formatCurrency(stmt.paidIndividuallyTotal)}</span>
+                  <span>Paid Individually</span>
+                  <span>−{formatCurrency(paidIndividuallyTotal)}</span>
+                </div>
+              )}
+              {commissionTotal > 0 && (
+                <div className="flex items-center justify-between text-amber-600 dark:text-amber-400">
+                  <span>Less commission</span>
+                  <span>−{formatCurrency(commissionTotal)}</span>
                 </div>
               )}
               <div className="flex items-center justify-between font-medium">
-                {netDue > 0 ? (
+                {outstanding > 0 ? (
                   <>
-                    <span className="text-indigo-600 dark:text-indigo-400">
-                      {totalPayable > 0 ? "Net due from agent" : "Total on statement"}
-                    </span>
-                    <span className="font-bold text-indigo-800 dark:text-indigo-200">{formatCurrency(netDue)}</span>
+                    <span className="text-indigo-600 dark:text-indigo-400">Outstanding</span>
+                    <span className="font-bold text-indigo-800 dark:text-indigo-200">{formatCurrency(outstanding)}</span>
                   </>
-                ) : netDue < 0 ? (
+                ) : outstanding < 0 ? (
                   <>
                     <span className="text-amber-600 dark:text-amber-400">Commission credit to agent</span>
-                    <span className="font-bold text-amber-700 dark:text-amber-300">{formatCurrency(Math.abs(netDue))}</span>
+                    <span className="font-bold text-amber-700 dark:text-amber-300">{formatCurrency(Math.abs(outstanding))}</span>
                   </>
                 ) : (
                   <>

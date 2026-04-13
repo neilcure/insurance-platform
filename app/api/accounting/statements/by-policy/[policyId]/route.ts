@@ -319,10 +319,11 @@ function resolveDisplayedItemAmountCents(
   premiumRoleTotals: Map<number, { clientCents: number; agentCents: number }>,
   direction?: string | null,
 ) {
+  if (isCreditStatementItem(item) || isCommissionStatementItem(item)) return item.amountCents;
   if (!item.policyPremiumId) return item.amountCents;
   const totals = premiumRoleTotals.get(item.policyPremiumId);
-  if (entityType === "agent") return totals?.agentCents ?? item.amountCents;
-  if (entityType === "client") return totals?.clientCents ?? item.amountCents;
+  if (entityType === "agent") return totals?.agentCents || item.amountCents;
+  if (entityType === "client") return totals?.clientCents || item.amountCents;
   return item.amountCents;
 }
 
@@ -359,14 +360,12 @@ async function loadPolicyStatementMeta(policyIds: number[]) {
 
 function isCreditStatementItem(item: ItemResult) {
   const desc = String(item.description ?? "").trim().toLowerCase();
-  if (item.policyPremiumId) return false;
-  return desc.startsWith("credit:");
+  return desc.includes("credit:");
 }
 
 function isCommissionStatementItem(item: ItemResult) {
   const desc = String(item.description ?? "").trim().toLowerCase();
-  if (item.policyPremiumId) return false;
-  return desc.startsWith("commission:");
+  return desc.includes("commission:");
 }
 
 function applyStatementItemPremiumAliases(
@@ -486,7 +485,7 @@ async function loadCommissionTotalCents(
       and ai.entity_type = 'agent'
       and ai.status <> 'cancelled'
       and (
-        lower(coalesce(ii.description, '')) like 'commission:%'
+        lower(coalesce(ii.description, '')) like '%commission:%'
         or lower(coalesce(ai.notes, '')) like 'agent commission%'
       )
       ${scheduleFilter}
@@ -537,7 +536,8 @@ function computePaidIndividuallyTotal(
   if (entityType !== "agent" || clientPaidPolicyIds.size === 0) return paidByItemStatus;
 
   const paidByPolicyMatch = items
-    .filter((it) => it.policyPremiumId && clientPaidPolicyIds.has(it.policyId))
+    .filter((it) => it.policyPremiumId && clientPaidPolicyIds.has(it.policyId)
+      && !isCreditStatementItem(it) && !isCommissionStatementItem(it))
     .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, entityType, premiumRoleTotals, direction), 0);
 
   return Math.max(paidByItemStatus, paidByPolicyMatch);
@@ -755,13 +755,18 @@ async function buildPreviewFromScheduledInvoices(
   }));
   const policyMetaById = await loadPolicyStatementMeta(itemPolicyIds);
   const commissionTotalCents = await loadCommissionTotalCents(itemPolicyIds, allSchedIds, effectiveEntityType);
-  const activeTotal = synthItems
-    .filter((it) => it.status === "active")
-    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals, effectiveDirection), 0);
   const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
   const paidIndividuallyTotal = computePaidIndividuallyTotal(
     synthItems, effectiveEntityType, premiumRoleTotals, clientPaidPolicyIds, effectiveDirection,
   );
+  const activeTotal = synthItems
+    .filter((it) => {
+      if (it.status !== "active") return false;
+      if (isCreditStatementItem(it) || isCommissionStatementItem(it)) return false;
+      if (effectiveEntityType === "agent" && it.policyPremiumId && clientPaidPolicyIds.has(it.policyId)) return false;
+      return true;
+    })
+    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals, effectiveDirection), 0);
   const totalCents = activeTotal + paidIndividuallyTotal;
   const paidCents = paidIndividuallyTotal;
   const summaryTotals = buildStatementSummaryTotals(
@@ -1109,9 +1114,19 @@ export async function GET(
       status: r.status,
     }));
     const shouldScopeToPolicy = audience === "client";
-    const items = shouldScopeToPolicy
+    const scopedItems = shouldScopeToPolicy
       ? allStatementItems.filter((it) => allPolicyIds.includes(it.policyId))
       : allStatementItems;
+
+    const seenPremiumIds = new Set<number>();
+    const items = scopedItems.filter((it) => {
+      if (!it.policyPremiumId) return true;
+      const isCommCredit = String(it.description ?? "").toLowerCase();
+      if (isCommCredit.includes("commission:") || isCommCredit.includes("credit:")) return true;
+      if (seenPremiumIds.has(it.policyPremiumId)) return false;
+      seenPremiumIds.add(it.policyPremiumId);
+      return true;
+    });
     const isPolicyScopedView = shouldScopeToPolicy && items.length !== allStatementItems.length;
 
     // Enrich descriptions with policy numbers + line suffix (a)/(b) for multi-line
@@ -1354,13 +1369,18 @@ export async function GET(
       stmtScheduleId ? [stmtScheduleId] : scheduleIds,
       stmt.entityType,
     );
-    const activeTotal = items
-      .filter((it) => it.status === "active")
-      .reduce((sum, it) => sum + resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction), 0);
     const clientPaidPolicyIds2 = await loadClientPaidPolicyIds(items.map((it) => it.policyId));
     const paidIndividuallyTotal = computePaidIndividuallyTotal(
       items, stmt.entityType, premiumRoleTotals, clientPaidPolicyIds2, stmt.direction,
     );
+    const activeTotal = items
+      .filter((it) => {
+        if (it.status !== "active") return false;
+        if (isCreditStatementItem(it) || isCommissionStatementItem(it)) return false;
+        if (stmt.entityType === "agent" && it.policyPremiumId && clientPaidPolicyIds2.has(it.policyId)) return false;
+        return true;
+      })
+      .reduce((sum, it) => sum + resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction), 0);
     const summaryTotals = buildStatementSummaryTotals(
       items,
       stmt.entityType,

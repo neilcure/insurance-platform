@@ -517,12 +517,10 @@ function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: strin
       || Number(p.netPremium ?? 0) !== 0;
   };
   const isCommissionItem = (it: StatementCtx["items"][number]) => {
-    if (hasPremiumBreakdown(it)) return false;
-    return String(it.description ?? "").trim().toLowerCase().startsWith("commission:");
+    return String(it.description ?? "").trim().toLowerCase().includes("commission:");
   };
   const isCreditItem = (it: StatementCtx["items"][number]) => {
-    if (hasPremiumBreakdown(it)) return false;
-    return String(it.description ?? "").trim().toLowerCase().startsWith("credit:");
+    return String(it.description ?? "").trim().toLowerCase().includes("credit:");
   };
   const computedTotalDueFromItemsCents = statementBillableItems
     .filter((it) => !isCommissionItem(it) && !isCreditItem(it))

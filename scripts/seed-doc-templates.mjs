@@ -142,6 +142,270 @@ const templates = [
   },
   {
     group_key: "document_templates",
+    label: "Motor Insurance Quotation",
+    value: "motor_quotation_agent",
+    value_type: "json",
+    sort_order: 3,
+    is_active: true,
+    meta: {
+      type: "quotation",
+      flows: [],
+      isAgentTemplate: true,
+      documentPrefix: "MQ",
+      documentSetGroup: "motor_agent",
+      header: {
+        title: "Motor Insurance Quotation",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "mqa1",
+          title: "Insured Information",
+          source: "insured",
+          fields: [
+            { key: "lastName", label: "Last Name", format: "text" },
+            { key: "firstName", label: "First Name", format: "text" },
+            { key: "idNumber", label: "ID Number", format: "text" },
+          ],
+        },
+        {
+          id: "mqa2",
+          title: "Agent Information",
+          source: "agent",
+          fields: [
+            { key: "name", label: "Agent Name", format: "text" },
+            { key: "userNumber", label: "Agent Code", format: "text" },
+          ],
+        },
+        {
+          id: "mqa3",
+          title: "Vehicle Details",
+          source: "package",
+          packageName: "vehicleinfo",
+          fields: [
+            { key: "make", label: "Make", format: "text" },
+            { key: "model", label: "Model", format: "text" },
+            { key: "year", label: "Year", format: "text" },
+            { key: "plateNumber", label: "Plate Number", format: "text" },
+          ],
+        },
+        {
+          id: "mqa4",
+          title: "Policy Details",
+          source: "package",
+          packageName: "policyinfo",
+          fields: [
+            { key: "coverType", label: "Cover Type", format: "text" },
+            { key: "premium", label: "Premium", format: "currency", currencyCode: "HKD" },
+            { key: "sumInsured", label: "Sum Insured", format: "currency", currencyCode: "HKD" },
+            { key: "effectiveDate", label: "Effective Date", format: "date" },
+            { key: "expiryDate", label: "Expiry Date", format: "date" },
+          ],
+        },
+      ],
+      footer: {
+        text: "This quotation is valid for 30 days from the date of issue.",
+        showSignature: true,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Motor Insurance Invoice",
+    value: "motor_invoice",
+    value_type: "json",
+    sort_order: 4,
+    is_active: true,
+    meta: {
+      type: "invoice",
+      flows: [],
+      documentPrefix: "MI",
+      documentSetGroup: "motor_main",
+      header: {
+        title: "Motor Insurance Invoice",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "mi1",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "mi2",
+          title: "Amount Due",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Premium", format: "currency", currencyCode: "HKD" },
+            { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Premium", format: "currency", currencyCode: "HKD" },
+            { key: "clientPremium", label: "Total Payable", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Payment is due within 14 days of issue.",
+        showSignature: false,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Motor Insurance Invoice",
+    value: "motor_invoice_agent",
+    value_type: "json",
+    sort_order: 5,
+    is_active: true,
+    meta: {
+      type: "invoice",
+      flows: [],
+      isAgentTemplate: true,
+      documentPrefix: "MI",
+      documentSetGroup: "motor_agent",
+      header: {
+        title: "Motor Insurance Invoice",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "mia1",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "mia2",
+          title: "Agent Information",
+          source: "agent",
+          fields: [
+            { key: "name", label: "Agent Name", format: "text" },
+            { key: "userNumber", label: "Agent Code", format: "text" },
+          ],
+        },
+        {
+          id: "mia3",
+          title: "Amount Due",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Premium", format: "currency", currencyCode: "HKD" },
+            { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Premium", format: "currency", currencyCode: "HKD" },
+            { key: "agentPremium", label: "Agent Payable", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Payment is due within 14 days of issue.",
+        showSignature: false,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Motor Insurance Receipt",
+    value: "motor_receipt",
+    value_type: "json",
+    sort_order: 6,
+    is_active: true,
+    meta: {
+      type: "receipt",
+      flows: [],
+      documentPrefix: "MR",
+      documentSetGroup: "motor_main",
+      header: {
+        title: "Motor Insurance Receipt",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "mr1",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+          ],
+        },
+        {
+          id: "mr2",
+          title: "Payment Received",
+          source: "accounting",
+          fields: [
+            { key: "clientPremium", label: "Amount Paid", format: "currency", currencyCode: "HKD" },
+            { key: "currency", label: "Currency", format: "text" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Thank you for your payment.",
+        showSignature: false,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Motor Insurance Receipt",
+    value: "motor_receipt_agent",
+    value_type: "json",
+    sort_order: 7,
+    is_active: true,
+    meta: {
+      type: "receipt",
+      flows: [],
+      isAgentTemplate: true,
+      documentPrefix: "MR",
+      documentSetGroup: "motor_agent",
+      header: {
+        title: "Motor Insurance Receipt",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "mra1",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+          ],
+        },
+        {
+          id: "mra2",
+          title: "Agent Information",
+          source: "agent",
+          fields: [
+            { key: "name", label: "Agent Name", format: "text" },
+            { key: "userNumber", label: "Agent Code", format: "text" },
+          ],
+        },
+        {
+          id: "mra3",
+          title: "Payment Received",
+          source: "accounting",
+          fields: [
+            { key: "agentPremium", label: "Agent Amount Paid", format: "currency", currencyCode: "HKD" },
+            { key: "currency", label: "Currency", format: "text" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Thank you for your payment.",
+        showSignature: false,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
     label: "Endorsement Quotation",
     value: "endorsement_quotation",
     value_type: "json",
@@ -347,6 +611,195 @@ const templates = [
       footer: {
         text: "This credit note has been issued against the original policy premium.",
         showSignature: true,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Endorsement Quotation",
+    value: "endorsement_quotation_agent",
+    value_type: "json",
+    sort_order: 15,
+    is_active: true,
+    meta: {
+      type: "quotation",
+      flows: ["endorsement"],
+      isAgentTemplate: true,
+      documentPrefix: "EQ",
+      documentSetGroup: "endorsement_agent",
+      header: {
+        title: "Endorsement Quotation",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "eqa1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+            { key: "endorsementType", label: "Endorsement Type", format: "text" },
+            { key: "endorsementReason", label: "Reason", format: "text" },
+          ],
+        },
+        {
+          id: "eqa2",
+          title: "Insured Information",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "eqa3",
+          title: "Agent Information",
+          source: "agent",
+          fields: [
+            { key: "name", label: "Agent Name", format: "text" },
+            { key: "userNumber", label: "Agent Code", format: "text" },
+          ],
+        },
+        {
+          id: "eqa4",
+          title: "Endorsement Premium",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Additional Premium", format: "currency", currencyCode: "HKD" },
+            { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Premium", format: "currency", currencyCode: "HKD" },
+            { key: "agentPremium", label: "Agent Premium", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "This endorsement quotation is subject to the terms of the original policy.",
+        showSignature: true,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Endorsement Invoice",
+    value: "endorsement_invoice_agent",
+    value_type: "json",
+    sort_order: 16,
+    is_active: true,
+    meta: {
+      type: "invoice",
+      flows: ["endorsement"],
+      isAgentTemplate: true,
+      documentPrefix: "EI",
+      documentSetGroup: "endorsement_agent",
+      header: {
+        title: "Endorsement Invoice",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "eia1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+            { key: "endorsementType", label: "Endorsement Type", format: "text" },
+          ],
+        },
+        {
+          id: "eia2",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+            { key: "primaryId", label: "ID / BR No.", format: "text" },
+          ],
+        },
+        {
+          id: "eia3",
+          title: "Agent Information",
+          source: "agent",
+          fields: [
+            { key: "name", label: "Agent Name", format: "text" },
+            { key: "userNumber", label: "Agent Code", format: "text" },
+          ],
+        },
+        {
+          id: "eia4",
+          title: "Amount Due",
+          source: "accounting",
+          fields: [
+            { key: "grossPremium", label: "Additional Premium", format: "currency", currencyCode: "HKD" },
+            { key: "levy", label: "Levy", format: "currency", currencyCode: "HKD" },
+            { key: "netPremium", label: "Net Premium", format: "currency", currencyCode: "HKD" },
+            { key: "agentPremium", label: "Agent Payable", format: "currency", currencyCode: "HKD" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Payment is due within 14 days of issue.",
+        showSignature: false,
+      },
+    },
+  },
+  {
+    group_key: "document_templates",
+    label: "Endorsement Receipt",
+    value: "endorsement_receipt_agent",
+    value_type: "json",
+    sort_order: 17,
+    is_active: true,
+    meta: {
+      type: "receipt",
+      flows: ["endorsement"],
+      isAgentTemplate: true,
+      documentPrefix: "ER",
+      documentSetGroup: "endorsement_agent",
+      header: {
+        title: "Endorsement Receipt",
+        showDate: true,
+        showPolicyNumber: true,
+      },
+      sections: [
+        {
+          id: "era1",
+          title: "Original Policy",
+          source: "policy",
+          fields: [
+            { key: "linkedPolicyNumber", label: "Original Policy No.", format: "text" },
+          ],
+        },
+        {
+          id: "era2",
+          title: "Insured",
+          source: "insured",
+          fields: [
+            { key: "displayName", label: "Insured Name", format: "text" },
+          ],
+        },
+        {
+          id: "era3",
+          title: "Agent Information",
+          source: "agent",
+          fields: [
+            { key: "name", label: "Agent Name", format: "text" },
+            { key: "userNumber", label: "Agent Code", format: "text" },
+          ],
+        },
+        {
+          id: "era4",
+          title: "Payment Received",
+          source: "accounting",
+          fields: [
+            { key: "agentPremium", label: "Agent Amount Paid", format: "currency", currencyCode: "HKD" },
+            { key: "currency", label: "Currency", format: "text" },
+          ],
+        },
+      ],
+      footer: {
+        text: "Thank you for your payment.",
+        showSignature: false,
       },
     },
   },

@@ -296,6 +296,7 @@ function DocumentPreview({
   tracking,
   docTrackingKey,
   audience,
+  renderMode,
   onConfirmDoc,
   onOpenEmailDialog,
 }: {
@@ -306,6 +307,7 @@ function DocumentPreview({
   tracking?: Record<string, DocTrackingEntry> | null;
   docTrackingKey?: string;
   audience?: "client" | "agent";
+  renderMode?: "policy" | "agent_statement";
   onConfirmDoc?: (trackingKey: string) => void;
   onOpenEmailDialog?: (subject: string, htmlContent: string, plainText: string) => void;
 }) {
@@ -844,19 +846,19 @@ function DocumentPreview({
                           key={`policy-group-${group.policyId}-${groupIdx}`}
                           className={cn(
                             "rounded-lg border p-2 sm:p-3",
-                            isCurrentStatementGroup(group, detail.policyId)
+                            renderMode !== "agent_statement" && isCurrentStatementGroup(group, detail.policyId)
                               ? "border-amber-300 bg-amber-50/80"
                               : group.items.length > 1
                                 ? "border-neutral-300 bg-neutral-100/80"
                                 : "border-neutral-200 bg-neutral-50/60",
                           )}
                         >
-                          {(group.items.length > 1 || isCurrentStatementGroup(group, detail.policyId)) && (
+                          {(group.items.length > 1 || (renderMode !== "agent_statement" && isCurrentStatementGroup(group, detail.policyId))) && (
                             <div className="mb-2 flex items-center justify-between gap-2">
                               <div className="text-[11px] sm:text-[13px] font-semibold text-neutral-900">
                                 {getStatementGroupTitle(group, detail.policyNumber)}
                               </div>
-                              {isCurrentStatementGroup(group, detail.policyId) && (
+                              {renderMode !== "agent_statement" && isCurrentStatementGroup(group, detail.policyId) && (
                                 <div className="rounded border border-amber-300 bg-white px-2 py-0.5 text-[10px] sm:text-[11px] font-medium text-amber-700">
                                   Current Policy
                                 </div>
@@ -1693,6 +1695,14 @@ function SendEmailDialog({
   );
 }
 
+export type EndorsementEntry = {
+  policyId: number;
+  policyNumber: string;
+  detail: PolicyDetail;
+  statusClient: string;
+  statusAgent: string;
+};
+
 export function DocumentsTab({
   detail,
   flowKey,
@@ -1706,6 +1716,7 @@ export function DocumentsTab({
   trackingScope = "policy",
   trackingInvoiceId,
   onStatusAutoAdvanced,
+  endorsements,
 }: {
   detail: PolicyDetail;
   flowKey?: string;
@@ -1719,6 +1730,7 @@ export function DocumentsTab({
   trackingScope?: "policy" | "invoice";
   trackingInvoiceId?: number;
   onStatusAutoAdvanced?: () => void;
+  endorsements?: EndorsementEntry[];
 }) {
   const { sortedValues: statusOrder, loading: statusesLoading } = usePolicyStatuses();
   const [templates, setTemplates] = React.useState<DocumentTemplateRow[]>([]);
@@ -1727,9 +1739,14 @@ export function DocumentsTab({
   const [hasLoadedOnce, setHasLoadedOnce] = React.useState(false);
   const [selected, setSelected] = React.useState<DocumentTemplateRow | null>(null);
   const [selectedAudience, setSelectedAudience] = React.useState<"client" | "agent">("client");
+  const [selectedEndorsement, setSelectedEndorsement] = React.useState<EndorsementEntry | null>(null);
   const [initialSelectionApplied, setInitialSelectionApplied] = React.useState(false);
   const [emailDialogOpen, setEmailDialogOpen] = React.useState(false);
   const [emailPreSelectedId, setEmailPreSelectedId] = React.useState<number | undefined>();
+
+  // Endorsement templates (loaded from the same document_templates pool, filtered by flows: ["endorsement"])
+  const [endorsementTemplates, setEndorsementTemplates] = React.useState<DocumentTemplateRow[]>([]);
+  const [endorsementTracking, setEndorsementTracking] = React.useState<Record<number, DocumentStatusMap>>({});
 
   // Document tracking state (shared across all template rows)
   const [tracking, setTracking] = React.useState<DocumentStatusMap>({});
@@ -1749,6 +1766,25 @@ export function DocumentsTab({
       .then((data: DocumentStatusMap) => setTracking(data))
       .catch(() => {});
   }, [trackingEndpoint]);
+
+  // Load tracking for endorsement policies
+  React.useEffect(() => {
+    if (!endorsements || endorsements.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      endorsements.map((e) =>
+        fetch(`/api/policies/${e.policyId}/document-tracking`, { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : {}))
+          .catch(() => ({})),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const map: Record<number, DocumentStatusMap> = {};
+      results.forEach((data, i) => { map[endorsements[i].policyId] = data as DocumentStatusMap; });
+      setEndorsementTracking(map);
+    });
+    return () => { cancelled = true; };
+  }, [endorsements]);
 
   const handleTrackingAction = React.useCallback(async (
     docType: string,
@@ -2074,6 +2110,7 @@ export function DocumentsTab({
       return policyLineKeys.size === 0 || policyLineKeys.has(key);
     };
 
+    const hasEndorsements = endorsements && endorsements.length > 0;
     const loadHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : []))
       .then((rows: DocumentTemplateRow[]) => {
@@ -2081,8 +2118,6 @@ export function DocumentsTab({
         const applicable = rows.filter((r) => {
           if (!r.meta) return false;
           if (onlyTemplateValue) {
-            // Agent-side "open specific statement" must render exactly the selected
-            // template, even if normal policy visibility rules would hide it.
             return r.value === onlyTemplateValue;
           }
           const placements = resolveDocumentTemplateShowOn(r.meta);
@@ -2101,6 +2136,17 @@ export function DocumentsTab({
           return true;
         });
         setTemplates(applicable);
+
+        if (hasEndorsements) {
+          const endorseTemplates = rows.filter((r) => {
+            if (!r.meta) return false;
+            const placements = resolveDocumentTemplateShowOn(r.meta);
+            if (!placements.includes("policy")) return false;
+            const flows = r.meta.flows;
+            return flows && flows.length > 0 && flows.includes("endorsement");
+          });
+          setEndorsementTemplates(endorseTemplates);
+        }
       })
       .catch(() => {});
 
@@ -2139,7 +2185,7 @@ export function DocumentsTab({
     });
 
     return () => { cancelled = true; };
-  }, [flowKey, statusClient, statusAgent, policyInsurerIds, policyLineKeys, detail.policyId, statusOrder, statusesLoading, onlyTemplateValue]);
+  }, [flowKey, statusClient, statusAgent, policyInsurerIds, policyLineKeys, detail.policyId, statusOrder, statusesLoading, onlyTemplateValue, endorsements]);
 
   // Auto-prepare: assign document numbers when templates become visible
   const [autoPrepared, setAutoPrepared] = React.useState<Set<string>>(new Set());
@@ -2239,25 +2285,37 @@ export function DocumentsTab({
     const selKey = selHasAudienceSections && selectedAudience === "agent"
       ? toTrackingKey(selected.label) + "_agent"
       : toTrackingKey(selected.label);
+    const previewDetail = selectedEndorsement ? selectedEndorsement.detail : detail;
+    const previewSnapshot = (previewDetail.extraAttributes ?? {}) as SnapshotData;
+    const previewTracking = selectedEndorsement
+      ? (endorsementTracking[selectedEndorsement.policyId] ?? {})
+      : tracking;
     return (
       <div className="space-y-3">
         <Button
           size="sm"
           variant="ghost"
           className="gap-1 text-xs"
-          onClick={() => setSelected(null)}
+          onClick={() => { setSelected(null); setSelectedEndorsement(null); }}
         >
           <ChevronLeft className="h-3 w-3" />
           Back to templates
         </Button>
+        {selectedEndorsement && (
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+            <FileText className="h-3 w-3" />
+            Endorsement {selectedEndorsement.policyNumber}
+          </div>
+        )}
         <DocumentPreview
           template={selected}
-          detail={detail}
-          snapshot={snapshot}
-          trackingEntry={tracking[selKey]}
-          tracking={tracking as Record<string, DocTrackingEntry> | null}
+          detail={previewDetail}
+          snapshot={previewSnapshot}
+          trackingEntry={previewTracking[selKey]}
+          tracking={previewTracking as Record<string, DocTrackingEntry> | null}
           docTrackingKey={selKey}
           audience={selectedAudience}
+          renderMode={renderMode}
           onConfirmDoc={(key) => {
             setHtmlConfirmKey(key);
             setHtmlConfirmMethod("admin");
@@ -2453,7 +2511,8 @@ export function DocumentsTab({
     || (detail.agent
       ? (templateMatchesAudienceStatus(tpl, "agent") && isActionGatedTemplateVisibleForAudience(tpl, "agent"))
       : false),
-  ) || (showPdfMergeTemplates && pdfTemplates.length > 0);
+  ) || (showPdfMergeTemplates && pdfTemplates.length > 0)
+    || (endorsements && endorsements.length > 0 && endorsementTemplates.length > 0);
 
   if (!hasAny) {
     return (
@@ -2501,19 +2560,30 @@ export function DocumentsTab({
         : (templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate)
     )
   );
-  const showGrouped = policyHasAgent && agentTemplates.length > 0;
 
-  function renderTemplateButton(tpl: DocumentTemplateRow, aud: "client" | "agent") {
+  // Endorsement templates split into client / agent using the same rules as parent templates
+  const endorseClientTemplates = endorsementTemplates.filter((tpl) =>
+    !tpl.meta?.isAgentTemplate || templateHasAudienceSections(tpl),
+  );
+  const endorseAgentTemplates = endorsementTemplates.filter((tpl) =>
+    templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate,
+  );
+
+  const hasEndorsementAgentDocs = endorsements && endorsements.length > 0 && endorseAgentTemplates.length > 0;
+  const showGrouped = policyHasAgent && (agentTemplates.length > 0 || !!hasEndorsementAgentDocs);
+
+  function renderTemplateButton(tpl: DocumentTemplateRow, aud: "client" | "agent", endorsement?: EndorsementEntry) {
     const isAgent = aud === "agent";
     const tKey = isAgent ? toTrackingKey(tpl.label) + "_agent" : toTrackingKey(tpl.label);
-    const tEntry = tracking[tKey];
+    const trkMap = endorsement ? (endorsementTracking[endorsement.policyId] ?? {}) : tracking;
+    const tEntry = trkMap[tKey];
     const tBadge = tEntry?.status ? STATUS_BADGE[tEntry.status] : null;
 
     return (
       <button
-        key={`${tpl.id}_${aud}`}
+        key={`${tpl.id}_${aud}${endorsement ? `_e${endorsement.policyId}` : ""}`}
         type="button"
-        onClick={() => { setSelected(tpl); setSelectedAudience(aud); }}
+        onClick={() => { setSelected(tpl); setSelectedAudience(aud); setSelectedEndorsement(endorsement ?? null); }}
         className={cn(
           "flex w-full items-center gap-3 rounded-md p-2.5 text-left transition-colors",
           tEntry?.status === "confirmed"
@@ -2562,6 +2632,17 @@ export function DocumentsTab({
             <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
               {clientTemplates.map((tpl) => renderTemplateButton(tpl, "client"))}
             </div>
+            {endorsements && endorsements.length > 0 && endorseClientTemplates.length > 0 && endorsements.map((e) => (
+              <div key={`endorse-client-${e.policyId}`}>
+                <div className="flex items-center gap-1.5 bg-amber-50/60 px-3 py-1.5 border-t border-blue-200 dark:border-blue-800 dark:bg-amber-950/20">
+                  <FileText className="h-3 w-3 text-amber-500" />
+                  <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">Endorsement {e.policyNumber}</span>
+                </div>
+                <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                  {endorseClientTemplates.map((tpl) => renderTemplateButton(tpl, "client", e))}
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* Agent Documents Group */}
@@ -2576,12 +2657,32 @@ export function DocumentsTab({
             <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
               {agentTemplates.map((tpl) => renderTemplateButton(tpl, "agent"))}
             </div>
+            {endorsements && endorsements.length > 0 && endorseAgentTemplates.length > 0 && endorsements.map((e) => (
+              <div key={`endorse-agent-${e.policyId}`}>
+                <div className="flex items-center gap-1.5 bg-amber-50/60 px-3 py-1.5 border-t border-amber-200 dark:border-amber-800 dark:bg-amber-950/20">
+                  <FileText className="h-3 w-3 text-amber-500" />
+                  <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">Endorsement {e.policyNumber}</span>
+                </div>
+                <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                  {endorseAgentTemplates.map((tpl) => renderTemplateButton(tpl, "agent", e))}
+                </div>
+              </div>
+            ))}
           </div>
         </>
-      ) : visibleTemplates.length > 0 ? (
+      ) : visibleTemplates.length > 0 || (endorsements && endorsements.length > 0 && endorseClientTemplates.length > 0) ? (
         <>
           <div className="text-sm font-medium">Document Templates</div>
           {clientTemplates.map((tpl) => renderTemplateButton(tpl, "client"))}
+          {endorsements && endorsements.length > 0 && endorseClientTemplates.length > 0 && endorsements.map((e) => (
+            <React.Fragment key={`endorse-ungrouped-${e.policyId}`}>
+              <div className="flex items-center gap-1.5 pt-2 pb-1">
+                <FileText className="h-3 w-3 text-amber-500" />
+                <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">Endorsement {e.policyNumber}</span>
+              </div>
+              {endorseClientTemplates.map((tpl) => renderTemplateButton(tpl, "client", e))}
+            </React.Fragment>
+          ))}
         </>
       ) : null}
 
