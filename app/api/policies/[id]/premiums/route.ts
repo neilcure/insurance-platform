@@ -601,13 +601,14 @@ export async function GET(request: Request, ctx: Ctx) {
       return b.includes("collorator") || b.includes("collaborator") || b.includes("collabrator");
     };
 
-    const extractEntitiesFromSnapshot = (carExtraData: Record<string, unknown>) => {
+    const extractEntitiesFromExtra = (carExtraData: Record<string, unknown>): Record<string, EntityHint> => {
+      const result: Record<string, EntityHint> = {};
       const pkgs = (carExtraData.packagesSnapshot ?? {}) as Record<string, unknown>;
       const ensureHint = (hint: string) => {
-        if (!snapshotEntities[hint]) {
-          snapshotEntities[hint] = { insurerId: null, insurerName: null, collabId: null, collabName: null };
+        if (!result[hint]) {
+          result[hint] = { insurerId: null, insurerName: null, collabId: null, collabName: null };
         }
-        return snapshotEntities[hint];
+        return result[hint];
       };
 
       for (const data of Object.values(pkgs)) {
@@ -624,6 +625,33 @@ export async function GET(request: Request, ctx: Ctx) {
           if (isCollabKey(k) && !entry.collabName) entry.collabName = v.trim();
         }
       }
+      return result;
+    };
+
+    const extractEntitiesFromSnapshot = (carExtraData: Record<string, unknown>) => {
+      const result = extractEntitiesFromExtra(carExtraData);
+      for (const [hint, entry] of Object.entries(result)) {
+        if (!snapshotEntities[hint]) snapshotEntities[hint] = { insurerId: null, insurerName: null, collabId: null, collabName: null };
+        if (entry.insurerName && !snapshotEntities[hint].insurerName) snapshotEntities[hint].insurerName = entry.insurerName;
+        if (entry.insurerId && !snapshotEntities[hint].insurerId) snapshotEntities[hint].insurerId = entry.insurerId;
+        if (entry.collabName && !snapshotEntities[hint].collabName) snapshotEntities[hint].collabName = entry.collabName;
+        if (entry.collabId && !snapshotEntities[hint].collabId) snapshotEntities[hint].collabId = entry.collabId;
+      }
+    };
+
+    const resolveEntitiesForPolicy = async (targetPolicyId: number): Promise<Record<string, EntityHint>> => {
+      let extra: Record<string, unknown> | null = null;
+      if (targetPolicyId === policyId && carExtra) {
+        extra = carExtra;
+      } else {
+        const [carRow2] = await db
+          .select({ extra: cars.extraAttributes })
+          .from(cars)
+          .where(eq(cars.policyId, targetPolicyId))
+          .limit(1);
+        if (carRow2) extra = (carRow2.extra ?? {}) as Record<string, unknown>;
+      }
+      return extra ? extractEntitiesFromExtra(extra) : {};
     };
 
     const resolveEntitiesFromSnapshot = async (targetPolicyId: number) => {
@@ -648,6 +676,7 @@ export async function GET(request: Request, ctx: Ctx) {
       createdAt: string;
       linkedPolicyNumber?: string;
       isActive?: boolean;
+      entities?: Record<string, EntityHint>;
     };
     let accountingRecords: AccountingRecord[] = [];
 
@@ -687,7 +716,8 @@ export async function GET(request: Request, ctx: Ctx) {
       }
 
       if (recFields.length === 0) return null;
-      return { recordId: lr.pId, recordNumber: lr.pNum, flowKey: fk, fields: recFields, createdAt: lr.pCreated, isActive: lr.pActive };
+      const recEntities = extractEntitiesFromExtra(extra);
+      return { recordId: lr.pId, recordNumber: lr.pNum, flowKey: fk, fields: recFields, createdAt: lr.pCreated, isActive: lr.pActive, entities: recEntities };
     };
 
     // RT3: Run entity lookup, entity extraction, AND linkedRows in parallel
@@ -859,7 +889,8 @@ export async function GET(request: Request, ctx: Ctx) {
         const fColMap = buildFieldColumnMap(fields);
 
         for (const cp of clientPolicies) {
-          try { await resolveEntitiesFromSnapshot(cp.policyId); } catch { /* non-fatal */ }
+          let cpEntities: Record<string, EntityHint> = {};
+          try { cpEntities = await resolveEntitiesForPolicy(cp.policyId); } catch { /* non-fatal */ }
 
           // Load policy_premiums lines for this policy
           const cpPremiumRows = await db
@@ -906,26 +937,29 @@ export async function GET(request: Request, ctx: Ctx) {
               }
             } catch { /* non-fatal */ }
 
-            // Convert lines to AccountingRecord format
+            // Merge all premium lines into a single AccountingRecord per policy
+            const mergedFieldMap = new Map<string, { key: string; label: string; value: unknown }>();
             for (const ln of cpLines) {
-              const recFields: { key: string; label: string; value: unknown }[] = [];
               for (const f of fields) {
                 const v = ln.values[f.key];
                 if (v !== null && v !== undefined && v !== "") {
-                  recFields.push({ key: f.key, label: f.label, value: v });
+                  if (!mergedFieldMap.has(f.key)) {
+                    mergedFieldMap.set(f.key, { key: f.key, label: f.label, value: v });
+                  }
                 }
               }
-              if (recFields.length > 0) {
-                accountingRecords.push({
-                  recordId: cp.policyId,
-                  recordNumber: cp.policyNumber,
-                  flowKey: "policyset",
-                  fields: recFields,
-                  createdAt: "",
-                  linkedPolicyNumber: cp.policyNumber,
-                  isActive: cp.isActive,
-                });
-              }
+            }
+            if (mergedFieldMap.size > 0) {
+              accountingRecords.push({
+                recordId: cp.policyId,
+                recordNumber: cp.policyNumber,
+                flowKey: "policyset",
+                fields: Array.from(mergedFieldMap.values()),
+                createdAt: "",
+                linkedPolicyNumber: cp.policyNumber,
+                isActive: cp.isActive,
+                entities: cpEntities,
+              });
             }
           } else {
             // No policy_premiums rows — try snapshot directly
@@ -965,6 +999,7 @@ export async function GET(request: Request, ctx: Ctx) {
                         createdAt: snapR.pCreated ?? "",
                         linkedPolicyNumber: cp.policyNumber,
                         isActive: cp.isActive,
+                        entities: cpEntities,
                       });
                     }
                   }

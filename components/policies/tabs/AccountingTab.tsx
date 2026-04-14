@@ -423,6 +423,8 @@ function LineView({ line, fields, canEdit, onEdit, displayPolicyNumber }: { line
 // --- Accounting flow record view ---
 type PremiumContext = "policy" | "collaborator" | "insurer" | "client" | "agent" | "self";
 
+type EntityHintMap = Record<string, { insurerId: number | null; insurerName: string | null; collabId: number | null; collabName: string | null }>;
+
 type AccountingRecord = {
   recordId: number;
   recordNumber: string;
@@ -431,6 +433,7 @@ type AccountingRecord = {
   createdAt: string;
   linkedPolicyNumber?: string;
   isActive?: boolean;
+  entities?: EntityHintMap;
 };
 
 type SectionEntities = {
@@ -529,8 +532,9 @@ function AccountingRecordView({
 
   const displayPolNum = record.linkedPolicyNumber ?? policyNumber;
 
-  const mainHint = snapshotEntities["main"] ?? { collabName: null, insurerName: null };
-  const odHint = snapshotEntities["od"] ?? { collabName: null, insurerName: null };
+  const entitySource = record.entities ?? snapshotEntities;
+  const mainHint = entitySource["main"] ?? { collabName: null, insurerName: null };
+  const odHint = entitySource["od"] ?? { collabName: null, insurerName: null };
 
   const mainFields: { def: FieldDef; value: unknown }[] = [];
   const pdFields: { def: FieldDef; value: unknown }[] = [];
@@ -538,6 +542,8 @@ function AccountingRecordView({
   for (const f of allFields) {
     const v = valMap.get(f.key);
     if (v === undefined || v === null || v === "") continue;
+    const isCurrency = f.inputType === "currency" || f.inputType === "negative_currency";
+    if (isCurrency && Number(v) === 0) continue;
     if (isPdField(f)) {
       pdFields.push({ def: f, value: v });
     } else {
@@ -545,7 +551,7 @@ function AccountingRecordView({
     }
   }
 
-  const hasPdSection = pdFields.length > 0 || odHint.collabName || odHint.insurerName;
+  const hasPdSection = pdFields.length > 0;
 
   const mainLabel = expectedTemplates[0]?.label ?? "Third Party";
   const pdLabel = expectedTemplates[1]?.label ?? "Own Vehicle Damage";
@@ -1128,8 +1134,8 @@ export function AccountingTab({
 
     return (
       <div className="space-y-3">
-        {visibleRecords.map((rec) => (
-          <CollapsibleRecord key={rec.recordId} record={rec} premiumContext={context} onPolicyClick={openPolicyDrawer}>
+        {visibleRecords.map((rec, idx) => (
+          <CollapsibleRecord key={`${rec.recordId}-${idx}`} record={rec} premiumContext={context} onPolicyClick={openPolicyDrawer}>
             <AccountingRecordView
               record={rec}
               allFields={fields}
