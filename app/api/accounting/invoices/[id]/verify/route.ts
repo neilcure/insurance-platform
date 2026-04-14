@@ -7,6 +7,7 @@ import { requireUser } from "@/lib/auth/require-user";
 import { sendPaymentStatusEmail } from "@/lib/accounting-notifications";
 import { getBaseUrlFromRequestUrl } from "@/lib/email";
 import { syncInvoicePaymentStatus, crossSettlePolicyInvoices } from "@/lib/accounting-invoices";
+import { createAgentCommissionPayable } from "@/lib/agent-commission";
 import { markAgentPolicyItemsPaidIndividually, markPolicyPaidOnAgentStatement } from "@/lib/statement-management";
 
 export const dynamic = "force-dynamic";
@@ -80,6 +81,11 @@ export async function POST(
 
       if (inv?.entityPolicyId) {
         if (!payment.payer || payment.payer === "client") {
+          try {
+            await createAgentCommissionPayable(inv.entityPolicyId, Number(user.id));
+          } catch (commErr) {
+            console.error("Agent commission creation on verify failed (non-fatal):", commErr);
+          }
           try {
             await markAgentPolicyItemsPaidIndividually(inv.entityPolicyId);
           } catch {}

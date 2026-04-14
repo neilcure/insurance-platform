@@ -65,6 +65,7 @@ export type StatementCtx = {
     status: string;
     policyId: number;
     premiums?: Record<string, number>;
+    paymentBadge?: string;
   }[];
   premiumTotals?: Record<string, number>;
   summaryTotals?: Record<string, number>;
@@ -566,6 +567,12 @@ function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: strin
       const outstanding = totalDueCents - stmt.paidIndividuallyTotal - commissionTotalCents - agentPaid;
       return Math.max(outstanding, 0) / 100;
     }
+    case "creditToAgent": {
+      const agentPaid2 = stmt.agentPaidTotal ?? 0;
+      const outstanding2 = totalDueCents - stmt.paidIndividuallyTotal - commissionTotalCents - agentPaid2;
+      if (outstanding2 >= 0) return commissionTotalCents > 0 ? commissionTotalCents / 100 : "";
+      return Math.abs(outstanding2) / 100;
+    }
     case "currency": return stmt.currency;
     case "policyPremiumTotal":
     case "endorsementPremiumTotal":
@@ -580,9 +587,16 @@ function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: strin
     case "itemDescriptions": return activeItems.map((it) => it.description ?? "Premium").join("\n");
     case "itemAmounts": return activeItems.map((it) => (it.amountCents / 100).toFixed(2)).join("\n");
     case "itemStatuses": return stmt.items.map((it) => it.status).join("\n");
+    case "itemPaymentBadges": return statementBillableItems
+      .filter((it) => !isCommissionItem(it) && !isCreditItem(it))
+      .map((it) => it.paymentBadge ?? "")
+      .join("\n");
     default: {
       if (fieldKey.startsWith("item_")) {
         const premKey = fieldKey.slice(5);
+        if (premKey === "paymentBadge") {
+          return activeItems.map((it) => it.paymentBadge ?? "").join("\n");
+        }
         return activeItems
           .map((it) => {
             const v = it.premiums?.[premKey];

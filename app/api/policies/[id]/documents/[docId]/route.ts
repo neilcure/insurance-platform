@@ -155,15 +155,21 @@ export async function PATCH(
                 if (!meta.payer || meta.payer === "client") {
                   try {
                     await createAgentCommissionPayable(existing.policyId, Number(user.id));
-                  } catch {}
+                  } catch (commErr) {
+                    console.error("Agent commission creation on doc verify failed (non-fatal):", commErr);
+                  }
                   try {
                     await markAgentPolicyItemsPaidIndividually(existing.policyId);
-                  } catch {}
+                  } catch (markErr) {
+                    console.error("Mark agent items paid individually failed (non-fatal):", markErr);
+                  }
                 }
 
                 try {
                   await crossSettlePolicyInvoices(existing.policyId, meta.payer || "client");
-                } catch {}
+                } catch (crossErr) {
+                  console.error("Cross-settle policy invoices failed (non-fatal):", crossErr);
+                }
               }
             }
           }

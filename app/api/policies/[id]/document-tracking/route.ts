@@ -194,6 +194,10 @@ export async function POST(
       case "reset": {
         const updated = { ...existing };
         delete updated[docType];
+        // Clear cached set codes so next prepare re-scans sibling entries for the correct code
+        if (updated._setCodes) {
+          delete updated._setCodes;
+        }
         await db.update(policies).set({ documentTracking: updated }).where(eq(policies.id, policyId));
         let statusRolledBack: string | null = null;
         try {

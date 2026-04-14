@@ -88,6 +88,7 @@ type StatementDataForPreview = {
     status: string;
     policyId: number;
     premiums?: Record<string, number>;
+    paymentBadge?: string;
   }[];
   premiumTotals?: Record<string, number>;
   summaryTotals?: Record<string, number>;
@@ -155,21 +156,23 @@ function resolveFieldValue(
 const formatValue = formatResolvedValue;
 
 function isPerItemField(key: string): boolean {
-  return key === "itemDescriptions" || key === "itemAmounts" || key === "itemStatuses" || key.startsWith("item_");
+  return key === "itemDescriptions" || key === "itemAmounts" || key === "itemStatuses" || key === "itemPaymentBadges" || key.startsWith("item_");
 }
 
-const STATEMENT_TOTAL_ORDER = ["activeTotal", "paidIndividuallyTotal", "commissionTotal", "outstandingTotal"] as const;
+const STATEMENT_TOTAL_ORDER = ["activeTotal", "paidIndividuallyTotal", "commissionTotal", "outstandingTotal", "creditToAgent"] as const;
 const STATEMENT_TOTAL_LABELS: Record<string, string> = {
   activeTotal: "Total Due",
   paidIndividuallyTotal: "Paid Individually",
-  commissionTotal: "commission",
+  commissionTotal: "Commission",
   outstandingTotal: "Outstanding",
+  creditToAgent: "Credit to Agent",
 };
 const STATEMENT_TOTAL_SIDE: Record<string, "credit" | "debit"> = {
   activeTotal: "debit",
   paidIndividuallyTotal: "credit",
   commissionTotal: "credit",
   outstandingTotal: "debit",
+  creditToAgent: "credit",
 };
 
 function normalizeStatementTotalFields(fields: TemplateFieldMapping[]): TemplateFieldMapping[] {
@@ -195,9 +198,11 @@ function getItemFieldValue(
     case "itemDescriptions": return item.description ?? "Premium";
     case "itemAmounts": return item.amountCents / 100;
     case "itemStatuses": return item.status;
+    case "itemPaymentBadges": return (item as { paymentBadge?: string }).paymentBadge ?? "";
     default:
       if (fieldKey.startsWith("item_")) {
         const premKey = fieldKey.slice(5);
+        if (premKey === "paymentBadge") return (item as { paymentBadge?: string }).paymentBadge ?? "";
         const v = item.premiums?.[premKey];
         return v != null ? v : null;
       }
@@ -330,23 +335,42 @@ function DocumentPreview({
       const ctx: ExtraDocContext = {};
       try {
         const aud = audience ?? "client";
-        const stmtRes = await fetch(`/api/accounting/statements/by-policy/${detail.policyId}?_t=${Date.now()}&audience=${aud}`, { cache: "no-store" });
-        if (stmtRes.ok) {
-          const { statement, hasSchedule } = await stmtRes.json() as { statement: StatementDataForPreview | null; hasSchedule?: boolean };
-          console.log("[DocPreview] statement for policy", detail.policyId, ":", statement ? `found (${statement.statementNumber}, ${statement.items?.length ?? 0} items)` : "null", "hasSchedule:", hasSchedule);
-          if (statement) ctx.statementData = statement;
+        const ts = Date.now();
+
+        type ApiLine = { lineKey: string; lineLabel: string; values: Record<string, unknown>; margin?: number | null; insurerName?: string | null; collaboratorName?: string | null };
+        const roleAliasMap: Record<string, string> = { client: "clientPremium", agent: "agentPremium", net: "netPremium", commission: "agentCommission" };
+        const labelAliasMap: Record<string, string> = { gross: "grossPremium", credit: "creditPremium", levy: "levy", stamp: "stampDuty", discount: "discount", currency: "currency", commission_rate: "commissionRate" };
+
+        const [stmtRes, premRes, invRes, cliRes] = await Promise.all([
+          fetch(`/api/accounting/statements/by-policy/${detail.policyId}?_t=${ts}&audience=${aud}`, { cache: "no-store" }).catch(() => null),
+          fetch(`/api/policies/${detail.policyId}/premiums?_t=${ts}`, { cache: "no-store" }).catch(() => null),
+          fetch(`/api/accounting/invoices/by-policy/${detail.policyId}?_t=${ts}`, { cache: "no-store" }).catch(() => null),
+          detail.clientId ? fetch(`/api/clients/${detail.clientId}?_t=${ts}`, { cache: "no-store" }).catch(() => null) : Promise.resolve(null),
+        ]);
+
+        if (stmtRes?.ok) {
+          const { statement, hasSchedule } = await stmtRes.json() as {
+            statement: (StatementDataForPreview & { clientPaidPolicyIds?: number[] }) | null;
+            hasSchedule?: boolean;
+          };
+          if (statement) {
+            const paidSet = new Set(statement.clientPaidPolicyIds ?? []);
+            if (paidSet.size > 0) {
+              for (const it of statement.items) {
+                if (paidSet.has(it.policyId)) {
+                  it.paymentBadge = "Client paid directly";
+                }
+              }
+            }
+            ctx.statementData = statement;
+          }
           ctx.hasSchedule = !!hasSchedule;
         }
 
-        const premRes = await fetch(`/api/policies/${detail.policyId}/premiums?_t=${Date.now()}`, { cache: "no-store" });
-        if (premRes.ok) {
+        if (premRes?.ok) {
           const premData = await premRes.json();
           const fields = Array.isArray(premData.fields) ? premData.fields as { key: string; label: string; premiumRole?: string; premiumColumn?: string }[] : [];
           const lines = Array.isArray(premData.lines) ? premData.lines : [];
-
-          type ApiLine = { lineKey: string; lineLabel: string; values: Record<string, unknown>; margin?: number | null; insurerName?: string | null; collaboratorName?: string | null };
-          const roleAliasMap: Record<string, string> = { client: "clientPremium", agent: "agentPremium", net: "netPremium", commission: "agentCommission" };
-          const labelAliasMap: Record<string, string> = { gross: "grossPremium", credit: "creditPremium", levy: "levy", stamp: "stampDuty", discount: "discount", currency: "currency", commission_rate: "commissionRate" };
 
           ctx.accountingLines = lines.map((ln: ApiLine) => {
             const vals = { ...(ln.values ?? {}) };
@@ -374,9 +398,7 @@ function DocumentPreview({
           });
         }
 
-        // Latest verified/recorded client payment (for receipt amount/date/reference fields)
-        const invRes = await fetch(`/api/accounting/invoices/by-policy/${detail.policyId}?_t=${Date.now()}`, { cache: "no-store" });
-        if (invRes.ok) {
+        if (invRes?.ok) {
           const invoices = await invRes.json() as Array<{
             direction?: string;
             payments?: Array<{
@@ -414,12 +436,9 @@ function DocumentPreview({
           }
         }
 
-        if (detail.clientId) {
-          const cliRes = await fetch(`/api/clients/${detail.clientId}?_t=${Date.now()}`, { cache: "no-store" });
-          if (cliRes.ok) {
-            const cliData = await cliRes.json();
-            ctx.clientData = cliData.client ?? cliData;
-          }
+        if (cliRes?.ok) {
+          const cliData = await cliRes.json();
+          ctx.clientData = cliData.client ?? cliData;
         }
       } catch (err) {
         console.error("Failed to fetch extra doc context:", err);
@@ -434,7 +453,7 @@ function DocumentPreview({
     return () => { cancelled = true; };
   }, [needsExtraContext, detail.policyId, detail.clientId, audience]);
 
-  const hasAudienceSections = meta.sections.some(
+  const hasAudienceSections = !!template.meta?.enableAgentCopy || meta.sections.some(
     (s) => s.audience === "client" || s.audience === "agent",
   );
   const viewAudience = audience ?? "client";
@@ -661,7 +680,7 @@ function DocumentPreview({
     );
   }
 
-  const trackingKey = hasAudienceSections && viewAudience === "agent"
+  const trackingKey = (hasAudienceSections && viewAudience === "agent") || template.meta?.isAgentTemplate || (template.meta?.enableAgentCopy && viewAudience === "agent")
     ? toTrackingKey(template.label) + "_agent"
     : toTrackingKey(template.label);
 
@@ -799,19 +818,22 @@ function DocumentPreview({
                         {scalarFields.map((f, idx) => {
                           const side = getStatementTotalSide(f.key);
                           const value = formatValue(f.resolved, f.format, f.currencyCode);
-                          const isOutstanding = f.key === "outstandingTotal";
+                          const isResult = f.key === "outstandingTotal" || f.key === "creditToAgent";
+                          const prevField = idx > 0 ? scalarFields[idx - 1] : null;
+                          const prevIsResult = prevField && (prevField.key === "outstandingTotal" || prevField.key === "creditToAgent");
+                          const isFirstResult = isResult && !prevIsResult;
                           return (
                             <div
                               key={f.key}
-                              className={`grid grid-cols-[1fr_100px_100px] gap-2 py-1 sm:py-1.5 ${idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                              className={`grid grid-cols-[1fr_100px_100px] gap-2 py-1 sm:py-1.5 ${isFirstResult ? "border-t-2 border-neutral-400 mt-1 pt-2" : idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
                             >
-                              <span className={`text-[11px] sm:text-[13px] ${isOutstanding ? "font-bold text-neutral-900" : "text-neutral-500 font-medium"}`}>
+                              <span className={`text-[11px] sm:text-[13px] ${isResult ? "font-bold text-neutral-900" : "text-neutral-500 font-medium"}`}>
                                 {f.label}
                               </span>
-                              <span className={`text-xs sm:text-[13px] text-right ${isOutstanding ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                              <span className={`text-xs sm:text-[13px] text-right ${isResult ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
                                 {side === "credit" ? value : ""}
                               </span>
-                              <span className={`text-xs sm:text-[13px] text-right ${isOutstanding ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                              <span className={`text-xs sm:text-[13px] text-right ${isResult ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
                                 {side === "debit" ? value : ""}
                               </span>
                             </div>
@@ -889,8 +911,15 @@ function DocumentPreview({
                                   : "";
                                 return (
                                   <div key={`${title}-${idx}`} className="rounded-md border border-neutral-200 bg-white px-2 py-2 sm:p-3">
-                                    <div className="mb-1 text-[11px] sm:text-[13px] font-semibold text-neutral-900">
-                                      {title || "Premium"}
+                                    <div className="mb-1 flex items-center justify-between gap-2">
+                                      <span className="text-[11px] sm:text-[13px] font-semibold text-neutral-900">
+                                        {title || "Premium"}
+                                      </span>
+                                      {item.paymentBadge && (
+                                        <span className="rounded border border-green-300 bg-green-50 px-1.5 py-0.5 text-[9px] sm:text-[10px] font-medium text-green-700 whitespace-nowrap">
+                                          {item.paymentBadge}
+                                        </span>
+                                      )}
                                     </div>
                                     {amountText && (
                                       <div className="flex items-center justify-between text-[11px] sm:text-[13px]">
@@ -904,8 +933,15 @@ function DocumentPreview({
 
                               return (
                                 <div key={`${title}-${idx}`} className="rounded-md border border-neutral-200 bg-white px-2 py-2 sm:p-3">
-                                  <div className="mb-2 text-[11px] sm:text-[13px] font-semibold text-neutral-900">
-                                    {title}
+                                  <div className="mb-2 flex items-center justify-between gap-2">
+                                    <span className="text-[11px] sm:text-[13px] font-semibold text-neutral-900">
+                                      {title}
+                                    </span>
+                                    {item.paymentBadge && (
+                                      <span className="rounded border border-green-300 bg-green-50 px-1.5 py-0.5 text-[9px] sm:text-[10px] font-medium text-green-700 whitespace-nowrap">
+                                        {item.paymentBadge}
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="space-y-1.5">
                                     {visiblePairs.map((pair) => {
@@ -1044,19 +1080,22 @@ function DocumentPreview({
                     {fields.map((f, idx) => {
                       const side = getStatementTotalSide(f.key);
                       const value = formatValue(f.resolved, f.format, f.currencyCode);
-                      const isOutstanding = f.key === "outstandingTotal";
+                      const isResult = f.key === "outstandingTotal" || f.key === "creditToAgent";
+                      const prevField = idx > 0 ? fields[idx - 1] : null;
+                      const prevIsResult = prevField && (prevField.key === "outstandingTotal" || prevField.key === "creditToAgent");
+                      const isFirstResult = isResult && !prevIsResult;
                       return (
                         <div
                           key={f.key}
-                          className={`grid grid-cols-[1fr_100px_100px] gap-2 py-1 sm:py-1.5 ${idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                          className={`grid grid-cols-[1fr_100px_100px] gap-2 py-1 sm:py-1.5 ${isFirstResult ? "border-t-2 border-neutral-400 mt-1 pt-2" : idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}
                         >
-                          <span className={`text-[11px] sm:text-[13px] ${isOutstanding ? "font-bold text-neutral-900" : "text-neutral-500 font-medium"}`}>
+                          <span className={`text-[11px] sm:text-[13px] ${isResult ? "font-bold text-neutral-900" : "text-neutral-500 font-medium"}`}>
                             {f.label}
                           </span>
-                          <span className={`text-xs sm:text-[13px] text-right ${isOutstanding ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                          <span className={`text-xs sm:text-[13px] text-right ${isResult ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
                             {side === "credit" ? value : ""}
                           </span>
-                          <span className={`text-xs sm:text-[13px] text-right ${isOutstanding ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                          <span className={`text-xs sm:text-[13px] text-right ${isResult ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
                             {side === "debit" ? value : ""}
                           </span>
                         </div>
@@ -1245,7 +1284,8 @@ function PdfMergeButton({
       icon: <Send className="h-3.5 w-3.5" />,
       onClick: () => {
         const sentTo = prompt("Sent to (email, optional):");
-        onTrackingAction(trackingKey, "send", sentTo || undefined, meta?.documentPrefix || undefined, meta?.isAgentTemplate ? "(A)" : undefined, meta?.documentSetGroup || undefined, meta?.type);
+        const isAgentCopy = trackingKey.endsWith("_agent");
+        onTrackingAction(trackingKey, "send", sentTo || undefined, meta?.documentPrefix || undefined, isAgentCopy ? "(A)" : undefined, meta?.documentSetGroup || undefined, meta?.type);
         setActionsOpen(false);
       },
       show: !status || status === "rejected",
@@ -1982,8 +2022,8 @@ export function DocumentsTab({
         const hasAudienceSections = selected.meta?.sections?.some(
           (s) => s.audience === "client" || s.audience === "agent",
         );
-        const isAgent = hasAudienceSections ? selectedAudience === "agent" : !!selected.meta?.isAgentTemplate;
-        const trackKey = isAgent && hasAudienceSections
+        const isAgent = hasAudienceSections ? selectedAudience === "agent" : !!(selected.meta?.isAgentTemplate || (selected.meta?.enableAgentCopy && selectedAudience === "agent"));
+        const trackKey = isAgent
           ? toTrackingKey(selected.label) + "_agent"
           : toTrackingKey(selected.label);
         if (!tracking[trackKey] || tracking[trackKey]?.status !== "confirmed") {
@@ -2023,55 +2063,17 @@ export function DocumentsTab({
 
 
   React.useEffect(() => {
-    fetch(`/api/policies/${detail.policyId}/linked-insurers`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : { insurerPolicyIds: [] }))
-      .then((data: { insurerPolicyIds?: number[] }) => {
-        setPolicyInsurerIds(data.insurerPolicyIds ?? []);
-      })
-      .catch(() => setPolicyInsurerIds([]));
-
-    fetch(`/api/policies/${detail.policyId}/premiums?_t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : { lines: [] }))
-      .then((data: { lines?: { lineKey?: string }[] }) => {
-        const keys = new Set((data.lines ?? []).map((l) => l.lineKey ?? "").filter(Boolean));
-        setPolicyLineKeys(keys);
-      })
-      .catch(() => setPolicyLineKeys(new Set()));
-
-    fetch(`/api/accounting/invoices/by-policy/${detail.policyId}?_t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows: Array<{ invoiceType?: string }> | unknown) => {
-        if (!Array.isArray(rows)) {
-          setPolicyInvoiceTypes(new Set());
-          return;
-        }
-        const types = new Set(
-          rows
-            .map((row) => String(row?.invoiceType ?? "").toLowerCase())
-            .filter(Boolean),
-        );
-        setPolicyInvoiceTypes(types);
-      })
-      .catch(() => setPolicyInvoiceTypes(new Set()));
-  }, [detail.policyId]);
-
-  React.useEffect(() => {
-    if (policyInsurerIds === null || policyLineKeys === null || statusesLoading) return;
+    if (statusesLoading) return;
     let cancelled = false;
     setLoading(true);
+
+    const ts = Date.now();
+    const hasEndorsements = endorsements && endorsements.length > 0;
 
     const effectiveStatusOrder = Array.from(new Set([
       ...statusOrder,
       ...FALLBACK_POLICY_STATUS_ORDER,
     ]));
-
-    const matchingIds = [...new Set([detail.policyId, ...policyInsurerIds])];
-
-    const matchesInsurer = (tplInsurerIds: number[] | undefined) => {
-      if (!tplInsurerIds || tplInsurerIds.length === 0) return true;
-      return matchingIds.some((pid) => tplInsurerIds.includes(pid));
-    };
-
     const getStatusForAudience = (audience: "client" | "agent") =>
       audience === "agent" ? statusAgent : statusClient;
     const matchesStatus = (sws: string[] | undefined, audience: "client" | "agent") => {
@@ -2081,9 +2083,7 @@ export function DocumentsTab({
       const earliestIdx = Math.min(
         ...sws.map((s) => effectiveStatusOrder.indexOf(s)).filter((i) => i >= 0),
       );
-      if (currentIdx < 0 || earliestIdx === Infinity) {
-        return sws.includes(status);
-      }
+      if (currentIdx < 0 || earliestIdx === Infinity) return sws.includes(status);
       return currentIdx >= earliestIdx;
     };
     const matchesStatusForAudience = (
@@ -2095,31 +2095,62 @@ export function DocumentsTab({
       return matchesStatus(rule, audience);
     };
     const matchesTemplateStatus = (meta: DocumentTemplateMeta) => {
-      const hasAudienceSections = !!meta.sections?.some((s) => s.audience === "client" || s.audience === "agent");
-      if (meta.isAgentTemplate && !hasAudienceSections) {
-        return matchesStatusForAudience(meta, "agent");
-      }
-      if (!hasAudienceSections) {
-        return matchesStatusForAudience(meta, "client");
-      }
+      const hasAudienceSections = !!meta.enableAgentCopy || !!meta.sections?.some((s) => s.audience === "client" || s.audience === "agent");
+      if (meta.isAgentTemplate && !hasAudienceSections) return matchesStatusForAudience(meta, "agent");
+      if (!hasAudienceSections) return matchesStatusForAudience(meta, "client");
       return matchesStatusForAudience(meta, "client") || matchesStatusForAudience(meta, "agent");
     };
 
-    const matchesLineKey = (key: string | undefined) => {
-      if (!key) return true;
-      return policyLineKeys.size === 0 || policyLineKeys.has(key);
-    };
+    // Fire ALL requests in parallel — don't wait for insurer/line data before loading templates
+    const pInsurers = fetch(`/api/policies/${detail.policyId}/linked-insurers`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { insurerPolicyIds: [] }))
+      .then((d: { insurerPolicyIds?: number[] }) => d.insurerPolicyIds ?? [])
+      .catch(() => [] as number[]);
 
-    const hasEndorsements = endorsements && endorsements.length > 0;
-    const loadHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${Date.now()}`, { cache: "no-store" })
+    const pLines = fetch(`/api/policies/${detail.policyId}/premiums?_t=${ts}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { lines: [] }))
+      .then((d: { lines?: { lineKey?: string }[] }) =>
+        new Set((d.lines ?? []).map((l) => l.lineKey ?? "").filter(Boolean)),
+      )
+      .catch(() => new Set<string>());
+
+    const pInvoices = fetch(`/api/accounting/invoices/by-policy/${detail.policyId}?_t=${ts}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : []))
-      .then((rows: DocumentTemplateRow[]) => {
+      .then((rows: Array<{ invoiceType?: string }> | unknown) => {
+        if (!Array.isArray(rows)) return new Set<string>();
+        return new Set(rows.map((row) => String(row?.invoiceType ?? "").toLowerCase()).filter(Boolean));
+      })
+      .catch(() => new Set<string>());
+
+    const pHtml = fetch(`/api/form-options?groupKey=document_templates&_t=${ts}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => [] as DocumentTemplateRow[]);
+
+    const pPdf = fetch(`/api/form-options?groupKey=pdf_merge_templates&_t=${ts}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => [] as PdfTemplateRow[]);
+
+    Promise.all([pInsurers, pLines, pInvoices, pHtml, pPdf]).then(
+      ([insurerIds, lineKeys, invoiceTypes, htmlRows, pdfRows]) => {
         if (cancelled) return;
-        const applicable = rows.filter((r) => {
+
+        setPolicyInsurerIds(insurerIds);
+        setPolicyLineKeys(lineKeys);
+        setPolicyInvoiceTypes(invoiceTypes);
+
+        const matchingIds = [...new Set([detail.policyId, ...insurerIds])];
+        const matchesInsurer = (tplInsurerIds: number[] | undefined) => {
+          if (!tplInsurerIds || tplInsurerIds.length === 0) return true;
+          return matchingIds.some((pid) => tplInsurerIds.includes(pid));
+        };
+        const matchesLineKey = (key: string | undefined) => {
+          if (!key) return true;
+          return lineKeys.size === 0 || lineKeys.has(key);
+        };
+
+        const applicable = (htmlRows as DocumentTemplateRow[]).filter((r) => {
           if (!r.meta) return false;
-          if (onlyTemplateValue) {
-            return r.value === onlyTemplateValue;
-          }
+          if (onlyTemplateValue) return r.value === onlyTemplateValue;
           const placements = resolveDocumentTemplateShowOn(r.meta);
           if (!placements.includes("policy")) return false;
           const hasInsurerRestriction = r.meta.insurerPolicyIds && r.meta.insurerPolicyIds.length > 0;
@@ -2138,7 +2169,7 @@ export function DocumentsTab({
         setTemplates(applicable);
 
         if (hasEndorsements) {
-          const endorseTemplates = rows.filter((r) => {
+          const endorseTemplates = (htmlRows as DocumentTemplateRow[]).filter((r) => {
             if (!r.meta) return false;
             const placements = resolveDocumentTemplateShowOn(r.meta);
             if (!placements.includes("policy")) return false;
@@ -2147,14 +2178,8 @@ export function DocumentsTab({
           });
           setEndorsementTemplates(endorseTemplates);
         }
-      })
-      .catch(() => {});
 
-    const loadPdf = fetch(`/api/form-options?groupKey=pdf_merge_templates&_t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows: PdfTemplateRow[]) => {
-        if (cancelled) return;
-        const applicable = rows.filter((r) => {
+        const applicablePdf = (pdfRows as PdfTemplateRow[]).filter((r) => {
           const meta = r.meta as unknown as PdfTemplateMeta | null;
           if (!meta) return false;
           const placements = resolvePdfTemplateShowOn(meta);
@@ -2173,19 +2198,15 @@ export function DocumentsTab({
           if (!matchesLineKey(meta.accountingLineKey)) return false;
           return true;
         });
-        setPdfTemplates(applicable);
-      })
-      .catch(() => {});
+        setPdfTemplates(applicablePdf);
 
-    Promise.all([loadHtml, loadPdf]).finally(() => {
-      if (!cancelled) {
         setLoading(false);
         setHasLoadedOnce(true);
-      }
-    });
+      },
+    );
 
     return () => { cancelled = true; };
-  }, [flowKey, statusClient, statusAgent, policyInsurerIds, policyLineKeys, detail.policyId, statusOrder, statusesLoading, onlyTemplateValue, endorsements]);
+  }, [flowKey, statusClient, statusAgent, detail.policyId, statusOrder, statusesLoading, onlyTemplateValue, endorsements]);
 
   // Auto-prepare: assign document numbers when templates become visible
   const [autoPrepared, setAutoPrepared] = React.useState<Set<string>>(new Set());
@@ -2194,7 +2215,7 @@ export function DocumentsTab({
 
     const hasAgent = !!detail.agent;
     const templateHasAudienceSections = (tpl: DocumentTemplateRow) =>
-      !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
+      !!tpl.meta?.enableAgentCopy || !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
     const effectiveStatusOrder = Array.from(new Set([
       ...statusOrder,
       ...FALLBACK_POLICY_STATUS_ORDER,
@@ -2227,11 +2248,12 @@ export function DocumentsTab({
       const group = tpl.meta?.documentSetGroup;
       const tplType = tpl.meta?.type;
       if (tplType === "credit_note" || tplType === "debit_note") continue;
-      const canRenderAgentCopy = hasAgent && (templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate);
+      const canRenderAgentCopy = hasAgent && (templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate || !!tpl.meta?.enableAgentCopy);
 
       const baseKey = toTrackingKey(tpl.label);
       if (
-        matchesStatusForAudience(tpl, "client")
+        !tpl.meta?.isAgentTemplate
+        && matchesStatusForAudience(tpl, "client")
         && !tracking[baseKey]?.documentNumber
         && !autoPrepared.has(baseKey)
       ) {
@@ -2270,6 +2292,125 @@ export function DocumentsTab({
     })();
   }, [loading, templates, pdfTemplates, tracking, detail.agent, autoPrepared, handleTrackingAction, statusClient, statusAgent, statusOrder]);
 
+  // Auto-prepare: endorsement document numbers
+  const [endorseAutoPrepared, setEndorseAutoPrepared] = React.useState<Set<string>>(new Set());
+  React.useEffect(() => {
+    if (!endorsements || endorsements.length === 0 || endorsementTemplates.length === 0) return;
+    const hasAgent = !!detail.agent;
+    const tplSupportsAgent = (tpl: DocumentTemplateRow) =>
+      !!tpl.meta?.enableAgentCopy || !!tpl.meta?.isAgentTemplate || !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
+
+    // Build sibling keys and group info
+    const groupSiblings = new Map<string, string[]>();
+    for (const tpl of endorsementTemplates) {
+      const g = tpl.meta?.documentSetGroup;
+      if (!g) continue;
+      if (!groupSiblings.has(g)) groupSiblings.set(g, []);
+      const arr = groupSiblings.get(g)!;
+      arr.push(toTrackingKey(tpl.label));
+      arr.push(toTrackingKey(tpl.label) + "_agent");
+    }
+
+    const extractCode = (docNum: string) => {
+      const match = docNum.match(/-(\d{4})-(\d{4,6})/);
+      return match ? match[2] : null;
+    };
+
+    type PrepItem = { endorsePolicyId: number; key: string; prefix: string; suffix?: string; group?: string; tplType?: string; resetFirst?: boolean };
+    const toProcess: PrepItem[] = [];
+
+    for (const e of endorsements) {
+      const eTrk = endorsementTracking[e.policyId] ?? {};
+
+      // Find the "reference" code for each group (from any existing client-copy number)
+      const groupRefCode = new Map<string, string>();
+      for (const tpl of endorsementTemplates) {
+        const g = tpl.meta?.documentSetGroup;
+        if (!g) continue;
+        const baseKey = toTrackingKey(tpl.label);
+        const clientNum = eTrk[baseKey]?.documentNumber;
+        if (clientNum) {
+          const code = extractCode(clientNum);
+          if (code && !groupRefCode.has(g)) groupRefCode.set(g, code);
+        }
+      }
+
+      for (const tpl of endorsementTemplates) {
+        const prefix = tpl.meta?.documentPrefix;
+        if (!prefix) continue;
+        const tplType = tpl.meta?.type;
+        if (tplType === "credit_note" || tplType === "debit_note") continue;
+        const group = tpl.meta?.documentSetGroup;
+        const baseKey = toTrackingKey(tpl.label);
+        const prepKey = `${e.policyId}::${baseKey}`;
+
+        if (!tpl.meta?.isAgentTemplate && !eTrk[baseKey]?.documentNumber && !endorseAutoPrepared.has(prepKey)) {
+          toProcess.push({ endorsePolicyId: e.policyId, key: baseKey, prefix, group, tplType });
+        }
+        if (hasAgent && tplSupportsAgent(tpl)) {
+          const agentKey = baseKey + "_agent";
+          const agentPrepKey = `${e.policyId}::${agentKey}`;
+          const agentNum = eTrk[agentKey]?.documentNumber;
+
+          if (!agentNum && !endorseAutoPrepared.has(agentPrepKey)) {
+            toProcess.push({ endorsePolicyId: e.policyId, key: agentKey, prefix, suffix: "(A)", group, tplType });
+          } else if (agentNum && group && groupRefCode.has(group) && !endorseAutoPrepared.has(agentPrepKey)) {
+            // Check if agent copy code matches client copy code
+            const agentCode = extractCode(agentNum);
+            const refCode = groupRefCode.get(group);
+            if (agentCode && refCode && agentCode !== refCode) {
+              toProcess.push({ endorsePolicyId: e.policyId, key: agentKey, prefix, suffix: "(A)", group, tplType, resetFirst: true });
+            }
+          }
+        }
+      }
+    }
+
+    if (toProcess.length === 0) return;
+
+    setEndorseAutoPrepared((prev) => {
+      const next = new Set(prev);
+      toProcess.forEach((p) => next.add(`${p.endorsePolicyId}::${p.key}`));
+      return next;
+    });
+
+    (async () => {
+      for (const { endorsePolicyId, key, prefix, suffix, group, tplType, resetFirst } of toProcess) {
+        try {
+          // Reset mismatched numbers first
+          if (resetFirst) {
+            await fetch(`/api/policies/${endorsePolicyId}/document-tracking`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ docType: key, action: "reset" }),
+            });
+          }
+
+          const body: Record<string, unknown> = { docType: key, action: "prepare" };
+          if (prefix) body.documentPrefix = prefix;
+          if (suffix) body.documentSuffix = suffix;
+          if (group) {
+            body.documentSetGroup = group;
+            body.groupSiblingKeys = groupSiblings.get(group) ?? [];
+          }
+          if (tplType) body.templateType = tplType;
+          const res = await fetch(`/api/policies/${endorsePolicyId}/document-tracking`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setEndorsementTracking((prev) => ({
+              ...prev,
+              [endorsePolicyId]: data.documentTracking ?? {},
+            }));
+          }
+        } catch { /* ignore */ }
+      }
+    })();
+  }, [endorsements, endorsementTemplates, endorsementTracking, detail.agent, endorseAutoPrepared]);
+
   if (loading && !hasLoadedOnce) {
     return (
       <div className="py-8 text-center text-xs text-neutral-500 dark:text-neutral-400">
@@ -2279,10 +2420,10 @@ export function DocumentsTab({
   }
 
   if (selected) {
-    const selHasAudienceSections = selected.meta?.sections?.some(
+    const selHasAudienceSections = selected.meta?.enableAgentCopy || selected.meta?.sections?.some(
       (s) => s.audience === "client" || s.audience === "agent",
     );
-    const selKey = selHasAudienceSections && selectedAudience === "agent"
+    const selKey = (selHasAudienceSections && selectedAudience === "agent") || selected.meta?.isAgentTemplate
       ? toTrackingKey(selected.label) + "_agent"
       : toTrackingKey(selected.label);
     const previewDetail = selectedEndorsement ? selectedEndorsement.detail : detail;
@@ -2539,34 +2680,31 @@ export function DocumentsTab({
   const visibleTemplates = templates.filter((tpl) =>
     visibleForClient(tpl) || (policyHasAgent && visibleForAgent(tpl)),
   );
-  const templateHasAudienceSections = (tpl: DocumentTemplateRow) =>
-    !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
+  const templateSupportsAgent = (tpl: DocumentTemplateRow) =>
+    !!tpl.meta?.enableAgentCopy || !!tpl.meta?.isAgentTemplate || !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
+  const isDedicatedAgentTemplate = (tpl: DocumentTemplateRow) =>
+    !!tpl.meta?.isAgentTemplate && !tpl.meta?.enableAgentCopy;
   const isStatementTemplate = (tpl: DocumentTemplateRow) => tpl.meta?.type === "statement";
-  // Statements are separate business documents for client billing vs agent
-  // settlement, so only explicit agent statement templates belong in the
-  // agent group. Other documents can still share a template via audience
-  // sections when needed.
   const clientTemplates = visibleTemplates.filter((tpl) =>
     visibleForClient(tpl) && (
       isStatementTemplate(tpl)
-        ? !tpl.meta?.isAgentTemplate
-        : (!tpl.meta?.isAgentTemplate || templateHasAudienceSections(tpl))
+        ? !isDedicatedAgentTemplate(tpl)
+        : (!isDedicatedAgentTemplate(tpl))
     )
   );
   const agentTemplates = visibleTemplates.filter((tpl) =>
     visibleForAgent(tpl) && (
       isStatementTemplate(tpl)
-        ? !!tpl.meta?.isAgentTemplate
-        : (templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate)
+        ? isDedicatedAgentTemplate(tpl)
+        : templateSupportsAgent(tpl)
     )
   );
 
-  // Endorsement templates split into client / agent using the same rules as parent templates
   const endorseClientTemplates = endorsementTemplates.filter((tpl) =>
-    !tpl.meta?.isAgentTemplate || templateHasAudienceSections(tpl),
+    !isDedicatedAgentTemplate(tpl),
   );
   const endorseAgentTemplates = endorsementTemplates.filter((tpl) =>
-    templateHasAudienceSections(tpl) || !!tpl.meta?.isAgentTemplate,
+    templateSupportsAgent(tpl),
   );
 
   const hasEndorsementAgentDocs = endorsements && endorsements.length > 0 && endorseAgentTemplates.length > 0;

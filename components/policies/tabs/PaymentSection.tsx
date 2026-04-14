@@ -705,9 +705,11 @@ export function PaymentSection({
     const onStatementReceivables = invoices.filter((inv) =>
       agentSched ? inv.scheduleId === agentSched.id : !!inv.scheduleId,
     );
-    const commissionInvs = payables.filter((inv) =>
-      agentSched ? inv.scheduleId === agentSched.id : !!inv.scheduleId,
-    );
+    const commissionInvs = payables.filter((inv) => {
+      const isCommission = String(inv.notes ?? "").toLowerCase().startsWith("agent commission");
+      if (isCommission) return true;
+      return agentSched ? inv.scheduleId === agentSched.id : !!inv.scheduleId;
+    });
 
     const agentPaidTotal = onStatementReceivables.reduce((sum, inv) => {
       const agentPayments = inv.payments

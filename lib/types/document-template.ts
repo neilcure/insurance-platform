@@ -9,7 +9,7 @@ export type TemplateSection = {
   id: string;
   title: string;
   /** Where to pull data from in the snapshot */
-  source: "insured" | "contactinfo" | "package" | "policy" | "agent" | "accounting" | "client" | "organisation" | "statement" | "static" | "custom";
+  source: "insured" | "contactinfo" | "package" | "policy" | "agent" | "accounting" | "client" | "organisation" | "statement";
   /** Required when source is "package" */
   packageName?: string;
   /** Which audience sees this section: "all" (default), "client", or "agent" */
@@ -39,6 +39,8 @@ export type DocumentTemplateMeta = {
   documentSetGroup?: string;
   /** Mark as agent template — auto-appends (A) to document numbers */
   isAgentTemplate?: boolean;
+  /** When true, this single template generates both a Client copy and an Agent copy (with "(A)" suffix). */
+  enableAgentCopy?: boolean;
   /** Where this template should be listed/rendered */
   showOn?: ("policy" | "agent")[];
   /** When true, hides the document if no statement exists for this audience (requires Payment Schedule) */
@@ -62,9 +64,23 @@ export function resolveDocumentTemplateShowOn(
   meta: DocumentTemplateMeta | null | undefined,
 ): ("policy" | "agent")[] {
   const configured = meta?.showOn?.filter((v): v is "policy" | "agent" => v === "policy" || v === "agent") ?? [];
-  if (configured.length > 0) return [...new Set(configured)];
-  if (meta?.type === "statement" && meta?.isAgentTemplate) return ["agent"];
-  return ["policy"];
+  let result: ("policy" | "agent")[];
+  if (configured.length > 0) {
+    result = [...new Set(configured)];
+  } else if (meta?.type === "statement" && meta?.isAgentTemplate) {
+    result = ["agent"];
+  } else {
+    result = ["policy"];
+  }
+  // Agent statements must list under Agent Details even if Show On was saved as policy-only.
+  if (meta?.type === "statement" && meta?.isAgentTemplate && !result.includes("agent")) {
+    result = [...result, "agent"];
+  }
+  // Client workflow docs (invoice, receipt, …) stay on Policy Details unless the template is agent-only.
+  if (!meta?.isAgentTemplate && meta?.type !== "statement" && !result.includes("policy")) {
+    result = [...result, "policy"];
+  }
+  return [...new Set(result)];
 }
 
 export type DocumentTemplateRow = {

@@ -191,7 +191,11 @@ export async function GET(
       return NextResponse.json({ statement: null });
     }
 
-    const itemPolicyIds = [...new Set(allItems.map((it) => it.policyId))];
+    // Include policy IDs from both allItems AND any existing statement items
+    // so loadCommissionTotalCents can find commission payables even if they
+    // weren't linked to the schedule (backfill for pre-existing data).
+    const stmtPolicyIds = stmtItems.map((it) => it.policyId);
+    const itemPolicyIds = [...new Set([...allItems.map((it) => it.policyId), ...stmtPolicyIds])];
     let invoicesCreated = false;
 
     if (itemPolicyIds.length > 0) {
@@ -279,12 +283,12 @@ export async function GET(
       }
     }
 
+    const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
     const enrichedItems = allItems.map((it) => ({
       ...it,
       displayAmountCents: resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals),
+      paymentBadge: clientPaidPolicyIds.has(it.policyId) ? "Client paid directly" : undefined,
     }));
-
-    const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
     const paidIndividuallyTotal = computePaidIndividuallyTotal(
       allItems, effectiveEntityType, premiumRoleTotals, clientPaidPolicyIds,
     );
@@ -369,17 +373,18 @@ function computePaidIndividuallyTotal(
 
 async function loadCommissionTotalCents(
   policyIds: number[],
-  scheduleIds: number[],
+  _scheduleIds: number[],
   entityType: string,
 ) {
   if (entityType !== "agent") return 0;
   const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
   if (uniquePolicyIds.length === 0) return 0;
 
-  const scheduleFilter = scheduleIds.length > 0
-    ? sql`and ai.schedule_id in (${sql.join(scheduleIds.map((id) => sql`${id}`), sql`,`)})`
-    : sql``;
-
+  // No scheduleId filter — policyIds already scope to the correct agent's policies,
+  // and commission payables may not always have scheduleId set (e.g. created before
+  // the schedule existed, or for endorsement policies).
+  // Only count from individual invoices to avoid double-counting when commission
+  // items are also copied to the statement invoice.
   const result = await db.execute(sql`
     select coalesce(sum(ii.amount_cents), 0) as total
     from accounting_invoice_items ii
@@ -387,12 +392,12 @@ async function loadCommissionTotalCents(
     where ii.policy_id in (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
       and ai.direction = 'payable'
       and ai.entity_type = 'agent'
+      and ai.invoice_type = 'individual'
       and ai.status <> 'cancelled'
       and (
         lower(coalesce(ii.description, '')) like '%commission:%'
         or lower(coalesce(ai.notes, '')) like 'agent commission%'
       )
-      ${scheduleFilter}
   `);
   const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
   const total = Number((rows[0] as { total?: unknown } | undefined)?.total ?? 0);

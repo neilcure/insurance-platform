@@ -318,10 +318,12 @@ export async function buildMergeContext(policyId: number): Promise<{
             .reduce((sum, it) => sum + it.amountCents, 0);
 
           let agentPaidTotal = 0;
-          if (stmt.entityType === "agent") {
-            const itemPolicyIds = [...new Set(items.map((it) => it.policyId).filter((id) => id > 0))];
-            if (itemPolicyIds.length > 0) {
-              const agentPaidResult = await db.execute(sql`
+          let commissionTotalCents = 0;
+          const itemPolicyIds = [...new Set(items.map((it) => it.policyId).filter((id) => id > 0))];
+
+          if (stmt.entityType === "agent" && itemPolicyIds.length > 0) {
+            const [agentPaidResult, commissionResult, paymentBadgeResult] = await Promise.all([
+              db.execute(sql`
                 SELECT coalesce(sum(ap.amount_cents), 0)::int AS total
                 FROM accounting_payments ap
                 INNER JOIN accounting_invoices ai ON ai.id = ap.invoice_id
@@ -332,9 +334,52 @@ export async function buildMergeContext(policyId: number): Promise<{
                   AND ai.invoice_type <> 'statement'
                   AND ap.payer = 'agent'
                   AND ap.status IN ('recorded', 'verified', 'confirmed')
-              `);
-              const agentPaidRows = Array.isArray(agentPaidResult) ? agentPaidResult : (agentPaidResult as { rows?: unknown[] }).rows ?? [];
-              agentPaidTotal = (agentPaidRows[0] as { total?: number })?.total ?? 0;
+              `),
+              db.execute(sql`
+                SELECT coalesce(sum(ii.amount_cents), 0)::int AS total
+                FROM accounting_invoice_items ii
+                INNER JOIN accounting_invoices ai ON ai.id = ii.invoice_id
+                WHERE ii.policy_id IN (${sql.join(itemPolicyIds.map((id) => sql`${id}`), sql`,`)})
+                  AND ai.direction = 'payable'
+                  AND ai.entity_type = 'agent'
+                  AND ai.invoice_type = 'individual'
+                  AND ai.status <> 'cancelled'
+                  AND (
+                    lower(coalesce(ii.description, '')) LIKE '%commission:%'
+                    OR lower(coalesce(ai.notes, '')) LIKE 'agent commission%'
+                  )
+              `),
+              db.execute(sql`
+                SELECT DISTINCT aii.policy_id,
+                  ap.payer,
+                  ap.payment_method,
+                  ap.status AS payment_status
+                FROM accounting_payments ap
+                INNER JOIN accounting_invoices ai ON ai.id = ap.invoice_id
+                INNER JOIN accounting_invoice_items aii ON aii.invoice_id = ai.id
+                WHERE aii.policy_id IN (${sql.join(itemPolicyIds.map((id) => sql`${id}`), sql`,`)})
+                  AND ai.direction = 'receivable'
+                  AND ai.entity_type = 'agent'
+                  AND ai.invoice_type <> 'statement'
+                  AND ap.status IN ('recorded', 'verified', 'confirmed')
+              `),
+            ]);
+            const agentPaidRows = Array.isArray(agentPaidResult) ? agentPaidResult : (agentPaidResult as { rows?: unknown[] }).rows ?? [];
+            agentPaidTotal = (agentPaidRows[0] as { total?: number })?.total ?? 0;
+            const commRows = Array.isArray(commissionResult) ? commissionResult : (commissionResult as { rows?: unknown[] }).rows ?? [];
+            commissionTotalCents = (commRows[0] as { total?: number })?.total ?? 0;
+
+            const badgeRows = Array.isArray(paymentBadgeResult) ? paymentBadgeResult : (paymentBadgeResult as { rows?: unknown[] }).rows ?? [];
+            const payerByPolicy = new Map<number, string>();
+            for (const row of badgeRows as { policy_id: number; payer: string | null }[]) {
+              const payer = row.payer ?? "unknown";
+              const label = payer === "client" ? "Client paid directly" : payer === "agent" ? "Agent paid" : "Paid";
+              payerByPolicy.set(row.policy_id, label);
+            }
+            for (const it of items) {
+              if (payerByPolicy.has(it.policyId)) {
+                (it as { paymentBadge?: string }).paymentBadge = payerByPolicy.get(it.policyId)!;
+              }
             }
           }
 
@@ -351,6 +396,9 @@ export async function buildMergeContext(policyId: number): Promise<{
             currency: stmt.currency,
             items,
             agentPaidTotal,
+            summaryTotals: commissionTotalCents > 0
+              ? { commissionTotal: commissionTotalCents }
+              : undefined,
           };
           break;
         }

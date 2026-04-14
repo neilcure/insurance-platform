@@ -112,6 +112,12 @@ export function resolvePremiumByRole(
     if (client > 0 && agent > 0) return Math.max(client - agent, 0);
   }
 
+  // Pass 4: gross premium as client total when no client-tagged field matched (common legacy data)
+  if (role === "client") {
+    const gross = Number(premiumRow.grossPremiumCents) || 0;
+    if (gross > 0) return gross;
+  }
+
   return 0;
 }
 

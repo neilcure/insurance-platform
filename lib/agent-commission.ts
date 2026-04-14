@@ -49,6 +49,7 @@ export async function createAgentCommissionPayable(
           eq(accountingInvoices.entityType, "agent"),
           eq(accountingInvoices.premiumType, "agent_premium"),
           sql`${accountingInvoices.status} <> 'cancelled'`,
+          sql`coalesce(${accountingInvoiceItems.description}, '') ilike 'Commission:%'`,
         ),
       )
       .limit(1),
@@ -69,9 +70,12 @@ export async function createAgentCommissionPayable(
 
   for (const p of premiums) {
     const row = p as Record<string, unknown>;
+    const explicitCommission = resolvePremiumByRole(row, "commission", accountingFields);
     const clientAmt = resolvePremiumByRole(row, "client", accountingFields);
     const agentAmt = resolvePremiumByRole(row, "agent", accountingFields);
-    const commission = clientAmt - agentAmt;
+    const fromDiff =
+      clientAmt > 0 && agentAmt > 0 ? Math.max(clientAmt - agentAmt, 0) : 0;
+    const commission = explicitCommission > 0 ? explicitCommission : fromDiff;
     if (commission > 0) {
       totalCommissionCents += commission;
       items.push({
@@ -100,6 +104,8 @@ export async function createAgentCommissionPayable(
     )
     .limit(1);
 
+  let createdInvoiceId: number | undefined;
+
   await db.transaction(async (tx) => {
     const [invoice] = await tx
       .insert(accountingInvoices)
@@ -123,6 +129,8 @@ export async function createAgentCommissionPayable(
       })
       .returning();
 
+    createdInvoiceId = invoice.id;
+
     await tx.insert(accountingInvoiceItems).values(
       items.map((item) => ({
         invoiceId: invoice.id,
@@ -135,6 +143,17 @@ export async function createAgentCommissionPayable(
       })),
     );
   });
+
+  // Auto-add the commission payable to the agent's existing statement
+  if (agentSchedule && createdInvoiceId) {
+    try {
+      const { addInvoiceToStatement, findOrCreateDraftStatement } = await import("@/lib/statement-management");
+      const stmt = await findOrCreateDraftStatement(agentSchedule.id, userId);
+      await addInvoiceToStatement(stmt.statementId, createdInvoiceId);
+    } catch (stmtErr) {
+      console.error("Auto-add commission to statement failed (non-fatal):", stmtErr);
+    }
+  }
 
   // Keep agent status track aligned with commission settlement lifecycle.
   try {

@@ -194,19 +194,21 @@ export async function generateStatementInvoice({
   }
 
   if (schedule.entityType === "agent") {
+    // For agent schedules, find individual payable invoices linked to this schedule.
+    // Use LEFT JOIN + flexible agent matching to include endorsement policies
+    // (where policies.agentId is null but the agent is inherited via linkedPolicyId).
     const linkedInvoices = await db
       .select({
         id: accountingInvoices.id,
       })
       .from(accountingInvoices)
-      .innerJoin(policies, eq(policies.id, accountingInvoices.entityPolicyId))
+      .leftJoin(policies, eq(policies.id, accountingInvoices.entityPolicyId))
       .where(
         and(
           eq(accountingInvoices.scheduleId, schedule.id),
           eq(accountingInvoices.invoiceType, "individual"),
           eq(accountingInvoices.direction, "payable"),
           eq(accountingInvoices.entityType, "agent"),
-          target.agentId ? eq(policies.agentId, target.agentId) : undefined,
           sql`${accountingInvoices.status} <> 'paid'`,
           sql`${accountingInvoices.status} <> 'cancelled'`,
         ),

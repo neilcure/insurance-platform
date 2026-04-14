@@ -464,17 +464,13 @@ function buildStatementSummaryTotals(
 
 async function loadCommissionTotalCents(
   policyIds: number[],
-  scheduleIds: number[],
+  _scheduleIds: number[],
   entityType: string,
 ) {
   if (entityType !== "agent") return 0;
 
   const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
   if (uniquePolicyIds.length === 0) return 0;
-
-  const scheduleFilter = scheduleIds.length > 0
-    ? sql`and ai.schedule_id in (${sql.join(scheduleIds.map((id) => sql`${id}`), sql`,`)})`
-    : sql``;
 
   const result = await db.execute(sql`
     select coalesce(sum(ii.amount_cents), 0) as total
@@ -483,12 +479,12 @@ async function loadCommissionTotalCents(
     where ii.policy_id in (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
       and ai.direction = 'payable'
       and ai.entity_type = 'agent'
+      and ai.invoice_type = 'individual'
       and ai.status <> 'cancelled'
       and (
         lower(coalesce(ii.description, '')) like '%commission:%'
         or lower(coalesce(ai.notes, '')) like 'agent commission%'
       )
-      ${scheduleFilter}
   `);
 
   const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
@@ -748,14 +744,15 @@ async function buildPreviewFromScheduledInvoices(
     }
   }
 
+  const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
   const enrichedItems = synthItems.map((it) => ({
     ...it,
     premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
     displayAmountCents: resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals, effectiveDirection),
+    paymentBadge: clientPaidPolicyIds.has(it.policyId) ? "Client paid directly" : undefined,
   }));
   const policyMetaById = await loadPolicyStatementMeta(itemPolicyIds);
   const commissionTotalCents = await loadCommissionTotalCents(itemPolicyIds, allSchedIds, effectiveEntityType);
-  const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
   const paidIndividuallyTotal = computePaidIndividuallyTotal(
     synthItems, effectiveEntityType, premiumRoleTotals, clientPaidPolicyIds, effectiveDirection,
   );
@@ -1358,10 +1355,12 @@ export async function GET(
       } catch { /* non-fatal */ }
     }
 
+    const clientPaidPolicyIds2 = await loadClientPaidPolicyIds(items.map((it) => it.policyId));
     const enrichedItems = items.map((it) => ({
       ...it,
       premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
       displayAmountCents: resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction),
+      paymentBadge: clientPaidPolicyIds2.has(it.policyId) ? "Client paid directly" : undefined,
     }));
     const policyMetaById = await loadPolicyStatementMeta(items.map((it) => it.policyId));
     const commissionTotalCents = await loadCommissionTotalCents(
@@ -1369,7 +1368,6 @@ export async function GET(
       stmtScheduleId ? [stmtScheduleId] : scheduleIds,
       stmt.entityType,
     );
-    const clientPaidPolicyIds2 = await loadClientPaidPolicyIds(items.map((it) => it.policyId));
     const paidIndividuallyTotal = computePaidIndividuallyTotal(
       items, stmt.entityType, premiumRoleTotals, clientPaidPolicyIds2, stmt.direction,
     );

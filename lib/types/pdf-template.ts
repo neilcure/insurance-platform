@@ -124,8 +124,16 @@ export function resolvePdfTemplateShowOn(
   meta: PdfTemplateMeta | null | undefined,
 ): ("policy" | "agent")[] {
   const configured = meta?.showOn?.filter((v): v is "policy" | "agent" => v === "policy" || v === "agent") ?? [];
-  if (configured.length > 0) return [...new Set(configured)];
-  return ["policy"];
+  let result: ("policy" | "agent")[];
+  if (configured.length > 0) {
+    result = [...new Set(configured)];
+  } else {
+    result = ["policy"];
+  }
+  if (!meta?.isAgentTemplate && !result.includes("policy")) {
+    result = [...result, "policy"];
+  }
+  return [...new Set(result)];
 }
 
 export type PdfTemplateRow = {
@@ -161,33 +169,20 @@ export const DATA_SOURCE_OPTIONS: {
 export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
   policy: [
     "policyNumber", "createdAt", "flowKey", "status",
+    "documentNumber",
     "linkedPolicyId", "linkedPolicyNumber",
     "endorsementType", "endorsementReason",
     "effectiveDate", "expiryDate",
-    "paymentAmount", "paymentDate", "paymentReference",
     "latestClientPaidAmount", "latestClientPaidDate", "latestClientPaymentRef",
   ],
   insured: [
-    "displayName", "primaryId",
-    "fullName", "lastName", "firstName", "idNumber", "companyName",
-    "brNumber", "organisationName", "hasDrivingLicense", "insuredType",
+    "displayName", "primaryId", "insuredType",
   ],
   contactinfo: [
     "fullAddress",
-    "name", "personalTitle", "tel", "mobile", "fax", "email",
-    "flatNumber", "floorNumber", "blockNumber", "blockName",
-    "streetNumber", "streetName", "propertyName", "districtName", "area",
   ],
   package: [],
-  accounting: [
-    "grossPremium", "netPremium", "clientPremium", "agentPremium",
-    "agentCommission", "creditPremium", "levy", "stampDuty", "discount",
-    "policyPremiumTotal", "endorsementPremiumTotal", "creditTotal", "commissionTotal",
-    "commissionRate", "currency", "margin", "lineLabel",
-    "insurerName", "insurerContactName", "insurerContactEmail", "insurerContactPhone",
-    "insurerAddress",
-    "collaboratorName",
-  ],
+  accounting: [],
   agent: ["name", "email", "userNumber"],
   client: ["clientNumber", "category", "displayName", "primaryId", "contactPhone"],
   organisation: [
@@ -206,10 +201,11 @@ export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
     "statementNumber", "statementDate", "statementStatus",
     "entityName", "entityType",
     "activeTotal", "paidIndividuallyTotal", "totalAmountCents",
-    "paidAmountCents", "outstandingTotal", "agentPaidTotal", "currency",
-    "policyPremiumTotal", "endorsementPremiumTotal", "creditTotal", "commissionTotal",
+    "paidAmountCents", "outstandingTotal", "agentPaidTotal",
+    "commissionTotal", "creditToAgent", "currency",
+    "policyPremiumTotal", "endorsementPremiumTotal", "creditTotal",
     "itemCount", "activeItemCount", "paidIndividuallyItemCount",
-    "itemDescriptions", "itemAmounts", "itemStatuses",
+    "itemDescriptions", "itemAmounts", "itemStatuses", "itemPaymentBadges",
   ],
   static: [],
 };
