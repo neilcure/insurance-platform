@@ -235,6 +235,38 @@ function buildTotals(
   };
 }
 
+function isCommissionItem(it: { description: string | null }): boolean {
+  const d = String(it.description ?? "").toLowerCase();
+  return d.includes("commission:") || d.includes("credit:");
+}
+
+function buildTotalsFromItems(
+  items: StatementItem[],
+  agentPaid: number,
+): { totalDue: number; activeTotal: number; paidIndividuallyTotal: number; commissionTotal: number; agentPaidTotal: number; clientPaidTotal: number } {
+  const premiumItems = items.filter((it) => !isCommissionItem(it));
+  const activeTotal = premiumItems
+    .filter((it) => it.status === "active")
+    .reduce((s, it) => s + (it.displayAmountCents ?? it.amountCents), 0);
+  const paidIndividuallyTotal = premiumItems
+    .filter((it) => it.status === "paid_individually")
+    .reduce((s, it) => s + (it.displayAmountCents ?? it.amountCents), 0);
+  const commissionTotal = items
+    .filter((it) => isCommissionItem(it))
+    .reduce((s, it) => s + (it.displayAmountCents ?? it.amountCents), 0);
+  const clientPaidTotal = premiumItems
+    .filter((it) => it.paymentBadge?.toLowerCase().includes("client"))
+    .reduce((s, it) => s + (it.displayAmountCents ?? it.amountCents), 0);
+  return {
+    totalDue: activeTotal + paidIndividuallyTotal,
+    activeTotal,
+    paidIndividuallyTotal,
+    commissionTotal,
+    agentPaidTotal: agentPaid,
+    clientPaidTotal,
+  };
+}
+
 function toStatementItems(items: (AgentStmtItem | StatementItemInfo)[]): StatementItem[] {
   return items.map((it) => ({
     id: it.id,
@@ -682,10 +714,10 @@ export function PaymentSection({
     sched: ScheduleInfo,
     linkedReceivable: InvoiceWithPayments[],
     linkedPayable: InvoiceWithPayments[],
+    filterPolicyIds?: Set<number>,
   ) => {
     const useEnriched = agentStmtData;
     const stmt = statementsBySchedule[sched.id] ?? null;
-    const dataSource = useEnriched ? agentStmtData : stmt;
 
     const stmtNumber = useEnriched ? agentStmtData.statementNumber : stmt?.statementNumber;
     const stmtStatus = useEnriched ? agentStmtData.statementStatus : (stmt?.status ?? "draft");
@@ -698,11 +730,27 @@ export function PaymentSection({
       return sum + agentPayments;
     }, 0);
 
-    const totals = buildTotals(dataSource, linkedReceivable, linkedPayable, agentPaidOnSchedule);
-
-    const items = useEnriched
+    let allItems = useEnriched
       ? toStatementItems(agentStmtData.items)
       : stmt ? toStatementItems(stmt.items) : [];
+
+    if (filterPolicyIds && filterPolicyIds.size > 0) {
+      const before = allItems.length;
+      allItems = allItems.filter((it) => filterPolicyIds.has(Number(it.policyId)));
+      if (typeof window !== "undefined") {
+        // eslint-disable-next-line no-console
+        console.log("[STMT-FILTER] filter:", [...filterPolicyIds], "before:", before, "after:", allItems.length, "itemPids:", allItems.map((it) => it.policyId));
+      }
+    } else if (typeof window !== "undefined") {
+      // eslint-disable-next-line no-console
+      console.log("[STMT-FILTER] no filter applied, items:", allItems.length);
+    }
+
+    const filteredDataSource = filterPolicyIds
+      ? buildTotalsFromItems(allItems, agentPaidOnSchedule)
+      : (useEnriched ? agentStmtData : stmt);
+
+    const totals = buildTotals(filteredDataSource, linkedReceivable, linkedPayable, agentPaidOnSchedule);
 
     const receivableByPolicy = new Map<number, InvoiceWithPayments>();
     for (const inv of linkedReceivable) {
@@ -721,7 +769,7 @@ export function PaymentSection({
         statementStatus={stmtStatus}
         totals={totals}
         currency={stmtCurrency}
-        items={items}
+        items={allItems}
         receivableInvoices={toInvoiceInfos(Array.from(receivableByPolicy.values()))}
         commissionInvoices={toInvoiceInfos(commissionInvs)}
         isAdmin={isAdmin}
@@ -1225,6 +1273,7 @@ export function PaymentSection({
               agentSchedule,
               invoices.filter((inv) => inv.scheduleId === agentSchedule.id),
               payables.filter((inv) => inv.scheduleId === agentSchedule.id),
+              new Set([policyId!, ...(endorsementPolicyIds ?? [])]),
             )}
 
             {!hideInvoiceCards && payables.map((inv) => (
