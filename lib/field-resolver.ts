@@ -70,6 +70,7 @@ export type StatementCtx = {
   premiumTotals?: Record<string, number>;
   summaryTotals?: Record<string, number>;
   agentPaidTotal?: number;
+  clientPaidTotal?: number;
 };
 
 /** Unified reference to a field in any data source. */
@@ -523,25 +524,16 @@ function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: strin
   const isCreditItem = (it: StatementCtx["items"][number]) => {
     return String(it.description ?? "").trim().toLowerCase().includes("credit:");
   };
-  const computedTotalDueFromItemsCents = statementBillableItems
-    .filter((it) => !isCommissionItem(it) && !isCreditItem(it))
-    .reduce((sum, it) => sum + Number(it.amountCents ?? 0), 0);
-  const computedCommissionFromItemsCents = statementBillableItems
+  const computedCommissionFromItemsCents = stmt.items
     .filter((it) => isCommissionItem(it))
     .reduce((sum, it) => sum + Number(it.amountCents ?? 0), 0);
-  const policyPremiumTotalCents = Number(stmt.summaryTotals?.policyPremiumTotal ?? 0);
-  const endorsementPremiumTotalCents = Number(stmt.summaryTotals?.endorsementPremiumTotal ?? 0);
   const summaryCommissionTotalCents = Number(stmt.summaryTotals?.commissionTotal ?? 0);
   const commissionTotalCents = summaryCommissionTotalCents > 0
     ? summaryCommissionTotalCents
     : Math.max(computedCommissionFromItemsCents, 0);
-  const totalDueCents = (policyPremiumTotalCents + endorsementPremiumTotalCents) > 0
-    ? (policyPremiumTotalCents + endorsementPremiumTotalCents)
-    : (
-      computedTotalDueFromItemsCents > 0
-        ? computedTotalDueFromItemsCents
-        : stmt.activeTotal
-    );
+  // Total Due = ALL premiums (active + paid) using pre-computed role-resolved values.
+  // Agent statements use agent premium, client statements use client premium.
+  const totalDueCents = stmt.activeTotal + stmt.paidIndividuallyTotal;
 
   switch (fieldKey) {
     case "statementNumber": {
@@ -558,20 +550,19 @@ function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: strin
     case "entityName": return stmt.entityName ?? "";
     case "entityType": return stmt.entityType;
     case "activeTotal": return totalDueCents / 100;
-    case "paidIndividuallyTotal": return stmt.paidIndividuallyTotal / 100;
+    case "paidIndividuallyTotal": return (stmt.clientPaidTotal ?? 0) / 100;
     case "totalAmountCents": return stmt.totalAmountCents / 100;
     case "paidAmountCents": return stmt.paidAmountCents / 100;
     case "agentPaidTotal": return (stmt.agentPaidTotal ?? 0) / 100;
     case "outstandingTotal": {
-      const agentPaid = stmt.agentPaidTotal ?? 0;
-      const outstanding = totalDueCents - stmt.paidIndividuallyTotal - commissionTotalCents - agentPaid;
-      return Math.max(outstanding, 0) / 100;
+      // Outstanding = unpaid items only (activeTotal).
+      // paidIndividuallyTotal already covers client-paid AND agent-paid items.
+      // Commission is already factored into agent premium amounts.
+      return Math.max(stmt.activeTotal, 0) / 100;
     }
     case "creditToAgent": {
-      const agentPaid2 = stmt.agentPaidTotal ?? 0;
-      const outstanding2 = totalDueCents - stmt.paidIndividuallyTotal - commissionTotalCents - agentPaid2;
-      if (outstanding2 >= 0) return commissionTotalCents > 0 ? commissionTotalCents / 100 : "";
-      return Math.abs(outstanding2) / 100;
+      // Credit to Agent = commission the company owes the agent.
+      return commissionTotalCents > 0 ? commissionTotalCents / 100 : "";
     }
     case "currency": return stmt.currency;
     case "policyPremiumTotal":

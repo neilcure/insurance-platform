@@ -79,6 +79,8 @@ type StatementDataForPreview = {
   entityType: string;
   activeTotal: number;
   paidIndividuallyTotal: number;
+  agentPaidTotal?: number;
+  clientPaidTotal?: number;
   totalAmountCents: number;
   paidAmountCents: number;
   currency: string;
@@ -159,32 +161,23 @@ function isPerItemField(key: string): boolean {
   return key === "itemDescriptions" || key === "itemAmounts" || key === "itemStatuses" || key === "itemPaymentBadges" || key.startsWith("item_");
 }
 
-const STATEMENT_TOTAL_ORDER = ["activeTotal", "paidIndividuallyTotal", "commissionTotal", "outstandingTotal", "creditToAgent"] as const;
-const STATEMENT_TOTAL_LABELS: Record<string, string> = {
-  activeTotal: "Total Due",
-  paidIndividuallyTotal: "Paid Individually",
-  commissionTotal: "Commission",
-  outstandingTotal: "Outstanding",
-  creditToAgent: "Credit to Agent",
-};
+/** Display-only hints — field order and labels come from the template. */
 const STATEMENT_TOTAL_SIDE: Record<string, "credit" | "debit"> = {
   activeTotal: "debit",
   paidIndividuallyTotal: "credit",
   commissionTotal: "credit",
+  agentPaidTotal: "credit",
   outstandingTotal: "debit",
   creditToAgent: "credit",
 };
-
-function normalizeStatementTotalFields(fields: TemplateFieldMapping[]): TemplateFieldMapping[] {
-  const byKey = new Map(fields.map((f) => [f.key, f]));
-  return STATEMENT_TOTAL_ORDER
-    .map((key) => byKey.get(key))
-    .filter((f): f is TemplateFieldMapping => Boolean(f))
-    .map((f) => ({
-      ...f,
-      label: STATEMENT_TOTAL_LABELS[f.key] ?? f.label,
-    }));
-}
+const STATEMENT_TOTAL_COLOR: Record<string, { bg: string; text: string }> = {
+  paidIndividuallyTotal: { bg: "bg-green-50", text: "text-green-800" },
+  commissionTotal: { bg: "bg-amber-50", text: "text-amber-800" },
+  agentPaidTotal: { bg: "bg-green-50", text: "text-green-800" },
+  outstandingTotal: { bg: "bg-red-50", text: "text-red-800" },
+  creditToAgent: { bg: "bg-amber-50", text: "text-amber-800" },
+};
+const STATEMENT_RESULT_KEYS = new Set(["outstandingTotal", "creditToAgent"]);
 
 function getStatementTotalSide(fieldKey: string): "credit" | "debit" | null {
   return STATEMENT_TOTAL_SIDE[fieldKey] ?? null;
@@ -357,7 +350,7 @@ function DocumentPreview({
             const paidSet = new Set(statement.clientPaidPolicyIds ?? []);
             if (paidSet.size > 0) {
               for (const it of statement.items) {
-                if (paidSet.has(it.policyId)) {
+                if (paidSet.has(it.policyId) && !it.paymentBadge) {
                   it.paymentBadge = "Client paid directly";
                 }
               }
@@ -509,12 +502,11 @@ function DocumentPreview({
         /agent/i.test(f.label) || /agent/i.test(f.key);
       const rawVisibleFields = section.fields.filter((f) => {
         if (!hasAudienceSections) return true;
+        if (section.id === "totals") return true;
         if (viewAudience === "client" && isAgentFld(f)) return false;
         return true;
       });
-      const visibleFlds = section.id === "totals"
-        ? normalizeStatementTotalFields(rawVisibleFields)
-        : rawVisibleFields;
+      const visibleFlds = rawVisibleFields;
 
       const useTable =
         (section.layout === "table" || section.id === "line_items") &&
@@ -773,13 +765,12 @@ function DocumentPreview({
           const rawVisibleFields = section.fields.filter((f) => {
             if (!hasAudienceSections) return true;
             if (section.id === "line_items") return true;
+            if (section.id === "totals") return true;
             if (viewAudience === "client" && isAgentField(f)) return false;
             if (viewAudience === "agent" && isClientField(f)) return false;
             return true;
           });
-          const visibleFields = section.id === "totals"
-            ? normalizeStatementTotalFields(rawVisibleFields)
-            : rawVisibleFields;
+          const visibleFields = rawVisibleFields;
 
           const useTable =
             (section.layout === "table" || section.id === "line_items") &&
@@ -818,22 +809,29 @@ function DocumentPreview({
                         {scalarFields.map((f, idx) => {
                           const side = getStatementTotalSide(f.key);
                           const value = formatValue(f.resolved, f.format, f.currencyCode);
-                          const isResult = f.key === "outstandingTotal" || f.key === "creditToAgent";
+                          const isResult = STATEMENT_RESULT_KEYS.has(f.key);
                           const prevField = idx > 0 ? scalarFields[idx - 1] : null;
-                          const prevIsResult = prevField && (prevField.key === "outstandingTotal" || prevField.key === "creditToAgent");
+                          const prevIsResult = prevField && STATEMENT_RESULT_KEYS.has(prevField.key);
                           const isFirstResult = isResult && !prevIsResult;
+                          const color = STATEMENT_TOTAL_COLOR[f.key];
                           return (
                             <div
                               key={f.key}
-                              className={`grid grid-cols-[1fr_100px_100px] gap-2 py-1 sm:py-1.5 ${isFirstResult ? "border-t-2 border-neutral-400 mt-1 pt-2" : idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                              className={cn(
+                                "grid grid-cols-[1fr_100px_100px] gap-2 py-1 sm:py-1.5 rounded",
+                                isFirstResult && "border-t-2 border-neutral-400 mt-1 pt-2",
+                                !isFirstResult && idx < scalarFields.length - 1 && "border-b border-neutral-100",
+                                color?.bg ?? "",
+                                color ? "px-1.5" : "",
+                              )}
                             >
-                              <span className={`text-[11px] sm:text-[13px] ${isResult ? "font-bold text-neutral-900" : "text-neutral-500 font-medium"}`}>
+                              <span className={cn("text-[11px] sm:text-[13px]", isResult ? "font-bold" : "font-medium", color?.text ?? (isResult ? "text-neutral-900" : "text-neutral-500"))}>
                                 {f.label}
                               </span>
-                              <span className={`text-xs sm:text-[13px] text-right ${isResult ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                              <span className={cn("text-xs sm:text-[13px] text-right", isResult ? "font-bold" : "font-semibold", color?.text ?? "text-neutral-900")}>
                                 {side === "credit" ? value : ""}
                               </span>
-                              <span className={`text-xs sm:text-[13px] text-right ${isResult ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                              <span className={cn("text-xs sm:text-[13px] text-right", isResult ? "font-bold" : "font-semibold", color?.text ?? "text-neutral-900")}>
                                 {side === "debit" ? value : ""}
                               </span>
                             </div>
@@ -1080,22 +1078,29 @@ function DocumentPreview({
                     {fields.map((f, idx) => {
                       const side = getStatementTotalSide(f.key);
                       const value = formatValue(f.resolved, f.format, f.currencyCode);
-                      const isResult = f.key === "outstandingTotal" || f.key === "creditToAgent";
+                      const isResult = STATEMENT_RESULT_KEYS.has(f.key);
                       const prevField = idx > 0 ? fields[idx - 1] : null;
-                      const prevIsResult = prevField && (prevField.key === "outstandingTotal" || prevField.key === "creditToAgent");
+                      const prevIsResult = prevField && STATEMENT_RESULT_KEYS.has(prevField.key);
                       const isFirstResult = isResult && !prevIsResult;
+                      const color = STATEMENT_TOTAL_COLOR[f.key];
                       return (
                         <div
                           key={f.key}
-                          className={`grid grid-cols-[1fr_100px_100px] gap-2 py-1 sm:py-1.5 ${isFirstResult ? "border-t-2 border-neutral-400 mt-1 pt-2" : idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                          className={cn(
+                            "grid grid-cols-[1fr_100px_100px] gap-2 py-1 sm:py-1.5 rounded",
+                            isFirstResult && "border-t-2 border-neutral-400 mt-1 pt-2",
+                            !isFirstResult && idx < fields.length - 1 && "border-b border-neutral-100",
+                            color?.bg ?? "",
+                            color ? "px-1.5" : "",
+                          )}
                         >
-                          <span className={`text-[11px] sm:text-[13px] ${isResult ? "font-bold text-neutral-900" : "text-neutral-500 font-medium"}`}>
+                          <span className={cn("text-[11px] sm:text-[13px]", isResult ? "font-bold" : "font-medium", color?.text ?? (isResult ? "text-neutral-900" : "text-neutral-500"))}>
                             {f.label}
                           </span>
-                          <span className={`text-xs sm:text-[13px] text-right ${isResult ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                          <span className={cn("text-xs sm:text-[13px] text-right", isResult ? "font-bold" : "font-semibold", color?.text ?? "text-neutral-900")}>
                             {side === "credit" ? value : ""}
                           </span>
-                          <span className={`text-xs sm:text-[13px] text-right ${isResult ? "font-bold text-neutral-900" : "font-semibold text-neutral-900"}`}>
+                          <span className={cn("text-xs sm:text-[13px] text-right", isResult ? "font-bold" : "font-semibold", color?.text ?? "text-neutral-900")}>
                             {side === "debit" ? value : ""}
                           </span>
                         </div>

@@ -112,6 +112,7 @@ export function WorkflowTab({
   const [paymentRefreshKey, setPaymentRefreshKey] = React.useState(0);
 
   const isParentPolicy = !flowKey || flowKey === "policyset" || flowKey === "";
+  const isClientFlow = (flowKey ?? "").toLowerCase() === "clientset";
   const [linkedEndorsements, setLinkedEndorsements] = React.useState<LinkedEndorsement[]>([]);
   const [endorsementDetails, setEndorsementDetails] = React.useState<Record<number, PolicyDetail>>({});
   const [endorsementSummaries, setEndorsementSummaries] = React.useState<Record<number, { total: number; verified: number; outstanding: number }>>({});
@@ -428,7 +429,9 @@ export function WorkflowTab({
                   </div>
                 ))}
                 <PaymentSection
-                  policyId={detail.policyId}
+                  {...(isClientFlow
+                    ? { clientRecordId: detail.policyId }
+                    : { policyId: detail.policyId })}
                   isAdmin={isAdmin ?? false}
                   onSummaryChange={setPaymentSummary}
                   externalRefreshKey={paymentRefreshKey}

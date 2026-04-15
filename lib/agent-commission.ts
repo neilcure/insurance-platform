@@ -153,6 +153,33 @@ export async function createAgentCommissionPayable(
     } catch (stmtErr) {
       console.error("Auto-add commission to statement failed (non-fatal):", stmtErr);
     }
+
+    // Also link the policy's receivable invoice to the same schedule so the
+    // by-schedule API can include it as a "paid individually" line item.
+    try {
+      const receivableInvs = await db
+        .select({ id: accountingInvoices.id })
+        .from(accountingInvoices)
+        .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
+        .where(
+          and(
+            eq(accountingInvoiceItems.policyId, policyId),
+            eq(accountingInvoices.invoiceType, "individual"),
+            eq(accountingInvoices.direction, "receivable"),
+            eq(accountingInvoices.entityType, "agent"),
+            sql`${accountingInvoices.status} <> 'cancelled'`,
+            sql`${accountingInvoices.scheduleId} IS NULL`,
+          ),
+        );
+      for (const inv of receivableInvs) {
+        await db
+          .update(accountingInvoices)
+          .set({ scheduleId: agentSchedule.id })
+          .where(eq(accountingInvoices.id, inv.id));
+      }
+    } catch (linkErr) {
+      console.error("Link receivable invoice to schedule failed (non-fatal):", linkErr);
+    }
   }
 
   // Keep agent status track aligned with commission settlement lifecycle.
@@ -168,4 +195,75 @@ export async function createAgentCommissionPayable(
   } catch {
     // non-fatal
   }
+}
+
+/**
+ * Remove commission payable invoices for a policy.
+ * Used when the payer changes from "client" to "agent" or when a
+ * client-direct payment is rejected/removed — the commission is no
+ * longer applicable.
+ *
+ * Also removes copied commission items from the agent's statement invoice
+ * so they don't appear as stale data.
+ */
+export async function removeAgentCommissionPayable(
+  policyId: number,
+): Promise<number> {
+  const commissionInvoices = await db
+    .select({ id: accountingInvoices.id, scheduleId: accountingInvoices.scheduleId })
+    .from(accountingInvoices)
+    .innerJoin(accountingInvoiceItems, eq(accountingInvoiceItems.invoiceId, accountingInvoices.id))
+    .where(
+      and(
+        eq(accountingInvoiceItems.policyId, policyId),
+        eq(accountingInvoices.direction, "payable"),
+        eq(accountingInvoices.entityType, "agent"),
+        sql`${accountingInvoices.status} <> 'cancelled'`,
+        sql`(
+          coalesce(${accountingInvoiceItems.description}, '') ilike 'Commission:%'
+          OR lower(coalesce(${accountingInvoices.notes}, '')) like 'agent commission%'
+        )`,
+      ),
+    );
+
+  if (commissionInvoices.length === 0) return 0;
+
+  const invoiceIds = [...new Set(commissionInvoices.map((r) => r.id))];
+  const scheduleIds = [...new Set(
+    commissionInvoices.map((r) => r.scheduleId).filter((s): s is number => s != null),
+  )];
+
+  // Remove commission items copied to the statement invoice(s) for this policy
+  if (scheduleIds.length > 0) {
+    const stmtInvoices = await db
+      .select({ id: accountingInvoices.id })
+      .from(accountingInvoices)
+      .where(
+        and(
+          sql`${accountingInvoices.scheduleId} IN (${sql.join(scheduleIds.map((s) => sql`${s}`), sql`,`)})`,
+          eq(accountingInvoices.invoiceType, "statement"),
+          sql`${accountingInvoices.status} <> 'cancelled'`,
+        ),
+      );
+
+    for (const si of stmtInvoices) {
+      await db.delete(accountingInvoiceItems).where(
+        and(
+          eq(accountingInvoiceItems.invoiceId, si.id),
+          eq(accountingInvoiceItems.policyId, policyId),
+          sql`(
+            lower(coalesce(${accountingInvoiceItems.description}, '')) like 'commission:%'
+            OR lower(coalesce(${accountingInvoiceItems.description}, '')) like 'credit:%'
+          )`,
+        ),
+      );
+    }
+  }
+
+  for (const invId of invoiceIds) {
+    await db.delete(accountingInvoiceItems).where(eq(accountingInvoiceItems.invoiceId, invId));
+    await db.delete(accountingInvoices).where(eq(accountingInvoices.id, invId));
+  }
+
+  return invoiceIds.length;
 }

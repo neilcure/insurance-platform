@@ -1,7 +1,7 @@
 import { db } from "@/db/client";
 import { cars, policies } from "@/db/schema/insurance";
 import { policyDocuments } from "@/db/schema/documents";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 
 const STATUS_ORDER = [
   "quotation_prepared",
@@ -15,6 +15,11 @@ const STATUS_ORDER = [
 
 export type PolicyStatusKey = (typeof STATUS_ORDER)[number];
 export type PolicyStatusTrack = "client" | "agent";
+
+function extractCount(result: unknown): number {
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
+  return (rows[0] as { cnt?: number })?.cnt ?? 0;
+}
 
 /**
  * When a status is reached, automatically chain to the next status.
@@ -135,19 +140,33 @@ export async function recalculatePolicyStatus(
     return false;
   };
 
-  const verifiedPaymentDocs = await db
-    .select({ paymentMeta: policyDocuments.paymentMeta })
-    .from(policyDocuments)
-    .where(and(
-      eq(policyDocuments.policyId, policyId),
-      eq(policyDocuments.status, "verified"),
-    ))
-    .limit(50);
+  const [verifiedPaymentDocs, accountingPaymentsResult] = await Promise.all([
+    db
+      .select({ paymentMeta: policyDocuments.paymentMeta })
+      .from(policyDocuments)
+      .where(and(
+        eq(policyDocuments.policyId, policyId),
+        eq(policyDocuments.status, "verified"),
+      ))
+      .limit(50),
+    db.execute(sql`
+      SELECT count(DISTINCT ap.id)::int AS cnt
+      FROM accounting_payments ap
+      JOIN accounting_invoices ai ON ai.id = ap.invoice_id
+      JOIN accounting_invoice_items aii ON aii.invoice_id = ai.id
+      WHERE aii.policy_id = ${policyId}
+        AND ai.direction = 'receivable'
+        AND coalesce(ap.payer, 'client') <> 'agent'
+        AND ap.status IN ('recorded', 'verified', 'confirmed', 'submitted')
+    `),
+  ]);
 
   const hasVerifiedPaymentProof = verifiedPaymentDocs.some((d) => {
     const meta = d.paymentMeta as { amountCents?: number } | null;
     return meta && meta.amountCents && meta.amountCents > 0;
   });
+
+  const hasAccountingPayments = extractCount(accountingPaymentsResult) > 0;
 
   const hasReceiptSent = hasTrackingMatch("receipt", "sent");
   const hasInvoiceSent = hasTrackingMatch("invoice", "sent") || hasTrackingMatch("debit", "sent");
@@ -155,7 +174,7 @@ export async function recalculatePolicyStatus(
   const hasQuotationSent = hasTrackingMatch("quotation", "sent");
 
   let correctStatus: PolicyStatusKey = "quotation_prepared";
-  if (hasVerifiedPaymentProof || hasReceiptSent) {
+  if (hasVerifiedPaymentProof || hasReceiptSent || hasAccountingPayments) {
     correctStatus = "payment_received";
   } else if (hasInvoiceSent) {
     correctStatus = "invoice_sent";
@@ -194,4 +213,110 @@ export async function recalculatePolicyStatus(
   return correctStatus;
 }
 
-export { STATUS_ORDER };
+/**
+ * Agent-track status progression (separate from STATUS_ORDER which is client-track).
+ * These are not enforced as strictly as STATUS_ORDER; they flow freely
+ * based on commission/payment state.
+ */
+const AGENT_COMMISSION_STATUSES = [
+  "commission_pending",
+  "statement_created",
+  "statement_sent",
+  "statement_confirmed",
+  "commission_settled",
+] as const;
+
+/**
+ * Sync BOTH client and agent status tracks based on actual payment state.
+ * Called after recording, verifying, rejecting, or deleting a payment.
+ *
+ * Client track:
+ *   - Has active client payments → advance to `payment_received`
+ *   - No active client payments  → recalculate from document tracking
+ *
+ * Agent track:
+ *   - Verified/confirmed agent payment → advance to `commission_settled`
+ *   - Commission payable exists but not paid → keep at commission_pending/statement_created
+ *   - No commission payable, no payments  → recalculate from document tracking
+ */
+export async function syncPolicyStatusFromPayments(
+  policyId: number,
+  changedBy: string,
+): Promise<{ client: string | null; agent: string | null }> {
+  // --- Client track ---
+  const clientPayments = await db.execute(sql`
+    SELECT count(DISTINCT ap.id)::int AS cnt
+    FROM accounting_payments ap
+    JOIN accounting_invoices ai ON ai.id = ap.invoice_id
+    JOIN accounting_invoice_items aii ON aii.invoice_id = ai.id
+    WHERE aii.policy_id = ${policyId}
+      AND ai.direction = 'receivable'
+      AND coalesce(ap.payer, 'client') <> 'agent'
+      AND ap.status IN ('recorded', 'verified', 'confirmed', 'submitted')
+  `);
+  const clientPaymentCount = extractCount(clientPayments);
+
+  let clientResult: string | null = null;
+  if (clientPaymentCount > 0) {
+    clientResult = await advancePolicyStatus(
+      policyId, "payment_received", changedBy,
+      "Auto: client payment recorded", "client",
+    );
+  } else {
+    clientResult = await recalculatePolicyStatus(
+      policyId, changedBy, "payment removed", "client",
+    );
+  }
+
+  // --- Agent track ---
+  const agentVerified = await db.execute(sql`
+    SELECT count(DISTINCT ap.id)::int AS cnt
+    FROM accounting_payments ap
+    JOIN accounting_invoices ai ON ai.id = ap.invoice_id
+    JOIN accounting_invoice_items aii ON aii.invoice_id = ai.id
+    WHERE aii.policy_id = ${policyId}
+      AND ap.payer = 'agent'
+      AND ap.status IN ('verified', 'confirmed')
+  `);
+  const agentVerifiedCount = extractCount(agentVerified);
+
+  let agentResult: string | null = null;
+  if (agentVerifiedCount > 0) {
+    agentResult = await advancePolicyStatus(
+      policyId, "commission_settled", changedBy,
+      "Auto: agent payment verified", "agent",
+    );
+  } else {
+    const commPayable = await db.execute(sql`
+      SELECT ai.schedule_id
+      FROM accounting_invoices ai
+      JOIN accounting_invoice_items aii ON aii.invoice_id = ai.id
+      WHERE aii.policy_id = ${policyId}
+        AND ai.direction = 'payable'
+        AND ai.entity_type = 'agent'
+        AND ai.status <> 'cancelled'
+        AND (
+          coalesce(aii.description, '') ILIKE 'Commission:%'
+          OR lower(coalesce(ai.notes, '')) LIKE 'agent commission%'
+        )
+      LIMIT 1
+    `);
+    const commRows = Array.isArray(commPayable)
+      ? commPayable
+      : (commPayable as { rows?: unknown[] }).rows ?? [];
+
+    if (commRows.length > 0) {
+      // Commission payable still exists — don't rollback, keep current agent status
+      // (createAgentCommissionPayable already set commission_pending/statement_created)
+    } else {
+      // No commission payable and no agent payments → rollback agent track
+      agentResult = await recalculatePolicyStatus(
+        policyId, changedBy, "commission removed", "agent",
+      );
+    }
+  }
+
+  return { client: clientResult, agent: agentResult };
+}
+
+export { STATUS_ORDER, AGENT_COMMISSION_STATUSES };

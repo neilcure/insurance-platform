@@ -95,6 +95,7 @@ export async function GET(
           ]),
         ),
       )
+      .orderBy(sql`${accountingInvoices.id} DESC`)
       .limit(1);
 
     let stmtItems: ItemResult[] = [];
@@ -109,13 +110,23 @@ export async function GET(
       const rawRows = Array.isArray(rawItems)
         ? rawItems
         : (rawItems as { rows?: unknown[] }).rows ?? [];
-      stmtItems = (rawRows as {
+      const rawMapped = (rawRows as {
         id: number; policy_id: number; policy_premium_id: number | null;
         amount_cents: number; description: string | null; status: string;
       }[]).map((r) => ({
         id: r.id, policyId: r.policy_id, policyPremiumId: r.policy_premium_id,
         amountCents: r.amount_cents, description: r.description, status: r.status,
       }));
+
+      const seenPremIds = new Set<number>();
+      stmtItems = rawMapped.filter((it) => {
+        if (!it.policyPremiumId) return true;
+        const d = String(it.description ?? "").toLowerCase();
+        if (d.includes("commission:") || d.includes("credit:")) return true;
+        if (seenPremIds.has(it.policyPremiumId)) return false;
+        seenPremIds.add(it.policyPremiumId);
+        return true;
+      });
     }
 
     const existingPremiumPolicyIds = new Set(
@@ -185,6 +196,50 @@ export async function GET(
       if (it.policyPremiumId && seenPremiumIds.has(it.policyPremiumId)) continue;
       if (it.policyPremiumId) seenPremiumIds.add(it.policyPremiumId);
       allItems.push(it);
+    }
+
+    // Pull in premium items for client-paid policies that only have commission
+    // items on the schedule (their receivable invoices may not be on the schedule).
+    const commissionOnlyPolicyIds = [
+      ...new Set(
+        allItems
+          .filter((it) => isCommissionOrCreditItem(it))
+          .map((it) => it.policyId)
+          .filter((pid) => !existingPremiumPolicyIds.has(pid) && !allItems.some((a) => a.policyId === pid && !isCommissionOrCreditItem(a))),
+      ),
+    ].filter((id) => Number.isFinite(id) && id > 0);
+
+    if (commissionOnlyPolicyIds.length > 0) {
+      const offSchedItems = await db.execute(sql`
+        SELECT ii."id", ii."policy_id", ii."policy_premium_id", ii."amount_cents",
+               ii."description", 'paid_individually' AS "status"
+        FROM "accounting_invoice_items" ii
+        INNER JOIN "accounting_invoices" ai ON ai."id" = ii."invoice_id"
+        WHERE ii."policy_id" IN (${sql.join(commissionOnlyPolicyIds.map((id) => sql`${id}`), sql`,`)})
+          AND ai."invoice_type" = 'individual'
+          AND ai."direction" = 'receivable'
+          AND ai."entity_type" = 'agent'
+          AND ai."status" <> 'cancelled'
+          AND lower(coalesce(ii."description", '')) NOT LIKE 'commission:%'
+          AND lower(coalesce(ii."description", '')) NOT LIKE 'credit:%'
+        ORDER BY ii."id"
+      `);
+      const offRows = Array.isArray(offSchedItems)
+        ? offSchedItems
+        : (offSchedItems as { rows?: unknown[] }).rows ?? [];
+      for (const r of offRows as {
+        id: number; policy_id: number; policy_premium_id: number | null;
+        amount_cents: number; description: string | null; status: string;
+      }[]) {
+        const mapped: ItemResult = {
+          id: r.id, policyId: r.policy_id, policyPremiumId: r.policy_premium_id,
+          amountCents: r.amount_cents, description: r.description, status: "paid_individually",
+        };
+        if (mapped.policyPremiumId && seenPremiumIds.has(mapped.policyPremiumId)) continue;
+        if (mapped.policyPremiumId) seenPremiumIds.add(mapped.policyPremiumId);
+        existingPremiumPolicyIds.add(mapped.policyId);
+        allItems.push(mapped);
+      }
     }
 
     if (allItems.length === 0) {
@@ -284,38 +339,65 @@ export async function GET(
     }
 
     const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
-    const enrichedItems = allItems.map((it) => ({
-      ...it,
-      displayAmountCents: resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals),
-      paymentBadge: clientPaidPolicyIds.has(it.policyId) ? "Client paid directly" : undefined,
-    }));
-    const paidIndividuallyTotal = computePaidIndividuallyTotal(
-      allItems, effectiveEntityType, premiumRoleTotals, clientPaidPolicyIds,
-    );
+    const agentPaidPolicyIds = await loadAgentPaidPolicyIds(itemPolicyIds);
+    const paidPolicyIds = new Set([...clientPaidPolicyIds, ...agentPaidPolicyIds]);
 
-    const activeTotal = allItems
+    const enrichedItems = allItems.map((it) => {
+      const isComm = isCommissionOrCreditItem(it);
+      let badge: string | undefined;
+      let effectiveStatus = it.status;
+      if (!isComm) {
+        if (paidPolicyIds.has(it.policyId)) {
+          effectiveStatus = "paid_individually";
+        } else {
+          effectiveStatus = "active";
+        }
+        if (clientPaidPolicyIds.has(it.policyId)) badge = "Client paid directly";
+        else if (agentPaidPolicyIds.has(it.policyId)) badge = "Agent paid";
+      }
+      return {
+        ...it,
+        status: effectiveStatus,
+        displayAmountCents: resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals),
+        paymentBadge: badge,
+      };
+    });
+
+    const activeTotal = enrichedItems
       .filter((it) => {
         if (it.status !== "active") return false;
         if (isCommissionOrCreditItem(it)) return false;
-        if (effectiveEntityType === "agent" && it.policyPremiumId && clientPaidPolicyIds.has(it.policyId)) return false;
         return true;
       })
       .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals), 0);
 
+    const paidIndividuallyTotal = enrichedItems
+      .filter((it) => it.status === "paid_individually" && !isCommissionOrCreditItem(it))
+      .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals), 0);
+
     const commissionTotalCents = await loadCommissionTotalCents(itemPolicyIds, [sid], effectiveEntityType);
+    const agentPaidTotalCents = await loadAgentPaidTotalCents(itemPolicyIds, effectiveEntityType);
+    const clientPaidTotalCents = computeClientPaidTotal(
+      allItems, effectiveEntityType, premiumRoleTotals, clientPaidPolicyIds,
+    );
     const policyClients = await loadPolicyClientMap(itemPolicyIds);
 
     const statementNumber = stmtInvoice?.invoiceNumber ?? "";
     const statementStatus = stmtInvoice?.status ?? "draft";
     const currency = stmtInvoice?.currency ?? enrichedItems[0]?.status ? "HKD" : "HKD";
 
+    const totalDue = activeTotal + paidIndividuallyTotal;
+
     return NextResponse.json({
       statement: {
         statementNumber,
         statementStatus,
+        totalDue,
         activeTotal,
         paidIndividuallyTotal,
         commissionTotal: commissionTotalCents,
+        agentPaidTotal: agentPaidTotalCents,
+        clientPaidTotal: clientPaidTotalCents,
         currency: stmtInvoice?.currency ?? "HKD",
         items: enrichedItems,
         policyClients,
@@ -365,10 +447,22 @@ function computePaidIndividuallyTotal(
   if (entityType !== "agent" || clientPaidPolicyIds.size === 0) return paidByItemStatus;
 
   const paidByPolicyMatch = items
-    .filter((it) => it.policyPremiumId && clientPaidPolicyIds.has(it.policyId) && !isCommissionOrCreditItem(it))
+    .filter((it) => clientPaidPolicyIds.has(it.policyId) && !isCommissionOrCreditItem(it))
     .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, entityType, premiumRoleTotals), 0);
 
   return Math.max(paidByItemStatus, paidByPolicyMatch);
+}
+
+function computeClientPaidTotal(
+  items: ItemResult[],
+  entityType: string,
+  premiumRoleTotals: Map<number, { clientCents: number; agentCents: number }>,
+  clientPaidPolicyIds: Set<number>,
+): number {
+  if (clientPaidPolicyIds.size === 0) return 0;
+  return items
+    .filter((it) => clientPaidPolicyIds.has(it.policyId) && !isCommissionOrCreditItem(it))
+    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, entityType, premiumRoleTotals), 0);
 }
 
 async function loadCommissionTotalCents(
@@ -398,6 +492,54 @@ async function loadCommissionTotalCents(
         lower(coalesce(ii.description, '')) like '%commission:%'
         or lower(coalesce(ai.notes, '')) like 'agent commission%'
       )
+  `);
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
+  const total = Number((rows[0] as { total?: unknown } | undefined)?.total ?? 0);
+  return Number.isFinite(total) ? total : 0;
+}
+
+async function loadAgentPaidPolicyIds(policyIds: number[]): Promise<Set<number>> {
+  const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (uniquePolicyIds.length === 0) return new Set();
+  const result = await db.execute(sql`
+    SELECT DISTINCT ii.policy_id
+    FROM accounting_payments ap
+    INNER JOIN accounting_invoices ai ON ai.id = ap.invoice_id
+    INNER JOIN accounting_invoice_items ii ON ii.invoice_id = ai.id
+    WHERE ai.direction = 'receivable'
+      AND ai.invoice_type = 'individual'
+      AND ai.entity_type = 'agent'
+      AND ai.status <> 'cancelled'
+      AND ap.status IN ('verified', 'confirmed', 'recorded')
+      AND ap.payer = 'agent'
+      AND ii.policy_id IN (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
+  `);
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
+  return new Set(
+    (rows as { policy_id: number }[])
+      .map((r) => Number(r.policy_id))
+      .filter((id) => Number.isFinite(id) && id > 0),
+  );
+}
+
+async function loadAgentPaidTotalCents(policyIds: number[], entityType: string): Promise<number> {
+  if (entityType !== "agent") return 0;
+  const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (uniquePolicyIds.length === 0) return 0;
+  const result = await db.execute(sql`
+    SELECT coalesce(sum(ap.amount_cents), 0)::int AS total
+    FROM accounting_payments ap
+    WHERE ap.invoice_id IN (
+      SELECT DISTINCT ai.id
+      FROM accounting_invoices ai
+      INNER JOIN accounting_invoice_items ii ON ii.invoice_id = ai.id
+      WHERE ii.policy_id IN (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
+        AND ai.direction = 'receivable'
+        AND ai.entity_type = 'agent'
+        AND ai.invoice_type <> 'statement'
+    )
+    AND ap.payer = 'agent'
+    AND ap.status IN ('recorded', 'verified', 'confirmed')
   `);
   const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
   const total = Number((rows[0] as { total?: unknown } | undefined)?.total ?? 0);

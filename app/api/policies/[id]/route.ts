@@ -305,10 +305,19 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
     } catch {
       // ignore resolution errors
     }
-    // For client flow records, keep the client's clientNumber in sync with policyNumber
-    // so there is only one identifier visible to the user.
+    // For client flow records, resolve client by matching policyNumber = clientNumber
     const resolvedFlowKey = (base as any).flowKey || String((base.extraAttributes as any)?.flowKey ?? "");
     const flowKey = resolvedFlowKey.toLowerCase();
+    if (!resolvedClient && flowKey.includes("client")) {
+      try {
+        const [c] = await db
+          .select({ id: clients.id, clientNumber: clients.clientNumber, createdAt: clients.createdAt })
+          .from(clients)
+          .where(eq(clients.clientNumber, base.policyNumber))
+          .limit(1);
+        if (c) resolvedClient = { id: c.id, clientNumber: c.clientNumber, createdAt: c.createdAt };
+      } catch { /* ignore */ }
+    }
     if (flowKey.includes("client") && resolvedClient && resolvedClient.clientNumber !== base.policyNumber) {
       try {
         await db.update(clients).set({ clientNumber: base.policyNumber }).where(eq(clients.id, resolvedClient.id));

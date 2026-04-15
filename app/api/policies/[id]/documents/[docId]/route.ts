@@ -7,7 +7,7 @@ import { requireUser } from "@/lib/auth/require-user";
 import { deleteFile } from "@/lib/storage";
 import { appendPolicyAudit } from "@/lib/audit";
 import { syncInvoicePaymentStatus, crossSettlePolicyInvoices } from "@/lib/accounting-invoices";
-import { createAgentCommissionPayable } from "@/lib/agent-commission";
+import { createAgentCommissionPayable, removeAgentCommissionPayable } from "@/lib/agent-commission";
 import { markAgentPolicyItemsPaidIndividually } from "@/lib/statement-management";
 
 export const dynamic = "force-dynamic";
@@ -181,6 +181,11 @@ export async function PATCH(
 
     // Recalculate status when rejecting a previously verified document
     if (body.status === "rejected" && existing.status === "verified") {
+      try {
+        await removeAgentCommissionPayable(existing.policyId);
+      } catch (commCleanErr) {
+        console.error("Commission cleanup on doc rejection failed (non-fatal):", commCleanErr);
+      }
       try {
         const { recalculatePolicyStatus } = await import("@/lib/auto-advance-status");
         const rolledBack = await recalculatePolicyStatus(

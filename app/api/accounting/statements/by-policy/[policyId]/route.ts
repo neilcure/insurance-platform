@@ -492,6 +492,54 @@ async function loadCommissionTotalCents(
   return Number.isFinite(total) ? total : 0;
 }
 
+async function loadAgentPaidPolicyIds(policyIds: number[]): Promise<Set<number>> {
+  const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (uniquePolicyIds.length === 0) return new Set();
+  const result = await db.execute(sql`
+    SELECT DISTINCT ii.policy_id
+    FROM accounting_payments ap
+    INNER JOIN accounting_invoices ai ON ai.id = ap.invoice_id
+    INNER JOIN accounting_invoice_items ii ON ii.invoice_id = ai.id
+    WHERE ai.direction = 'receivable'
+      AND ai.invoice_type = 'individual'
+      AND ai.entity_type = 'agent'
+      AND ai.status <> 'cancelled'
+      AND ap.status IN ('verified', 'confirmed', 'recorded')
+      AND ap.payer = 'agent'
+      AND ii.policy_id IN (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
+  `);
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
+  return new Set(
+    (rows as { policy_id: number }[])
+      .map((r) => Number(r.policy_id))
+      .filter((id) => Number.isFinite(id) && id > 0),
+  );
+}
+
+async function loadAgentPaidTotalCents(policyIds: number[], entityType: string): Promise<number> {
+  if (entityType !== "agent") return 0;
+  const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (uniquePolicyIds.length === 0) return 0;
+  const result = await db.execute(sql`
+    SELECT coalesce(sum(ap.amount_cents), 0)::int AS total
+    FROM accounting_payments ap
+    WHERE ap.invoice_id IN (
+      SELECT DISTINCT ai.id
+      FROM accounting_invoices ai
+      INNER JOIN accounting_invoice_items ii ON ii.invoice_id = ai.id
+      WHERE ii.policy_id IN (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
+        AND ai.direction = 'receivable'
+        AND ai.entity_type = 'agent'
+        AND ai.invoice_type <> 'statement'
+    )
+    AND ap.payer = 'agent'
+    AND ap.status IN ('recorded', 'verified', 'confirmed')
+  `);
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
+  const total = Number((rows[0] as { total?: unknown } | undefined)?.total ?? 0);
+  return Number.isFinite(total) ? total : 0;
+}
+
 async function loadClientPaidPolicyIds(
   policyIds: number[],
 ): Promise<Set<number>> {
@@ -532,11 +580,25 @@ function computePaidIndividuallyTotal(
   if (entityType !== "agent" || clientPaidPolicyIds.size === 0) return paidByItemStatus;
 
   const paidByPolicyMatch = items
-    .filter((it) => it.policyPremiumId && clientPaidPolicyIds.has(it.policyId)
+    .filter((it) => clientPaidPolicyIds.has(it.policyId)
       && !isCreditStatementItem(it) && !isCommissionStatementItem(it))
     .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, entityType, premiumRoleTotals, direction), 0);
 
   return Math.max(paidByItemStatus, paidByPolicyMatch);
+}
+
+function computeClientPaidTotal(
+  items: ItemResult[],
+  entityType: string,
+  premiumRoleTotals: Map<number, { clientCents: number; agentCents: number }>,
+  clientPaidPolicyIds: Set<number>,
+  direction?: string | null,
+): number {
+  if (clientPaidPolicyIds.size === 0) return 0;
+  return items
+    .filter((it) => clientPaidPolicyIds.has(it.policyId)
+      && !isCreditStatementItem(it) && !isCommissionStatementItem(it))
+    .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, entityType, premiumRoleTotals, direction), 0);
 }
 
 async function loadPolicyClientMap(policyIds: number[]): Promise<Record<number, { policyNumber: string; clientName: string }>> {
@@ -744,13 +806,20 @@ async function buildPreviewFromScheduledInvoices(
     }
   }
 
-  const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
-  const enrichedItems = synthItems.map((it) => ({
-    ...it,
-    premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
-    displayAmountCents: resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals, effectiveDirection),
-    paymentBadge: clientPaidPolicyIds.has(it.policyId) ? "Client paid directly" : undefined,
-  }));
+    const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
+    const agentPaidPolicyIds = await loadAgentPaidPolicyIds(itemPolicyIds);
+    const enrichedItems = synthItems.map((it) => {
+      const isComm = isCreditStatementItem(it) || isCommissionStatementItem(it);
+      let badge: string | undefined;
+      if (clientPaidPolicyIds.has(it.policyId) && !isComm) badge = "Client paid directly";
+      else if (agentPaidPolicyIds.has(it.policyId) && !isComm) badge = "Agent paid";
+      return {
+        ...it,
+        premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
+        displayAmountCents: resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals, effectiveDirection),
+        paymentBadge: badge,
+      };
+    });
   const policyMetaById = await loadPolicyStatementMeta(itemPolicyIds);
   const commissionTotalCents = await loadCommissionTotalCents(itemPolicyIds, allSchedIds, effectiveEntityType);
   const paidIndividuallyTotal = computePaidIndividuallyTotal(
@@ -760,7 +829,7 @@ async function buildPreviewFromScheduledInvoices(
     .filter((it) => {
       if (it.status !== "active") return false;
       if (isCreditStatementItem(it) || isCommissionStatementItem(it)) return false;
-      if (effectiveEntityType === "agent" && it.policyPremiumId && clientPaidPolicyIds.has(it.policyId)) return false;
+      if (effectiveEntityType === "agent" && clientPaidPolicyIds.has(it.policyId)) return false;
       return true;
     })
     .reduce((s, it) => s + resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals, effectiveDirection), 0);
@@ -776,6 +845,10 @@ async function buildPreviewFromScheduledInvoices(
   );
 
   const policyClients = await loadPolicyClientMap(itemPolicyIds);
+  const agentPaidTotalCents = await loadAgentPaidTotalCents(itemPolicyIds, effectiveEntityType);
+  const clientPaidTotalCents = computeClientPaidTotal(
+    synthItems, effectiveEntityType, premiumRoleTotals, clientPaidPolicyIds, effectiveDirection,
+  );
 
   return {
     first,
@@ -786,6 +859,8 @@ async function buildPreviewFromScheduledInvoices(
     summaryTotals,
     activeTotal,
     paidIndividuallyTotal,
+    agentPaidTotal: agentPaidTotalCents,
+    clientPaidTotal: clientPaidTotalCents,
     policyClients,
     clientPaidPolicyIds: [...clientPaidPolicyIds],
   };
@@ -929,6 +1004,7 @@ export async function GET(
         })
         .from(accountingInvoices)
         .where(and(...conditions))
+        .orderBy(sql`${accountingInvoices.id} DESC`)
         .limit(1);
 
       if (found) stmt = found;
@@ -1027,6 +1103,7 @@ export async function GET(
               })
               .from(accountingInvoices)
               .where(and(...stmtConds))
+              .orderBy(sql`${accountingInvoices.id} DESC`)
               .limit(1);
             if (found) stmt = found;
           }
@@ -1040,12 +1117,13 @@ export async function GET(
       // statement document template can render.
       const preview = await buildPreviewFromScheduledInvoices(scheduleIds, audience, allPolicyIds);
       if (preview) {
-        const { first, totalCents, paidCents, enrichedItems, activeTotal, paidIndividuallyTotal, premiumTotals, summaryTotals, policyClients, clientPaidPolicyIds: paidIds } = preview;
+        const { first, totalCents, paidCents, enrichedItems, activeTotal, paidIndividuallyTotal, agentPaidTotal: previewAgentPaid, clientPaidTotal: previewClientPaid, premiumTotals, summaryTotals, policyClients, clientPaidPolicyIds: paidIds } = preview;
           return NextResponse.json({
             statement: {
               statementNumber: "",
               statementDate: new Date().toISOString().split("T")[0],
               statementStatus: "draft",
+              totalDue: activeTotal + paidIndividuallyTotal,
               totalAmountCents: totalCents,
               paidAmountCents: paidCents,
               currency: first.currency,
@@ -1054,6 +1132,8 @@ export async function GET(
               items: enrichedItems,
               activeTotal,
               paidIndividuallyTotal,
+              agentPaidTotal: previewAgentPaid,
+              clientPaidTotal: previewClientPaid,
               premiumTotals,
               summaryTotals,
               policyClients,
@@ -1195,6 +1275,8 @@ export async function GET(
             items: preview.enrichedItems,
             activeTotal: preview.activeTotal,
             paidIndividuallyTotal: preview.paidIndividuallyTotal,
+            agentPaidTotal: preview.agentPaidTotal,
+            clientPaidTotal: preview.clientPaidTotal,
             premiumTotals: preview.premiumTotals,
             summaryTotals: preview.summaryTotals,
             policyClients: preview.policyClients,
@@ -1356,12 +1438,19 @@ export async function GET(
     }
 
     const clientPaidPolicyIds2 = await loadClientPaidPolicyIds(items.map((it) => it.policyId));
-    const enrichedItems = items.map((it) => ({
-      ...it,
-      premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
-      displayAmountCents: resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction),
-      paymentBadge: clientPaidPolicyIds2.has(it.policyId) ? "Client paid directly" : undefined,
-    }));
+    const agentPaidPolicyIds2 = await loadAgentPaidPolicyIds(items.map((it) => it.policyId));
+    const enrichedItems = items.map((it) => {
+      const isComm = isCreditStatementItem(it) || isCommissionStatementItem(it);
+      let badge: string | undefined;
+      if (clientPaidPolicyIds2.has(it.policyId) && !isComm) badge = "Client paid directly";
+      else if (agentPaidPolicyIds2.has(it.policyId) && !isComm) badge = "Agent paid";
+      return {
+        ...it,
+        premiums: it.policyPremiumId ? (itemPremiumMap.get(it.policyPremiumId) ?? {}) : {},
+        displayAmountCents: resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction),
+        paymentBadge: badge,
+      };
+    });
     const policyMetaById = await loadPolicyStatementMeta(items.map((it) => it.policyId));
     const commissionTotalCents = await loadCommissionTotalCents(
       items.map((it) => it.policyId),
@@ -1375,7 +1464,7 @@ export async function GET(
       .filter((it) => {
         if (it.status !== "active") return false;
         if (isCreditStatementItem(it) || isCommissionStatementItem(it)) return false;
-        if (stmt.entityType === "agent" && it.policyPremiumId && clientPaidPolicyIds2.has(it.policyId)) return false;
+        if (stmt.entityType === "agent" && clientPaidPolicyIds2.has(it.policyId)) return false;
         return true;
       })
       .reduce((sum, it) => sum + resolveDisplayedItemAmountCents(it, stmt.entityType, premiumRoleTotals, stmt.direction), 0);
@@ -1393,12 +1482,17 @@ export async function GET(
     }
 
     const formalPolicyClients = await loadPolicyClientMap(items.map((it) => it.policyId));
+    const formalAgentPaidTotal = await loadAgentPaidTotalCents(items.map((it) => it.policyId), stmt.entityType);
+    const formalClientPaidTotal = computeClientPaidTotal(
+      items, stmt.entityType, premiumRoleTotals, clientPaidPolicyIds2, stmt.direction,
+    );
 
     return NextResponse.json({
       statement: {
         statementNumber: stmt.invoiceNumber,
         statementDate: stmt.invoiceDate,
         statementStatus: stmt.status,
+        totalDue: activeTotal + paidIndividuallyTotal,
         totalAmountCents: isPolicyScopedView ? activeTotal + paidIndividuallyTotal : stmt.totalAmountCents,
         paidAmountCents: isPolicyScopedView ? paidIndividuallyTotal : stmt.paidAmountCents,
         currency: stmt.currency,
@@ -1407,6 +1501,8 @@ export async function GET(
         items: enrichedItems,
         activeTotal,
         paidIndividuallyTotal,
+        agentPaidTotal: formalAgentPaidTotal,
+        clientPaidTotal: formalClientPaidTotal,
         premiumTotals,
         summaryTotals,
         policyClients: formalPolicyClients,

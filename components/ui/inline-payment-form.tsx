@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { DollarSign, Loader2 } from "lucide-react";
 import { PAYMENT_METHOD_OPTIONS, type PaymentMethod } from "@/lib/types/accounting";
 
@@ -34,6 +35,7 @@ export function InlinePaymentForm({
   const [ref, setRef] = React.useState("");
   const [notes, setNotes] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
   const reset = () => {
     setMethod("bank_transfer");
@@ -68,7 +70,7 @@ export function InlinePaymentForm({
       reset();
       onSuccess();
     } catch (err) {
-      alert((err as Error).message);
+      setErrorMsg((err as Error).message);
     } finally {
       setSaving(false);
     }
@@ -92,6 +94,14 @@ export function InlinePaymentForm({
   }
 
   return (
+    <>
+    <Dialog open={!!errorMsg} onOpenChange={(open) => { if (!open) setErrorMsg(null); }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader><DialogTitle>Error</DialogTitle></DialogHeader>
+        <p className="text-sm text-red-600 dark:text-red-400">{errorMsg}</p>
+        <DialogFooter><Button size="sm" onClick={() => setErrorMsg(null)}>OK</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
     <div className="space-y-2.5 rounded-md border border-neutral-200 dark:border-neutral-700 p-3 bg-neutral-50 dark:bg-neutral-800/30">
       <div className="text-xs font-medium">Record Payment</div>
       <div className="grid grid-cols-2 gap-2">
@@ -165,5 +175,6 @@ export function InlinePaymentForm({
         </span>
       </div>
     </div>
+    </>
   );
 }

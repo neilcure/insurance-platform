@@ -12,9 +12,11 @@ export async function GET(request: Request) {
     const user = await requireUser();
     const url = new URL(request.url);
     const entityTypeFilter = url.searchParams.get("entityType");
+    const clientIdFilter = url.searchParams.get("clientId");
 
     const conditions: ReturnType<typeof eq>[] = [];
     if (entityTypeFilter) conditions.push(eq(accountingPaymentSchedules.entityType, entityTypeFilter));
+    if (clientIdFilter) conditions.push(eq(accountingPaymentSchedules.clientId, Number(clientIdFilter)));
 
     if (!(user.userType === "admin" || user.userType === "internal_staff")) {
       const userMemberships = await db

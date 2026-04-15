@@ -119,9 +119,10 @@ export async function findOrCreateDraftStatement(
       and(
         eq(accountingInvoices.scheduleId, scheduleId),
         eq(accountingInvoices.invoiceType, "statement"),
-        inArray(accountingInvoices.status, ["draft", "pending"]),
+        sql`${accountingInvoices.status} <> 'cancelled'`,
       ),
     )
+    .orderBy(sql`${accountingInvoices.id} DESC`)
     .limit(1);
 
   if (existing) {
@@ -238,9 +239,12 @@ export async function addInvoiceToStatement(
       const newIsComm = isCommissionOrCreditDesc(newItem.description);
       return existingStmtItems.some((existing) => {
         if (existing.policyId !== newItem.policyId) return false;
-        if ((existing.policyPremiumId ?? 0) !== (newItem.policyPremiumId ?? 0)) return false;
         const existingIsComm = isCommissionOrCreditDesc(existing.description);
-        return newIsComm === existingIsComm;
+        if (newIsComm !== existingIsComm) return false;
+        if (newItem.policyPremiumId && existing.policyPremiumId) {
+          return existing.policyPremiumId === newItem.policyPremiumId;
+        }
+        return (existing.policyPremiumId ?? 0) === (newItem.policyPremiumId ?? 0);
       });
     });
 
@@ -289,15 +293,22 @@ export async function addInvoiceToStatement(
       ),
     );
 
+  const insertedPremiumIds = new Set<number>();
   let itemId = 0;
   if (invItems.length > 0) {
     for (const it of invItems) {
       const itIsComm = isCommissionOrCredit(it.description);
-      const alreadyExists = existingForDedup.some((e) =>
-        e.policyId === it.policyId
-        && (e.policyPremiumId ?? 0) === (it.policyPremiumId ?? 0)
-        && isCommissionOrCreditDesc(e.description) === itIsComm,
-      );
+
+      if (!itIsComm && it.policyPremiumId && insertedPremiumIds.has(it.policyPremiumId)) continue;
+
+      const alreadyExists = existingForDedup.some((e) => {
+        if (e.policyId !== it.policyId) return false;
+        if (isCommissionOrCreditDesc(e.description) !== itIsComm) return false;
+        if (it.policyPremiumId && e.policyPremiumId) {
+          return e.policyPremiumId === it.policyPremiumId;
+        }
+        return (e.policyPremiumId ?? 0) === (it.policyPremiumId ?? 0);
+      });
       if (alreadyExists) continue;
 
       const amountCents = await resolveAmount(it);
@@ -313,6 +324,7 @@ export async function addInvoiceToStatement(
         })
         .returning({ id: accountingInvoiceItems.id });
       if (!itemId) itemId = inserted.id;
+      if (it.policyPremiumId) insertedPremiumIds.add(it.policyPremiumId);
     }
   } else {
     const [inserted] = await db
@@ -355,6 +367,7 @@ export async function markAgentPolicyItemsPaidIndividually(
 ): Promise<void> {
   await ensureItemStatusColumn();
 
+  // Mark premium items on BOTH payable and receivable agent statements
   const touched = await db
     .select({
       invoiceId: accountingInvoiceItems.invoiceId,
@@ -365,7 +378,6 @@ export async function markAgentPolicyItemsPaidIndividually(
     .where(
       and(
         eq(accountingInvoiceItems.policyId, policyId),
-        eq(accountingInvoices.direction, "payable"),
         eq(accountingInvoices.entityType, "agent"),
         sql`${accountingInvoices.status} <> 'cancelled'`,
         sql`coalesce("accounting_invoice_items"."status", 'active') = 'active'`,
@@ -382,10 +394,62 @@ export async function markAgentPolicyItemsPaidIndividually(
     FROM "accounting_invoices" ai
     WHERE ii."invoice_id" = ai."id"
       AND ii."policy_id" = ${policyId}
-      AND ai."direction" = 'payable'
       AND ai."entity_type" = 'agent'
       AND ai."status" <> 'cancelled'
       AND coalesce(ii."status", 'active') = 'active'
+      AND lower(coalesce(ii."description", '')) NOT LIKE 'commission:%'
+      AND lower(coalesce(ii."description", '')) NOT LIKE 'credit:%'
+  `);
+
+  const statementIds = [...new Set(
+    touched
+      .filter((row) => row.invoiceType === "statement")
+      .map((row) => row.invoiceId),
+  )];
+
+  for (const statementId of statementIds) {
+    await recalcStatementTotal(statementId);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reset policy items on agent statements back to 'active' when all payments
+// for a policy are removed/rejected.
+// ---------------------------------------------------------------------------
+export async function resetPolicyItemsToActive(
+  policyId: number,
+): Promise<void> {
+  await ensureItemStatusColumn();
+
+  const touched = await db
+    .select({
+      invoiceId: accountingInvoiceItems.invoiceId,
+      invoiceType: accountingInvoices.invoiceType,
+    })
+    .from(accountingInvoiceItems)
+    .innerJoin(accountingInvoices, eq(accountingInvoices.id, accountingInvoiceItems.invoiceId))
+    .where(
+      and(
+        eq(accountingInvoiceItems.policyId, policyId),
+        eq(accountingInvoices.entityType, "agent"),
+        sql`${accountingInvoices.status} <> 'cancelled'`,
+        sql`coalesce("accounting_invoice_items"."status", 'active') = 'paid_individually'`,
+        sql`lower(coalesce("accounting_invoice_items"."description", '')) NOT LIKE 'commission:%'`,
+        sql`lower(coalesce("accounting_invoice_items"."description", '')) NOT LIKE 'credit:%'`,
+      ),
+    );
+
+  if (touched.length === 0) return;
+
+  await db.execute(sql`
+    UPDATE "accounting_invoice_items" ii
+    SET "status" = 'active'
+    FROM "accounting_invoices" ai
+    WHERE ii."invoice_id" = ai."id"
+      AND ii."policy_id" = ${policyId}
+      AND ai."entity_type" = 'agent'
+      AND ai."status" <> 'cancelled'
+      AND coalesce(ii."status", 'active') = 'paid_individually'
       AND lower(coalesce(ii."description", '')) NOT LIKE 'commission:%'
       AND lower(coalesce(ii."description", '')) NOT LIKE 'credit:%'
   `);

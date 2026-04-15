@@ -190,10 +190,30 @@ export default function DocumentTemplatesManager() {
     if (source === "package" && packageName) {
       return pkgFieldsCache[packageName] ?? [];
     }
+    const LABEL_OVERRIDES: Record<string, string> = {
+      activeTotal: "Total Due",
+      paidIndividuallyTotal: "Client Paid Directly",
+      commissionTotal: "Commission",
+      outstandingTotal: "Outstanding",
+      creditToAgent: "Credit to Agent",
+      agentPaidTotal: "Agent Paid",
+      totalAmountCents: "Total Amount",
+      paidAmountCents: "Paid Amount",
+      policyPremiumTotal: "Policy Premium Total",
+      endorsementPremiumTotal: "Endorsement Premium Total",
+      creditTotal: "Credit Total",
+      itemCount: "Item Count",
+      activeItemCount: "Active Item Count",
+      paidIndividuallyItemCount: "Client Paid Item Count",
+      itemDescriptions: "Item Descriptions",
+      itemAmounts: "Item Amounts",
+      itemStatuses: "Item Statuses",
+      itemPaymentBadges: "Payment Badges",
+    };
     const hints = (FIELD_KEY_HINTS as Record<string, string[]>)[source] ?? [];
     const base: { key: string; label: string; group?: string }[] = hints.map((k) => ({
       key: k,
-      label: k.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()).trim(),
+      label: LABEL_OVERRIDES[k] ?? k.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()).trim(),
     }));
 
     const dynamicSourceMap: Record<string, string> = {

@@ -2,13 +2,14 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { accountingPayments, accountingInvoices } from "@/db/schema/accounting";
 import { users } from "@/db/schema/core";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { sendPaymentStatusEmail } from "@/lib/accounting-notifications";
 import { getBaseUrlFromRequestUrl } from "@/lib/email";
 import { syncInvoicePaymentStatus, crossSettlePolicyInvoices } from "@/lib/accounting-invoices";
-import { createAgentCommissionPayable } from "@/lib/agent-commission";
-import { markAgentPolicyItemsPaidIndividually, markPolicyPaidOnAgentStatement } from "@/lib/statement-management";
+import { createAgentCommissionPayable, removeAgentCommissionPayable } from "@/lib/agent-commission";
+import { markAgentPolicyItemsPaidIndividually, markPolicyPaidOnAgentStatement, resetPolicyItemsToActive } from "@/lib/statement-management";
+import { syncPolicyStatusFromPayments } from "@/lib/auto-advance-status";
 
 export const dynamic = "force-dynamic";
 
@@ -92,11 +93,20 @@ export async function POST(
         }
         if (payment.payer === "agent") {
           try {
+            await removeAgentCommissionPayable(inv.entityPolicyId);
+          } catch (cleanErr) {
+            console.error("Commission cleanup on agent-pay verify failed (non-fatal):", cleanErr);
+          }
+          try {
             await markPolicyPaidOnAgentStatement(inv.entityPolicyId);
           } catch {}
         }
         try {
           await crossSettlePolicyInvoices(inv.entityPolicyId, payment.payer || null);
+        } catch {}
+
+        try {
+          await syncPolicyStatusFromPayments(inv.entityPolicyId, `user:${user.id}`);
         } catch {}
       }
     } else {
@@ -110,6 +120,37 @@ export async function POST(
           updatedAt: now,
         })
         .where(eq(accountingPayments.id, Number(paymentId)));
+
+      await syncInvoicePaymentStatus(invoiceId);
+
+      const [inv] = await db
+        .select({ entityPolicyId: accountingInvoices.entityPolicyId })
+        .from(accountingInvoices)
+        .where(eq(accountingInvoices.id, invoiceId))
+        .limit(1);
+
+      if (inv?.entityPolicyId) {
+        const remainingPayments = await db.execute(sql`
+          SELECT count(*)::int AS cnt FROM accounting_payments
+          WHERE invoice_id = ${invoiceId}
+            AND status IN ('recorded', 'verified', 'confirmed', 'submitted')
+        `);
+        const rows = Array.isArray(remainingPayments) ? remainingPayments : (remainingPayments as { rows?: unknown[] }).rows ?? [];
+        const cnt = (rows[0] as { cnt: number })?.cnt ?? 0;
+
+        if (cnt === 0) {
+          try {
+            await resetPolicyItemsToActive(inv.entityPolicyId);
+          } catch {}
+          try {
+            await removeAgentCommissionPayable(inv.entityPolicyId);
+          } catch {}
+        }
+
+        try {
+          await syncPolicyStatusFromPayments(inv.entityPolicyId, `user:${user.id}`);
+        } catch {}
+      }
     }
 
     // Best-effort email notification to the payment submitter
