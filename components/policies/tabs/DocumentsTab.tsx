@@ -351,7 +351,7 @@ function DocumentPreview({
             if (paidSet.size > 0) {
               for (const it of statement.items) {
                 if (paidSet.has(it.policyId) && !it.paymentBadge) {
-                  it.paymentBadge = "Client paid directly";
+                  it.paymentBadge = "Premium settled \u00b7 Client paid directly";
                 }
               }
             }

@@ -1246,7 +1246,7 @@ export function PaymentSection({
 
   if (isClientMode) {
     const clientReceivables = invoices.filter(
-      (inv) => inv.direction === "receivable" && inv.invoiceType !== "statement" && inv.entityType !== "agent",
+      (inv) => inv.direction === "receivable" && inv.invoiceType !== "statement",
     );
 
     if (clientReceivables.length === 0) {

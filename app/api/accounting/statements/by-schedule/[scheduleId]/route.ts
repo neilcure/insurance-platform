@@ -353,7 +353,7 @@ export async function GET(
         } else {
           effectiveStatus = "active";
         }
-        if (clientPaidPolicyIds.has(it.policyId)) badge = "Client paid directly";
+        if (clientPaidPolicyIds.has(it.policyId)) badge = "Premium settled \u00b7 Client paid directly";
         else if (agentPaidPolicyIds.has(it.policyId)) badge = "Agent paid";
         if (ctaPaidPolicyIds.has(it.policyId)) {
           badge = badge ? `${badge} · Client paid agent` : "Client paid agent";
@@ -458,6 +458,8 @@ export async function GET(
 async function loadClientPaidPolicyIds(policyIds: number[]): Promise<Set<number>> {
   const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
   if (uniquePolicyIds.length === 0) return new Set();
+
+  // Policies where client paid admin directly (payer = 'client', not 'client_to_agent')
   const result = await db.execute(sql`
     select distinct ii.policy_id
     from accounting_payments ap
@@ -468,14 +470,36 @@ async function loadClientPaidPolicyIds(policyIds: number[]): Promise<Set<number>
       and ai.status <> 'cancelled'
       and ap.status in ('verified', 'confirmed', 'recorded')
       and coalesce(ap.payer, 'client') = 'client'
+      and ap.payer <> 'client_to_agent'
       and ii.policy_id in (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
   `);
   const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
-  return new Set(
+  const candidates = new Set(
     (rows as { policy_id: number }[])
       .map((r) => Number(r.policy_id))
       .filter((id) => Number.isFinite(id) && id > 0),
   );
+
+  if (candidates.size === 0) return candidates;
+
+  // Exclude policies that also have client_to_agent payments (client paid agent, not admin)
+  const ctaResult = await db.execute(sql`
+    select distinct ii.policy_id
+    from accounting_payments ap
+    inner join accounting_invoices ai on ai.id = ap.invoice_id
+    inner join accounting_invoice_items ii on ii.invoice_id = ai.id
+    where ai.direction = 'receivable'
+      and ai.status <> 'cancelled'
+      and ap.status in ('verified', 'confirmed', 'recorded')
+      and ap.payer = 'client_to_agent'
+      and ii.policy_id in (${sql.join([...candidates].map((id) => sql`${id}`), sql`,`)})
+  `);
+  const ctaRows = Array.isArray(ctaResult) ? ctaResult : (ctaResult as { rows?: unknown[] }).rows ?? [];
+  for (const r of ctaRows as { policy_id: number }[]) {
+    candidates.delete(Number(r.policy_id));
+  }
+
+  return candidates;
 }
 
 function computePaidIndividuallyTotal(

@@ -402,7 +402,7 @@ export function StatementPaymentCard({
           {premiumItems.map((item) => {
             const isPaid = item.status === "paid_individually";
             const badgeStr = item.paymentBadge ?? "";
-            const isClientPaid = badgeStr.includes("Client paid directly");
+            const isClientPaid = badgeStr.includes("Client paid directly") || badgeStr.includes("Premium settled");
             const isAgentPaid = badgeStr.includes("Agent paid");
             const isCtaPaid = badgeStr.includes("Client paid agent");
             const amt = resolvedAmt(item);

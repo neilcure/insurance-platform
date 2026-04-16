@@ -333,7 +333,7 @@ export async function buildMergeContext(policyId: number): Promise<{
           if (stmt.entityType === "agent" && itemPolicyIds.length > 0) {
             const policyIdsSql = sql.join(itemPolicyIds.map((id) => sql`${id}`), sql`,`);
 
-            const [clientPaidResult, agentPaidResult, commissionResult, agentPaidAmtResult] = await Promise.all([
+            const [clientPaidResult, agentPaidResult, commissionResult, agentPaidAmtResult, ctaPaidResult] = await Promise.all([
               db.execute(sql`
                 SELECT DISTINCT ii.policy_id
                 FROM accounting_payments ap
@@ -344,6 +344,7 @@ export async function buildMergeContext(policyId: number): Promise<{
                   AND ai.status <> 'cancelled'
                   AND ap.status IN ('verified', 'confirmed', 'recorded')
                   AND coalesce(ap.payer, 'client') = 'client'
+                  AND ap.payer <> 'client_to_agent'
                   AND ii.policy_id IN (${policyIdsSql})
               `),
               db.execute(sql`
@@ -389,12 +390,27 @@ export async function buildMergeContext(policyId: number): Promise<{
                 AND ap.payer = 'agent'
                 AND ap.status IN ('recorded', 'verified', 'confirmed')
               `),
+              db.execute(sql`
+                SELECT DISTINCT ii.policy_id
+                FROM accounting_payments ap
+                INNER JOIN accounting_invoices ai ON ai.id = ap.invoice_id
+                INNER JOIN accounting_invoice_items ii ON ii.invoice_id = ai.id
+                WHERE ai.direction = 'receivable'
+                  AND ai.status <> 'cancelled'
+                  AND ap.status IN ('verified', 'confirmed', 'recorded')
+                  AND ap.payer = 'client_to_agent'
+                  AND ii.policy_id IN (${policyIdsSql})
+              `),
             ]);
 
             const toRows = (r: unknown) => Array.isArray(r) ? r : ((r as { rows?: unknown[] }).rows ?? []);
+            const ctaPolicyIds = new Set(
+              (toRows(ctaPaidResult) as { policy_id: number }[])
+                .map((r) => Number(r.policy_id)).filter((id) => id > 0),
+            );
             clientPaidPolicyIds = new Set(
               (toRows(clientPaidResult) as { policy_id: number }[])
-                .map((r) => Number(r.policy_id)).filter((id) => id > 0),
+                .map((r) => Number(r.policy_id)).filter((id) => id > 0 && !ctaPolicyIds.has(id)),
             );
             agentPaidPolicyIds = new Set(
               (toRows(agentPaidResult) as { policy_id: number }[])
@@ -408,7 +424,7 @@ export async function buildMergeContext(policyId: number): Promise<{
 
             for (const it of items) {
               if (clientPaidPolicyIds.has(it.policyId)) {
-                (it as { paymentBadge?: string }).paymentBadge = "Client paid directly";
+                (it as { paymentBadge?: string }).paymentBadge = "Premium settled \u00b7 Client paid directly";
               } else if (agentPaidPolicyIds.has(it.policyId)) {
                 (it as { paymentBadge?: string }).paymentBadge = "Agent paid";
               }
