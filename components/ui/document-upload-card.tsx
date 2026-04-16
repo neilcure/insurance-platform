@@ -19,6 +19,7 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   CalendarClock,
 } from "lucide-react";
 import Image from "next/image";
@@ -255,6 +256,76 @@ function formatCurrency(cents: number): string {
   return new Intl.NumberFormat("en-HK", { style: "currency", currency: "HKD", minimumFractionDigits: 2 }).format(cents / 100);
 }
 
+const paymentColorStyles = {
+  emerald: {
+    border: "border-emerald-200 bg-emerald-50/50 dark:border-emerald-800 dark:bg-emerald-950/20",
+    text: "text-emerald-700 dark:text-emerald-400",
+    bold: "text-emerald-800 dark:text-emerald-300",
+    divider: "border-emerald-200 dark:border-emerald-800",
+  },
+  blue: {
+    border: "border-blue-200 bg-blue-50/50 dark:border-blue-800 dark:bg-blue-950/20",
+    text: "text-blue-700 dark:text-blue-400",
+    bold: "text-blue-800 dark:text-blue-300",
+    divider: "border-blue-200 dark:border-blue-800",
+  },
+  yellow: {
+    border: "border-yellow-200 bg-yellow-50/50 dark:border-yellow-800 dark:bg-yellow-950/20",
+    text: "text-yellow-700 dark:text-yellow-400",
+    bold: "text-yellow-800 dark:text-yellow-300",
+    divider: "border-yellow-200 dark:border-yellow-800",
+  },
+};
+
+function PaymentRecordSection({
+  label,
+  payments,
+  paidCents,
+  premiumCents,
+  colorScheme,
+  settled,
+  statusLabel,
+  statusColor,
+  renderPayment,
+}: {
+  label: string;
+  payments: PolicyPaymentRecord[] | null;
+  paidCents: number;
+  premiumCents: number;
+  colorScheme: "emerald" | "blue" | "yellow";
+  settled: boolean;
+  statusLabel: string;
+  statusColor: string;
+  renderPayment: (p: PolicyPaymentRecord, i: number) => React.ReactNode;
+}) {
+  const cs = paymentColorStyles[colorScheme];
+
+  return (
+    <div className={`mb-2 rounded-md border p-2.5 ${cs.border}`}>
+      <div className={`text-[10px] font-semibold uppercase tracking-wider ${cs.text} mb-1.5`}>
+        {label}
+      </div>
+      {payments && payments.length > 0 && (
+        <div className="space-y-1.5">
+          {payments.map((p, i) => renderPayment(p, i))}
+        </div>
+      )}
+      <div className={`${payments && payments.length > 0 ? "mt-1.5 pt-1.5 border-t" : ""} ${cs.divider} flex items-center justify-between text-xs`}>
+        <span className={`font-semibold ${cs.bold}`}>Total</span>
+        <span className={`font-bold ${cs.bold}`}>
+          {formatCurrency(paidCents)}{premiumCents > 0 && ` / ${formatCurrency(premiumCents)}`}
+        </span>
+      </div>
+      {settled && (
+        <div className={`mt-1 flex items-center gap-1 text-[10px] ${statusColor}`}>
+          <CheckCircle2 className="h-3 w-3" />
+          <span>{statusLabel}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DocumentUploadCard({
   typeKey,
   label,
@@ -290,6 +361,8 @@ export function DocumentUploadCard({
   const [pendingFile, setPendingFile] = React.useState<File | null>(null);
   const [payIndividually, setPayIndividually] = React.useState(!hasStatementInvoices);
   const [togglingStatement, setTogglingStatement] = React.useState(false);
+  const allSettled = displayStatus === "verified";
+  const [cardOpen, setCardOpen] = React.useState(!allSettled);
 
   React.useEffect(() => {
     setPayIndividually(!hasStatementInvoices);
@@ -375,10 +448,16 @@ export function DocumentUploadCard({
   }, [payments]);
 
   const alreadyPaid = React.useMemo(() => {
-    return receivablePayments
-      .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
-      .reduce((sum, p) => sum + p.amountCents, 0);
-  }, [receivablePayments]);
+    const counted = ["verified", "confirmed", "recorded"];
+    const relevantPmts = receivablePayments.filter((p) => {
+      if (!counted.includes(p.status)) return false;
+      if (!paymentPayer || paymentPayer === "client") {
+        return p.entityType === "client" || (!p.entityType && p.payer !== "agent");
+      }
+      return p.entityType === "agent" || (!p.entityType && p.payer === "agent");
+    });
+    return relevantPmts.reduce((sum, p) => sum + p.amountCents, 0);
+  }, [receivablePayments, paymentPayer]);
 
   const remainingAmount = Math.max(fullAmount - alreadyPaid, 0);
 
@@ -514,28 +593,37 @@ export function DocumentUploadCard({
 
   return (
     <>
-      <div className="rounded-md border border-neutral-200 p-2.5 dark:border-neutral-800 space-y-1.5">
+      <div className="rounded-md border border-neutral-200 dark:border-neutral-800 overflow-hidden">
         <input ref={fileInputRef} type="file" accept={acceptAttr} onChange={handleUpload} className="hidden" />
-        {/* Row 1: document name */}
-        <div className="flex items-center gap-1.5">
-          <FileText className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" />
-          <span className="text-sm font-medium">{label}</span>
-        </div>
+        {/* Collapsible header */}
+        <button
+          type="button"
+          onClick={() => setCardOpen((v) => !v)}
+          className="flex w-full items-center justify-between p-2.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/30 transition-colors"
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <FileText className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" />
+            <span className="text-sm font-medium truncate">{label}</span>
+            <Badge variant="outline" className={`gap-1 border-0 text-[10px] shrink-0 ${statusCfg.className}`}>
+              <StatusIcon className="h-3 w-3" />
+              {statusCfg.label}
+            </Badge>
+            {meta?.required && displayStatus === "outstanding" && (
+              <span className="text-[10px] text-red-500 dark:text-red-400 shrink-0">Required</span>
+            )}
+          </div>
+          {cardOpen
+            ? <ChevronDown className="h-4 w-4 shrink-0 text-neutral-400" />
+            : <ChevronRight className="h-4 w-4 shrink-0 text-neutral-400" />
+          }
+        </button>
+
+        {cardOpen && <div className="px-2.5 pb-2.5 space-y-1.5">
         {meta?.description && (
           <div className="text-[11px] text-neutral-500 dark:text-neutral-400 pl-[22px]">
             {meta.description}
           </div>
         )}
-        {/* Row 2: status badge + required */}
-        <div className="flex items-center gap-1.5 pl-[22px]">
-          <Badge variant="outline" className={`gap-1 border-0 text-[10px] ${statusCfg.className}`}>
-            <StatusIcon className="h-3 w-3" />
-            {statusCfg.label}
-          </Badge>
-          {meta?.required && displayStatus === "outstanding" && (
-            <span className="text-[10px] text-red-500 dark:text-red-400">Required</span>
-          )}
-        </div>
 
         {/* Uploaded files list */}
         {uploads.length > 0 && (
@@ -648,12 +736,16 @@ export function DocumentUploadCard({
           </div>
         )}
 
-        {/* Payment records summary — only show receivable payments (what was paid toward the policy premium) */}
-        {needsPayment && uploads.length > 0 && receivablePayments.length > 0 && (() => {
-          const clientPmts = receivablePayments.filter((p) => p.payer === "client");
-          const agentPmts = receivablePayments.filter((p) => p.payer === "agent");
-          const untaggedPmts = receivablePayments.filter((p) => !p.payer);
-          const showPayerGroups = hasAgent && (clientPmts.length > 0 || agentPmts.length > 0);
+        {/* Payment records summary — separate client and agent sections */}
+        {needsPayment && receivablePayments.length > 0 && (() => {
+          const isClientPayment = (p: PolicyPaymentRecord) =>
+            p.payer === "client" || p.payer === "client_to_agent" || (!p.payer && p.entityType !== "agent");
+          const isAgentPayment = (p: PolicyPaymentRecord) =>
+            p.payer === "agent" || (!p.payer && p.entityType === "agent");
+
+          const clientEntityPmts = receivablePayments.filter(isClientPayment);
+          const agentEntityPmts = receivablePayments.filter(isAgentPayment);
+          const untaggedPmts = receivablePayments.filter((p) => !isClientPayment(p) && !isAgentPayment(p));
 
           const renderPayment = (p: PolicyPaymentRecord, i: number) => (
             <div key={i} className="text-xs space-y-0.5">
@@ -662,7 +754,7 @@ export function DocumentUploadCard({
                   {formatCurrency(p.amountCents)}
                 </span>
                 <div className="flex items-center gap-1">
-                  {p.payer && hasAgent && (
+                  {p.payer && (
                     <Badge
                       variant="outline"
                       className={`shrink-0 border-0 text-[9px] ${
@@ -706,52 +798,97 @@ export function DocumentUploadCard({
             </div>
           );
 
-          const verifiedTotal = receivablePayments
-            .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
-            .reduce((sum, p) => sum + p.amountCents, 0);
+          const clientPremium = premiumBreakdown?.clientPremiumCents ?? 0;
+          const agentPremium = premiumBreakdown?.agentPremiumCents ?? 0;
+          const commissionCents = clientPremium > 0 && agentPremium > 0
+            ? Math.max(clientPremium - agentPremium, 0)
+            : 0;
 
-          const policyPremium = premiumBreakdown?.clientPremiumCents
-            ?? premiumBreakdown?.agentPremiumCents
-            ?? 0;
-          const isSettled = policyPremium > 0 && verifiedTotal >= policyPremium;
+          const clientVerified = clientEntityPmts
+            .concat(untaggedPmts)
+            .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
+            .reduce((s, p) => s + p.amountCents, 0);
+          const clientFullyPaid = clientPremium > 0 && clientVerified >= clientPremium;
+
+          const agentVerified = agentEntityPmts
+            .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
+            .reduce((s, p) => s + p.amountCents, 0);
+
+          const clientPaidAdminDirectly = clientFullyPaid && agentVerified < agentPremium;
+
+          const showClientSection = !isAdmin ? true : clientEntityPmts.length > 0 || untaggedPmts.length > 0;
+          const showAgentSection = isAdmin && hasAgent;
+          const showCommission = isAdmin && commissionCents > 0 && clientPaidAdminDirectly;
+
+          if (!hasAgent || (clientEntityPmts.length === 0 && agentEntityPmts.length === 0 && untaggedPmts.length > 0)) {
+            const allPmts = receivablePayments;
+            const premium = clientPremium || agentPremium;
+            const allVerified = allPmts
+              .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
+              .reduce((s, p) => s + p.amountCents, 0);
+            const allSettled = premium > 0 && allVerified >= premium;
+            return (
+              <PaymentRecordSection
+                label="Payment Records"
+                payments={allPmts}
+                paidCents={allVerified}
+                premiumCents={premium}
+                colorScheme="emerald"
+                settled={allSettled}
+                statusLabel="Payment settled"
+                statusColor="text-green-700 dark:text-green-400"
+                renderPayment={renderPayment}
+              />
+            );
+          }
+
+          const clientPmtsWithUntagged = [...clientEntityPmts, ...untaggedPmts];
+          const effectiveAgentPaid = clientPaidAdminDirectly ? agentPremium : agentVerified;
+          const clientSettled = clientPremium > 0 && clientVerified >= clientPremium;
+          const agentSettled = clientPaidAdminDirectly || (agentPremium > 0 && agentVerified >= agentPremium);
 
           return (
-            <div className="mb-2 rounded-md border border-emerald-200 bg-emerald-50/50 p-2.5 dark:border-emerald-800 dark:bg-emerald-950/20">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1.5">
-                Payment Records
-              </div>
-              <div className="space-y-1.5">
-                {showPayerGroups ? (
-                  <>
-                    {clientPmts.length > 0 && (
-                      <div className="space-y-1">
-                        {clientPmts.map((p, i) => renderPayment(p, i))}
-                      </div>
-                    )}
-                    {agentPmts.length > 0 && (
-                      <div className="space-y-1">
-                        {agentPmts.map((p, i) => renderPayment(p, i + clientPmts.length))}
-                      </div>
-                    )}
-                    {untaggedPmts.map((p, i) => renderPayment(p, i + clientPmts.length + agentPmts.length))}
-                  </>
-                ) : (
-                  receivablePayments.map((p, i) => renderPayment(p, i))
-                )}
-              </div>
-              <div className="mt-1.5 pt-1.5 border-t border-emerald-200 dark:border-emerald-800 flex items-center justify-between text-xs">
-                <span className="font-semibold text-emerald-800 dark:text-emerald-300">Total</span>
-                <span className="font-bold text-emerald-800 dark:text-emerald-300">
-                  {formatCurrency(verifiedTotal)}{policyPremium > 0 && ` / ${formatCurrency(policyPremium)}`}
-                </span>
-              </div>
-              {isSettled && (
-                <div className="mt-1 flex items-center gap-1 text-[10px] text-green-700 dark:text-green-400">
-                  <CheckCircle2 className="h-3 w-3" />
-                  <span>Policy premium settled</span>
-                </div>
+            <>
+              {showClientSection && (
+                <PaymentRecordSection
+                  label={isAdmin && hasAgent ? "Client Payment Records" : "Payment Records"}
+                  payments={clientPmtsWithUntagged}
+                  paidCents={clientVerified}
+                  premiumCents={clientPremium}
+                  colorScheme="emerald"
+                  settled={clientSettled}
+                  statusLabel="Client Payment settled"
+                  statusColor="text-green-700 dark:text-green-400"
+                  renderPayment={renderPayment}
+                />
               )}
-            </div>
+              {showAgentSection && (
+                <PaymentRecordSection
+                  label="Agent Payment Records"
+                  payments={agentEntityPmts.length > 0 ? agentEntityPmts : null}
+                  paidCents={effectiveAgentPaid}
+                  premiumCents={agentPremium}
+                  colorScheme="blue"
+                  settled={agentSettled}
+                  statusLabel="Agent Payment settled"
+                  statusColor="text-green-700 dark:text-green-400"
+                  renderPayment={renderPayment}
+                />
+              )}
+              {showCommission && (
+                <PaymentRecordSection
+                  label="Commission"
+                  payments={null}
+                  paidCents={commissionCents}
+                  premiumCents={commissionCents}
+                  colorScheme="yellow"
+                  settled={true}
+                  statusLabel="On Statement"
+                  statusColor="text-yellow-700 dark:text-yellow-400"
+                  renderPayment={renderPayment}
+                />
+              )}
+            </>
           );
         })()}
 
@@ -1057,6 +1194,7 @@ export function DocumentUploadCard({
             </div>
           );
         })()}
+        </div>}
       </div>
 
       {/* Lightbox preview — rendered via portal to escape drawer stacking context */}

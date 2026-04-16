@@ -52,10 +52,10 @@ export async function syncInvoicePaymentStatus(invoiceId: number) {
 
   const isOnStatement = !!invoice.scheduleId;
 
-  const newStatus = isOnStatement
-    ? "statement_created"
-    : paidTotal >= effectiveTotal
-      ? "paid"
+  const newStatus = paidTotal >= effectiveTotal && effectiveTotal > 0
+    ? "paid"
+    : isOnStatement
+      ? "statement_created"
       : paidTotal > 0
         ? "partial"
         : "pending";

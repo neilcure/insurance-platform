@@ -27,9 +27,20 @@ const FALLBACK_POLICY_STATUS_ORDER = [
   "completed",
 ] as const;
 
-function computeDisplayStatus(uploads: PolicyDocumentRow[]): DocumentStatus {
-  if (uploads.length === 0) return "outstanding";
+function computeDisplayStatus(
+  uploads: PolicyDocumentRow[],
+  payments?: PolicyPaymentRecord[],
+): DocumentStatus {
   if (uploads.some((u) => u.status === "verified")) return "verified";
+  if (payments && payments.length > 0) {
+    const hasVerified = payments.some(
+      (p) =>
+        (!p.direction || p.direction === "receivable") &&
+        (p.status === "verified" || p.status === "confirmed" || p.status === "recorded"),
+    );
+    if (hasVerified) return "verified";
+  }
+  if (uploads.length === 0) return "outstanding";
   if (uploads.some((u) => u.status === "uploaded")) return "uploaded";
   if (uploads.every((u) => u.status === "rejected")) return "rejected";
   return "outstanding";
@@ -201,13 +212,14 @@ export function UploadDocumentsTab({
 
       const reqs: DocumentRequirement[] = applicable.map((t) => {
         const typeUploads = uploads.filter((u) => u.documentTypeKey === t.value);
+        const isPaymentType = t.meta?.requirePaymentDetails === true;
         return {
           typeKey: t.value,
           label: t.label,
           meta: t.meta,
-          displayStatus: computeDisplayStatus(typeUploads),
+          displayStatus: computeDisplayStatus(typeUploads, isPaymentType ? policyPayments : undefined),
           uploads: typeUploads,
-          ...(t.meta?.requirePaymentDetails ? { payments: policyPayments, premiumBreakdown: premiumData ?? undefined } : {}),
+          ...(isPaymentType ? { payments: policyPayments, premiumBreakdown: premiumData ?? undefined } : {}),
         };
       });
 

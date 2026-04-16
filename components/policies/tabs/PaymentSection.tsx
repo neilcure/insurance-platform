@@ -91,6 +91,9 @@ export type PaymentSummary = {
   invoiceCount: number;
   hasSubmitted: boolean;
   invoiceNumbers: string[];
+  agentOwed?: number;
+  agentPaid?: number;
+  commissionCents?: number;
 };
 
 type ScheduleInfo = {
@@ -493,40 +496,76 @@ export function PaymentSection({
         })();
 
     fetchPromise
-      .then((data) => {
+      .then(async (data) => {
         if (cancelled) return;
         const receivable = data.filter((inv) => inv.direction === "receivable" && inv.invoiceType !== "statement");
         const payableInvs = data.filter((inv) => inv.direction === "payable" && inv.invoiceType !== "statement");
         setInvoices(receivable);
         setPayables(payableInvs);
 
-        const totalOwed = receivable.reduce((sum, inv) => sum + inv.totalAmountCents, 0);
-        const verifiedPaid = receivable.reduce((sum, inv) => {
-          const invPaid = inv.payments
-            .filter((p) => p.status === "verified" || p.status === "confirmed" || p.status === "recorded")
-            .reduce((s, p) => s + p.amountCents, 0);
-          return sum + invPaid;
-        }, 0);
-        const pendingAmount = receivable.reduce((sum, inv) => {
-          const pending = inv.payments
-            .filter((p) => p.status === "submitted")
-            .reduce((s, p) => s + p.amountCents, 0);
-          return sum + pending;
-        }, 0);
-        const hasSubmitted = receivable.some((inv) =>
-          inv.payments.some((p) => p.status === "submitted"),
-        );
+        const countedStatuses = ["verified", "confirmed", "recorded"];
+        const allPayments = receivable.flatMap((inv) => inv.payments);
+
+        const isClientPmt = (p: InvoicePayment) =>
+          p.payer === "client" || p.payer === "client_to_agent" || (!p.payer);
+        const isAgentPmt = (p: InvoicePayment) =>
+          p.payer === "agent";
+
+        const clientPaid = allPayments
+          .filter((p) => isClientPmt(p) && countedStatuses.includes(p.status))
+          .reduce((s, p) => s + p.amountCents, 0);
+        const agentPaidAmt = allPayments
+          .filter((p) => isAgentPmt(p) && countedStatuses.includes(p.status))
+          .reduce((s, p) => s + p.amountCents, 0);
+        const pendingAmount = allPayments
+          .filter((p) => p.status === "submitted")
+          .reduce((s, p) => s + p.amountCents, 0);
+        const hasSubmitted = allPayments.some((p) => p.status === "submitted");
+
+        // Fetch premium summary for correct owed amounts per role
+        let clientOwed = 0;
+        let agentOwedAmt = 0;
+        try {
+          const allPolicyIds = [policyId!, ...(endorsementPolicyIds ?? [])];
+          const premSummaries = await Promise.all(
+            allPolicyIds.map((pid) =>
+              fetch(`/api/policies/${pid}/premium-summary?_t=${Date.now()}`, { cache: "no-store" })
+                .then((r) => (r.ok ? r.json() : null))
+                .catch(() => null),
+            ),
+          );
+          for (const ps of premSummaries) {
+            if (!ps) continue;
+            clientOwed += ps.clientPremiumCents ?? 0;
+            agentOwedAmt += ps.agentPremiumCents ?? 0;
+          }
+        } catch { /* fallback below */ }
+
+        if (clientOwed === 0 && agentOwedAmt === 0) {
+          clientOwed = receivable.reduce((sum, inv) => sum + inv.totalAmountCents, 0);
+        }
+
+        const clientFullyPaid = clientOwed > 0 && clientPaid >= clientOwed;
+        const clientPaidAdminDirectly = clientFullyPaid && agentPaidAmt < agentOwedAmt;
+        const commissionCents = clientOwed > 0 && agentOwedAmt > 0
+          ? Math.max(clientOwed - agentOwedAmt, 0)
+          : 0;
 
         const currency = receivable[0]?.currency ?? "HKD";
         const summary: PaymentSummary = {
-          totalOwed,
-          totalPaid: verifiedPaid,
+          totalOwed: clientOwed,
+          totalPaid: clientPaid,
           totalPending: pendingAmount,
-          remaining: totalOwed - verifiedPaid,
+          remaining: Math.max(clientOwed - clientPaid, 0),
           currency,
           invoiceCount: receivable.length,
           hasSubmitted,
           invoiceNumbers: receivable.map((inv) => inv.invoiceNumber),
+          agentOwed: agentOwedAmt > 0 ? agentOwedAmt : undefined,
+          agentPaid: agentOwedAmt > 0
+            ? (clientPaidAdminDirectly ? agentOwedAmt : (agentPaidAmt > 0 ? agentPaidAmt : 0))
+            : undefined,
+          commissionCents: clientPaidAdminDirectly && commissionCents > 0 ? commissionCents : undefined,
         };
         summaryRef.current?.(summary);
         setLoading(false);
@@ -936,6 +975,11 @@ export function PaymentSection({
     const methodLabel = (m: string | null) =>
       PAYMENT_METHOD_OPTIONS.find((o) => o.value === m)?.label ?? m ?? "—";
 
+    const displayStatus: InvoiceStatus =
+      inv.paidAmountCents >= inv.totalAmountCents && inv.totalAmountCents > 0 && inv.status !== "cancelled"
+        ? "paid"
+        : inv.status;
+
     return (
       <div key={inv.id} className="rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">
         <button
@@ -954,8 +998,8 @@ export function PaymentSection({
                   On Statement
                 </Badge>
               )}
-              <Badge variant="custom" className={invoiceStatusClass(inv.status)}>
-                {INVOICE_STATUS_LABELS[inv.status] ?? inv.status}
+              <Badge variant="custom" className={invoiceStatusClass(displayStatus)}>
+                {INVOICE_STATUS_LABELS[displayStatus] ?? displayStatus}
               </Badge>
               {isExpanded ? <ChevronUp className="h-4 w-4 text-neutral-400" /> : <ChevronDown className="h-4 w-4 text-neutral-400" />}
             </span>
@@ -1202,7 +1246,7 @@ export function PaymentSection({
 
   if (isClientMode) {
     const clientReceivables = invoices.filter(
-      (inv) => inv.direction === "receivable" && inv.invoiceType !== "statement",
+      (inv) => inv.direction === "receivable" && inv.invoiceType !== "statement" && inv.entityType !== "agent",
     );
 
     if (clientReceivables.length === 0) {
@@ -1258,7 +1302,7 @@ export function PaymentSection({
   const hasInvsOnAgentStatement = !!agentSchedule && [...invoices, ...payables].some(
     (inv) => inv.scheduleId === agentSchedule.id,
   );
-  const showAgentSection = payables.length > 0 || hasInvsOnAgentStatement;
+  const showAgentSection = isAdmin && (payables.length > 0 || hasInvsOnAgentStatement);
 
   return (
     <>
@@ -1275,7 +1319,9 @@ export function PaymentSection({
           </div>
         )}
 
-        {!hideInvoiceCards && invoices.map((inv) => (
+        {!hideInvoiceCards && invoices
+          .filter((inv) => isAdmin || inv.entityType !== "agent")
+          .map((inv) => (
           <React.Fragment key={inv.id}>{renderInvoiceCard(inv)}</React.Fragment>
         ))}
 

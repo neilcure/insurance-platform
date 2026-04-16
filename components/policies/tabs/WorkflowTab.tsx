@@ -108,6 +108,7 @@ export function WorkflowTab({
     totalOwed: number; totalPaid: number; totalPending: number; remaining: number;
     currency: string; invoiceCount: number; hasSubmitted: boolean;
     invoiceNumbers: string[];
+    agentOwed?: number; agentPaid?: number; commissionCents?: number;
   } | null>(null);
   const [paymentRefreshKey, setPaymentRefreshKey] = React.useState(0);
 
@@ -214,7 +215,7 @@ export function WorkflowTab({
             >
               Client: {getLabel(curStatusClient)}
             </Badge>
-            {detail.agent && (
+            {isAdmin && detail.agent && (
               <Badge
                 variant="custom"
                 className="bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
@@ -311,20 +312,43 @@ export function WorkflowTab({
                   );
                 })()}
                 {sec.id === "payments" && paymentSummary && paymentSummary.invoiceCount > 0 && (() => {
-                  const fullyPaid = paymentSummary.remaining <= 0;
+                  const clientFullyPaid = paymentSummary.remaining <= 0 && paymentSummary.totalOwed > 0;
+                  const agentFullyPaid = paymentSummary.agentOwed != null && paymentSummary.agentPaid != null && paymentSummary.agentPaid >= paymentSummary.agentOwed;
                   const fmtCur = (cents: number) =>
                     new Intl.NumberFormat("en-HK", { style: "currency", currency: paymentSummary.currency, minimumFractionDigits: 0 }).format(cents / 100);
                   return (
                     <>
-                      <Badge
-                        variant="custom"
-                        className={`text-[10px] ${fullyPaid
-                          ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
-                          : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
-                        }`}
-                      >
-                        {fmtCur(paymentSummary.totalPaid)} / {fmtCur(paymentSummary.totalOwed)}
-                      </Badge>
+                      {paymentSummary.totalOwed > 0 && (
+                        <Badge
+                          variant="custom"
+                          className={`text-[10px] ${clientFullyPaid
+                            ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                            : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+                          }`}
+                        >
+                          {fmtCur(paymentSummary.totalPaid)} / {fmtCur(paymentSummary.totalOwed)}
+                        </Badge>
+                      )}
+                      {isAdmin && paymentSummary.agentOwed != null && paymentSummary.agentOwed > 0 && (
+                        <Badge
+                          variant="custom"
+                          className={`text-[10px] ${agentFullyPaid
+                            ? "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+                            : "bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-200"
+                          }`}
+                        >
+                          {fmtCur(paymentSummary.agentPaid ?? 0)} / {fmtCur(paymentSummary.agentOwed)}
+                        </Badge>
+                      )}
+                      {isAdmin && paymentSummary.commissionCents != null && paymentSummary.commissionCents > 0 && (
+                        <Badge
+                          variant="custom"
+                          className="text-[10px] bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                          title="Commission — on statement"
+                        >
+                          {fmtCur(paymentSummary.commissionCents)} comm.
+                        </Badge>
+                      )}
                       {paymentSummary.hasSubmitted && (
                         <Badge variant="custom" className="text-[10px] bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
                           pending review

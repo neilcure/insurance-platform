@@ -713,6 +713,7 @@ function PaymentStatusCard({ policyId, canEdit, endorsementPolicyIds }: { policy
   const [summary, setSummary] = React.useState<{
     totalOwed: number; totalPaid: number; totalPending: number;
     remaining: number; currency: string; invoiceCount: number; hasSubmitted: boolean;
+    agentOwed?: number; agentPaid?: number; commissionCents?: number;
   } | null>(null);
 
   if (summary && summary.invoiceCount === 0) return null;
@@ -746,8 +747,18 @@ function PaymentStatusCard({ policyId, canEdit, endorsementPolicyIds }: { policy
         </span>
         <span className="flex items-center gap-1.5">
           {summary && summary.invoiceCount > 0 && (
-            <span className="text-[11px] font-normal text-neutral-500">
-              {fmtCur(summary.totalPaid, summary.currency)} / {fmtCur(summary.totalOwed, summary.currency)}
+            <span className="flex items-center gap-1.5 text-[11px] font-normal text-neutral-500">
+              <span className="text-emerald-600 dark:text-emerald-400">{fmtCur(summary.totalPaid, summary.currency)} / {fmtCur(summary.totalOwed, summary.currency)}</span>
+              {canEdit && summary.agentOwed != null && summary.agentOwed > 0 && (
+                <span className="text-blue-600 dark:text-blue-400">
+                  {fmtCur(summary.agentPaid ?? 0, summary.currency)} / {fmtCur(summary.agentOwed, summary.currency)}
+                </span>
+              )}
+              {canEdit && summary.commissionCents != null && summary.commissionCents > 0 && (
+                <span className="text-yellow-600 dark:text-yellow-400">
+                  {fmtCur(summary.commissionCents, summary.currency)}
+                </span>
+              )}
             </span>
           )}
           {open ? (

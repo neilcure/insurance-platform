@@ -95,7 +95,7 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       .where(eq(accountingInvoiceItems.policyId, policyId));
     const invoiceIds = [...new Set(invoiceItemRows.map((r) => r.invoiceId))];
 
-    let paymentsByInvoice: { amountCents: number; paymentMethod: string | null; paymentDate: string | null; referenceNumber: string | null; status: string; createdAt: string; payer: "client" | "agent" | null; direction: string }[] = [];
+    let paymentsByInvoice: { amountCents: number; paymentMethod: string | null; paymentDate: string | null; referenceNumber: string | null; status: string; createdAt: string; payer: "client" | "agent" | null; direction: string; entityType: string | null }[] = [];
     if (invoiceIds.length > 0) {
       const rawPayments = await db
         .select({
@@ -107,13 +107,11 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
           createdAt: accountingPayments.createdAt,
           payer: accountingPayments.payer,
           direction: accountingInvoices.direction,
+          entityType: accountingInvoices.entityType,
         })
         .from(accountingPayments)
         .innerJoin(accountingInvoices, eq(accountingInvoices.id, accountingPayments.invoiceId))
-        .where(and(
-          inArray(accountingPayments.invoiceId, invoiceIds),
-          sql`${accountingInvoices.invoiceType} != 'statement'`,
-        ))
+        .where(inArray(accountingPayments.invoiceId, invoiceIds))
         .orderBy(desc(accountingPayments.createdAt));
 
       paymentsByInvoice = rawPayments.map((p) => ({
@@ -125,6 +123,7 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
         createdAt: p.createdAt,
         payer: (p.payer as "client" | "agent") || null,
         direction: p.direction,
+        entityType: p.entityType,
       }));
     }
 

@@ -61,8 +61,9 @@ export type PolicyPaymentRecord = {
   referenceNumber: string | null;
   status: string;
   createdAt: string;
-  payer?: "client" | "agent" | null;
+  payer?: "client" | "agent" | "client_to_agent" | null;
   direction?: "receivable" | "payable" | string;
+  entityType?: "client" | "agent" | string | null;
 };
 
 export type PremiumBreakdown = {
