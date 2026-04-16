@@ -109,8 +109,22 @@ type AgentStmtItem = {
   description: string | null;
   amountCents: number;
   displayAmountCents?: number;
+  clientPremiumCents?: number;
   status: string;
   paymentBadge?: string;
+};
+
+type CtaPaymentRecord = {
+  id: number;
+  invoiceId: number;
+  amountCents: number;
+  currency: string;
+  paymentDate: string | null;
+  paymentMethod: string | null;
+  status: string;
+  payer: string | null;
+  notes: string | null;
+  createdAt: string;
 };
 
 type AgentStmtData = {
@@ -126,6 +140,7 @@ type AgentStmtData = {
   items: AgentStmtItem[];
   policyClients: Record<number, { policyNumber: string; clientName: string }>;
   clientPaidPolicyIds: number[];
+  ctaPaymentsByPolicy?: Record<number, CtaPaymentRecord[]>;
 };
 
 type StatementItemInfo = {
@@ -274,6 +289,7 @@ function toStatementItems(items: (AgentStmtItem | StatementItemInfo)[]): Stateme
     policyPremiumId: it.policyPremiumId,
     amountCents: it.amountCents,
     displayAmountCents: "displayAmountCents" in it ? it.displayAmountCents : null,
+    clientPremiumCents: "clientPremiumCents" in it ? (it as AgentStmtItem).clientPremiumCents : undefined,
     description: it.description,
     status: it.status,
     paymentBadge: "paymentBadge" in it ? it.paymentBadge : undefined,
@@ -390,6 +406,7 @@ export function PaymentSection({
           items: Array.isArray(s.items) ? s.items : [],
           policyClients: (s.policyClients ?? {}) as Record<number, { policyNumber: string; clientName: string }>,
           clientPaidPolicyIds: Array.isArray(s.clientPaidPolicyIds) ? s.clientPaidPolicyIds : [],
+          ctaPaymentsByPolicy: s.ctaPaymentsByPolicy ?? {},
         });
         setAgentStmtLoaded(true);
         if (j.invoicesCreated) refresh();
@@ -735,15 +752,7 @@ export function PaymentSection({
       : stmt ? toStatementItems(stmt.items) : [];
 
     if (filterPolicyIds && filterPolicyIds.size > 0) {
-      const before = allItems.length;
       allItems = allItems.filter((it) => filterPolicyIds.has(Number(it.policyId)));
-      if (typeof window !== "undefined") {
-        // eslint-disable-next-line no-console
-        console.log("[STMT-FILTER] filter:", [...filterPolicyIds], "before:", before, "after:", allItems.length, "itemPids:", allItems.map((it) => it.policyId));
-      }
-    } else if (typeof window !== "undefined") {
-      // eslint-disable-next-line no-console
-      console.log("[STMT-FILTER] no filter applied, items:", allItems.length);
     }
 
     const filteredDataSource = filterPolicyIds
@@ -763,6 +772,15 @@ export function PaymentSection({
       return inv.scheduleId === sched.id;
     });
 
+    // Build client premium map: policyId → total client premium cents
+    const cpMap = new Map<number, number>();
+    for (const it of allItems) {
+      const polId = Number(it.policyId);
+      if (it.clientPremiumCents && it.clientPremiumCents > 0) {
+        cpMap.set(polId, (cpMap.get(polId) ?? 0) + it.clientPremiumCents);
+      }
+    }
+
     return (
       <StatementPaymentCard
         statementNumber={stmtNumber}
@@ -775,6 +793,8 @@ export function PaymentSection({
         isAdmin={isAdmin}
         onRefresh={refresh}
         defaultPayer="agent"
+        clientPremiumByPolicy={cpMap}
+        ctaPaymentsByPolicy={agentStmtData?.ctaPaymentsByPolicy}
       />
     );
   };

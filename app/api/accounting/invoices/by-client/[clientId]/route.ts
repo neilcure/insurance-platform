@@ -181,9 +181,43 @@ export async function GET(
       clientTotalByInvoice.set(item.invoiceId, (clientTotalByInvoice.get(item.invoiceId) ?? 0) + clientCents);
     }
 
+    // Detect policies settled via "Client Paid Agent" payments on client invoices
+    const clientToAgentSettledPolicies = new Set<number>();
+    for (const inv of invoiceList) {
+      if (inv.entityType !== "client") continue;
+      const invPayments = paymentsByInvoice.get(inv.id) ?? [];
+      const hasCtaPay = invPayments.some(
+        (p) => p.payer === "client_to_agent" && ["recorded", "verified", "confirmed"].includes(p.status),
+      );
+      if (hasCtaPay && inv.entityPolicyId) {
+        clientToAgentSettledPolicies.add(inv.entityPolicyId);
+      }
+    }
+
+    // Collect all endorsement IDs whose parent is settled via client_to_agent
+    if (clientToAgentSettledPolicies.size > 0) {
+      const endorsementCheck = await db.execute(sql`
+        SELECT DISTINCT c.policy_id
+        FROM cars c
+        WHERE (c.extra_attributes->>'linkedPolicyId')::int IN (${sql.join(
+          [...clientToAgentSettledPolicies].map((id) => sql`${id}`), sql`,`,
+        )})
+      `);
+      const endRows = Array.isArray(endorsementCheck) ? endorsementCheck : (endorsementCheck as { rows?: unknown[] }).rows ?? [];
+      for (const r of endRows) {
+        clientToAgentSettledPolicies.add(Number((r as { policy_id: number }).policy_id));
+      }
+    }
+
     const result = invoiceList.map((inv) => {
       const isAgentType = inv.entityType === "agent";
       const clientTotal = clientTotalByInvoice.get(inv.id);
+
+      // If this agent invoice's policy is settled via client_to_agent, hide it from client view
+      if (isAgentType && inv.entityPolicyId && clientToAgentSettledPolicies.has(inv.entityPolicyId)) {
+        return null;
+      }
+
       return {
         ...inv,
         totalAmountCents: isAgentType && clientTotal != null ? clientTotal : inv.totalAmountCents,
@@ -192,7 +226,7 @@ export async function GET(
           : inv.notes,
         payments: paymentsByInvoice.get(inv.id) ?? [],
       };
-    });
+    }).filter(Boolean);
 
     return NextResponse.json(result);
   } catch (err) {

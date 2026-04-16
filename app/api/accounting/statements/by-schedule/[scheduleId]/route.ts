@@ -340,6 +340,7 @@ export async function GET(
 
     const clientPaidPolicyIds = await loadClientPaidPolicyIds(itemPolicyIds);
     const agentPaidPolicyIds = await loadAgentPaidPolicyIds(itemPolicyIds);
+    const ctaPaidPolicyIds = await loadClientToAgentPaidPolicyIds(itemPolicyIds);
     const paidPolicyIds = new Set([...clientPaidPolicyIds, ...agentPaidPolicyIds]);
 
     const enrichedItems = allItems.map((it) => {
@@ -354,11 +355,16 @@ export async function GET(
         }
         if (clientPaidPolicyIds.has(it.policyId)) badge = "Client paid directly";
         else if (agentPaidPolicyIds.has(it.policyId)) badge = "Agent paid";
+        if (ctaPaidPolicyIds.has(it.policyId)) {
+          badge = badge ? `${badge} · Client paid agent` : "Client paid agent";
+        }
       }
+      const rpTotals = it.policyPremiumId ? premiumRoleTotals.get(it.policyPremiumId) : undefined;
       return {
         ...it,
         status: effectiveStatus,
         displayAmountCents: resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals),
+        clientPremiumCents: isComm ? undefined : (rpTotals?.clientCents ?? undefined),
         paymentBadge: badge,
       };
     });
@@ -382,6 +388,43 @@ export async function GET(
     );
     const policyClients = await loadPolicyClientMap(itemPolicyIds);
 
+    // Load actual client_to_agent payment records per policy
+    const ctaPaymentsByPolicy: Record<number, { id: number; invoiceId: number; amountCents: number; currency: string; paymentDate: string | null; paymentMethod: string | null; status: string; payer: string | null; notes: string | null; createdAt: string }[]> = {};
+    if (ctaPaidPolicyIds.size > 0) {
+      const ctaRows = await db.execute(sql`
+        SELECT DISTINCT ON (ap.id) ap.id, ap.invoice_id, ap.amount_cents, ap.currency,
+               ap.payment_date, ap.payment_method, ap.status, ap.payer, ap.notes,
+               ap.created_at, ii.policy_id
+        FROM accounting_payments ap
+        INNER JOIN accounting_invoices ai ON ai.id = ap.invoice_id
+        INNER JOIN accounting_invoice_items ii ON ii.invoice_id = ai.id
+        WHERE ai.direction = 'receivable'
+          AND ai.entity_type = 'client'
+          AND ai.status <> 'cancelled'
+          AND ap.payer = 'client_to_agent'
+          AND ap.status IN ('verified', 'confirmed', 'recorded')
+          AND ii.policy_id IN (${sql.join([...ctaPaidPolicyIds].map((id) => sql`${id}`), sql`,`)})
+        ORDER BY ap.id, ap.created_at DESC
+      `);
+      const rawRows = Array.isArray(ctaRows) ? ctaRows : (ctaRows as { rows?: unknown[] }).rows ?? [];
+      for (const r of rawRows as { id: number; invoice_id: number; amount_cents: number; currency: string; payment_date: string | null; payment_method: string | null; status: string; payer: string | null; notes: string | null; created_at: string; policy_id: number }[]) {
+        const pid = Number(r.policy_id);
+        if (!ctaPaymentsByPolicy[pid]) ctaPaymentsByPolicy[pid] = [];
+        ctaPaymentsByPolicy[pid].push({
+          id: r.id,
+          invoiceId: r.invoice_id,
+          amountCents: r.amount_cents,
+          currency: r.currency,
+          paymentDate: r.payment_date,
+          paymentMethod: r.payment_method,
+          status: r.status,
+          payer: r.payer,
+          notes: r.notes,
+          createdAt: r.created_at,
+        });
+      }
+    }
+
     const statementNumber = stmtInvoice?.invoiceNumber ?? "";
     const statementStatus = stmtInvoice?.status ?? "draft";
     const currency = stmtInvoice?.currency ?? enrichedItems[0]?.status ? "HKD" : "HKD";
@@ -402,6 +445,7 @@ export async function GET(
         items: enrichedItems,
         policyClients,
         clientPaidPolicyIds: [...clientPaidPolicyIds],
+        ctaPaymentsByPolicy,
       },
       invoicesCreated,
     });
@@ -512,6 +556,29 @@ async function loadAgentPaidPolicyIds(policyIds: number[]): Promise<Set<number>>
       AND ai.status <> 'cancelled'
       AND ap.status IN ('verified', 'confirmed', 'recorded')
       AND ap.payer = 'agent'
+      AND ii.policy_id IN (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
+  `);
+  const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
+  return new Set(
+    (rows as { policy_id: number }[])
+      .map((r) => Number(r.policy_id))
+      .filter((id) => Number.isFinite(id) && id > 0),
+  );
+}
+
+async function loadClientToAgentPaidPolicyIds(policyIds: number[]): Promise<Set<number>> {
+  const uniquePolicyIds = [...new Set(policyIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (uniquePolicyIds.length === 0) return new Set();
+  const result = await db.execute(sql`
+    SELECT DISTINCT ii.policy_id
+    FROM accounting_payments ap
+    INNER JOIN accounting_invoices ai ON ai.id = ap.invoice_id
+    INNER JOIN accounting_invoice_items ii ON ii.invoice_id = ai.id
+    WHERE ai.direction = 'receivable'
+      AND ai.entity_type = 'client'
+      AND ai.status <> 'cancelled'
+      AND ap.status IN ('verified', 'confirmed', 'recorded')
+      AND ap.payer = 'client_to_agent'
       AND ii.policy_id IN (${sql.join(uniquePolicyIds.map((id) => sql`${id}`), sql`,`)})
   `);
   const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];

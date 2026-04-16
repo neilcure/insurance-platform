@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PAYMENT_STATUS_LABELS, type PaymentStatus } from "@/lib/types/accounting";
-import { Check, X, ChevronDown, ChevronUp, FileText, Trash2 } from "lucide-react";
+import { Check, X, ChevronDown, ChevronUp, FileText, Trash2, UserCheck } from "lucide-react";
 import { InlinePaymentForm } from "@/components/ui/inline-payment-form";
 import {
   Dialog,
@@ -25,6 +25,7 @@ export type StatementItem = {
   policyPremiumId?: number | null;
   amountCents: number;
   displayAmountCents?: number | null;
+  clientPremiumCents?: number | null;
   description: string | null;
   status: string;
   paymentBadge?: string;
@@ -84,6 +85,10 @@ export interface StatementPaymentCardProps {
   onRefresh: () => void;
   /** Who is making the payment — locks InlinePaymentForm payer. */
   defaultPayer?: "client" | "agent";
+  /** Map of policyId → client premium cents (for "Client Paid Agent" action). */
+  clientPremiumByPolicy?: Map<number, number>;
+  /** Existing client-to-agent payment records per policyId. */
+  ctaPaymentsByPolicy?: Record<number, { id: number; invoiceId: number; amountCents: number; currency: string; paymentDate: string | null; paymentMethod: string | null; status: string; payer: string | null; notes: string | null; createdAt: string }[]>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -129,6 +134,8 @@ export function StatementPaymentCard({
   isAdmin,
   onRefresh,
   defaultPayer,
+  clientPremiumByPolicy,
+  ctaPaymentsByPolicy,
 }: StatementPaymentCardProps) {
   const [expandedId, setExpandedId] = React.useState<number | null>(null);
   const [verifyingId, setVerifyingId] = React.useState<number | null>(null);
@@ -140,6 +147,12 @@ export function StatementPaymentCard({
   } | null>(null);
   const [dialogNote, setDialogNote] = React.useState("");
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
+
+  // "Mark Client Paid" dialog — wraps InlinePaymentForm in a dialog
+  const [ctaDialog, setCtaDialog] = React.useState<{
+    invoiceId: number;
+    clientPremiumCents: number;
+  } | null>(null);
 
   const { totalDue, clientPaidTotal, agentPaidTotal, commissionTotal, outstanding, creditToAgent } = totals;
 
@@ -270,10 +283,39 @@ export function StatementPaymentCard({
     </Dialog>
   );
 
+  const ctaDialogEl = (
+    <Dialog open={!!ctaDialog} onOpenChange={(open) => { if (!open) setCtaDialog(null); }}>
+      <DialogContent className="max-w-sm p-0 overflow-hidden">
+        <div className="px-4 pt-4 pb-2">
+          <DialogTitle><span className="text-sm">Mark Client Paid Agent</span></DialogTitle>
+          {ctaDialog && (
+            <p className="text-[10px] text-neutral-400 mt-1">
+              Client premium: {formatCurrency(ctaDialog.clientPremiumCents, currency)}
+            </p>
+          )}
+        </div>
+        {ctaDialog && (
+          <div className="px-2 pb-3">
+            <InlinePaymentForm
+              invoiceId={ctaDialog.invoiceId}
+              remainingCents={ctaDialog.clientPremiumCents}
+              currency={currency}
+              defaultPayer="client_to_agent"
+              buttonLabel="Mark Client Paid"
+              startOpen
+              onSuccess={() => { setCtaDialog(null); onRefresh(); }}
+            />
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+
   return (
     <div className="space-y-3">
       {confirmDialogEl}
       {errorDialogEl}
+      {ctaDialogEl}
       {/* ---- Header ---- */}
       <div className="rounded-md border border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30 overflow-hidden">
         <div className="flex items-center justify-between px-3 py-2">
@@ -359,8 +401,10 @@ export function StatementPaymentCard({
           </div>
           {premiumItems.map((item) => {
             const isPaid = item.status === "paid_individually";
-            const isClientPaid = item.paymentBadge === "Client paid directly";
-            const isAgentPaid = item.paymentBadge === "Agent paid";
+            const badgeStr = item.paymentBadge ?? "";
+            const isClientPaid = badgeStr.includes("Client paid directly");
+            const isAgentPaid = badgeStr.includes("Agent paid");
+            const isCtaPaid = badgeStr.includes("Client paid agent");
             const amt = resolvedAmt(item);
             const invoice = invoiceByPolicy.get(item.policyId);
             const invRemaining = invoice ? invoice.totalAmountCents - invoice.paidAmountCents : 0;
@@ -395,6 +439,11 @@ export function StatementPaymentCard({
                       {isAgentPaid && (
                         <span className="rounded bg-blue-100 px-1 py-0.5 text-[9px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 shrink-0">
                           Agent paid
+                        </span>
+                      )}
+                      {isCtaPaid && (
+                        <span className="rounded bg-purple-100 px-1 py-0.5 text-[9px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 shrink-0">
+                          Client paid agent
                         </span>
                       )}
                     </div>
@@ -470,6 +519,48 @@ export function StatementPaymentCard({
                         onSuccess={onRefresh}
                       />
                     )}
+
+                    {defaultPayer === "agent" && (() => {
+                      const ctaPayments = ctaPaymentsByPolicy?.[item.policyId] ?? [];
+                      const hasCtaPayment = ctaPayments.length > 0;
+                      return (
+                        <div className="space-y-1.5">
+                          {hasCtaPayment ? (
+                            <div className="space-y-1">
+                              <div className="text-[10px] font-medium text-purple-600 dark:text-purple-400">Client → Agent Payments</div>
+                              {ctaPayments.map((cp) => (
+                                <div key={cp.id} className="flex items-center justify-between gap-2 rounded border border-purple-100 dark:border-purple-800/40 bg-purple-50/50 dark:bg-purple-900/10 p-1.5 text-[11px]">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-medium">{formatCurrency(cp.amountCents, cp.currency)}</span>
+                                    <Badge variant="custom" className={`text-[9px] ${statusBadgeClass(cp.status as PaymentStatus)}`}>
+                                      {PAYMENT_STATUS_LABELS[cp.status as PaymentStatus] ?? cp.status}
+                                    </Badge>
+                                  </div>
+                                  {isAdmin && (
+                                    <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px] text-neutral-500 hover:text-red-600" disabled={verifyingId === cp.id} onClick={() => openDeleteDialog(cp.invoiceId, cp.id)}>
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full border-purple-200 text-purple-700 hover:bg-purple-50 dark:border-purple-700 dark:text-purple-300 dark:hover:bg-purple-900/30"
+                              onClick={() => {
+                                const cpCents = clientPremiumByPolicy?.get(item.policyId) ?? 0;
+                                setCtaDialog({ invoiceId: invoice.id, clientPremiumCents: cpCents || resolvedAmt(item) });
+                              }}
+                            >
+                              <UserCheck className="h-3.5 w-3.5 mr-1" />
+                              Mark Client Paid
+                            </Button>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
