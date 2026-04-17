@@ -111,6 +111,7 @@ export function UploadDocumentsTab({
   React.useEffect(() => {
     const schedule = agentSchedule || clientSchedule;
     if (!schedule) return;
+    if (policyId == null || !Number.isFinite(Number(policyId)) || Number(policyId) <= 0) return;
     fetch(`/api/accounting/invoices/by-policy/${policyId}?_t=${Date.now()}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : []))
       .then((invoices: { scheduleId: number | null; direction: string; invoiceType: string }[]) => {
@@ -123,6 +124,8 @@ export function UploadDocumentsTab({
   }, [policyId, agentSchedule, clientSchedule]);
 
   React.useEffect(() => {
+    if (policyId == null || !Number.isFinite(Number(policyId)) || Number(policyId) <= 0) return;
+
     fetch(`/api/policies/${policyId}/linked-insurers`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : { insurerPolicyIds: [] }))
       .then((data: { insurerPolicyIds?: number[] }) => {
@@ -141,6 +144,7 @@ export function UploadDocumentsTab({
 
   React.useEffect(() => {
     if (policyInsurerIds === null) return;
+    if (policyId == null || !Number.isFinite(Number(policyId)) || Number(policyId) <= 0) return;
     let cancelled = false;
     setLoading(true);
 

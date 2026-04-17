@@ -534,22 +534,29 @@ export function PaymentSection({
           .reduce((s, p) => s + p.amountCents, 0);
         const hasSubmitted = allPayments.some((p) => p.status === "submitted");
 
-        // Fetch premium summary for correct owed amounts per role
+        // Fetch premium summary for correct owed amounts per role (policy context only — agent/client drawers have no policyId)
         let clientOwed = 0;
         let agentOwedAmt = 0;
         try {
-          const allPolicyIds = [policyId!, ...(endorsementPolicyIds ?? [])];
-          const premSummaries = await Promise.all(
-            allPolicyIds.map((pid) =>
-              fetch(`/api/policies/${pid}/premium-summary?_t=${Date.now()}`, { cache: "no-store" })
-                .then((r) => (r.ok ? r.json() : null))
-                .catch(() => null),
-            ),
-          );
-          for (const ps of premSummaries) {
-            if (!ps) continue;
-            clientOwed += ps.clientPremiumCents ?? 0;
-            agentOwedAmt += ps.agentPremiumCents ?? 0;
+          const rootPid = policyId != null && Number.isFinite(Number(policyId)) && Number(policyId) > 0
+            ? Number(policyId)
+            : null;
+          if (rootPid != null) {
+            const allPolicyIds = [rootPid, ...(endorsementPolicyIds ?? [])].filter(
+              (id) => id != null && Number.isFinite(Number(id)) && Number(id) > 0,
+            );
+            const premSummaries = await Promise.all(
+              allPolicyIds.map((pid) =>
+                fetch(`/api/policies/${pid}/premium-summary?_t=${Date.now()}`, { cache: "no-store" })
+                  .then((r) => (r.ok ? r.json() : null))
+                  .catch(() => null),
+              ),
+            );
+            for (const ps of premSummaries) {
+              if (!ps) continue;
+              clientOwed += ps.clientPremiumCents ?? 0;
+              agentOwedAmt += ps.agentPremiumCents ?? 0;
+            }
           }
         } catch { /* fallback below */ }
 
