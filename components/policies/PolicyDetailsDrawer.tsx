@@ -131,7 +131,7 @@ export function PolicyDetailsDrawer({
         }>) ?? undefined
       }
       side="right"
-      zClass="z-60"
+      zClass="z-[70]"
       passthrough
       functionTabs={detail ? ([
         {

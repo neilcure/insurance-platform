@@ -8,10 +8,16 @@ import { policyPremiums } from "@/db/schema/premiums";
 import { policies } from "@/db/schema/insurance";
 import { cars } from "@/db/schema/insurance";
 import { clients } from "@/db/schema/core";
+import { formOptions } from "@/db/schema/form_options";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { loadAccountingFields } from "@/lib/accounting-fields";
 import { resolvePremiumByRole } from "@/lib/resolve-policy-agent";
+import {
+  inferInsuranceTypeFromPackages,
+  OTHER_POLICIES_GROUP_LABEL,
+} from "@/lib/policies/insurance-type-from-packages";
+import { readVehicleRegistrationFromCar } from "@/lib/policies/vehicle-registration";
 
 export const dynamic = "force-dynamic";
 
@@ -325,6 +331,95 @@ export async function GET(
       }
     }
 
+    const registrationByPolicyId = new Map<number, string>();
+    let insuranceTypeByPolicy = new Map<number, string>();
+    if (itemPolicyIds.length > 0) {
+      const pkgLabelRows = await db
+        .select({ value: formOptions.value, label: formOptions.label })
+        .from(formOptions)
+        .where(and(eq(formOptions.groupKey, "packages"), eq(formOptions.isActive, true)));
+      const packageLabels: Record<string, string> = {};
+      for (const r of pkgLabelRows) {
+        if (r.value) packageLabels[String(r.value)] = String(r.label || r.value);
+      }
+      const carRows = await db
+        .select({
+          policyId: cars.policyId,
+          plateNumber: cars.plateNumber,
+          extra: cars.extraAttributes,
+        })
+        .from(cars)
+        .where(inArray(cars.policyId, itemPolicyIds));
+
+      type CarSnap = { plateNumber: string | null; extra: Record<string, unknown> | null };
+      const carByPolicyId = new Map<number, CarSnap>();
+      const linkedParentByPolicyId = new Map<number, number>();
+
+      const ingestCarRow = (policyId: number, plateNumber: string | null | undefined, extraRaw: unknown) => {
+        const ex = (extraRaw && typeof extraRaw === "object" ? extraRaw : null) as Record<string, unknown> | null;
+        carByPolicyId.set(policyId, {
+          plateNumber: plateNumber != null ? String(plateNumber) : null,
+          extra: ex,
+        });
+        const lp = Number(ex?.linkedPolicyId ?? 0);
+        if (Number.isFinite(lp) && lp > 0 && lp !== policyId) linkedParentByPolicyId.set(policyId, lp);
+      };
+
+      for (const row of carRows) {
+        ingestCarRow(Number(row.policyId), row.plateNumber, row.extra);
+      }
+
+      const parentIdsToFetch = [...new Set([...linkedParentByPolicyId.values()])].filter(
+        (parentId) => Number.isFinite(parentId) && parentId > 0 && !carByPolicyId.has(parentId),
+      );
+      if (parentIdsToFetch.length > 0) {
+        const parentCarRows = await db
+          .select({
+            policyId: cars.policyId,
+            plateNumber: cars.plateNumber,
+            extra: cars.extraAttributes,
+          })
+          .from(cars)
+          .where(inArray(cars.policyId, parentIdsToFetch));
+        for (const row of parentCarRows) {
+          ingestCarRow(Number(row.policyId), row.plateNumber, row.extra);
+        }
+      }
+
+      const packagesFromExtra = (ex: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined => {
+        if (!ex) return undefined;
+        const snap = ex.packagesSnapshot ?? (ex as { packages_snapshot?: unknown })?.packages_snapshot;
+        return snap && typeof snap === "object" && !Array.isArray(snap) ? (snap as Record<string, unknown>) : undefined;
+      };
+
+      for (const pid of itemPolicyIds) {
+        const sources: CarSnap[] = [];
+        const own = carByPolicyId.get(pid);
+        if (own) sources.push(own);
+        const parentId = linkedParentByPolicyId.get(pid);
+        if (parentId && parentId !== pid) {
+          const pCar = carByPolicyId.get(parentId);
+          if (pCar) sources.push(pCar);
+        }
+
+        let reg: string | null = null;
+        let label: string | null = null;
+        for (const src of sources) {
+          if (!reg) {
+            reg = readVehicleRegistrationFromCar(src.plateNumber, src.extra);
+          }
+          const pkgs = packagesFromExtra(src.extra ?? undefined);
+          const inferred = inferInsuranceTypeFromPackages(pkgs, packageLabels);
+          if (inferred && (!label || label === OTHER_POLICIES_GROUP_LABEL)) {
+            label = inferred;
+          }
+        }
+
+        if (reg) registrationByPolicyId.set(pid, reg);
+        insuranceTypeByPolicy.set(pid, label ?? OTHER_POLICIES_GROUP_LABEL);
+      }
+    }
+
     const premiumRoleTotals = new Map<number, { clientCents: number; agentCents: number }>();
     const premiumIds = [...new Set(allItems.map((it) => it.policyPremiumId).filter(Boolean))] as number[];
     if (premiumIds.length > 0) {
@@ -360,12 +455,18 @@ export async function GET(
         }
       }
       const rpTotals = it.policyPremiumId ? premiumRoleTotals.get(it.policyPremiumId) : undefined;
+      const insuranceTypeLabel = !isComm
+        ? (insuranceTypeByPolicy.get(it.policyId) ?? OTHER_POLICIES_GROUP_LABEL)
+        : undefined;
+      const vehicleRegistration = !isComm ? (registrationByPolicyId.get(it.policyId) ?? null) : undefined;
       return {
         ...it,
         status: effectiveStatus,
         displayAmountCents: resolveDisplayedItemAmountCents(it, effectiveEntityType, premiumRoleTotals),
         clientPremiumCents: isComm ? undefined : (rpTotals?.clientCents ?? undefined),
         paymentBadge: badge,
+        insuranceTypeLabel,
+        vehicleRegistration,
       };
     });
 

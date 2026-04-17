@@ -115,6 +115,9 @@ type AgentStmtItem = {
   clientPremiumCents?: number;
   status: string;
   paymentBadge?: string;
+  /** Set by agent statement API for LINE ITEMS grouping (Vehicle / EC / Liability / Other). */
+  insuranceTypeLabel?: string | null;
+  vehicleRegistration?: string | null;
 };
 
 type CtaPaymentRecord = {
@@ -303,6 +306,8 @@ function toStatementItems(items: (AgentStmtItem | StatementItemInfo)[]): Stateme
     description: it.description,
     status: it.status,
     paymentBadge: "paymentBadge" in it ? it.paymentBadge : undefined,
+    insuranceTypeLabel: "insuranceTypeLabel" in it ? (it as AgentStmtItem).insuranceTypeLabel ?? undefined : undefined,
+    vehicleRegistration: "vehicleRegistration" in it ? (it as AgentStmtItem).vehicleRegistration ?? undefined : undefined,
   }));
 }
 
@@ -841,6 +846,7 @@ export function PaymentSection({
         defaultPayer="agent"
         clientPremiumByPolicy={cpMap}
         ctaPaymentsByPolicy={agentStmtData?.ctaPaymentsByPolicy}
+        policyClients={agentStmtData?.policyClients}
       />
     );
   };

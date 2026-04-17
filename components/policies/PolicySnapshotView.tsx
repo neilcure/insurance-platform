@@ -3,6 +3,7 @@
 import * as React from "react";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { normalizeFieldKey, isHiddenPackage } from "@/lib/utils";
+import { inferInsuranceTypeFromPackages } from "@/lib/policies/insurance-type-from-packages";
 import { ClientLinkedPolicies } from "@/components/policies/ClientLinkedPolicies";
 import { EndorsementHistory } from "@/components/policies/EndorsementHistory";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -733,44 +734,10 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEdit
 
   const packageLabels = meta?.packageLabels ?? {};
 
-  // Insurance type detection
-  const insuranceType = React.useMemo(() => {
-    try {
-      const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
-      const knownByLabel: Record<string, string> = {
-        [normalize("Vehicle Insurance")]: "Vehicle Insurance",
-        [normalize("Employee Compensation")]: "Employee Compensation",
-        [normalize("Liability Insurance")]: "Liability Insurance",
-      };
-      const knownByPkg: Array<{ match: (s: string) => boolean; label: string }> = [
-        { match: s => ["vehicleinfo", "vehicle", "car", "auto"].includes(s), label: "Vehicle Insurance" },
-        { match: s => ["ecinfo", "employeecompensation", "ec"].includes(s), label: "Employee Compensation" },
-        { match: s => ["liability", "liabilityinfo"].includes(s), label: "Liability Insurance" },
-      ];
-      for (const [pkgName, pkg] of Object.entries(pkgs)) {
-        const lbl = packageLabels[pkgName];
-        if (lbl) {
-          const k = normalize(lbl);
-          if (knownByLabel[k]) {
-            const vals = pkg && typeof pkg === "object"
-              ? ("values" in (pkg as any) ? (pkg as any).values ?? pkg : pkg) as Record<string, unknown>
-              : {};
-            if (Object.values(vals).some(v => v !== null && typeof v !== "undefined" && String(v).trim() !== "")) return knownByLabel[k];
-          }
-        }
-        const pn = normalize(pkgName);
-        for (const rule of knownByPkg) {
-          if (rule.match(pn)) {
-            const vals = pkg && typeof pkg === "object"
-              ? ("values" in (pkg as any) ? (pkg as any).values ?? pkg : pkg) as Record<string, unknown>
-              : {};
-            if (Object.values(vals).some(v => v !== null && typeof v !== "undefined" && String(v).trim() !== "")) return rule.label;
-          }
-        }
-      }
-    } catch {}
-    return null;
-  }, [pkgs, packageLabels]);
+  const insuranceType = React.useMemo(
+    () => inferInsuranceTypeFromPackages(pkgs as Record<string, unknown>, packageLabels),
+    [pkgs, packageLabels],
+  );
 
   // Package entries sorted by configured order
   const sortedPkgEntries = React.useMemo(() => {
