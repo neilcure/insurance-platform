@@ -51,7 +51,14 @@ export function SlideDrawer({
   const translateVisible = "translate-x-0";
 
   return (
-    <div className={`fixed inset-0 ${zClass} ${!open || passthrough ? "pointer-events-none" : ""}`}>
+    // Use 100dvh (dynamic viewport height) so the drawer matches the *visible*
+    // area on mobile — `100vh` would extend behind the URL/navigation bar and
+    // hide the bottom of the scroll container. `dvh` is supported by all
+    // modern browsers (Safari 15.4+, Chrome 108+, Firefox 101+).
+    <div
+      className={`fixed inset-x-0 top-0 ${zClass} ${!open || passthrough ? "pointer-events-none" : ""}`}
+      style={{ height: "100dvh" }}
+    >
       <div
         className={`${open ? "pointer-events-auto" : ""} absolute inset-0 bg-black transition-opacity duration-300 ${
           open ? "opacity-60" : "opacity-0"
@@ -60,17 +67,22 @@ export function SlideDrawer({
         aria-label={`Close ${title}`}
       />
       <aside
-        className={`${open ? "pointer-events-auto" : ""} absolute ${posClass} h-full ${width} bg-neutral-100 dark:bg-neutral-950/40 dark:backdrop-blur-xl border-neutral-200 dark:border-neutral-800 shadow-xl transform transition-transform duration-300 ease-out will-change-transform overflow-visible ${
+        className={`${open ? "pointer-events-auto" : ""} absolute ${posClass} h-full ${width} bg-neutral-100 dark:bg-neutral-950/40 dark:backdrop-blur-xl border-neutral-200 dark:border-neutral-800 shadow-xl transform transition-transform duration-300 ease-out will-change-transform overflow-visible flex flex-col ${
           open ? translateVisible : translateHidden
         }`}
       >
-        <div className="flex items-center justify-between border-b border-neutral-200 p-3 dark:border-neutral-800">
+        <div className="shrink-0 flex items-center justify-between border-b border-neutral-200 p-3 dark:border-neutral-800">
           <div className="font-semibold">{title}</div>
           <Button size="iconCompact" variant="ghost" onClick={onClose} aria-label="Close">
             <X className="h-4 w-4" />
           </Button>
         </div>
-        {children}
+        {/* Body region — flex-1 + min-h-0 lets children opt into
+            `h-full overflow-y-auto overscroll-contain` without any
+            magic `calc(100vh - Xpx)` numbers. */}
+        <div className="flex-1 min-h-0">
+          {children}
+        </div>
 
         {/* Full-height tab strip outside the drawer right edge */}
         {tabStrip && (

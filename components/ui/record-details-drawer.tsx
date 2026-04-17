@@ -194,10 +194,10 @@ export function RecordDetailsDrawer({
   );
 
   const drawerBody = (
-    <div
-      className="overflow-y-auto p-3 text-sm"
-      style={{ maxHeight: "calc(100vh - 52px)" }}
-    >
+    // h-full + overflow-y-auto rides the SlideDrawer's flex body region —
+    // no magic `calc(100vh - 52px)` needed. `overscroll-contain` stops
+    // mobile scroll-bubbling that triggers the URL-bar show/hide.
+    <div className="h-full overflow-y-auto overscroll-contain p-3 text-sm">
       {toolbar}
       {hasFunctionTabs ? <DrawerTabContent /> : overviewContent}
     </div>
@@ -243,7 +243,7 @@ export function RecordDetailsDrawer({
           zClass={zClass ? "z-[70]" : "z-60"}
           passthrough
         >
-          <div className="p-3 text-xs space-y-4">
+          <div className="h-full overflow-y-auto overscroll-contain p-3 text-xs space-y-4">
             {statusHistory && statusHistory.length > 0 && (
               <StatusHistoryCollapsible entries={statusHistory} statusLabels={statusLabels} />
             )}

@@ -188,13 +188,13 @@ export function EntityPickerDrawer({
 
   return (
     <SlideDrawer open={open} onClose={onClose} title={title} side="left" zClass="z-[60]">
-      <div className="space-y-3 p-4">
+      <div className="flex h-full flex-col gap-3 p-4">
         <Input
           placeholder="Search by name or record number…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <div className="max-h-[65vh] overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-800">
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain rounded-md border border-neutral-200 dark:border-neutral-800">
           {loading ? (
             <div className="space-y-2 p-3">
               <Skeleton className="h-6 w-full" />

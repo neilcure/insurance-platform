@@ -2282,7 +2282,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           side="right"
           widthClass="w-[300px] sm:w-[340px]"
         >
-          <div className="overflow-y-auto p-3 space-y-3 h-[calc(100%-49px)]">
+          <div className="overflow-y-auto p-3 space-y-3 h-full overscroll-contain">
             {/* Quick actions */}
             <div className="flex gap-1">
               <Button
@@ -2618,7 +2618,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           side="right"
           widthClass="w-[300px] sm:w-[340px]"
         >
-          <div className="overflow-y-auto p-3 space-y-3 h-[calc(100%-49px)]">
+          <div className="overflow-y-auto p-3 space-y-3 h-full overscroll-contain">
             <div className="flex gap-1">
               <Button size="xs" variant="outline" className="gap-1 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950" onClick={() => { setDrawings((prev) => prev.filter((dd) => dd.id !== ed.id)); setSelectedDrawingId(null); setEditingDrawingId(null); }}>
                 <Trash2 className="h-3 w-3" /> Delete Border
@@ -2690,7 +2690,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           side="right"
           widthClass="w-[300px] sm:w-[340px]"
         >
-          <div className="overflow-y-auto p-3 space-y-3 h-[calc(100%-49px)]">
+          <div className="overflow-y-auto p-3 space-y-3 h-full overscroll-contain">
             <div className="flex gap-1">
               <Button size="xs" variant="outline" className="gap-1 text-xs flex-1" onClick={() => duplicateImage(selectedImage)}>
                 <Copy className="h-3 w-3" /> Duplicate
@@ -2763,7 +2763,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
         side="right"
         widthClass="w-[340px] sm:w-[400px]"
       >
-        <div className="overflow-y-auto p-3 space-y-4 h-[calc(100%-49px)]">
+        <div className="overflow-y-auto p-3 space-y-4 h-full overscroll-contain">
           <div>
             <Label className="text-xs">Description</Label>
             <Input
