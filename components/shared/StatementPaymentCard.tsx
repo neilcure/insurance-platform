@@ -469,12 +469,29 @@ export function StatementPaymentCard({
                         <div className="text-[10px] text-green-600 dark:text-green-400">Paid</div>
                         <div className="font-semibold text-green-700 dark:text-green-300">{formatCurrency(invoice.paidAmountCents, invoice.currency)}</div>
                       </div>
-                      <div className={cn("rounded p-1.5", invRemaining > 0 ? "bg-orange-50 dark:bg-orange-900/20" : "bg-green-50 dark:bg-green-900/20")}>
-                        <div className={cn("text-[10px]", invRemaining > 0 ? "text-orange-600 dark:text-orange-400" : "text-green-600 dark:text-green-400")}>Remaining</div>
-                        <div className={cn("font-semibold", invRemaining > 0 ? "text-orange-700 dark:text-orange-300" : "text-green-700 dark:text-green-300")}>
-                          {formatCurrency(invRemaining, invoice.currency)}
-                        </div>
-                      </div>
+                      {(() => {
+                        // When client pays admin directly with the FULL client premium,
+                        // the agent receivable invoice ends up over-paid — that overage
+                        // IS the commission admin owes back to the agent for THIS line
+                        // (not a "negative remaining"). Each line's tile is computed
+                        // from its own invoice; lines are never aggregated here.
+                        const isCommissionCredit = invRemaining < 0;
+                        const label = isCommissionCredit ? "Commission" : "Remaining";
+                        const displayCents = isCommissionCredit ? Math.abs(invRemaining) : invRemaining;
+                        const tone = isCommissionCredit
+                          ? { bg: "bg-amber-50 dark:bg-amber-900/20", label: "text-amber-600 dark:text-amber-400", value: "text-amber-700 dark:text-amber-300" }
+                          : invRemaining > 0
+                            ? { bg: "bg-orange-50 dark:bg-orange-900/20", label: "text-orange-600 dark:text-orange-400", value: "text-orange-700 dark:text-orange-300" }
+                            : { bg: "bg-green-50 dark:bg-green-900/20", label: "text-green-600 dark:text-green-400", value: "text-green-700 dark:text-green-300" };
+                        return (
+                          <div className={cn("rounded p-1.5", tone.bg)}>
+                            <div className={cn("text-[10px]", tone.label)}>{label}</div>
+                            <div className={cn("font-semibold", tone.value)}>
+                              {formatCurrency(displayCents, invoice.currency)}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {invoice.payments.length > 0 && (
@@ -523,6 +540,10 @@ export function StatementPaymentCard({
                     {defaultPayer === "agent" && (() => {
                       const ctaPayments = ctaPaymentsByPolicy?.[item.policyId] ?? [];
                       const hasCtaPayment = ctaPayments.length > 0;
+                      // If admin already verified a client→admin payment for THIS line,
+                      // there's no "client paid agent" leg to record — hide the button.
+                      // Existing CTA history (if any) still renders so we never lose data.
+                      if (!hasCtaPayment && isClientPaid) return null;
                       return (
                         <div className="space-y-1.5">
                           {hasCtaPayment ? (

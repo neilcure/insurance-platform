@@ -272,8 +272,15 @@ function buildTotalsFromItems(
   const commissionTotal = items
     .filter((it) => isCommissionItem(it))
     .reduce((s, it) => s + (it.displayAmountCents ?? it.amountCents), 0);
+  // Only count "client paid directly" (client → admin), NOT "client paid agent" (CTA).
+  // CTA is a separate client↔agent leg and must not appear on the agent↔admin statement.
+  // Match the same badge strings used by StatementPaymentCard to render the green
+  // "Client paid directly" chip, so totals and per-line badges stay consistent.
   const clientPaidTotal = premiumItems
-    .filter((it) => it.paymentBadge?.toLowerCase().includes("client"))
+    .filter((it) => {
+      const badge = it.paymentBadge ?? "";
+      return badge.includes("Client paid directly") || badge.includes("Premium settled");
+    })
     .reduce((s, it) => s + (it.displayAmountCents ?? it.amountCents), 0);
   return {
     totalDue: activeTotal + paidIndividuallyTotal,
