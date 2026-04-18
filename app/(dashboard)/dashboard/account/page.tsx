@@ -21,18 +21,64 @@ export default async function AccountPage() {
         userType?: string;
       }
     | undefined;
+  let orgRow:
+    | {
+        organisationId: number;
+        organisationName: string;
+        contactName: string | null;
+        contactEmail: string | null;
+        contactPhone: string | null;
+        flatNumber: string | null;
+        floorNumber: string | null;
+        blockNumber: string | null;
+        blockName: string | null;
+        streetNumber: string | null;
+        streetName: string | null;
+        propertyName: string | null;
+        districtName: string | null;
+        area: string | null;
+      }
+    | undefined;
+
+  // Fetch user + org in parallel. For `direct_client` users the org lookup is unused,
+  // but the small extra query is worth saving a full round-trip for everyone else.
   try {
-    [u] = await db
-      .select({
-        id: users.id,
-        email: users.email,
-        name: users.name,
-        timezone: users.timezone,
-        userType: users.userType,
-      })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
+    const [userRows, orgRows] = await Promise.all([
+      db
+        .select({
+          id: users.id,
+          email: users.email,
+          name: users.name,
+          timezone: users.timezone,
+          userType: users.userType,
+        })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1),
+      db
+        .select({
+          organisationId: organisations.id,
+          organisationName: organisations.name,
+          contactName: organisations.contactName,
+          contactEmail: organisations.contactEmail,
+          contactPhone: organisations.contactPhone,
+          flatNumber: organisations.flatNumber,
+          floorNumber: organisations.floorNumber,
+          blockNumber: organisations.blockNumber,
+          blockName: organisations.blockName,
+          streetNumber: organisations.streetNumber,
+          streetName: organisations.streetName,
+          propertyName: organisations.propertyName,
+          districtName: organisations.districtName,
+          area: organisations.area,
+        })
+        .from(memberships)
+        .innerJoin(organisations, eq(organisations.id, memberships.organisationId))
+        .where(eq(memberships.userId, userId))
+        .limit(1),
+    ]);
+    u = userRows[0];
+    orgRow = orgRows[0];
   } catch (err: any) {
     loadError = err?.message ?? "Failed to load account info";
   }
@@ -60,53 +106,6 @@ export default async function AccountPage() {
         </div>
       </main>
     );
-  }
-
-  // For admin / agent / internal / accounting — existing Organisation + Address flow
-  let orgRow:
-    | {
-        organisationId: number;
-        organisationName: string;
-        contactName: string | null;
-        contactEmail: string | null;
-        contactPhone: string | null;
-        flatNumber: string | null;
-        floorNumber: string | null;
-        blockNumber: string | null;
-        blockName: string | null;
-        streetNumber: string | null;
-        streetName: string | null;
-        propertyName: string | null;
-        districtName: string | null;
-        area: string | null;
-      }
-    | undefined;
-  if (!loadError) {
-    try {
-      [orgRow] = await db
-        .select({
-          organisationId: organisations.id,
-          organisationName: organisations.name,
-          contactName: organisations.contactName,
-          contactEmail: organisations.contactEmail,
-          contactPhone: organisations.contactPhone,
-          flatNumber: organisations.flatNumber,
-          floorNumber: organisations.floorNumber,
-          blockNumber: organisations.blockNumber,
-          blockName: organisations.blockName,
-          streetNumber: organisations.streetNumber,
-          streetName: organisations.streetName,
-          propertyName: organisations.propertyName,
-          districtName: organisations.districtName,
-          area: organisations.area,
-        })
-        .from(memberships)
-        .innerJoin(organisations, eq(organisations.id, memberships.organisationId))
-        .where(eq(memberships.userId, userId))
-        .limit(1);
-    } catch (err: any) {
-      loadError = err?.message ?? "Failed to load account info";
-    }
   }
 
   return (

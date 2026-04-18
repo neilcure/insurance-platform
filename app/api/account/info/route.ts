@@ -8,41 +8,45 @@ export async function GET() {
   try {
     const me = await requireUser();
     const userId = Number(me.id);
-    // Load current user basic info
-    const [u] = await db
-      .select({
-        id: users.id,
-        email: users.email,
-        name: users.name,
-        userType: users.userType,
-        timezone: users.timezone,
-      })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
 
-    // Find one organisation via membership (first one by createdAt)
-    const [orgRow] = await db
-      .select({
-        organisationId: organisations.id,
-        organisationName: organisations.name,
-        contactName: organisations.contactName,
-        contactEmail: organisations.contactEmail,
-        contactPhone: organisations.contactPhone,
-        flatNumber: organisations.flatNumber,
-        floorNumber: organisations.floorNumber,
-        blockNumber: organisations.blockNumber,
-        blockName: organisations.blockName,
-        streetNumber: organisations.streetNumber,
-        streetName: organisations.streetName,
-        propertyName: organisations.propertyName,
-        districtName: organisations.districtName,
-        area: organisations.area,
-      })
-      .from(memberships)
-      .innerJoin(organisations, eq(organisations.id, memberships.organisationId))
-      .where(eq(memberships.userId, userId))
-      .limit(1);
+    // User basic info and organisation lookup are independent — fan out in parallel.
+    const [userRows, orgRows] = await Promise.all([
+      db
+        .select({
+          id: users.id,
+          email: users.email,
+          name: users.name,
+          userType: users.userType,
+          timezone: users.timezone,
+        })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1),
+      db
+        .select({
+          organisationId: organisations.id,
+          organisationName: organisations.name,
+          contactName: organisations.contactName,
+          contactEmail: organisations.contactEmail,
+          contactPhone: organisations.contactPhone,
+          flatNumber: organisations.flatNumber,
+          floorNumber: organisations.floorNumber,
+          blockNumber: organisations.blockNumber,
+          blockName: organisations.blockName,
+          streetNumber: organisations.streetNumber,
+          streetName: organisations.streetName,
+          propertyName: organisations.propertyName,
+          districtName: organisations.districtName,
+          area: organisations.area,
+        })
+        .from(memberships)
+        .innerJoin(organisations, eq(organisations.id, memberships.organisationId))
+        .where(eq(memberships.userId, userId))
+        .limit(1),
+    ]);
+
+    const u = userRows[0];
+    const orgRow = orgRows[0];
 
     return NextResponse.json(
       {

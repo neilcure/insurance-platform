@@ -43,41 +43,85 @@ export async function GET(
       return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
     }
 
-    const rawItems = await db
-      .select({
-        id: accountingInvoiceItems.id,
-        invoiceId: accountingInvoiceItems.invoiceId,
-        policyId: accountingInvoiceItems.policyId,
-        policyPremiumId: accountingInvoiceItems.policyPremiumId,
-        lineKey: accountingInvoiceItems.lineKey,
-        amountCents: accountingInvoiceItems.amountCents,
-        gainCents: accountingInvoiceItems.gainCents,
-        description: accountingInvoiceItems.description,
-        createdAt: accountingInvoiceItems.createdAt,
-        policyNumber: policies.policyNumber,
-      })
-      .from(accountingInvoiceItems)
-      .leftJoin(policies, eq(policies.id, accountingInvoiceItems.policyId))
-      .where(eq(accountingInvoiceItems.invoiceId, invoiceId));
+    // Stage A: everything that only needs `invoiceId` runs in parallel.
+    // Note: we previously fetched `accountingDocuments` twice (once as `paymentDocs`
+    // gated on payments existing, once as `documents`) — the queries were identical,
+    // so we now fetch it once and reuse.
+    const [rawItems, accountingFields, payments, documents, childInvoices] = await Promise.all([
+      db
+        .select({
+          id: accountingInvoiceItems.id,
+          invoiceId: accountingInvoiceItems.invoiceId,
+          policyId: accountingInvoiceItems.policyId,
+          policyPremiumId: accountingInvoiceItems.policyPremiumId,
+          lineKey: accountingInvoiceItems.lineKey,
+          amountCents: accountingInvoiceItems.amountCents,
+          gainCents: accountingInvoiceItems.gainCents,
+          description: accountingInvoiceItems.description,
+          createdAt: accountingInvoiceItems.createdAt,
+          policyNumber: policies.policyNumber,
+        })
+        .from(accountingInvoiceItems)
+        .leftJoin(policies, eq(policies.id, accountingInvoiceItems.policyId))
+        .where(eq(accountingInvoiceItems.invoiceId, invoiceId)),
+      loadAccountingFields(),
+      db
+        .select({
+          id: accountingPayments.id,
+          invoiceId: accountingPayments.invoiceId,
+          amountCents: accountingPayments.amountCents,
+          currency: accountingPayments.currency,
+          paymentDate: accountingPayments.paymentDate,
+          paymentMethod: accountingPayments.paymentMethod,
+          referenceNumber: accountingPayments.referenceNumber,
+          status: accountingPayments.status,
+          notes: accountingPayments.notes,
+          submittedBy: accountingPayments.submittedBy,
+          verifiedBy: accountingPayments.verifiedBy,
+          verifiedAt: accountingPayments.verifiedAt,
+          rejectionNote: accountingPayments.rejectionNote,
+          createdAt: accountingPayments.createdAt,
+          updatedAt: accountingPayments.updatedAt,
+        })
+        .from(accountingPayments)
+        .where(eq(accountingPayments.invoiceId, invoiceId))
+        .orderBy(desc(accountingPayments.createdAt)),
+      db
+        .select()
+        .from(accountingDocuments)
+        .where(eq(accountingDocuments.invoiceId, invoiceId)),
+      db
+        .select()
+        .from(accountingInvoices)
+        .where(eq(accountingInvoices.parentInvoiceId, invoiceId))
+        .orderBy(desc(accountingInvoices.createdAt)),
+    ]);
 
-    // Enrich items with live premium data from policy_premiums
+    // Stage B: enrich items with live premium data + start resolving entity policy.
+    // Both depend on `rawItems` only, not on each other.
     const premiumIds = rawItems.map((i) => i.policyPremiumId).filter(Boolean) as number[];
+    const policyIdsForEntity = [...new Set(rawItems.map((i) => i.policyId))];
 
     type PremiumRow = typeof policyPremiums.$inferSelect;
-    let premiumMap = new Map<number, PremiumRow>();
+    const premiumMap = new Map<number, PremiumRow>();
 
-    if (premiumIds.length > 0) {
-      const premiums = await db
-        .select()
-        .from(policyPremiums)
-        .where(inArray(policyPremiums.id, premiumIds));
+    const [premiums, policyRow] = await Promise.all([
+      premiumIds.length > 0
+        ? db.select().from(policyPremiums).where(inArray(policyPremiums.id, premiumIds))
+        : Promise.resolve([] as PremiumRow[]),
+      policyIdsForEntity.length > 0
+        ? db
+            .select({ clientId: policies.clientId, agentId: policies.agentId })
+            .from(policies)
+            .where(eq(policies.id, policyIdsForEntity[0]))
+            .limit(1)
+        : Promise.resolve([] as { clientId: number | null; agentId: number | null }[]),
+    ]);
 
-      for (const p of premiums) {
-        premiumMap.set(p.id, p);
-      }
+    for (const p of premiums) {
+      premiumMap.set(p.id, p);
     }
 
-    const accountingFields = await loadAccountingFields();
     const resolvedCol = resolvePremiumTypeColumn(invoice.premiumType, accountingFields);
 
     const centsColumns = CENTS_COLUMNS;
@@ -118,44 +162,49 @@ export async function GET(
     };
 
     if (policyIds.length > 0) {
-      const policyRow = await db
-        .select({ clientId: policies.clientId, agentId: policies.agentId })
-        .from(policies)
-        .where(eq(policies.id, policyIds[0]))
-        .limit(1);
+      const pol = policyRow[0];
 
-      if (policyRow.length > 0) {
-        const pol = policyRow[0];
-        if (pol.clientId) {
-          const [c] = await db.select({ displayName: clients.displayName }).from(clients).where(eq(clients.id, pol.clientId)).limit(1);
-          entityNames.clientName = c?.displayName ?? null;
-        }
-        if (pol.agentId) {
-          const [a] = await db.select({ name: users.name }).from(users).where(eq(users.id, pol.agentId)).limit(1);
-          entityNames.agentName = a?.name ?? null;
-        }
-      }
-
-      // Collect all collaboratorId and insurerPolicyId from premiums
+      // Collect collaborator / insurer policy ids that need name lookups.
       const allEntityPolicyIds = new Set<number>();
       for (const pm of premiumMap.values()) {
         if (pm.collaboratorId) allEntityPolicyIds.add(pm.collaboratorId);
         if (pm.insurerPolicyId) allEntityPolicyIds.add(pm.insurerPolicyId);
       }
 
-      // Load names from cars.extraAttributes for these entity policies
-      const entityNameMap = new Map<number, string>();
-      if (allEntityPolicyIds.size > 0) {
-        const entityRows = await db
-          .select({ policyId: policies.id, carExtra: cars.extraAttributes })
-          .from(policies)
-          .leftJoin(cars, eq(cars.policyId, policies.id))
-          .where(inArray(policies.id, [...allEntityPolicyIds]));
+      // Stage C: client name, agent name, and entity-name lookup are all independent.
+      const [clientNameRow, agentNameRow, entityRows] = await Promise.all([
+        pol?.clientId
+          ? db
+              .select({ displayName: clients.displayName })
+              .from(clients)
+              .where(eq(clients.id, pol.clientId))
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+          : Promise.resolve(null),
+        pol?.agentId
+          ? db
+              .select({ name: users.name })
+              .from(users)
+              .where(eq(users.id, pol.agentId))
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+          : Promise.resolve(null),
+        allEntityPolicyIds.size > 0
+          ? db
+              .select({ policyId: policies.id, carExtra: cars.extraAttributes })
+              .from(policies)
+              .leftJoin(cars, eq(cars.policyId, policies.id))
+              .where(inArray(policies.id, [...allEntityPolicyIds]))
+          : Promise.resolve([] as { policyId: number; carExtra: unknown }[]),
+      ]);
 
-        for (const r of entityRows) {
-          const name = extractEntityName(r.carExtra as Record<string, unknown> | null);
-          if (name) entityNameMap.set(r.policyId, name);
-        }
+      entityNames.clientName = clientNameRow?.displayName ?? null;
+      entityNames.agentName = agentNameRow?.name ?? null;
+
+      const entityNameMap = new Map<number, string>();
+      for (const r of entityRows) {
+        const name = extractEntityName(r.carExtra as Record<string, unknown> | null);
+        if (name) entityNameMap.set(r.policyId, name);
       }
 
       // Build per-line info and aggregate lists
@@ -180,51 +229,10 @@ export async function GET(
       entityNames.insurerNames = [...insurerSet];
     }
 
-    const payments = await db
-      .select({
-        id: accountingPayments.id,
-        invoiceId: accountingPayments.invoiceId,
-        amountCents: accountingPayments.amountCents,
-        currency: accountingPayments.currency,
-        paymentDate: accountingPayments.paymentDate,
-        paymentMethod: accountingPayments.paymentMethod,
-        referenceNumber: accountingPayments.referenceNumber,
-        status: accountingPayments.status,
-        notes: accountingPayments.notes,
-        submittedBy: accountingPayments.submittedBy,
-        verifiedBy: accountingPayments.verifiedBy,
-        verifiedAt: accountingPayments.verifiedAt,
-        rejectionNote: accountingPayments.rejectionNote,
-        createdAt: accountingPayments.createdAt,
-        updatedAt: accountingPayments.updatedAt,
-      })
-      .from(accountingPayments)
-      .where(eq(accountingPayments.invoiceId, invoiceId))
-      .orderBy(desc(accountingPayments.createdAt));
-
-    const paymentIds = payments.map((p) => p.id);
-    let paymentDocs: any[] = [];
-    if (paymentIds.length > 0) {
-      paymentDocs = await db
-        .select()
-        .from(accountingDocuments)
-        .where(eq(accountingDocuments.invoiceId, invoiceId));
-    }
-
-    const documents = await db
-      .select()
-      .from(accountingDocuments)
-      .where(eq(accountingDocuments.invoiceId, invoiceId));
-
-    const childInvoices = await db
-      .select()
-      .from(accountingInvoices)
-      .where(eq(accountingInvoices.parentInvoiceId, invoiceId))
-      .orderBy(desc(accountingInvoices.createdAt));
-
+    // payments / documents / childInvoices were already loaded in Stage A above.
     const paymentsWithDocs = payments.map((p) => ({
       ...p,
-      documents: paymentDocs.filter((d: any) => d.paymentId === p.id),
+      documents: documents.filter((d: { paymentId?: number | null }) => d.paymentId === p.id),
     }));
 
     const premiumFields = accountingFields

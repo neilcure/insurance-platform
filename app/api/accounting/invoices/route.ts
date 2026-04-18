@@ -50,6 +50,8 @@ export async function GET(request: Request) {
       );
     }
 
+    const includePayments = url.searchParams.get("includePayments") === "1";
+
     const rawRows = await db
       .select()
       .from(accountingInvoices)
@@ -58,25 +60,42 @@ export async function GET(request: Request) {
       .limit(qLimit)
       .offset(qOffset);
 
-    // Enrich rows with live totalGainCents and totalNetPremiumCents from policy_premiums
-    let rows = rawRows;
+    let rows: any[] = rawRows;
+
     if (rawRows.length > 0) {
       const ids = rawRows.map((r: any) => r.id as number);
 
-      const premiumRows = await db
-        .select({
-          invoiceId: accountingInvoiceItems.invoiceId,
-          totalNet: sql<number>`coalesce(sum(coalesce(${policyPremiums.netPremiumCents}, 0)), 0)::int`,
-          totalAgent: sql<number>`coalesce(sum(coalesce(${policyPremiums.agentPremiumCents}, 0)), 0)::int`,
-          totalClient: sql<number>`coalesce(sum(coalesce(${policyPremiums.clientPremiumCents}, 0)), 0)::int`,
-        })
-        .from(accountingInvoiceItems)
-        .leftJoin(policyPremiums, eq(policyPremiums.id, accountingInvoiceItems.policyPremiumId))
-        .where(inArray(accountingInvoiceItems.invoiceId, ids))
-        .groupBy(accountingInvoiceItems.invoiceId);
+      // Stage 1: premium aggregates, item→policy mapping, and (optional) payments
+      // all key off the same invoice-id list. Fan them out in parallel.
+      const [premiumRows, itemRows, paymentsRows] = await Promise.all([
+        db
+          .select({
+            invoiceId: accountingInvoiceItems.invoiceId,
+            totalNet: sql<number>`coalesce(sum(coalesce(${policyPremiums.netPremiumCents}, 0)), 0)::int`,
+            totalAgent: sql<number>`coalesce(sum(coalesce(${policyPremiums.agentPremiumCents}, 0)), 0)::int`,
+            totalClient: sql<number>`coalesce(sum(coalesce(${policyPremiums.clientPremiumCents}, 0)), 0)::int`,
+          })
+          .from(accountingInvoiceItems)
+          .leftJoin(policyPremiums, eq(policyPremiums.id, accountingInvoiceItems.policyPremiumId))
+          .where(inArray(accountingInvoiceItems.invoiceId, ids))
+          .groupBy(accountingInvoiceItems.invoiceId),
+        db
+          .select({
+            invoiceId: accountingInvoiceItems.invoiceId,
+            policyId: accountingInvoiceItems.policyId,
+          })
+          .from(accountingInvoiceItems)
+          .where(inArray(accountingInvoiceItems.invoiceId, ids)),
+        includePayments
+          ? db
+              .select()
+              .from(accountingPayments)
+              .where(inArray(accountingPayments.invoiceId, ids))
+          : Promise.resolve([] as (typeof accountingPayments.$inferSelect)[]),
+      ]);
 
+      // Apply premium aggregates
       const premiumMap = new Map(premiumRows.map((r) => [r.invoiceId, r]));
-
       rows = rawRows.map((r: any) => {
         const pm = premiumMap.get(r.id);
         const net = pm?.totalNet ?? 0;
@@ -89,29 +108,16 @@ export async function GET(request: Request) {
           totalNetPremiumCents: net,
         };
       });
-    }
 
-    // Enrich with policy details (policyNumber, clientName, agentName, documentNumbers)
-    if (rows.length > 0) {
-      const invoiceIds = rows.map((r: any) => r.id as number);
-
-      // Get policy IDs linked through invoice items
-      const itemRows = await db
-        .select({
-          invoiceId: accountingInvoiceItems.invoiceId,
-          policyId: accountingInvoiceItems.policyId,
-        })
-        .from(accountingInvoiceItems)
-        .where(inArray(accountingInvoiceItems.invoiceId, invoiceIds));
-
+      // Resolve all policy ids referenced by items and entityPolicyId fields.
       const policyIdSet = new Set(itemRows.map((r) => r.policyId));
-      // Also include entityPolicyId if set
-      for (const r of rows as any[]) {
-        if (r.entityPolicyId) policyIdSet.add(r.entityPolicyId);
+      for (const r of rows) {
+        if (r.entityPolicyId) policyIdSet.add(r.entityPolicyId as number);
       }
       const allPolicyIds = Array.from(policyIdSet);
 
       if (allPolicyIds.length > 0) {
+        // Stage 2: policy rows are needed before we know which clients/agents to fetch.
         const policyRows = await db
           .select({
             id: policies.id,
@@ -123,31 +129,32 @@ export async function GET(request: Request) {
           .from(policies)
           .where(inArray(policies.id, allPolicyIds));
 
-        // Get client names
         const clientIds = policyRows.map((p) => p.clientId).filter((id): id is number => id !== null);
-        const clientMap = new Map<number, string>();
-        if (clientIds.length > 0) {
-          const clientRows = await db
-            .select({ id: clients.id, displayName: clients.displayName })
-            .from(clients)
-            .where(inArray(clients.id, clientIds));
-          for (const c of clientRows) clientMap.set(c.id, c.displayName);
-        }
-
-        // Get agent names
         const agentIds = policyRows.map((p) => p.agentId).filter((id): id is number => id !== null);
+
+        // Stage 3: clients + agents are independent — fan out in parallel.
+        const [clientRows, agentRows] = await Promise.all([
+          clientIds.length > 0
+            ? db
+                .select({ id: clients.id, displayName: clients.displayName })
+                .from(clients)
+                .where(inArray(clients.id, clientIds))
+            : Promise.resolve([] as { id: number; displayName: string }[]),
+          agentIds.length > 0
+            ? db
+                .select({ id: users.id, name: users.name, email: users.email })
+                .from(users)
+                .where(inArray(users.id, agentIds))
+            : Promise.resolve([] as { id: number; name: string | null; email: string | null }[]),
+        ]);
+
+        const clientMap = new Map<number, string>();
+        for (const c of clientRows) clientMap.set(c.id, c.displayName);
         const agentMap = new Map<number, string>();
-        if (agentIds.length > 0) {
-          const agentRows = await db
-            .select({ id: users.id, name: users.name, email: users.email })
-            .from(users)
-            .where(inArray(users.id, agentIds));
-          for (const a of agentRows) agentMap.set(a.id, a.name || a.email || "");
-        }
+        for (const a of agentRows) agentMap.set(a.id, a.name || a.email || "");
 
         const policyMap = new Map(policyRows.map((p) => [p.id, p]));
 
-        // Map invoiceId → policyId (use first linked policy, or entityPolicyId)
         const invoicePolicyMap = new Map<number, number>();
         for (const item of itemRows) {
           if (!invoicePolicyMap.has(item.invoiceId)) {
@@ -155,7 +162,7 @@ export async function GET(request: Request) {
           }
         }
 
-        rows = (rows as any[]).map((r) => {
+        rows = rows.map((r) => {
           const policyId = invoicePolicyMap.get(r.id) ?? r.entityPolicyId;
           const policy = policyId ? policyMap.get(policyId) : undefined;
           const tracking = (policy?.documentTracking ?? {}) as Record<string, { documentNumber?: string }>;
@@ -177,26 +184,20 @@ export async function GET(request: Request) {
           };
         });
       }
-    }
 
-    const includePayments = url.searchParams.get("includePayments") === "1";
-    if (includePayments && rows.length > 0) {
-      const invoiceIds = rows.map((r: any) => r.id as number);
-      const payments = await db
-        .select()
-        .from(accountingPayments)
-        .where(inArray(accountingPayments.invoiceId, invoiceIds));
-
-      const paymentsByInvoice = new Map<number, (typeof payments)[number][]>();
-      for (const p of payments) {
-        const arr = paymentsByInvoice.get(p.invoiceId) ?? [];
-        arr.push(p);
-        paymentsByInvoice.set(p.invoiceId, arr);
+      // Apply payments (already pre-fetched in Stage 1 when includePayments was set).
+      if (includePayments) {
+        const paymentsByInvoice = new Map<number, (typeof paymentsRows)[number][]>();
+        for (const p of paymentsRows) {
+          const arr = paymentsByInvoice.get(p.invoiceId) ?? [];
+          arr.push(p);
+          paymentsByInvoice.set(p.invoiceId, arr);
+        }
+        rows = rows.map((r) => ({
+          ...r,
+          payments: paymentsByInvoice.get(r.id) ?? [],
+        }));
       }
-      rows = rows.map((r: any) => ({
-        ...r,
-        payments: paymentsByInvoice.get(r.id) ?? [],
-      }));
     }
 
     return NextResponse.json(rows, { status: 200 });

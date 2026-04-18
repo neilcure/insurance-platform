@@ -43,6 +43,8 @@ export async function buildMergeContext(policyId: number): Promise<{
 
   if (!policy) return null;
 
+  // Step 1: load the car row first so we can resolve clientId from snapshot extras.
+  // The car query is small and we can't fan out client lookup until we know the resolved id.
   let carRow: {
     plateNumber: string | null;
     make: string | null;
@@ -74,23 +76,21 @@ export async function buildMergeContext(policyId: number): Promise<{
     year: carRow?.year,
   };
 
-  let agentData: Record<string, unknown> | null = null;
-  if (policy.agentId) {
-    try {
-      const [agent] = await db
+  const resolvedClientId = policy.clientId ?? (extra.clientId as number | undefined);
+
+  // Step 2: agent / client / org lookups are independent — fan out in parallel.
+  const agentPromise = policy.agentId
+    ? db
         .select({ id: users.id, name: users.name, email: users.email, userNumber: users.userNumber })
         .from(users)
         .where(eq(users.id, policy.agentId))
-        .limit(1);
-      if (agent) agentData = agent as unknown as Record<string, unknown>;
-    } catch { /* ignore */ }
-  }
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+        .catch(() => null)
+    : Promise.resolve(null);
 
-  let clientData: Record<string, unknown> | null = null;
-  const resolvedClientId = policy.clientId ?? (extra.clientId as number | undefined);
-  if (resolvedClientId) {
-    try {
-      const [client] = await db
+  const clientPromise = resolvedClientId
+    ? db
         .select({
           id: clients.id,
           clientNumber: clients.clientNumber,
@@ -102,27 +102,35 @@ export async function buildMergeContext(policyId: number): Promise<{
         })
         .from(clients)
         .where(eq(clients.id, Number(resolvedClientId)))
-        .limit(1);
-      if (client) {
-        clientData = {
-          ...client,
-          ...(client.extraAttributes as Record<string, unknown> ?? {}),
-        } as unknown as Record<string, unknown>;
-      }
-    } catch { /* ignore */ }
-  }
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+        .catch(() => null)
+    : Promise.resolve(null);
 
-  let orgData: Record<string, unknown> | null = null;
-  if (policy.organisationId) {
-    try {
-      const [org] = await db
+  const orgPromise = policy.organisationId
+    ? db
         .select()
         .from(organisations)
         .where(eq(organisations.id, policy.organisationId))
-        .limit(1);
-      if (org) orgData = org as unknown as Record<string, unknown>;
-    } catch { /* ignore */ }
-  }
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+        .catch(() => null)
+    : Promise.resolve(null);
+
+  const [agentRow, clientRow, orgRow] = await Promise.all([agentPromise, clientPromise, orgPromise]);
+
+  const agentData: Record<string, unknown> | null = agentRow
+    ? (agentRow as unknown as Record<string, unknown>)
+    : null;
+  const clientData: Record<string, unknown> | null = clientRow
+    ? ({
+        ...clientRow,
+        ...((clientRow.extraAttributes as Record<string, unknown>) ?? {}),
+      } as unknown as Record<string, unknown>)
+    : null;
+  const orgData: Record<string, unknown> | null = orgRow
+    ? (orgRow as unknown as Record<string, unknown>)
+    : null;
 
   let accountingLines: AccountingLineContext[] = [];
   try {
@@ -142,31 +150,37 @@ export async function buildMergeContext(policyId: number): Promise<{
       const orgMap = new Map<number, Record<string, unknown>>();
       const collabMap = new Map<number, Record<string, unknown>>();
 
-      if (lineOrgIds.length) {
-        const orgRows = await db.select().from(organisations).where(inArray(organisations.id, lineOrgIds));
-        for (const o of orgRows) orgMap.set(o.id, o as unknown as Record<string, unknown>);
+      // Run org lookup, collaborator lookup, and accounting-fields load in parallel — none depend on each other.
+      const [orgRowsRes, collabRowsRes, acctFields] = await Promise.all([
+        lineOrgIds.length
+          ? db.select().from(organisations).where(inArray(organisations.id, lineOrgIds))
+          : Promise.resolve([] as { id: number }[]),
+        lineCollabIds.length
+          ? db
+              .select({ policyId: policies.id, carExtra: cars.extraAttributes })
+              .from(policies)
+              .leftJoin(cars, eq(cars.policyId, policies.id))
+              .where(inArray(policies.id, lineCollabIds))
+          : Promise.resolve([] as { policyId: number; carExtra: unknown }[]),
+        loadAccountingFields(),
+      ]);
+
+      for (const o of orgRowsRes as { id: number }[]) {
+        orgMap.set(o.id, o as unknown as Record<string, unknown>);
       }
-      if (lineCollabIds.length) {
-        const collabRows = await db
-          .select({ policyId: policies.id, carExtra: cars.extraAttributes })
-          .from(policies)
-          .leftJoin(cars, eq(cars.policyId, policies.id))
-          .where(inArray(policies.id, lineCollabIds));
-        for (const c of collabRows) {
-          const carSnap = (c.carExtra as Record<string, unknown>) ?? {};
-          const name = getDisplayNameFromSnapshot({
-            insuredSnapshot: carSnap.insuredSnapshot as Record<string, unknown> | null | undefined,
-            packagesSnapshot: (carSnap.packagesSnapshot ?? {}) as Record<string, unknown>,
-          });
-          collabMap.set(c.policyId, {
-            name: name || `Collaborator #${c.policyId}`,
-            ...((c.carExtra as Record<string, unknown>) ?? {}),
-          });
-        }
+      for (const c of collabRowsRes as { policyId: number; carExtra: unknown }[]) {
+        const carSnap = (c.carExtra as Record<string, unknown>) ?? {};
+        const name = getDisplayNameFromSnapshot({
+          insuredSnapshot: carSnap.insuredSnapshot as Record<string, unknown> | null | undefined,
+          packagesSnapshot: (carSnap.packagesSnapshot ?? {}) as Record<string, unknown>,
+        });
+        collabMap.set(c.policyId, {
+          name: name || `Collaborator #${c.policyId}`,
+          ...((c.carExtra as Record<string, unknown>) ?? {}),
+        });
       }
 
       const centsToDisplay = (v: number | null | undefined) => (v != null ? v / 100 : null);
-      const acctFields = await loadAccountingFields();
       const colFieldMap = buildColumnFieldMap(acctFields);
 
       const CANONICAL_KEYS: Record<string, string> = {};
@@ -263,29 +277,38 @@ export async function buildMergeContext(policyId: number): Promise<{
           ),
         );
 
-      for (const sched of schedules) {
-        const [stmt] = await db
-          .select({
-            id: accountingInvoices.id,
-            invoiceNumber: accountingInvoices.invoiceNumber,
-            status: accountingInvoices.status,
-            totalAmountCents: accountingInvoices.totalAmountCents,
-            paidAmountCents: accountingInvoices.paidAmountCents,
-            currency: accountingInvoices.currency,
-            entityType: accountingInvoices.entityType,
-            entityName: accountingInvoices.entityName,
-            invoiceDate: accountingInvoices.invoiceDate,
-          })
-          .from(accountingInvoices)
-          .where(
-            and(
-              eq(accountingInvoices.scheduleId, sched.id),
-              eq(accountingInvoices.invoiceType, "statement"),
-              inArray(accountingInvoices.status, ["draft", "pending", "partial", "settled", "active", "statement_created"]),
-            ),
-          )
-          .orderBy(sql`${accountingInvoices.id} DESC`)
-          .limit(1);
+      // Fan out the per-schedule statement lookup; we still pick the first one
+      // with a result via the loop below, but the round trips overlap.
+      const stmtResults = await Promise.all(
+        schedules.map((sched) =>
+          db
+            .select({
+              id: accountingInvoices.id,
+              invoiceNumber: accountingInvoices.invoiceNumber,
+              status: accountingInvoices.status,
+              totalAmountCents: accountingInvoices.totalAmountCents,
+              paidAmountCents: accountingInvoices.paidAmountCents,
+              currency: accountingInvoices.currency,
+              entityType: accountingInvoices.entityType,
+              entityName: accountingInvoices.entityName,
+              invoiceDate: accountingInvoices.invoiceDate,
+            })
+            .from(accountingInvoices)
+            .where(
+              and(
+                eq(accountingInvoices.scheduleId, sched.id),
+                eq(accountingInvoices.invoiceType, "statement"),
+                inArray(accountingInvoices.status, ["draft", "pending", "partial", "settled", "active", "statement_created"]),
+              ),
+            )
+            .orderBy(sql`${accountingInvoices.id} DESC`)
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+        ),
+      );
+
+      for (let i = 0; i < schedules.length; i++) {
+        const stmt = stmtResults[i];
 
         if (stmt) {
           const rawItems = await db.execute(sql`

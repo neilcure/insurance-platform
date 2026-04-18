@@ -142,42 +142,47 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     const base = rows[0] as Row & { extraAttributes?: any };
-    // Resolve client from snapshot (or clientNumber) to make UI simpler
-    let policyClientId: number | null = null;
-    let resolvedClient:
-      | { id: number; clientNumber: string; createdAt?: string }
-      | null = null;
-    try {
-      // Prefer the relational link when `policies.client_id` exists (this is the most reliable).
-      // Older snapshots may not contain clientId, but the policy row can still be linked.
-      try {
-        let cid = NaN;
-        if (polCols.hasClientId) {
-          const res = await db.execute(sql`
-            select p.client_id as "clientId"
-            from "policies" p
-            where p.id = ${id}
-            limit 1
-          `);
-          const r = Array.isArray(res) ? (res as any)[0] : (res as any)?.rows?.[0];
-          cid = Number(r?.clientId ?? r?.client_id);
-        }
-        if (Number.isFinite(cid) && cid > 0) {
-          policyClientId = cid;
-          const [c] = await db
-            .select({ id: clients.id, clientNumber: clients.clientNumber, createdAt: clients.createdAt })
-            .from(clients)
-            .where(eq(clients.id, cid))
-            .limit(1);
-          if (c) {
-            resolvedClient = { id: c.id, clientNumber: c.clientNumber, createdAt: c.createdAt };
-          }
-        }
-      } catch {
-        // ignore policy client_id lookup failures
-      }
+    const resolvedFlowKey = (base as any).flowKey || String((base.extraAttributes as any)?.flowKey ?? "");
 
-      const extra = (base?.extraAttributes ?? {}) as any;
+    // Client resolution and agent resolution are fully independent —
+    // run them in parallel so they share a single network round-trip window.
+    type ResolvedClient = { id: number; clientNumber: string; createdAt?: string } | null;
+    type ResolvedAgent = { id: number; userNumber: string | null; name: string | null; email: string } | null;
+
+    const clientResolutionPromise: Promise<{ policyClientId: number | null; resolvedClient: ResolvedClient }> = (async () => {
+      let policyClientId: number | null = null;
+      let resolvedClient: ResolvedClient = null;
+      try {
+        // Prefer the relational link when `policies.client_id` exists (this is the most reliable).
+        // Older snapshots may not contain clientId, but the policy row can still be linked.
+        try {
+          let cid = NaN;
+          if (polCols.hasClientId) {
+            const res = await db.execute(sql`
+              select p.client_id as "clientId"
+              from "policies" p
+              where p.id = ${id}
+              limit 1
+            `);
+            const r = Array.isArray(res) ? (res as any)[0] : (res as any)?.rows?.[0];
+            cid = Number(r?.clientId ?? r?.client_id);
+          }
+          if (Number.isFinite(cid) && cid > 0) {
+            policyClientId = cid;
+            const [c] = await db
+              .select({ id: clients.id, clientNumber: clients.clientNumber, createdAt: clients.createdAt })
+              .from(clients)
+              .where(eq(clients.id, cid))
+              .limit(1);
+            if (c) {
+              resolvedClient = { id: c.id, clientNumber: c.clientNumber, createdAt: c.createdAt };
+            }
+          }
+        } catch {
+          // ignore policy client_id lookup failures
+        }
+
+        const extra = (base?.extraAttributes ?? {}) as any;
       // 1) Try numeric clientId in snapshot
       let cid = Number(extra?.clientId);
       if (!(Number.isFinite(cid) && cid > 0) && Number.isFinite(policyClientId) && (policyClientId as number) > 0) {
@@ -302,33 +307,36 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
           .limit(1);
         if (c) resolvedClient = { id: c.id, clientNumber: c.clientNumber, createdAt: c.createdAt };
       }
-    } catch {
-      // ignore resolution errors
-    }
-    // For client flow records, resolve client by matching policyNumber = clientNumber
-    const resolvedFlowKey = (base as any).flowKey || String((base.extraAttributes as any)?.flowKey ?? "");
-    const flowKey = resolvedFlowKey.toLowerCase();
-    if (!resolvedClient && flowKey.includes("client")) {
-      try {
-        const [c] = await db
-          .select({ id: clients.id, clientNumber: clients.clientNumber, createdAt: clients.createdAt })
-          .from(clients)
-          .where(eq(clients.clientNumber, base.policyNumber))
-          .limit(1);
-        if (c) resolvedClient = { id: c.id, clientNumber: c.clientNumber, createdAt: c.createdAt };
-      } catch { /* ignore */ }
-    }
-    if (flowKey.includes("client") && resolvedClient && resolvedClient.clientNumber !== base.policyNumber) {
-      try {
-        await db.update(clients).set({ clientNumber: base.policyNumber }).where(eq(clients.id, resolvedClient.id));
-        resolvedClient = { ...resolvedClient, clientNumber: base.policyNumber };
-      } catch { /* best effort */ }
-    }
-    // Resolve agent linked to this policy (if column present)
-    let resolvedAgent:
-      | { id: number; userNumber: string | null; name: string | null; email: string }
-      | null = null;
-    if (polCols.hasAgentId) {
+      } catch {
+        // ignore resolution errors
+      }
+
+      // For client flow records, resolve client by matching policyNumber = clientNumber.
+      // (`resolvedFlowKey` is computed once at the top level; this branch only reads it.)
+      const flowKey = resolvedFlowKey.toLowerCase();
+      if (!resolvedClient && flowKey.includes("client")) {
+        try {
+          const [c] = await db
+            .select({ id: clients.id, clientNumber: clients.clientNumber, createdAt: clients.createdAt })
+            .from(clients)
+            .where(eq(clients.clientNumber, base.policyNumber))
+            .limit(1);
+          if (c) resolvedClient = { id: c.id, clientNumber: c.clientNumber, createdAt: c.createdAt };
+        } catch { /* ignore */ }
+      }
+      if (flowKey.includes("client") && resolvedClient && resolvedClient.clientNumber !== base.policyNumber) {
+        try {
+          await db.update(clients).set({ clientNumber: base.policyNumber }).where(eq(clients.id, resolvedClient.id));
+          resolvedClient = { ...resolvedClient, clientNumber: base.policyNumber };
+        } catch { /* best effort */ }
+      }
+
+      return { policyClientId, resolvedClient };
+    })();
+
+    // Resolve agent linked to this policy (if column present) — independent of client lookup.
+    const agentResolutionPromise: Promise<ResolvedAgent> = (async () => {
+      if (!polCols.hasAgentId) return null;
       try {
         const res = await db.execute(sql`
           select u.id, u.user_number as "userNumber", u.name, u.email
@@ -339,17 +347,24 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
         `);
         const r = Array.isArray(res) ? (res as any)[0] : (res as any)?.rows?.[0];
         if (r && r.id) {
-          resolvedAgent = {
+          return {
             id: Number(r.id),
             userNumber: r.userNumber !== undefined ? (r.userNumber as any) : (r.user_number as any) ?? null,
             name: (r.name as any) ?? null,
             email: String(r.email),
           };
         }
+        return null;
       } catch {
-        resolvedAgent = null;
+        return null;
       }
-    }
+    })();
+
+    const [{ policyClientId, resolvedClient }, resolvedAgent] = await Promise.all([
+      clientResolutionPromise,
+      agentResolutionPromise,
+    ]);
+
     const res = NextResponse.json(
       {
         ...base,

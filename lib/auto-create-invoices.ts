@@ -15,25 +15,27 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     await syncPremiumSnapshotToTable(policyId, userId);
   } catch { /* non-fatal */ }
 
-  const premiums = await db
-    .select()
-    .from(policyPremiums)
-    .where(eq(policyPremiums.policyId, policyId));
+  // After the sync, the premium rows and the policy row are independent reads — fan out.
+  const [premiums, policyRows] = await Promise.all([
+    db
+      .select()
+      .from(policyPremiums)
+      .where(eq(policyPremiums.policyId, policyId)),
+    db
+      .select({
+        id: policies.id,
+        policyNumber: policies.policyNumber,
+        organisationId: policies.organisationId,
+        clientId: policies.clientId,
+        agentId: policies.agentId,
+      })
+      .from(policies)
+      .where(eq(policies.id, policyId))
+      .limit(1),
+  ]);
 
   if (premiums.length === 0) return;
-
-  const [policy] = await db
-    .select({
-      id: policies.id,
-      policyNumber: policies.policyNumber,
-      organisationId: policies.organisationId,
-      clientId: policies.clientId,
-      agentId: policies.agentId,
-    })
-    .from(policies)
-    .where(eq(policies.id, policyId))
-    .limit(1);
-
+  const policy = policyRows[0];
   if (!policy) return;
 
   // Endorsements may not have their own agentId — inherit from parent policy
@@ -83,60 +85,51 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
     return agent > 0 ? agent - net : client - net;
   }
 
+  const hasAgent = !!effectiveAgentId;
+
+  // Client and agent schedule lookups are independent — fan out in parallel.
+  // (Previously the client lookup was issued twice: once for the early-return
+  // check below and once to populate `clientScheduleId`. We now do it once.)
+  const [clientScheduleRow, agentScheduleRow] = await Promise.all([
+    policy.clientId
+      ? db
+          .select({ id: accountingPaymentSchedules.id })
+          .from(accountingPaymentSchedules)
+          .where(
+            and(
+              eq(accountingPaymentSchedules.organisationId, organisationId),
+              eq(accountingPaymentSchedules.entityType, "client"),
+              eq(accountingPaymentSchedules.clientId, policy.clientId),
+              eq(accountingPaymentSchedules.isActive, true),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    hasAgent
+      ? db
+          .select({ id: accountingPaymentSchedules.id })
+          .from(accountingPaymentSchedules)
+          .where(
+            and(
+              eq(accountingPaymentSchedules.organisationId, organisationId),
+              eq(accountingPaymentSchedules.entityType, "agent"),
+              eq(accountingPaymentSchedules.agentId, effectiveAgentId!),
+              eq(accountingPaymentSchedules.isActive, true),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+  ]);
+
+  const clientScheduleId: number | null = clientScheduleRow?.id ?? null;
+  const agentScheduleId: number | null = agentScheduleRow?.id ?? null;
+
   // When the client has an active payment schedule, invoices are created
   // through the document template flow (quotation → confirm → invoice) with
   // proper document numbers — not here with auto-generated numbers.
-  if (policy.clientId) {
-    const scheduleRows = await db
-      .select({ id: accountingPaymentSchedules.id })
-      .from(accountingPaymentSchedules)
-      .where(
-        and(
-          eq(accountingPaymentSchedules.organisationId, organisationId),
-          eq(accountingPaymentSchedules.entityType, "client"),
-          eq(accountingPaymentSchedules.clientId, policy.clientId),
-          eq(accountingPaymentSchedules.isActive, true),
-        ),
-      )
-      .limit(1);
-    if (scheduleRows.length > 0 && !documentNumber) return;
-  }
-
-  const hasAgent = !!effectiveAgentId;
-
-  let clientScheduleId: number | null = null;
-  if (policy.clientId && organisationId) {
-    const [row] = await db
-      .select({ id: accountingPaymentSchedules.id })
-      .from(accountingPaymentSchedules)
-      .where(
-        and(
-          eq(accountingPaymentSchedules.organisationId, organisationId),
-          eq(accountingPaymentSchedules.entityType, "client"),
-          eq(accountingPaymentSchedules.clientId, policy.clientId),
-          eq(accountingPaymentSchedules.isActive, true),
-        ),
-      )
-      .limit(1);
-    clientScheduleId = row?.id ?? null;
-  }
-
-  let agentScheduleId: number | null = null;
-  if (hasAgent && organisationId) {
-    const [row] = await db
-      .select({ id: accountingPaymentSchedules.id })
-      .from(accountingPaymentSchedules)
-      .where(
-        and(
-          eq(accountingPaymentSchedules.organisationId, organisationId),
-          eq(accountingPaymentSchedules.entityType, "agent"),
-          eq(accountingPaymentSchedules.agentId, effectiveAgentId!),
-          eq(accountingPaymentSchedules.isActive, true),
-        ),
-      )
-      .limit(1);
-    agentScheduleId = row?.id ?? null;
-  }
+  if (policy.clientId && clientScheduleId && !documentNumber) return;
 
   // When line-specific rows exist (e.g. "tpo" + "own_vehicle_damage"),
   // ignore any phantom "main" row left over from snapshot sync.
@@ -157,25 +150,28 @@ export async function autoCreateAccountingInvoices(policyId: number, docType: st
   const eligiblePremiums = receivableRole === "client" ? clientEligiblePremiums : agentEligiblePremiums;
   if (eligiblePremiums.length === 0) return;
 
-  let clientName: string | null = null;
-  if (policy.clientId) {
-    const [c] = await db
-      .select({ displayName: clients.displayName })
-      .from(clients)
-      .where(eq(clients.id, policy.clientId))
-      .limit(1);
-    clientName = c?.displayName ?? null;
-  }
+  // Client display name and agent name are independent — fan out in parallel.
+  const [clientNameRow, agentNameRow] = await Promise.all([
+    policy.clientId
+      ? db
+          .select({ displayName: clients.displayName })
+          .from(clients)
+          .where(eq(clients.id, policy.clientId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    effectiveAgentId
+      ? db
+          .select({ name: users.name, email: users.email })
+          .from(users)
+          .where(eq(users.id, effectiveAgentId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+  ]);
 
-  let agentName: string | null = null;
-  if (effectiveAgentId) {
-    const [a] = await db
-      .select({ name: users.name, email: users.email })
-      .from(users)
-      .where(eq(users.id, effectiveAgentId))
-      .limit(1);
-    agentName = a?.name || a?.email || null;
-  }
+  const clientName: string | null = clientNameRow?.displayName ?? null;
+  const agentName: string | null = agentNameRow?.name || agentNameRow?.email || null;
 
   const billingEntityType = receivableRole === "agent" ? "agent" : "client";
   const billingEntityName = billingEntityType === "agent"
