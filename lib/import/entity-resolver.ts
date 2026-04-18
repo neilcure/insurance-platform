@@ -1,0 +1,145 @@
+/**
+ * Resolves entity-picker references made in import rows:
+ *   - "agent" pickers → user lookup by userNumber
+ *   - other entity pickers (collaboratorSet / InsuranceSet / etc.)
+ *     → policy lookup by policyNumber + flowKey, then snapshot copy
+ *
+ * If a reference can't be resolved the row is rejected with a clear error.
+ * The importer never auto-creates entity records — by design (the user picked
+ * "fail" over "auto-create" for missing references).
+ */
+import { db } from "@/db/client";
+import { users } from "@/db/schema/core";
+import { policies, cars } from "@/db/schema/insurance";
+import { and, eq } from "drizzle-orm";
+import type { ImportPolicyPayload, EntityReference } from "./payload";
+
+export type EntityResolutionError = {
+  /** Column id from the Excel template (for error reporting) */
+  columnId: string;
+  /** Human-friendly error message shown in the UI / error report */
+  message: string;
+};
+
+/**
+ * Per-organisation cache so that a single import batch (which can hit the
+ * same insurance company on hundreds of rows) doesn't issue thousands of
+ * duplicate lookups.
+ */
+export class EntityResolutionCache {
+  private agentCache = new Map<string, number | null>();
+  // key = `${flowKey}::${recordNumber}`
+  private entityCache = new Map<string, Record<string, unknown> | null>();
+
+  async resolveAgent(userNumber: string): Promise<number | null> {
+    const key = userNumber.trim();
+    if (!key) return null;
+    if (this.agentCache.has(key)) return this.agentCache.get(key)!;
+    const [row] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.userNumber, key))
+      .limit(1);
+    const id = row?.id ?? null;
+    this.agentCache.set(key, id);
+    return id;
+  }
+
+  async resolveEntitySnapshot(
+    refFlow: string,
+    refValue: string,
+  ): Promise<Record<string, unknown> | null> {
+    const key = `${refFlow}::${refValue.trim()}`;
+    if (this.entityCache.has(key)) return this.entityCache.get(key)!;
+
+    const [row] = await db
+      .select({
+        policyId: policies.id,
+        extra: cars.extraAttributes,
+      })
+      .from(policies)
+      .leftJoin(cars, eq(cars.policyId, policies.id))
+      .where(
+        and(
+          eq(policies.policyNumber, refValue.trim()),
+          eq(policies.flowKey, refFlow),
+        ),
+      )
+      .limit(1);
+
+    if (!row) {
+      this.entityCache.set(key, null);
+      return null;
+    }
+    const extra = (row.extra ?? {}) as {
+      insuredSnapshot?: Record<string, unknown>;
+      packagesSnapshot?: Record<string, unknown>;
+    };
+
+    // Flatten everything into one lookup map so mappings can use either
+    // raw field keys ("insured__firstName") or package-qualified ones.
+    const flat: Record<string, unknown> = {};
+    const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(insured)) flat[k] = v;
+    const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
+    for (const pkgValRaw of Object.values(pkgs)) {
+      const pkgVal = pkgValRaw as { values?: Record<string, unknown> } & Record<string, unknown>;
+      const values = (pkgVal.values ?? pkgVal) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(values)) flat[k] = v;
+    }
+    this.entityCache.set(key, flat);
+    return flat;
+  }
+}
+
+/**
+ * Apply all entity references for a single import payload.
+ * Mutates the payload in place: agent → policy.agentId; entity mappings →
+ * insured/package values.
+ */
+export async function applyEntityReferences(
+  payload: ImportPolicyPayload,
+  refs: EntityReference[],
+  cache: EntityResolutionCache,
+): Promise<EntityResolutionError[]> {
+  const errors: EntityResolutionError[] = [];
+
+  for (const ref of refs) {
+    if (ref.refFlow === "__agent__") {
+      const agentId = await cache.resolveAgent(ref.refValue);
+      if (!agentId) {
+        errors.push({
+          columnId: ref.columnId,
+          message: `Agent "${ref.refValue}" not found — make sure this user number exists in the system before importing`,
+        });
+        continue;
+      }
+      payload.policy = { ...(payload.policy ?? {}), agentId };
+      continue;
+    }
+
+    const snapshot = await cache.resolveEntitySnapshot(ref.refFlow, ref.refValue);
+    if (!snapshot) {
+      errors.push({
+        columnId: ref.columnId,
+        message: `Record "${ref.refValue}" not found in flow "${ref.refFlow}" — please add it via the "${ref.refFlow}" flow first, then re-upload`,
+      });
+      continue;
+    }
+
+    // Apply mappings: copy source fields from the snapshot to target fields
+    // in the import payload (insured snapshot or package values).
+    const target =
+      ref.scope === "insured"
+        ? payload.insured
+        : (payload.packages[ref.pkg!] ??= { values: {} }).values;
+
+    for (const m of ref.mappings) {
+      const sourceVal = snapshot[m.sourceField];
+      if (sourceVal === undefined) continue;
+      target[m.targetField] = sourceVal;
+    }
+  }
+
+  return errors;
+}

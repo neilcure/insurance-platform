@@ -1,8 +1,12 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import PoliciesTableClient from "@/components/policies/PoliciesTableClient";
 import { FlowNewButton } from "@/components/flows/FlowNewButton";
+import { ImportPoliciesButton } from "@/components/flows/ImportPoliciesButton";
 import { serverFetch } from "@/lib/auth/server-fetch";
 import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
+import { requireUser } from "@/lib/auth/require-user";
+
+const IMPORT_ENABLED_FLOWS = new Set(["policyset"]);
 
 type PolicyRowRaw = {
   policyId: number;
@@ -64,15 +68,25 @@ export default async function FlowDashboardPage({
   params: Promise<{ flow: string }>;
 }) {
   const { flow } = await params;
-  const [flowInfo, rows] = await Promise.all([fetchFlowInfo(flow), fetchPolicies(flow)]);
+  const [flowInfo, rows, currentUser] = await Promise.all([
+    fetchFlowInfo(flow),
+    fetchPolicies(flow),
+    requireUser().catch(() => null),
+  ]);
 
   const title = flowInfo?.meta?.dashboardLabel || flowInfo?.label || flow;
+  const canImport =
+    IMPORT_ENABLED_FLOWS.has(flow) &&
+    (currentUser?.userType === "admin" || currentUser?.userType === "internal_staff");
 
   return (
     <main className="mx-auto max-w-6xl">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex items-center justify-between gap-2">
         <h1 className="text-2xl font-semibold">{title}</h1>
-        <FlowNewButton flowKey={flow} defaultLabel={`New ${title}`} />
+        <div className="flex items-center gap-2">
+          {canImport && <ImportPoliciesButton flowKey={flow} flowLabel={title} />}
+          <FlowNewButton flowKey={flow} defaultLabel={`New ${title}`} />
+        </div>
       </div>
 
       <Card>
