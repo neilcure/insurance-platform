@@ -13,6 +13,10 @@ import { users } from "@/db/schema/core";
 import { policies, cars } from "@/db/schema/insurance";
 import { and, eq } from "drizzle-orm";
 import type { ImportPolicyPayload, EntityReference } from "./payload";
+import type { ImportFlowSchema } from "./schema";
+import { flattenFields } from "./schema";
+import { fieldColumnId } from "./excel";
+import type { ValidatedRow } from "./validate";
 
 export type EntityResolutionError = {
   /** Column id from the Excel template (for error reporting) */
@@ -142,4 +146,65 @@ export async function applyEntityReferences(
   }
 
   return errors;
+}
+
+/**
+ * Staging-time companion to `applyEntityReferences` — but this one only
+ * checks "does the referenced record exist?" and pushes a HARD ERROR onto
+ * the row's `errors[]` if it doesn't.
+ *
+ * Why hard error (not warning):
+ *   The commit step would fail anyway when the same row tries to actually
+ *   resolve the ref. Surfacing it during staging means admins see the problem
+ *   in the review UI BEFORE clicking "Commit", so the staging promise of
+ *   "ready means it'll commit" is honoured.
+ *
+ * Pure post-pass — never mutates row.values, only appends to row.errors.
+ * Uses the shared `EntityResolutionCache` so a batch with 200 rows pointing
+ * at the same insurer issues 1 query, not 200.
+ *
+ * Scope:
+ *   • Only fields with `field.entityPicker` are checked (i.e. agent_picker
+ *     and entity-picker columns).
+ *   • Empty cells are skipped (gating handled by the regular Required check).
+ *   • Already-erroring rows still get checked — admins want to see ALL
+ *     issues at once, not one-at-a-time.
+ */
+export async function attachRefResolutionErrors(
+  rows: ValidatedRow[],
+  schema: ImportFlowSchema,
+  cache: EntityResolutionCache,
+): Promise<void> {
+  const fields = flattenFields(schema);
+  const refFields = fields.filter((f) => Boolean(f.entityPicker));
+  if (refFields.length === 0) return;
+
+  for (const row of rows) {
+    for (const f of refFields) {
+      const colId = fieldColumnId(f);
+      const raw = row.values[colId];
+      if (raw === undefined || raw === null || raw === "") continue;
+
+      const refValue = String(raw).trim();
+      if (!refValue) continue;
+
+      // Skip duplicate work if this column already has an error message
+      // (e.g. type-validation flagged it earlier).
+      if (row.errors.some((e) => e.column === colId)) continue;
+
+      const isAgent = f.entityPicker!.flow === "__agent__";
+      const found = isAgent
+        ? (await cache.resolveAgent(refValue)) !== null
+        : (await cache.resolveEntitySnapshot(f.entityPicker!.flow, refValue)) !== null;
+
+      if (found) continue;
+
+      row.errors.push({
+        column: colId,
+        message: isAgent
+          ? `Agent "${refValue}" not found — pick an existing agent or create them first`
+          : `Record "${refValue}" not found in flow "${f.entityPicker!.flow}" — pick an existing record or create it first`,
+      });
+    }
+  }
 }

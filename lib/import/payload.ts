@@ -7,7 +7,13 @@
  */
 import type { ValidatedRow } from "./validate";
 import type { ImportFlowSchema } from "./schema";
-import { booleanChildWizardKey, optionChildWizardKey } from "./schema";
+import {
+  booleanChildRepeatableWizardKey,
+  booleanChildWizardKey,
+  optionChildBooleanChildWizardKey,
+  optionChildWizardKey,
+  repeatableWizardKey,
+} from "./schema";
 import { fieldColumnId } from "./excel";
 
 export type ImportPolicyPayload = {
@@ -67,6 +73,19 @@ export function buildPolicyPayload(
   for (const pkg of schema.packages) {
     let category: string | undefined;
     const pkgValues: Record<string, unknown> = {};
+    // Buffer for repeatable slot values: parentKey → slotIndex → { subKey: value }
+    const repeatableBuffers = new Map<string, Map<number, Record<string, unknown>>>();
+    // Buffer for boolean-child-nested repeatable slots:
+    //   `${parentKey}__${branch}__c${bcIdx}` → slotIndex → { subKey: value }
+    // Distinct from the plain repeatableBuffers so a top-level repeatable and
+    // a boolean-nested one with the same parentKey don't collide.
+    const boolRepeatableBuffers = new Map<
+      string,
+      {
+        meta: { parentKey: string; branch: "true" | "false"; bcChildIndex: number };
+        slots: Map<number, Record<string, unknown>>;
+      }
+    >();
 
     for (const field of pkg.fields) {
       const id = fieldColumnId(field);
@@ -87,7 +106,10 @@ export function buildPolicyPayload(
       }
 
       // Boolean-child virtual columns map to the wizard's RHF key shape:
-      //   <pkg>__<parent>__<true|false>__bc<idx>
+      //   <pkg>__<parent>__<true|false>__c<idx>
+      // (Top-level package booleans use `__c<idx>` — see PackageBlock.tsx.
+      // The `__bc<idx>` form is only used by BooleanBranchFields for booleans
+      // nested under another component, e.g. option-children.)
       if (field.virtual?.kind === "boolean_child") {
         const wizardKey = booleanChildWizardKey(
           pkg.key,
@@ -103,7 +125,11 @@ export function buildPolicyPayload(
       }
 
       // Option-child virtual columns map to the wizard's RHF key shape:
-      //   <pkg>__<parent>__opt_<value>__sc<idx>
+      //   <pkg>__<parent>__opt_<value>__c<idx>
+      // (Top-level select option children use `__c<idx>` — see
+      // InlineSelectWithChildren.tsx. The `__sc<idx>` form is only for
+      // selects nested inside another component, which our import doesn't
+      // emit.)
       if (field.virtual?.kind === "option_child") {
         const wizardKey = optionChildWizardKey(
           pkg.key,
@@ -115,6 +141,87 @@ export function buildPolicyPayload(
         if (pkg.key === "insured" || pkg.key === "contactinfo") {
           insured[wizardKey] = v;
         }
+        continue;
+      }
+
+      // Third-level chain (option-child boolean → boolean-child) maps to the
+      // wizard's nested RHF key:
+      //   <pkg>__<parent>__opt_<value>__c<ocIdx>__<true|false>__bc<bcIdx>
+      // The middle link uses `__c<ocIdx>` (InlineSelectWithChildren), then
+      // BooleanBranchFields adds `__<branch>__bc<bcIdx>` for the leaf.
+      if (field.virtual?.kind === "option_child_boolean_child") {
+        const wizardKey = optionChildBooleanChildWizardKey(
+          pkg.key,
+          field.virtual.parentKey,
+          field.virtual.optionValue,
+          field.virtual.ocChildIndex,
+          field.virtual.branch,
+          field.virtual.bcChildIndex,
+        );
+        pkgValues[wizardKey] = v;
+        if (pkg.key === "insured" || pkg.key === "contactinfo") {
+          insured[wizardKey] = v;
+        }
+        continue;
+      }
+
+      // Collapsed option-child: dispatch to the SAME wizard key shape as
+      // option_child, but using the parent's actual value (looked up from the
+      // already-cleaned row values).
+      if (field.virtual?.kind === "option_child_collapsed") {
+        const v2 = field.virtual;
+        const parentField = pkg.fields.find((p) => p.key === v2.parentKey);
+        if (!parentField) continue;
+        const parentVal = row.values[fieldColumnId(parentField)];
+        if (parentVal === undefined || parentVal === null || parentVal === "") continue;
+        const wizardKey = optionChildWizardKey(
+          pkg.key,
+          v2.parentKey,
+          String(parentVal),
+          v2.childIndex,
+        );
+        pkgValues[wizardKey] = v;
+        if (pkg.key === "insured" || pkg.key === "contactinfo") {
+          insured[wizardKey] = v;
+        }
+        continue;
+      }
+
+      // Repeatable slot: buffer per-slot, assemble into an array after the loop.
+      if (field.virtual?.kind === "repeatable_slot") {
+        const v2 = field.virtual;
+        let perParent = repeatableBuffers.get(v2.parentKey);
+        if (!perParent) {
+          perParent = new Map();
+          repeatableBuffers.set(v2.parentKey, perParent);
+        }
+        const slotObj = perParent.get(v2.slotIndex) ?? {};
+        slotObj[v2.subKey] = v;
+        perParent.set(v2.slotIndex, slotObj);
+        continue;
+      }
+
+      // Boolean-child repeatable slot: same shape as plain repeatable, but
+      // keyed on (parent, branch, bcChildIndex) so we can place the resulting
+      // array under the wizard's `__<branch>__c<bcIdx>` key.
+      if (field.virtual?.kind === "boolean_child_repeatable_slot") {
+        const v2 = field.virtual;
+        const groupKey = `${v2.parentKey}__${v2.branch}__c${v2.bcChildIndex}`;
+        let entry = boolRepeatableBuffers.get(groupKey);
+        if (!entry) {
+          entry = {
+            meta: {
+              parentKey: v2.parentKey,
+              branch: v2.branch,
+              bcChildIndex: v2.bcChildIndex,
+            },
+            slots: new Map(),
+          };
+          boolRepeatableBuffers.set(groupKey, entry);
+        }
+        const slotObj = entry.slots.get(v2.slotIndex) ?? {};
+        slotObj[v2.subKey] = v;
+        entry.slots.set(v2.slotIndex, slotObj);
         continue;
       }
 
@@ -161,6 +268,48 @@ export function buildPolicyPayload(
       }
 
       pkgValues[fullKey] = v;
+    }
+
+    // Flush any repeatable buffers — wizard storage shape is an array of
+    // per-slot objects under `${pkg}__${parentKey}`. We sort by slot index and
+    // drop trailing empty slots; the validator already enforced "no holes".
+    for (const [parentKey, perParent] of repeatableBuffers) {
+      const orderedSlots = [...perParent.entries()].sort((a, b) => a[0] - b[0]);
+      const items: Record<string, unknown>[] = [];
+      for (const [, obj] of orderedSlots) {
+        if (Object.keys(obj).length === 0) continue;
+        items.push(obj);
+      }
+      if (items.length === 0) continue;
+      const wizardKey = repeatableWizardKey(pkg.key, parentKey);
+      pkgValues[wizardKey] = items;
+      if (pkg.key === "insured" || pkg.key === "contactinfo") {
+        insured[wizardKey] = items;
+      }
+    }
+
+    // Flush boolean-child-nested repeatable buffers. Same array shape as a
+    // plain repeatable, but stored under the boolean-child wizard key so the
+    // wizard's `SubFieldRepeatable name="<pkg>__<parent>__<branch>__c<bcIdx>"`
+    // hydrates correctly.
+    for (const entry of boolRepeatableBuffers.values()) {
+      const orderedSlots = [...entry.slots.entries()].sort((a, b) => a[0] - b[0]);
+      const items: Record<string, unknown>[] = [];
+      for (const [, obj] of orderedSlots) {
+        if (Object.keys(obj).length === 0) continue;
+        items.push(obj);
+      }
+      if (items.length === 0) continue;
+      const wizardKey = booleanChildRepeatableWizardKey(
+        pkg.key,
+        entry.meta.parentKey,
+        entry.meta.branch,
+        entry.meta.bcChildIndex,
+      );
+      pkgValues[wizardKey] = items;
+      if (pkg.key === "insured" || pkg.key === "contactinfo") {
+        insured[wizardKey] = items;
+      }
     }
 
     if (Object.keys(pkgValues).length > 0 || category) {

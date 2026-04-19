@@ -18,6 +18,7 @@
  */
 import ExcelJS from "exceljs";
 import type { ImportFlowSchema, ImportFieldDef, ImportPackageDef } from "./schema";
+import { DEFAULT_REPEAT_SLOTS, MAX_REPEAT_SLOTS } from "./schema";
 
 const SHEET_DATA = "Policies";
 const SHEET_README = "Instructions";
@@ -80,7 +81,21 @@ function exampleValueFor(field: ImportFieldDef): string {
   if (field.entityPicker) return ""; // user must enter a real reference
   // Boolean-child / option-child columns: leave blank in the example so it's
   // clear they're conditional and only filled when the parent says so.
-  if (field.virtual?.kind === "boolean_child" || field.virtual?.kind === "option_child") return "";
+  if (
+    field.virtual?.kind === "boolean_child" ||
+    field.virtual?.kind === "option_child" ||
+    field.virtual?.kind === "option_child_boolean_child" ||
+    field.virtual?.kind === "option_child_collapsed" ||
+    field.virtual?.kind === "boolean_child_repeatable_slot"
+  ) {
+    return "";
+  }
+  // Repeatable slots: only show example for slot 1, leave subsequent slots blank
+  // to make it obvious they're optional.
+  if (field.virtual?.kind === "repeatable_slot") {
+    if (field.virtual.slotIndex !== 0) return "";
+    // Fall through to default by-type example below
+  }
   switch (field.inputType) {
     case "select":
     case "radio": {
@@ -97,7 +112,7 @@ function exampleValueFor(field: ImportFieldDef): string {
       return "0";
     case "boolean":
     case "checkbox":
-      return "false";
+      return "no";
     case "email":
       return "name@example.com";
     case "tel":
@@ -146,6 +161,83 @@ function buildLabelNote(f: ImportFieldDef): ExcelJS.Comment {
       text:
         `CONDITIONAL — only fill this column when "${v.parentLabel}" is set to "${v.optionLabel}" (value: ${v.optionValue}).\n` +
         `Filling it when the parent has any other value will FAIL the row.\n`,
+    });
+  }
+
+  // Third-level chain: option-child boolean → boolean-child sub-field
+  if (f.virtual?.kind === "option_child_boolean_child") {
+    const v = f.virtual;
+    const triggerWord = v.branch === "true" ? "yes / true" : "no / false";
+    texts.push({
+      text:
+        `CONDITIONAL (3-level) — only fill this column when:\n` +
+        `  1. "${v.parentLabel}" = "${v.optionLabel}" (value: ${v.optionValue}), AND\n` +
+        `  2. "${v.ocLabel}" is set to ${triggerWord}.\n` +
+        `Filling it when either parent is out of sync will fail the row.\n`,
+    });
+  }
+
+  // Collapsed option child: same field shape across many parent options
+  // (e.g. Make → Model). Allowed values change per parent value, so we don't
+  // attach a dropdown — the comment lists what's accepted instead.
+  if (f.virtual?.kind === "option_child_collapsed") {
+    const v = f.virtual;
+    const trigCount = v.triggeringOptionValues.length;
+    texts.push({
+      text:
+        `CONDITIONAL — depends on "${v.parentLabel}".\n` +
+        `Allowed values change based on the chosen "${v.parentLabel}" (${trigCount} parent options use this field).\n` +
+        `No in-cell dropdown because the valid value list differs per row. Make sure your value matches what the wizard would accept.\n`,
+    });
+    // Provide a small per-option preview so users know it's data-driven.
+    // Cap to first ~6 options to keep the comment compact.
+    const sample = Object.entries(v.perOption).slice(0, 6);
+    if (sample.length > 0) {
+      const lines = sample.map(([opt, info]) => {
+        const opts = (info.options ?? []).map((o) => o.value).filter(Boolean);
+        if (opts.length === 0) return `  • ${opt}: free text / numeric`;
+        const list = opts.slice(0, 5).join(", ") + (opts.length > 5 ? `, …(+${opts.length - 5} more)` : "");
+        return `  • ${opt}: ${list}`;
+      });
+      const tail = Object.keys(v.perOption).length > sample.length
+        ? `\n  …(+${Object.keys(v.perOption).length - sample.length} more parent options)`
+        : "";
+      texts.push({ text: `\nExamples by ${v.parentLabel}:\n${lines.join("\n")}${tail}\n` });
+    }
+  }
+
+  // Repeatable slot
+  if (f.virtual?.kind === "repeatable_slot") {
+    const v = f.virtual;
+    const maxNote = v.maxSlots > 0
+      ? `up to ${v.maxSlots} items configured (template provides ${v.slotsTotal} slots)`
+      : `unlimited items configured (template provides ${v.slotsTotal} slots)`;
+    const minNote = v.minSlots > 0 ? `at least ${v.minSlots} item(s) required` : "";
+    const reqNote = v.subRequired ? `Required within filled slot.` : "";
+    texts.push({
+      text:
+        `REPEATABLE — slot #${v.slotIndex + 1} of ${v.slotsTotal} for "${v.parentLabel}" (${v.itemLabel}).\n` +
+        `Fill slots IN ORDER: slot #1 first, then #2, etc. A gap (e.g. #1 empty but #2 filled) will FAIL the row.\n` +
+        `${maxNote}.${minNote ? " " + minNote + "." : ""}\n${reqNote ? reqNote + "\n" : ""}`,
+    });
+  }
+
+  // Boolean-child repeatable slot — combines repeatable rules with a parent
+  // boolean gate. Only fill these slots when the parent boolean matches.
+  if (f.virtual?.kind === "boolean_child_repeatable_slot") {
+    const v = f.virtual;
+    const triggerWord = v.branch === "true" ? "yes / true" : "no / false";
+    const maxNote = v.maxSlots > 0
+      ? `up to ${v.maxSlots} items configured (template provides ${v.slotsTotal} slots)`
+      : `unlimited items configured (template provides ${v.slotsTotal} slots)`;
+    const minNote = v.minSlots > 0 ? `at least ${v.minSlots} item(s) required when "${v.parentLabel}" is ${triggerWord}` : "";
+    const reqNote = v.subRequired ? `Required within filled slot.` : "";
+    texts.push({
+      text:
+        `CONDITIONAL REPEATABLE — slot #${v.slotIndex + 1} of ${v.slotsTotal} for "${v.parentLabel}.${v.bcLabel}" (${v.itemLabel}).\n` +
+        `Only fill these slots when "${v.parentLabel}" is set to ${triggerWord}.\n` +
+        `Fill slots IN ORDER: slot #1 first, then #2, etc. A gap (e.g. #1 empty but #2 filled) will FAIL the row.\n` +
+        `${maxNote}.${minNote ? " " + minNote + "." : ""}\n${reqNote ? reqNote + "\n" : ""}`,
     });
   }
 
@@ -272,6 +364,26 @@ export async function buildImportTemplate(schema: ImportFlowSchema): Promise<Buf
     "    that triggers it, e.g. 'Type of Cover.Sum Insured (when Comp) (if=comp)'.",
     "  • Only fill them when the parent select equals that option value.",
     "",
+    "Collapsed select-child fields (tagged '(depends on <parent>)'):",
+    "  • When MANY parent options share the same sub-field shape (e.g. 'Make' has",
+    "    50+ options and each one declares a 'Model' child), we collapse them",
+    "    into ONE column instead of generating 50 redundant 'Model' columns.",
+    "  • These columns have no in-cell dropdown because the valid value list",
+    "    changes per parent value. The cell comment lists examples by parent.",
+    "  • Make sure your value matches what the wizard would accept for the chosen",
+    "    parent value, otherwise the row will FAIL.",
+    "",
+    "Repeatable fields (tagged '(item N/M)'):",
+    `  • Lists like 'Drivers' or 'Compensations' get up to ${MAX_REPEAT_SLOTS} numbered slots.`,
+    `    Default is ${DEFAULT_REPEAT_SLOTS} slots when the admin hasn't capped the field.`,
+    "  • Each slot has its own set of sub-field columns labelled 'Drivers #1 Name',",
+    "    'Drivers #1 Age', 'Drivers #2 Name', 'Drivers #2 Age', etc.",
+    "  • Fill slots IN ORDER: slot #1 first, then #2, then #3. Skipping (e.g. #1",
+    "    blank but #2 filled) will FAIL the row with a clear error.",
+    "  • If the field has a minimum count, the row must fill at least that many slots.",
+    "  • Need more slots than the template provides? Re-create the row(s) via the",
+    "    wizard, or split into multiple imports.",
+    "",
     "Client linking:",
     "  • Leave the insured columns filled in — a new client will be auto-created",
     "    from the insured data if no Client Number is provided.",
@@ -296,6 +408,20 @@ export async function buildImportTemplate(schema: ImportFlowSchema): Promise<Buf
     }
     if (f.virtual?.kind === "option_child") {
       tags.push(`only when ${f.virtual.parentLabel}="${f.virtual.optionLabel}" (${f.virtual.optionValue})`);
+    }
+    if (f.virtual?.kind === "option_child_boolean_child") {
+      const v = f.virtual;
+      tags.push(
+        `only when ${v.parentLabel}="${v.optionLabel}" AND ${v.ocLabel}=${v.branch === "true" ? "yes" : "no"}`,
+      );
+    }
+    if (f.virtual?.kind === "option_child_collapsed") {
+      tags.push(`depends on ${f.virtual.parentLabel} (${f.virtual.triggeringOptionValues.length} parent options)`);
+    }
+    if (f.virtual?.kind === "repeatable_slot") {
+      const v = f.virtual;
+      tags.push(`slot ${v.slotIndex + 1}/${v.slotsTotal} of "${v.parentLabel}"`);
+      if (v.subRequired) tags.push("required within filled slot");
     }
     if (f.categories.length > 0) tags.push(`for type: ${f.categories.join("|")}`);
     if (f.entityPicker) {
@@ -359,9 +485,28 @@ export async function buildImportTemplate(schema: ImportFlowSchema): Promise<Buf
       labelText += f.virtual.branch === "true" ? " (if yes)" : " (if no)";
     } else if (f.virtual?.kind === "option_child") {
       labelText += ` (if=${f.virtual.optionValue})`;
+    } else if (f.virtual?.kind === "option_child_boolean_child") {
+      labelText += ` (if=${f.virtual.optionValue}/${f.virtual.branch === "true" ? "y" : "n"})`;
+    } else if (f.virtual?.kind === "option_child_collapsed") {
+      labelText += ` (depends on ${f.virtual.parentLabel})`;
+    } else if (f.virtual?.kind === "repeatable_slot") {
+      // Slot info already in the label; add a tiny "(item N/M)" tag for quick scanning
+      labelText += ` (item ${f.virtual.slotIndex + 1}/${f.virtual.slotsTotal})`;
+    } else if (f.virtual?.kind === "boolean_child_repeatable_slot") {
+      // Combined gate + slot tag so admins can scan it like a repeatable too.
+      const yn = f.virtual.branch === "true" ? "if yes" : "if no";
+      labelText += ` (${yn} / item ${f.virtual.slotIndex + 1}/${f.virtual.slotsTotal})`;
     }
     if (f.entityPicker) labelText += " (ref)";
-    if (f.categories.length > 0 && f.virtual?.kind !== "boolean_child") {
+    if (
+      f.categories.length > 0 &&
+      f.virtual?.kind !== "boolean_child" &&
+      f.virtual?.kind !== "option_child" &&
+      f.virtual?.kind !== "option_child_boolean_child" &&
+      f.virtual?.kind !== "option_child_collapsed" &&
+      f.virtual?.kind !== "repeatable_slot" &&
+      f.virtual?.kind !== "boolean_child_repeatable_slot"
+    ) {
       labelText += ` [${f.categories.join("|")}]`;
     }
     labelCell.value = labelText;
@@ -421,6 +566,11 @@ export async function buildImportTemplate(schema: ImportFlowSchema): Promise<Buf
       continue;
     }
 
+    // Collapsed option children intentionally have NO dropdown — the allowed
+    // values change per parent option (e.g. Make → Model). The cell comment
+    // lists the per-parent options instead.
+    if (f.virtual?.kind === "option_child_collapsed") continue;
+
     if (f.options.length > 0 && (f.inputType === "select" || f.inputType === "radio")) {
       const safeValues = f.options
         .map((o) => (o.value ?? "").trim())
@@ -440,10 +590,13 @@ export async function buildImportTemplate(schema: ImportFlowSchema): Promise<Buf
       });
       seenRanges.add(range);
     } else if (f.inputType === "boolean" || f.inputType === "checkbox") {
+      // Match the in-app wizard which renders booleans as "Yes / No" radios.
+      // The validator still accepts true/false/y/n/1/0 transparently — see
+      // TRUTHY/FALSY in lib/import/validate.ts — so existing files keep working.
       dv.add(range, {
         type: "list",
         allowBlank: true,
-        formulae: ['"true,false,yes,no"'],
+        formulae: ['"yes,no"'],
         showErrorMessage: true,
         errorStyle: "warning",
       });
@@ -551,6 +704,38 @@ export async function parseImportWorkbook(
     if (f.virtual?.kind === "option_child") {
       idByLabel.set(`${base} (if=${f.virtual.optionValue.toLowerCase()})`, fieldColumnId(f));
     }
+    // Option-child > boolean-child chained columns add `(if=<value>/<y|n>)`
+    if (f.virtual?.kind === "option_child_boolean_child") {
+      const v = f.virtual;
+      idByLabel.set(
+        `${base} (if=${v.optionValue.toLowerCase()}/${v.branch === "true" ? "y" : "n"})`,
+        fieldColumnId(f),
+      );
+    }
+    // Collapsed option-children add a `(depends on <parent>)` suffix
+    if (f.virtual?.kind === "option_child_collapsed") {
+      idByLabel.set(
+        `${base} (depends on ${f.virtual.parentLabel.toLowerCase()})`,
+        fieldColumnId(f),
+      );
+    }
+    // Repeatable slot columns add a `(item N/M)` suffix
+    if (f.virtual?.kind === "repeatable_slot") {
+      const v = f.virtual;
+      idByLabel.set(
+        `${base} (item ${v.slotIndex + 1}/${v.slotsTotal})`,
+        fieldColumnId(f),
+      );
+    }
+    // Boolean-child repeatable slots: `(if yes / item N/M)` or `(if no / ...)`
+    if (f.virtual?.kind === "boolean_child_repeatable_slot") {
+      const v = f.virtual;
+      const yn = v.branch === "true" ? "if yes" : "if no";
+      idByLabel.set(
+        `${base} (${yn} / item ${v.slotIndex + 1}/${v.slotsTotal})`,
+        fieldColumnId(f),
+      );
+    }
   }
 
   // Auto-detect the technical-id row anywhere in the first 6 rows so we
@@ -569,6 +754,9 @@ export async function parseImportWorkbook(
       if (!raw) return;
       const cleaned = raw
         .replace(/\s*\[[^\]]*\]\s*$/, "") // trailing [personal|company]
+        .replace(/\s*\(if\s+(?:yes|no)\s*\/\s*item\s+\d+\s*\/\s*\d+\)\s*$/i, "") // (if yes / item N/M)
+        .replace(/\s*\(item\s+\d+\s*\/\s*\d+\)\s*$/i, "") // (item N/M)
+        .replace(/\s*\(depends\s+on\s+[^)]+\)\s*$/i, "") // (depends on <parent>)
         .replace(/\s*\(if\s+yes\)\s*$/i, "")
         .replace(/\s*\(if\s+no\)\s*$/i, "")
         .replace(/\s*\(if\s*=\s*[^)]+\)\s*$/i, "") // (if=<value>)
