@@ -44,8 +44,14 @@ import { loadFlowImportSchema, flattenFields, type ImportFlowSchema, type Import
 import { parseImportWorkbook, fieldColumnId } from "./excel";
 import { validateRows, type ValidatedRow, type RowError } from "./validate";
 import { buildPolicyPayload } from "./payload";
+import { applyConditionalGating } from "./conditional-gates";
+import { evaluateFormulaFields } from "./formula-eval";
 import { resolveOrCreateClient } from "./client-resolver";
-import { EntityResolutionCache, applyEntityReferences, attachRefResolutionErrors } from "./entity-resolver";
+import {
+  EntityResolutionCache,
+  applyEntityReferences,
+  attachRefResolutionInfo,
+} from "./entity-resolver";
 import { serverFetch } from "@/lib/auth/server-fetch";
 
 /** Hard cap on rows per upload. Matches existing import endpoints. */
@@ -62,10 +68,32 @@ const SUMMARY_SAMPLE_LIMIT = 25;
 // ---------------------------------------------------------------------------
 
 export type BatchSummary = {
-  /** Per-column unknown select values surfaced as warnings in migration mode */
+  /**
+   * Per-column unknown select values. For plain select columns we track
+   * one bucket of unique strings. For `option_child_collapsed` columns
+   * (e.g. "Model" — depends on "Make"), we ALSO break the unknowns down
+   * by their parent value so the "Add to options" UI can group them
+   * correctly: "Camry, Corolla under Toyota" vs "Civic under Honda".
+   */
   unknownValuesByColumn: Record<
     string,
-    { columnLabel: string; uniqueCount: number; rowCount: number; samples: string[] }
+    {
+      columnLabel: string;
+      uniqueCount: number;
+      rowCount: number;
+      samples: string[];
+      /** Set only for collapsed-child columns. Keyed by lower-cased parent
+       *  value. Each entry holds the parent's display label + the per-value
+       *  buckets (so we can render "Toyota → [Camry × 3, Corolla × 2]"). */
+      byParent?: Record<
+        string,
+        {
+          parentLabel: string;
+          parentColumnId: string;
+          values: { value: string; rowCount: number }[];
+        }
+      >;
+    }
   >;
   /** Per-column row counts where a Required cell is empty */
   missingRequiredByColumn: Record<string, { columnLabel: string; rowCount: number }>;
@@ -140,6 +168,21 @@ export function buildBatchSummary(
 ): BatchSummary {
   const fields = flattenFields(schema);
   const labelById = new Map(fields.map((f) => [fieldColumnId(f), f.label]));
+  const fieldById = new Map(fields.map((f) => [fieldColumnId(f), f]));
+
+  // Pre-compute parent column ids for collapsed-child columns so we can
+  // group their unknown values per parent value (Make → Model bucketing).
+  const parentColIdByCollapsed = new Map<string, { parentColId: string; parentLabel: string }>();
+  for (const f of fields) {
+    if (f.virtual?.kind !== "option_child_collapsed") continue;
+    const v = f.virtual;
+    const parentField = fields.find((p) => p.pkg === v.pkg && p.key === v.parentKey);
+    if (!parentField) continue;
+    parentColIdByCollapsed.set(fieldColumnId(f), {
+      parentColId: fieldColumnId(parentField),
+      parentLabel: v.parentLabel,
+    });
+  }
 
   // Helpers to bucket rows per column
   const unknownValuesByColumn: BatchSummary["unknownValuesByColumn"] = {};
@@ -151,6 +194,8 @@ export function buildBatchSummary(
   // Per-column accumulators for unique values / row counts.
   // Keep tracking sets local so we can compute counts at the end.
   const unknownValueSets = new Map<string, Map<string, number>>(); // colId -> value -> rowCount
+  // For collapsed columns: colId -> parentValueLower -> value -> rowCount.
+  const unknownValueByParentSets = new Map<string, Map<string, Map<string, number>>>();
 
   for (const row of rows) {
     // We only summarise rows that are actually contributing — skip already
@@ -185,6 +230,28 @@ export function buildBatchSummary(
           const valueMap = unknownValueSets.get(w.column) ?? new Map<string, number>();
           valueMap.set(cellStr, (valueMap.get(cellStr) ?? 0) + 1);
           unknownValueSets.set(w.column, valueMap);
+
+          // Collapsed-child column? Also track per-parent so the UI can
+          // render "Toyota → [Camry × 3, Corolla × 2]" buckets and the
+          // "Add to options" endpoint knows which parent each value
+          // belongs under.
+          const parentInfo = parentColIdByCollapsed.get(w.column);
+          if (parentInfo) {
+            const parentRaw = row.rawValues[parentInfo.parentColId];
+            const parentLower =
+              parentRaw === null || parentRaw === undefined
+                ? ""
+                : String(parentRaw).trim().toLowerCase();
+            if (parentLower) {
+              const byParent =
+                unknownValueByParentSets.get(w.column) ??
+                new Map<string, Map<string, number>>();
+              const valueMap2 = byParent.get(parentLower) ?? new Map<string, number>();
+              valueMap2.set(cellStr, (valueMap2.get(cellStr) ?? 0) + 1);
+              byParent.set(parentLower, valueMap2);
+              unknownValueByParentSets.set(w.column, byParent);
+            }
+          }
         }
       } else if (/^Off-category data/i.test(w.message)) {
         const slot = (offCategoryByColumn[w.column] ??= { columnLabel: label, rowCount: 0 });
@@ -205,11 +272,39 @@ export function buildBatchSummary(
     const samples = Array.from(valueMap.keys()).slice(0, SUMMARY_SAMPLE_LIMIT);
     let totalRowCount = 0;
     for (const c of valueMap.values()) totalRowCount += c;
+
+    let byParent: BatchSummary["unknownValuesByColumn"][string]["byParent"];
+    const byParentMap = unknownValueByParentSets.get(colId);
+    const parentInfo = parentColIdByCollapsed.get(colId);
+    if (byParentMap && parentInfo) {
+      byParent = {};
+      for (const [parentLower, vm] of byParentMap) {
+        // Use the parent FIELD's option label when we recognise the value;
+        // fall back to the raw lower-cased key otherwise. This lets the UI
+        // show "Toyota" instead of "toyota" on the bucket header.
+        const parentField = fieldById.get(parentInfo.parentColId);
+        let parentDisplay = parentLower;
+        const opt = parentField?.options.find(
+          (o) => (o.value ?? "").toLowerCase() === parentLower,
+        );
+        if (opt) parentDisplay = opt.label ?? opt.value ?? parentLower;
+        byParent[parentLower] = {
+          parentLabel: parentDisplay,
+          parentColumnId: parentInfo.parentColId,
+          values: Array.from(vm.entries())
+            .map(([value, rowCount]) => ({ value, rowCount }))
+            .sort((a, b) => b.rowCount - a.rowCount)
+            .slice(0, SUMMARY_SAMPLE_LIMIT),
+        };
+      }
+    }
+
     unknownValuesByColumn[colId] = {
       columnLabel: label,
       uniqueCount: valueMap.size,
       rowCount: totalRowCount,
       samples,
+      ...(byParent ? { byParent } : {}),
     };
   }
 
@@ -295,11 +390,17 @@ export async function uploadAndStage(opts: CreateBatchOptions): Promise<CreateBa
 
   const validated = validateRows(parsed.rows, schema);
 
-  // Resolve entity-picker refs against the DB and attach hard errors for
-  // any missing records. Done as a post-pass so `validateRows` itself stays
-  // pure / testable. Cache is per-upload — usually 200 rows pointing at
-  // ~10 distinct insurers, so we get massive de-dup.
-  await attachRefResolutionErrors(validated, schema, new EntityResolutionCache());
+  // Resolve entity-picker refs against the DB. Returns:
+  //   • Hard errors appended to row.errors for missing references.
+  //   • A `resolvedRefs` map (per excelRow) so the staging UI can show
+  //     "Acme Insurance Ltd" instead of the raw "INS-0001".
+  // Cache is per-upload — usually 200 rows pointing at ~10 distinct
+  // insurers, so we get massive de-dup.
+  const resolvedByRow = await attachRefResolutionInfo(
+    validated,
+    schema,
+    new EntityResolutionCache(),
+  );
 
   // Pair each ValidatedRow with its raw values for the staging table
   const rowsForDb = validated.map((v) => ({
@@ -307,6 +408,7 @@ export async function uploadAndStage(opts: CreateBatchOptions): Promise<CreateBa
     rawValues: toRawValues(v.values),
     errors: v.errors,
     warnings: v.warnings,
+    resolvedRefs: resolvedByRow.get(v.excelRow) ?? {},
     status: "pending" as const,
   }));
 
@@ -348,6 +450,7 @@ export async function uploadAndStage(opts: CreateBatchOptions): Promise<CreateBa
           rawValues: r.rawValues,
           errors: r.errors,
           warnings: r.warnings,
+          resolvedRefs: r.resolvedRefs,
           status: r.status,
         })),
       );
@@ -395,10 +498,15 @@ export async function revalidateBatch(batchId: number): Promise<{
 
   // Re-resolve entity refs — admins use re-validate after fixing master data
   // (e.g. adding a missing insurer in another tab), so this is the step
-  // that makes the "missing record" errors disappear.
-  await attachRefResolutionErrors(validated, schema, new EntityResolutionCache());
+  // that makes the "missing record" errors disappear AND refreshes the
+  // displayed company / agent name in the UI.
+  const resolvedByRow = await attachRefResolutionInfo(
+    validated,
+    schema,
+    new EntityResolutionCache(),
+  );
 
-  // Update each row's errors/warnings if changed
+  // Update each row's errors/warnings/resolvedRefs if changed
   const updated = new Map<number, ValidatedRow>();
   for (let i = 0; i < pending.length; i++) {
     updated.set(pending[i].id, validated[i]);
@@ -412,6 +520,7 @@ export async function revalidateBatch(batchId: number): Promise<{
       .set({
         errors: v.errors,
         warnings: v.warnings,
+        resolvedRefs: resolvedByRow.get(v.excelRow) ?? {},
         updatedAt: sql`now()`,
       })
       .where(eq(importBatchRows.id, r.id));
@@ -496,8 +605,13 @@ export async function updateRowValues(
 
   // Single-row resolve: cheap because the cache is empty and we only check
   // the columns this row actually has values for. Catches the common case
-  // of admin pasting a real policy number into the Picker and saving.
-  await attachRefResolutionErrors([validated], schema, new EntityResolutionCache());
+  // of admin pasting a real policy number into the Picker and saving, AND
+  // refreshes the resolved company / agent name on the row.
+  const resolvedByRow = await attachRefResolutionInfo(
+    [validated],
+    schema,
+    new EntityResolutionCache(),
+  );
 
   const [updatedRow] = await db
     .update(importBatchRows)
@@ -505,6 +619,7 @@ export async function updateRowValues(
       rawValues: merged,
       errors: validated.errors,
       warnings: validated.warnings,
+      resolvedRefs: resolvedByRow.get(validated.excelRow) ?? {},
       edited: true,
       // If a previously failed row was edited, return it to pending so it
       // can be retried.
@@ -748,9 +863,46 @@ export async function commitBatch(batchId: number): Promise<CommitProgressSnapsh
         throw new Error(refErrors.map((e) => `${e.columnId}: ${e.message}`).join("; "));
       }
 
-      // Auto-create / resolve client
+      // Strip values for fields whose visibility gate fails, then evaluate
+      // formula fields. ORDER MATTERS:
+      //
+      //   1. applyConditionalGating runs FIRST so a TPO row with stray
+      //      Section I excess values gets cleaned up — otherwise those zero
+      //      values would render on the policy detail page (bug fix matching
+      //      the wizard, which never lets the user input gated values in the
+      //      first place).
+      //
+      //   2. evaluateFormulaFields runs SECOND so formulas like
+      //      `{startedDate} + 364` resolve against the cleaned snapshot —
+      //      and so derived fields aren't computed from values that were
+      //      about to be dropped anyway.
+      //
+      // Both passes mutate `payload` in place and return notes; we discard
+      // the notes here for now. (Surfacing them to the review UI is a
+      // future polish — see GatedFieldNote / ComputedFormulaNote types.)
+      applyConditionalGating(payload, schema);
+      evaluateFormulaFields(payload, schema);
+
+      // Auto-create / resolve client.
+      //
+      // IMPORTANT — two systems both called "client" coexist here:
+      //   • `clients` table   — legacy, FK target of `policies.client_id`
+      //   • `policies` table with flow_key="clientSet" — the new dynamic-flow
+      //     "client policy" record (what `resolveOrCreateClient` returns)
+      //
+      // resolveOrCreateClient returns a policies.id (clientSet flow), NOT a
+      // clients.id. Putting that id into payload.policy.clientId triggered
+      // a 23503 FK violation on policies_client_id_fkey, leaving the freshly
+      // created clientSet policy orphaned and zero real policies created
+      // ("I imported 1 row, 2 clients created, 0 policies" bug).
+      //
+      // Fix: keep the linkage in the SNAPSHOT (insured.clientPolicyId /
+      // clientPolicyNumber) — listing/lookup queries already read from those
+      // jsonb keys (see /api/policies GET clientFilterExpr) — and DO NOT
+      // populate the legacy policies.client_id column.
       let resolvedClientNumber: string | undefined;
       let clientCreated = false;
+      let createdClientPolicyId: number | undefined;
       if (Object.keys(payload.insured).length > 0 || clientNumber) {
         const resolved = await resolveOrCreateClient({
           clientNumber,
@@ -759,27 +911,42 @@ export async function commitBatch(batchId: number): Promise<CommitProgressSnapsh
         });
         payload.insured.clientPolicyId = resolved.clientPolicyId;
         payload.insured.clientPolicyNumber = resolved.clientPolicyNumber;
-        payload.policy = {
-          ...(payload.policy ?? {}),
-          ...({ clientId: resolved.clientPolicyId } as Record<string, unknown>),
-        };
+        // NOTE: deliberately NOT setting payload.policy.clientId here.
         resolvedClientNumber = resolved.clientPolicyNumber;
         clientCreated = resolved.created;
+        if (resolved.created) createdClientPolicyId = resolved.clientPolicyId;
       }
 
-      const res = await serverFetch("/api/policies", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const body = (await res.json().catch(() => ({}))) as {
+      let res: Response;
+      let body: {
         error?: string;
         policyId?: number;
         recordId?: number;
         policyNumber?: string;
         recordNumber?: string;
       };
-      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      try {
+        res = await serverFetch("/api/policies", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        body = (await res.json().catch(() => ({}))) as typeof body;
+        if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      } catch (postErr) {
+        // Roll back the just-auto-created client policy so a failed commit
+        // doesn't leave dangling clientSet rows in /dashboard/clients.
+        // (We only delete clients THIS row created — never an existing one
+        // matched by clientNumber, which `clientCreated=false` guarantees.)
+        if (createdClientPolicyId) {
+          try {
+            await serverFetch(`/api/policies/${createdClientPolicyId}`, {
+              method: "DELETE",
+            });
+          } catch { /* best-effort rollback; surface the original error */ }
+        }
+        throw postErr;
+      }
 
       const policyId = Number(body.recordId ?? body.policyId ?? 0);
       const policyNumber = String(body.recordNumber ?? body.policyNumber ?? "");
@@ -964,7 +1131,8 @@ function applyValidatorNormalisation(
       out[colId] = raw;
       continue;
     }
-    // Dates: keep as string — validator already DD/MM/YYYY-formatted on insert
+    // Dates: keep as string — validator already DD-MM-YYYY-formatted on insert
+    // (matches wizard's maskDDMMYYYY output; see lib/import/validate.ts).
     // Selects: normalise to canonical option.value when match
     if (f.inputType === "select" || f.inputType === "radio") {
       const lower = String(raw).toLowerCase();

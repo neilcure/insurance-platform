@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SlideDrawer } from "@/components/ui/slide-drawer";
 import { toast } from "sonner";
+import { extractDisplayName } from "@/lib/import/entity-display-name";
 
 type RecordRow = {
   policyId: number;
@@ -20,71 +21,6 @@ export type EntityPickerSelection = {
   extraAttributes: Record<string, unknown>;
   agent?: { id: number; userNumber?: string | null; name?: string | null; email?: string } | null;
 };
-
-function norm(k: string): string {
-  return k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
-}
-
-const SKIP_KEYS = /district|area|region|street|block|floor|flat|room|address|city|state|zip|postal|country|phone|tel|fax|mobile|email|account|number|date|remark|note|memo/;
-
-function extractDisplayName(carExtra: Record<string, unknown> | null | undefined): string {
-  if (!carExtra) return "";
-  const pkgs = (carExtra.packagesSnapshot ?? {}) as Record<string, unknown>;
-
-  for (const [pkgKey, data] of Object.entries(pkgs)) {
-    if (!data || typeof data !== "object") continue;
-    const structured = data as { values?: Record<string, unknown> };
-    const vals = structured.values ?? (data as Record<string, unknown>);
-    if (!vals || typeof vals !== "object") continue;
-
-    let firstName = "", lastName = "";
-    for (const [k, v] of Object.entries(vals)) {
-      const n = norm(k), s = String(v ?? "").trim();
-      if (!s) continue;
-      if (!lastName && /lastname|surname|lname/.test(n)) lastName = s;
-      if (!firstName && /firstname|fname/.test(n)) firstName = s;
-    }
-    if (firstName || lastName) return [lastName, firstName].filter(Boolean).join(" ");
-
-    for (const [k, v] of Object.entries(vals)) {
-      const n = norm(k), s = String(v ?? "").trim();
-      if (!s) continue;
-      if (/companyname|organisationname|orgname|corporatename|firmname/.test(n)) return s;
-    }
-
-    for (const [k, v] of Object.entries(vals)) {
-      const n = norm(k), s = String(v ?? "").trim();
-      if (!s) continue;
-      if (/fullname|displayname|^name$|title|label/.test(n)) return s;
-    }
-
-    // Match field key that equals or ends with the package key itself
-    // e.g., pkg="collaborator" matches key "collaborator__collaborator"
-    const pkgNorm = pkgKey.toLowerCase().replace(/[^a-z]/g, "");
-    for (const [k, v] of Object.entries(vals)) {
-      const n = norm(k), s = String(v ?? "").trim();
-      if (!s || typeof v !== "string") continue;
-      if (n === pkgNorm && s.length > 1 && !SKIP_KEYS.test(n)) return s;
-    }
-
-    // Match any key containing "name" or "broker" or "agent" or "company" or "insurer"
-    for (const [k, v] of Object.entries(vals)) {
-      const n = norm(k), s = String(v ?? "").trim();
-      if (!s || typeof v !== "string") continue;
-      if (/name|broker|agent|company|insurer|vendor|supplier|partner/.test(n) && !SKIP_KEYS.test(n)) return s;
-    }
-  }
-
-  const insured = (carExtra.insuredSnapshot ?? null) as Record<string, unknown> | null;
-  if (insured) {
-    for (const [k, v] of Object.entries(insured)) {
-      const n = norm(k), s = String(v ?? "").trim();
-      if (!s) continue;
-      if (/companyname|fullname|^name$|organisationname/.test(n)) return s;
-    }
-  }
-  return "";
-}
 
 interface EntityPickerDrawerProps {
   open: boolean;

@@ -82,11 +82,24 @@ export default async function ImportsHistoryPage() {
                         )}
                       </td>
                       <td className="border-b border-neutral-100 px-2 py-2 align-middle text-right dark:border-neutral-800">
+                        {/*
+                          Cancelled batches need the ?audit=1 flag because the
+                          review page server-redirects them away by default
+                          (see app/(dashboard)/dashboard/imports/[batchId]/page.tsx).
+                          Without the flag, clicking Open on a cancelled row
+                          looked like "nothing happened" — it bounced straight
+                          back here. Relabeling to "View" hints that no edits
+                          are possible.
+                        */}
                         <Link
-                          href={`/dashboard/imports/${b.id}`}
+                          href={
+                            b.status === "cancelled"
+                              ? `/dashboard/imports/${b.id}?audit=1`
+                              : `/dashboard/imports/${b.id}`
+                          }
                           className="text-blue-600 hover:underline dark:text-blue-400"
                         >
-                          Open
+                          {b.status === "cancelled" ? "View" : "Open"}
                         </Link>
                       </td>
                     </tr>

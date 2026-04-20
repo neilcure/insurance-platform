@@ -1,0 +1,254 @@
+{
+  "_comment": "Motorcycle Make/Model dataset for solomake (vehicleinfo, category=solo). Compiled from manufacturer lineups commonly registered in Hong Kong (Honda HK, Yamaha, Kawasaki, Ducati, BMW, Harley, Triumph, KTM, Vespa/Piaggio, SYM, Kymco, etc.) and verified against current 2025-2026 web listings. Edit this file freely - the apply script is idempotent and merges (does not delete existing entries). Brand order roughly reflects HK market share for motorcycles & scooters.",
+  "makes": [
+    {
+      "make": "Honda",
+      "models": [
+        "CB125R", "CB150R", "CB300R", "CB500F", "CB650R", "CB1000R", "CB1000 Hornet",
+        "CBR125R", "CBR150R", "CBR250RR", "CBR500R", "CBR600RR", "CBR650R", "CBR1000RR-R Fireblade",
+        "CRF250L", "CRF300L", "CRF300 Rally", "CRF1100L Africa Twin",
+        "NC750X", "NC750S", "X-ADV", "Forza 125", "Forza 350", "Forza 750",
+        "PCX125", "PCX160", "ADV150", "ADV160", "ADV350",
+        "Click 125i", "Click 160", "Vario 125", "Vario 160",
+        "Rebel 300", "Rebel 500", "Rebel 1100",
+        "Gold Wing", "GL1800", "Monkey", "Super Cub C125", "Dax 125", "Grom"
+      ]
+    },
+    {
+      "make": "Yamaha",
+      "models": [
+        "MT-03", "MT-07", "MT-09", "MT-10", "MT-15",
+        "YZF-R3", "YZF-R6", "YZF-R7", "YZF-R15", "YZF-R125", "YZF-R1", "YZF-R1M",
+        "Tracer 7", "Tracer 9 GT", "Tenere 700",
+        "XSR125", "XSR700", "XSR900",
+        "NMAX 125", "NMAX 155", "XMAX 125", "XMAX 300", "XMAX 400", "TMAX 560",
+        "Aerox 155", "Mio", "Jog 125", "BWS 125",
+        "Bolt R-Spec", "VMAX", "FJR1300", "Niken GT"
+      ]
+    },
+    {
+      "make": "Kawasaki",
+      "models": [
+        "Z125 Pro", "Z400", "Z500", "Z650", "Z650RS", "Z900", "Z900RS", "Z1000", "Z H2",
+        "Ninja 125", "Ninja 400", "Ninja 500", "Ninja 650", "Ninja 1000SX",
+        "Ninja ZX-4R", "Ninja ZX-6R", "Ninja ZX-10R", "Ninja H2", "Ninja H2 SX",
+        "Versys 650", "Versys 1000", "Versys-X 300",
+        "KLX150", "KLX230", "KLX300", "KLX300R", "KLR650",
+        "Vulcan S", "Vulcan 900", "W800",
+        "Eliminator 500"
+      ]
+    },
+    {
+      "make": "Suzuki",
+      "models": [
+        "GSX-R125", "GSX-R150", "GSX-R600", "GSX-R750", "GSX-R1000R",
+        "GSX-S125", "GSX-S750", "GSX-S1000", "GSX-S1000GT", "GSX-8S", "GSX-8R",
+        "Hayabusa", "Katana",
+        "V-Strom 250 SX", "V-Strom 650", "V-Strom 800DE", "V-Strom 1050",
+        "SV650", "SV650X",
+        "DR-Z400S", "DR-Z400SM", "DR650S",
+        "Address 110", "Burgman 125", "Burgman 200", "Burgman 400", "Burgman 650",
+        "Avenis 125", "Saluto 125"
+      ]
+    },
+    {
+      "make": "Ducati",
+      "models": [
+        "Panigale V2", "Panigale V4", "Panigale V4 S", "Panigale V4 R", "Panigale V4 SP2",
+        "Streetfighter V2", "Streetfighter V4", "Streetfighter V4 S", "Streetfighter V4 SP2",
+        "Monster", "Monster SP", "Monster 937",
+        "Hypermotard 698 Mono", "Hypermotard V2",
+        "Multistrada V2", "Multistrada V4", "Multistrada V4 S", "Multistrada V4 RS", "Multistrada V4 Pikes Peak",
+        "Diavel V4", "XDiavel",
+        "Scrambler Icon", "Scrambler Nightshift", "Scrambler Full Throttle", "Scrambler Desert Sled", "Scrambler 1100",
+        "DesertX", "DesertX Rally",
+        "Superleggera V4"
+      ]
+    },
+    {
+      "make": "BMW Motorrad",
+      "models": [
+        "G 310 R", "G 310 GS",
+        "F 800 GS", "F 850 GS", "F 850 GS Adventure", "F 900 R", "F 900 XR",
+        "R 1300 GS", "R 1300 GS Adventure", "R 1250 GS", "R 1250 RT",
+        "R nineT", "R 12", "R 12 nineT", "R 12 G/S", "R 18",
+        "S 1000 R", "S 1000 RR", "S 1000 XR", "M 1000 RR", "M 1000 R",
+        "K 1600 GT", "K 1600 GTL", "K 1600 B", "K 1600 Grand America",
+        "C 400 GT", "C 400 X", "CE 02", "CE 04"
+      ]
+    },
+    {
+      "make": "Harley-Davidson",
+      "models": [
+        "Street Bob", "Low Rider S", "Low Rider ST", "Fat Bob", "Softail Standard",
+        "Heritage Classic", "Fat Boy", "Breakout",
+        "Sportster S", "Nightster", "Nightster Special",
+        "Pan America 1250", "Pan America 1250 Special",
+        "LiveWire",
+        "Road King", "Road Glide", "Street Glide", "Ultra Limited", "CVO Road Glide", "CVO Street Glide", "CVO Tri Glide",
+        "Freewheeler", "Tri Glide Ultra"
+      ]
+    },
+    {
+      "make": "Triumph",
+      "models": [
+        "Trident 660", "Tiger Sport 660", "Daytona 660",
+        "Speed Triple 1200 RS", "Speed Triple 1200 RR", "Street Triple 765 R", "Street Triple 765 RS", "Street Triple 765 Moto2 Edition",
+        "Bonneville T100", "Bonneville T120", "Bonneville Bobber", "Bonneville Speedmaster",
+        "Thruxton RS", "Thruxton 400", "Speed Twin 900", "Speed Twin 1200",
+        "Scrambler 400 X", "Scrambler 900", "Scrambler 1200 X", "Scrambler 1200 XE",
+        "Tiger 660", "Tiger 850 Sport", "Tiger 900 GT", "Tiger 900 Rally Pro", "Tiger 1200 GT Pro", "Tiger 1200 Rally Pro",
+        "Rocket 3 R", "Rocket 3 GT", "Rocket 3 Storm",
+        "Speed 400"
+      ]
+    },
+    {
+      "make": "KTM",
+      "models": [
+        "125 Duke", "200 Duke", "250 Duke", "390 Duke", "790 Duke", "890 Duke R", "990 Duke", "1290 Super Duke R", "1390 Super Duke R", "1390 Super Duke RR",
+        "RC 125", "RC 200", "RC 390", "RC 8C",
+        "390 Adventure", "790 Adventure", "890 Adventure", "890 Adventure R", "1290 Super Adventure S", "1290 Super Adventure R", "1390 Super Adventure",
+        "250 EXC-F", "350 EXC-F", "450 EXC-F", "500 EXC-F",
+        "250 SX-F", "350 SX-F", "450 SX-F",
+        "Freeride E-XC"
+      ]
+    },
+    {
+      "make": "Aprilia",
+      "models": [
+        "RS 125", "RS 457", "RS 660", "RSV4", "RSV4 Factory",
+        "Tuono 125", "Tuono 457", "Tuono 660", "Tuono V4", "Tuono V4 Factory",
+        "Tuareg 660",
+        "SR 125", "SR 160", "SR Storm", "SR GT 125", "SR GT 200",
+        "Shiver 900", "Dorsoduro 900"
+      ]
+    },
+    {
+      "make": "MV Agusta",
+      "models": [
+        "Brutale 800", "Brutale 1000 RR", "Brutale 1000 Nurburgring",
+        "Dragster 800", "Dragster 800 RR", "Dragster 800 RC SCS",
+        "F3 800", "F3 RR",
+        "Superveloce 800", "Superveloce 1000 Serie Oro",
+        "Turismo Veloce 800", "Turismo Veloce Lusso",
+        "Enduro Veloce"
+      ]
+    },
+    {
+      "make": "Vespa",
+      "models": [
+        "Primavera 50", "Primavera 125", "Primavera 150",
+        "Sprint 125", "Sprint 150",
+        "GTS 125", "GTS 300", "GTS Super 300", "GTS Super Tech 300", "GTS SuperSport 300",
+        "GTV 300",
+        "LX 125", "LX 150",
+        "Elettrica"
+      ]
+    },
+    {
+      "make": "Piaggio",
+      "models": [
+        "Liberty 125", "Liberty 150",
+        "Medley 125", "Medley 150",
+        "Beverly 300", "Beverly 400",
+        "MP3 300", "MP3 400", "MP3 530",
+        "X10 350", "X-EVO 250"
+      ]
+    },
+    {
+      "make": "SYM",
+      "models": [
+        "Jet 14", "Jet X", "Jet 4",
+        "Cruisym 125", "Cruisym 300",
+        "Joymax Z 125", "Joymax Z 300",
+        "Maxsym 400", "Maxsym TL 500",
+        "Citycom 300i", "Fiddle 125", "Fiddle 200", "Mio 50", "Mio 115",
+        "ADX 125", "Husky ADV 150"
+      ]
+    },
+    {
+      "make": "Kymco",
+      "models": [
+        "Agility 125", "Agility City 125", "Agility City 200",
+        "Like 125", "Like 150", "Like 200i",
+        "People S 125", "People S 200",
+        "Downtown 125", "Downtown 350i",
+        "Xciting S 400", "AK 550",
+        "X-Town 300", "Racing King 180"
+      ]
+    },
+    {
+      "make": "Royal Enfield",
+      "models": [
+        "Classic 350", "Classic 500",
+        "Bullet 350",
+        "Meteor 350",
+        "Hunter 350",
+        "Himalayan", "Himalayan 450",
+        "Scram 411",
+        "Continental GT 650", "Interceptor 650", "Super Meteor 650", "Shotgun 650",
+        "Guerrilla 450"
+      ]
+    },
+    {
+      "make": "Husqvarna",
+      "models": [
+        "Svartpilen 125", "Svartpilen 250", "Svartpilen 401", "Svartpilen 701",
+        "Vitpilen 125", "Vitpilen 401", "Vitpilen 701",
+        "Norden 901",
+        "FE 250", "FE 350", "FE 450", "FE 501",
+        "TE 150", "TE 250", "TE 300"
+      ]
+    },
+    {
+      "make": "CFMoto",
+      "models": [
+        "300NK", "300SR", "300CL-X",
+        "450NK", "450SR", "450MT", "450CL-C",
+        "650NK", "650GT", "650MT", "650 Adventura",
+        "700CL-X", "700MT",
+        "800NK", "800MT", "800MT Sport",
+        "Papio", "Papio SS"
+      ]
+    },
+    {
+      "make": "Benelli",
+      "models": [
+        "TNT 135", "TNT 300", "TNT 600",
+        "302S", "502C",
+        "Leoncino 250", "Leoncino 500", "Leoncino 800",
+        "TRK 251", "TRK 502", "TRK 502X", "TRK 702", "TRK 702X",
+        "Imperiale 400"
+      ]
+    },
+    {
+      "make": "Indian Motorcycle",
+      "models": [
+        "Scout", "Scout Bobber", "Scout Sixty", "Sport Scout", "Super Scout",
+        "FTR 1200", "FTR 1200 S", "FTR R Carbon", "FTR Sport",
+        "Chief", "Chief Bobber", "Chief Dark Horse", "Super Chief",
+        "Springfield", "Chieftain", "Roadmaster", "Pursuit", "Challenger"
+      ]
+    },
+    {
+      "make": "Moto Guzzi",
+      "models": [
+        "V7 Stone", "V7 Special", "V7 Sport",
+        "V9 Bobber", "V9 Roamer",
+        "V85 TT", "V85 TT Travel",
+        "V100 Mandello", "V100 Mandello S",
+        "Stelvio"
+      ]
+    },
+    {
+      "make": "Zero Motorcycles",
+      "models": [
+        "FX", "FXE", "S", "SR", "SR/F", "SR/S", "DSR/X", "DS", "DSR"
+      ]
+    },
+    {
+      "make": "Other",
+      "models": []
+    }
+  ]
+}

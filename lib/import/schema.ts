@@ -15,7 +15,20 @@ import { db } from "@/db/client";
 import { formOptions } from "@/db/schema/form_options";
 import { and, eq } from "drizzle-orm";
 
-/** Input types that are computed by the wizard and must NOT be imported. */
+/**
+ * Input types that don't accept user input via Excel.
+ *
+ *   - "formula": value is computed (e.g. endDate = startedDate + 364). We DO
+ *     want these in the schema so the payload builder can evaluate them at
+ *     import time (mirroring what the wizard's <FormulaField /> does on save),
+ *     but the template MUST NOT show a column for them — they're handled by
+ *     `unsupported: true, unsupportedReason: "Computed automatically"` in
+ *     loadPackageFields, which excel.ts already filters out of column emission.
+ *
+ *   - "heading"/"divider"/"info"/"spacer": pure UI scaffolding, never stored.
+ *     These are dropped entirely from the schema.
+ */
+const PRESENTATIONAL_INPUT_TYPES = new Set(["heading", "divider", "info", "spacer"]);
 const COMPUTED_INPUT_TYPES = new Set(["formula", "heading", "divider", "info", "spacer"]);
 
 /** Max recursion depth when expanding embedded flows. */
@@ -117,7 +130,52 @@ export type ImportFieldMeta = {
     buttonLabel?: string;
     mappings?: EntityPickerMappings;
   };
+  /** Formula expression for inputType="formula" fields. Evaluated at save-time. */
+  formula?: string;
+  /** Per-field conditional rules — field is hidden when these fail. */
+  showWhen?: ShowWhenRule | ShowWhenRule[];
+  /** Per-group conditional rules — entire group hidden when these fail. */
+  groupShowWhen?: GroupShowWhenRule | GroupShowWhenRule[];
+  /** Map of group label → groupShowWhen rules; takes precedence over `groupShowWhen`. */
+  groupShowWhenMap?: Record<string, GroupShowWhenRule | GroupShowWhenRule[]>;
+  /** Combination logic for groupShowWhen rules; defaults to "and". */
+  groupShowWhenLogic?: "and" | "or";
+  /** Per-group logic override map. */
+  groupShowWhenLogicMap?: Record<string, "and" | "or">;
 } & Record<string, unknown>;
+
+/**
+ * Per-field conditional. Mirrors `evaluateShowWhen` in PackageBlock.tsx.
+ * Field is shown only when EVERY rule passes.
+ */
+export type ShowWhenRule = {
+  /** Other package whose values gate visibility. Required. */
+  package: string;
+  /** Required category (or one of). Empty = no category constraint. */
+  category?: string | string[];
+  /** Optional field-value gate within the other package. */
+  field?: string;
+  fieldValues?: string[];
+  /** Optional gate on a child of `field` (e.g. "coverType__opt_tpo__c0"). */
+  childKey?: string;
+  childValues?: string[];
+};
+
+/**
+ * Per-group conditional. Mirrors the gsw evaluator in PackageBlock.tsx
+ * (around line 1418). Group is shown only when rules pass per `logic`.
+ *
+ * Note: uses `field`/`values` (NOT `fieldValues`) — rule shape differs from
+ * showWhen for historical reasons.
+ */
+export type GroupShowWhenRule = {
+  /** Package whose values gate the group. Defaults to the field's own pkg. */
+  package?: string;
+  field?: string;
+  values?: string[];
+  childKey?: string;
+  childValues?: string[];
+};
 
 /**
  * Tag put on virtual columns the schema synthesises (category selector,
@@ -288,6 +346,20 @@ export type ImportFieldDef = {
   effectiveOrder: number;
   /** DB row id, used as final stable tiebreaker */
   dbId: number;
+  /**
+   * Formula expression (only set when inputType="formula"). Evaluated at
+   * import-commit time so the snapshot mirrors what the wizard's
+   * <FormulaField /> would have written.
+   */
+  formula?: string;
+  /** Group label this field belongs to (for groupShowWhen lookups). */
+  group?: string;
+  /** Per-field show condition; gating dropped when these fail. */
+  showWhen?: ShowWhenRule[];
+  /** Per-group show condition; the entire group is gated when these fail. */
+  groupShowWhen?: GroupShowWhenRule[];
+  /** Combination logic for groupShowWhen ("and" default). */
+  groupShowWhenLogic?: "and" | "or";
 };
 
 export type CategoryOption = { value: string; label: string };
@@ -317,6 +389,55 @@ export type ImportFlowSchema = {
   /** Ordered packages used by the flow (de-duplicated, in step order) */
   packages: ImportPackageDef[];
 };
+
+/**
+ * Normalise per-field showWhen meta to a clean array. Accepts a single rule,
+ * an array of rules, or null/undefined. Drops malformed entries silently —
+ * the wizard does the same.
+ */
+function normaliseShowWhen(raw: unknown): ShowWhenRule[] | undefined {
+  if (raw == null) return undefined;
+  const arr = Array.isArray(raw) ? raw : [raw];
+  const out: ShowWhenRule[] = [];
+  for (const r of arr) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    const pkg = typeof o.package === "string" ? o.package.trim() : "";
+    if (!pkg) continue; // showWhen requires a package anchor
+    out.push({
+      package: pkg,
+      category: typeof o.category === "string" || Array.isArray(o.category) ? (o.category as string | string[]) : undefined,
+      field: typeof o.field === "string" ? o.field : undefined,
+      fieldValues: Array.isArray(o.fieldValues) ? o.fieldValues.filter((v): v is string => typeof v === "string") : undefined,
+      childKey: typeof o.childKey === "string" ? o.childKey : undefined,
+      childValues: Array.isArray(o.childValues) ? o.childValues.filter((v): v is string => typeof v === "string") : undefined,
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Normalise groupShowWhen meta to an array. Accepts single rule or array.
+ * Note: rule shape uses `field`/`values` (not `fieldValues`) — different from
+ * showWhen but matches what the wizard's gsw evaluator expects.
+ */
+function normaliseGroupShowWhen(raw: unknown): GroupShowWhenRule[] | undefined {
+  if (raw == null) return undefined;
+  const arr = Array.isArray(raw) ? raw : [raw];
+  const out: GroupShowWhenRule[] = [];
+  for (const r of arr) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    out.push({
+      package: typeof o.package === "string" ? o.package : undefined,
+      field: typeof o.field === "string" ? o.field : undefined,
+      values: Array.isArray(o.values) ? o.values.filter((v): v is string => typeof v === "string") : undefined,
+      childKey: typeof o.childKey === "string" ? o.childKey : undefined,
+      childValues: Array.isArray(o.childValues) ? o.childValues.filter((v): v is string => typeof v === "string") : undefined,
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
 
 function isUnsupportedField(meta: ImportFieldMeta): { unsupported: boolean; reason?: string } {
   // NOTE: repeatables are now supported via slot expansion (see expandRepeatable).
@@ -1253,16 +1374,50 @@ async function loadPackageFields(pkgKey: string): Promise<ImportFieldDef[]> {
   for (const r of sorted) {
     const meta = (r.meta ?? {}) as ImportFieldMeta;
     const inputType = String(meta.inputType ?? "text");
-    if (COMPUTED_INPUT_TYPES.has(inputType)) continue;
+    // Drop pure-presentational fields (heading/divider/info/spacer) entirely —
+    // they have no value to import, evaluate, or gate. Formula fields fall
+    // through (excluded only from the template via the `unsupported` flag),
+    // because the payload builder needs them to compute end-date / issue-date.
+    if (PRESENTATIONAL_INPUT_TYPES.has(inputType)) continue;
     if (meta.hidden === true) continue;
     const fieldKey = String(r.value ?? "").trim();
     if (!fieldKey) continue;
 
-    const { unsupported, reason } = isUnsupportedField(meta);
+    const isFormula = inputType === "formula";
+    const { unsupported: unsupportedRaw, reason: reasonRaw } = isUnsupportedField(meta);
+    // Mark formulas as unsupported so the template generator skips them
+    // (excel.ts filters on `f.unsupported`), but still expose them in the
+    // schema so the payload builder can compute their values.
+    const unsupported = isFormula ? true : unsupportedRaw;
+    const reason = isFormula
+      ? "Computed automatically by formula"
+      : reasonRaw;
     const entityPicker = extractEntityPicker(meta, inputType);
     const categories = Array.isArray(meta.categories)
       ? meta.categories.filter((c): c is string => typeof c === "string" && c.length > 0)
       : [];
+
+    // Normalise show/groupShowWhen meta into arrays for ergonomic consumers.
+    // The wizard accepts both single-rule and array forms — we mirror that.
+    const showWhen = normaliseShowWhen(meta.showWhen);
+    const groupLabel = typeof meta.group === "string"
+      ? meta.group
+      : Array.isArray(meta.group)
+        ? meta.group.find((g): g is string => typeof g === "string") ?? undefined
+        : undefined;
+    // groupShowWhenMap takes precedence (matches PackageBlock.tsx's gsw resolver).
+    // Use a ternary instead of `groupLabel && ...` so an empty-string groupLabel
+    // doesn't leak through the `??` chain (empty string is falsy but not nullish,
+    // which would widen the result type to include "" — see TS build #1438).
+    const rawGsw =
+      (groupLabel ? meta.groupShowWhenMap?.[groupLabel] : undefined)
+      ?? meta.groupShowWhen
+      ?? null;
+    const groupShowWhen = normaliseGroupShowWhen(rawGsw);
+    const groupShowWhenLogic: "and" | "or" =
+      (groupLabel ? meta.groupShowWhenLogicMap?.[groupLabel] : undefined)
+      ?? meta.groupShowWhenLogic
+      ?? "and";
 
     const isRepeatable = inputType === "repeatable" || Boolean(meta.repeatable);
 
@@ -1281,6 +1436,11 @@ async function loadPackageFields(pkgKey: string): Promise<ImportFieldDef[]> {
       categories,
       effectiveOrder: positional++,
       dbId: r.id,
+      formula: isFormula && typeof meta.formula === "string" ? meta.formula : undefined,
+      group: groupLabel,
+      showWhen,
+      groupShowWhen,
+      groupShowWhenLogic,
     };
 
     // Repeatables: expand into slot columns INSTEAD of emitting the parent.

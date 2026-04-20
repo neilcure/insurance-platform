@@ -17,13 +17,16 @@ export const dynamic = "force-dynamic";
  */
 export default async function BatchReviewPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ batchId: string }>;
+  searchParams: Promise<{ audit?: string }>;
 }) {
   const user = await requireUser();
   if (!canCreatePolicy(user)) redirect("/dashboard");
 
   const { batchId } = await params;
+  const { audit } = await searchParams;
   const id = Number(batchId);
   if (!Number.isFinite(id)) notFound();
 
@@ -36,6 +39,15 @@ export default async function BatchReviewPage({
 
   const isStaff = user.userType === "admin" || user.userType === "internal_staff";
   if (!isStaff && batch.createdBy !== Number(user.id)) {
+    redirect("/dashboard/imports");
+  }
+
+  // Cancelled batches have no actionable controls on the review page — every
+  // button is hidden because `isLocked` is true. Bouncing the user back to
+  // the imports list (where they can see the cancelled status badge + start
+  // a fresh import) avoids the dead-end "why is nothing happening?" screen.
+  // `?audit=1` lets staff inspect a cancelled batch's rows when needed.
+  if (batch.status === "cancelled" && audit !== "1") {
     redirect("/dashboard/imports");
   }
 

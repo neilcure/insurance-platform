@@ -31,11 +31,27 @@ import { AgentPickerDrawer } from "@/components/policies/AgentPickerDrawer";
 
 type Issue = { column: string | null; message: string };
 
+/**
+ * Resolved entity-picker payload — populated server-side by
+ * attachRefResolutionInfo so we can render the human company / agent NAME
+ * next to (or instead of) the raw record number the user typed.
+ */
+type ResolvedRef = {
+  status: "ok" | "missing";
+  displayName: string;
+  recordNumber: string;
+  kind: "agent" | "entity";
+  rawInput: string;
+};
+
 type Row = {
   id: number;
   batchId: number;
   excelRow: number;
   rawValues: Record<string, unknown>;
+  /** Per-column resolved refs (entity / agent pickers). May be missing on
+   *  legacy rows uploaded before the resolved_refs column existed. */
+  resolvedRefs?: Record<string, ResolvedRef> | null;
   status: "pending" | "skipped" | "committed" | "failed";
   errors: Issue[];
   warnings: Issue[];
@@ -76,7 +92,22 @@ type Batch = {
 type BatchSummary = {
   unknownValuesByColumn?: Record<
     string,
-    { columnLabel: string; uniqueCount: number; rowCount: number; samples: string[] }
+    {
+      columnLabel: string;
+      uniqueCount: number;
+      rowCount: number;
+      samples: string[];
+      /** Set only for collapsed-child columns (e.g. Make/Model). Lets us
+       *  bucket Models by the Make they appeared under. */
+      byParent?: Record<
+        string,
+        {
+          parentLabel: string;
+          parentColumnId: string;
+          values: { value: string; rowCount: number }[];
+        }
+      >;
+    }
   >;
   missingRequiredByColumn?: Record<string, { columnLabel: string; rowCount: number }>;
   offCategoryByColumn?: Record<string, { columnLabel: string; rowCount: number }>;
@@ -362,7 +393,11 @@ export default function BatchReviewClient({
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       toast.success("Batch cancelled");
-      await refreshBatch();
+      // Send the admin back to the imports list — there's nothing they can
+      // do on a cancelled batch's review page (all action buttons are
+      // hidden) so leaving them stranded here was confusing.
+      router.push("/dashboard/imports");
+      router.refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
     } finally {
@@ -382,8 +417,9 @@ export default function BatchReviewClient({
           >
             <ArrowLeft className="h-3 w-3" /> Back to imports
           </Link>
-          <h1 className="text-2xl font-semibold">
+          <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold">
             Batch #{batch.id} — <code className="text-base">{batch.flowKey}</code>
+            <BatchStatusBadge status={batch.status} />
           </h1>
           <p className="text-sm text-neutral-500">
             {batch.filename ?? "(no filename)"} · uploaded {new Date(batch.createdAt).toLocaleString()}
@@ -402,6 +438,54 @@ export default function BatchReviewClient({
         </div>
       </div>
 
+      {/* Locked-state banner — explains why the action buttons are gone */}
+      {batch.status === "cancelled" && (
+        <Banner tone="err">
+          <strong>Batch cancelled.</strong> No more rows can be committed from
+          this batch. Already-committed rows (if any) stay committed. Start a
+          new import from{" "}
+          <Link href="/dashboard/imports" className="underline">
+            Imports
+          </Link>
+          .
+        </Banner>
+      )}
+      {batch.status === "committed" && (
+        <Banner tone="ok">
+          <strong>Batch committed.</strong> All commit-eligible rows have been
+          processed. See per-row status below.
+        </Banner>
+      )}
+      {batch.status === "committing" && (
+        <Banner tone="warn">
+          <strong>Commit in progress…</strong> Hang tight — rows are being
+          written to the live tables.
+        </Banner>
+      )}
+
+      {/* Empty-file guard: a freshly-downloaded template ships with row 4
+       *  blank (we removed the demo example to fix the "1 row uploaded, 2
+       *  policies?" bug). If a user uploads it without filling anything in,
+       *  the parser correctly returns 0 rows but the screen looks "broken"
+       *  — every counter is 0 with no explanation. This banner spells out
+       *  what to do, so it doesn't read as an upload failure. */}
+      {liveAggregates.totalRows === 0 &&
+        batch.status !== "cancelled" &&
+        batch.status !== "committed" && (
+          <Banner tone="warn">
+            <strong>No data rows found in this file.</strong> The upload
+            succeeded, but the spreadsheet had no policy data to import.
+            Open your template, fill in your records starting on{" "}
+            <strong>row 4</strong> (rows 1–3 are headers, do not edit them),
+            save, then re-upload from the{" "}
+            <Link href="/dashboard/imports" className="underline">
+              Imports
+            </Link>{" "}
+            page. You can cancel this empty batch — nothing has been written
+            to your data.
+          </Banner>
+        )}
+
       {/* Aggregates */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-7">
         <Stat label="Total" value={liveAggregates.totalRows} />
@@ -415,7 +499,39 @@ export default function BatchReviewClient({
 
       {/* Issue summary */}
       {batch.summary && (
-        <SummaryPanel summary={batch.summary} />
+        <SummaryPanel
+          summary={batch.summary}
+          locked={isLocked || busy}
+          onAddOptions={async (additions) => {
+            // Single round-trip: batches the extension to form_options on the
+            // server AND re-validates the whole batch so all rows that were
+            // blocked on this unknown value flip back to "ready".
+            try {
+              setBusy(true);
+              const res = await fetch(`/api/imports/batches/${batch.id}/add-options`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ additions }),
+              });
+              const body = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+              const added = Number(body.added ?? 0);
+              toast.success(
+                added > 0
+                  ? `Added ${added} option${added === 1 ? "" : "s"} and re-validated the batch.`
+                  : "All values were already in the options list. Re-validated the batch.",
+              );
+              // Pull fresh rows + batch (the API already re-validated server-side)
+              await refreshRows();
+              await refreshBatch();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Failed to add options";
+              toast.error(msg);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
       )}
 
       {/* Row table */}
@@ -564,7 +680,23 @@ function FilterBar({
   );
 }
 
-function SummaryPanel({ summary }: { summary: BatchSummary }) {
+type AddOptionsRequest = Array<{
+  columnId: string;
+  parentValue?: string;
+  values: Array<{ value: string; label?: string }>;
+}>;
+
+function SummaryPanel({
+  summary,
+  locked,
+  onAddOptions,
+}: {
+  summary: BatchSummary;
+  locked: boolean;
+  /** Send a list of additions to /add-options. Resolves when validation
+   *  has refreshed; used to disable buttons during the round-trip. */
+  onAddOptions: (additions: AddOptionsRequest) => Promise<void>;
+}) {
   const unknownCols = Object.entries(summary.unknownValuesByColumn ?? {});
   const missingReq = Object.entries(summary.missingRequiredByColumn ?? {});
   const offCat = Object.entries(summary.offCategoryByColumn ?? {});
@@ -629,17 +761,10 @@ function SummaryPanel({ summary }: { summary: BatchSummary }) {
         )}
 
         {unknownCols.length > 0 && (
-          <IssueGroup
-            tone="warn"
-            title="Unknown values (not in current options list)"
-            items={unknownCols.map(([col, info]) => ({
-              key: col,
-              label: info.columnLabel,
-              count: info.rowCount,
-              detail: info.samples.length > 0
-                ? `${info.uniqueCount} unique: ${info.samples.slice(0, 8).join(", ")}${info.uniqueCount > 8 ? "…" : ""}`
-                : null,
-            }))}
+          <UnknownValuesPanel
+            entries={unknownCols}
+            locked={locked}
+            onAddOptions={onAddOptions}
           />
         )}
 
@@ -707,12 +832,288 @@ function IssueGroup({
   );
 }
 
-function Banner({ tone, children }: { tone: "warn" | "err"; children: React.ReactNode }) {
+type UnknownEntry = [
+  string,
+  NonNullable<BatchSummary["unknownValuesByColumn"]>[string],
+];
+
+/**
+ * Inline "fix unknown values" panel — for every column that has unknown
+ * values we show:
+ *   • The list of values with row counts
+ *   • A checkbox per value (default ALL checked)
+ *   • An "Add selected to options" button that calls /add-options and
+ *     re-validates the batch
+ *
+ * For collapsed columns (Make/Model and friends) the values are GROUPED by
+ * parent value (Toyota, Honda, …) — each group has its own button, AND
+ * if the parent value itself is unknown (admin pasted "Tesla" but Tesla
+ * isn't a Make yet) the button automatically adds the parent first, then
+ * the children, in one atomic POST. This is what makes the import "just
+ * work" for noisy real-world data instead of forcing a 4-step manual
+ * dance.
+ */
+function UnknownValuesPanel({
+  entries,
+  locked,
+  onAddOptions,
+}: {
+  entries: UnknownEntry[];
+  locked: boolean;
+  onAddOptions: (additions: AddOptionsRequest) => Promise<void>;
+}) {
+  const [busy, setBusy] = React.useState(false);
+  // Look up which parent column ids have unknown values themselves so we
+  // can surface "add Make first" automatically.
+  const parentColumnsWithUnknowns = new Map<string, Map<string, string>>();
+  for (const [, info] of entries) {
+    if (!info.byParent) continue;
+    for (const bucket of Object.values(info.byParent)) {
+      // Find the parent column entry (if it exists in `entries`) so we know
+      // whether the parent value is also unknown.
+      const parentEntry = entries.find(([cid]) => cid === bucket.parentColumnId);
+      if (!parentEntry) continue;
+      const parentLowerToValue = parentColumnsWithUnknowns.get(bucket.parentColumnId) ??
+        new Map<string, string>();
+      // Use the parent label as the canonical case-preserved value.
+      parentLowerToValue.set(bucket.parentLabel.toLowerCase(), bucket.parentLabel);
+      parentColumnsWithUnknowns.set(bucket.parentColumnId, parentLowerToValue);
+    }
+  }
+
+  async function submit(additions: AddOptionsRequest) {
+    if (busy || locked) return;
+    setBusy(true);
+    try {
+      await onAddOptions(additions);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 text-xs font-medium text-amber-700 dark:text-amber-300">
+        <AlertTriangle className="h-3.5 w-3.5" /> Unknown values (not in current options list)
+      </div>
+      <ul className="mt-1 space-y-2">
+        {entries.map(([col, info]) => (
+          <li
+            key={col}
+            className="space-y-2 rounded bg-neutral-50 px-2 py-2 text-xs dark:bg-neutral-900"
+          >
+            <div className="flex items-baseline justify-between gap-2">
+              <div>
+                <span className="font-medium">{info.columnLabel}</span>
+                <span className="ml-2 text-neutral-500">
+                  {info.uniqueCount} unique value{info.uniqueCount === 1 ? "" : "s"}
+                </span>
+              </div>
+              <Badge variant="outline">
+                {info.rowCount} row{info.rowCount === 1 ? "" : "s"}
+              </Badge>
+            </div>
+
+            {info.byParent ? (
+              // Grouped per-parent (Make/Model and friends)
+              <div className="space-y-2">
+                {Object.entries(info.byParent).map(([parentLower, bucket]) => {
+                  const parentNeedsCreation =
+                    parentColumnsWithUnknowns
+                      .get(bucket.parentColumnId)
+                      ?.has(parentLower) ?? false;
+                  return (
+                    <UnknownGroup
+                      key={parentLower}
+                      title={bucket.parentLabel}
+                      values={bucket.values.map((v) => v.value)}
+                      counts={bucket.values.map((v) => v.rowCount)}
+                      busy={busy}
+                      locked={locked}
+                      hint={
+                        parentNeedsCreation
+                          ? `Will also add "${bucket.parentLabel}" to ${prettyColumnLabel(bucket.parentColumnId, entries)}.`
+                          : undefined
+                      }
+                      onSubmit={(picked) => {
+                        const additions: AddOptionsRequest = [];
+                        if (parentNeedsCreation) {
+                          additions.push({
+                            columnId: bucket.parentColumnId,
+                            values: [{ value: bucket.parentLabel }],
+                          });
+                        }
+                        additions.push({
+                          columnId: col,
+                          parentValue: parentLower,
+                          values: picked.map((v) => ({ value: v })),
+                        });
+                        return submit(additions);
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            ) : (
+              // Flat list (plain select / radio / category)
+              <UnknownGroup
+                values={info.samples}
+                busy={busy}
+                locked={locked}
+                onSubmit={(picked) =>
+                  submit([
+                    { columnId: col, values: picked.map((v) => ({ value: v })) },
+                  ])
+                }
+              />
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function prettyColumnLabel(colId: string, entries: UnknownEntry[]): string {
+  const found = entries.find(([cid]) => cid === colId);
+  return found?.[1]?.columnLabel ?? colId;
+}
+
+function UnknownGroup({
+  title,
+  values,
+  counts,
+  hint,
+  busy,
+  locked,
+  onSubmit,
+}: {
+  title?: string;
+  values: string[];
+  counts?: number[];
+  hint?: string;
+  busy: boolean;
+  locked: boolean;
+  onSubmit: (picked: string[]) => Promise<void> | void;
+}) {
+  // Default state: every unknown value is selected. Admin un-ticks the ones
+  // that are typos or junk, then clicks Add.
+  const [picked, setPicked] = React.useState<Set<string>>(() => new Set(values));
+
+  // If the upstream value list changes (after re-validate), reset selection.
+  React.useEffect(() => {
+    setPicked(new Set(values));
+  }, [values.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function toggle(v: string) {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(v)) next.delete(v);
+      else next.add(v);
+      return next;
+    });
+  }
+
+  return (
+    <div className="rounded border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-950">
+      {title && (
+        <div className="mb-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300">
+          {title}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-1.5">
+        {values.map((v, i) => (
+          <label
+            key={v}
+            className="inline-flex cursor-pointer items-center gap-1 rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-[11px] dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            <input
+              type="checkbox"
+              checked={picked.has(v)}
+              onChange={() => toggle(v)}
+              className="h-3 w-3"
+              disabled={busy || locked}
+            />
+            <span>{v}</span>
+            {counts?.[i] && counts[i] > 0 && (
+              <span className="text-neutral-500">×{counts[i]}</span>
+            )}
+          </label>
+        ))}
+        {values.length === 0 && (
+          <span className="text-neutral-500">No values to add.</span>
+        )}
+      </div>
+      {hint && (
+        <div className="mt-1 text-[11px] text-blue-700 dark:text-blue-300">{hint}</div>
+      )}
+      <div className="mt-1.5 flex justify-end">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 px-2 text-[11px]"
+          disabled={busy || locked || picked.size === 0}
+          onClick={() => onSubmit([...picked])}
+        >
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+          Add {picked.size} to options
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function Banner({
+  tone,
+  children,
+}: {
+  tone: "warn" | "err" | "ok";
+  children: React.ReactNode;
+}) {
   const cls =
     tone === "err"
       ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-900/20 dark:text-red-200"
+      : tone === "ok"
+      ? "border-green-200 bg-green-50 text-green-900 dark:border-green-900 dark:bg-green-900/20 dark:text-green-200"
       : "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-200";
   return <div className={`rounded-md border p-2 text-xs ${cls}`}>{children}</div>;
+}
+
+/**
+ * Shows the batch's lifecycle state right next to the title so admins
+ * always know if they're looking at a live, cancelled, or committed batch.
+ * Without this, cancelling looks like nothing happened (the Cancel button
+ * just quietly disappears).
+ */
+function BatchStatusBadge({ status }: { status: Batch["status"] }) {
+  const map: Record<Batch["status"], { label: string; cls: string }> = {
+    parsing: {
+      label: "Parsing",
+      cls: "bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300",
+    },
+    review: {
+      label: "Review",
+      cls: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200",
+    },
+    committing: {
+      label: "Committing…",
+      cls: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
+    },
+    committed: {
+      label: "Committed",
+      cls: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200",
+    },
+    cancelled: {
+      label: "Cancelled",
+      cls: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200",
+    },
+  };
+  const { label, cls } = map[status];
+  return (
+    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}>
+      {label}
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -861,11 +1262,19 @@ function RowStatusBadge({ row }: { row: Row }) {
 function RowPreview({ row, labelById }: { row: Row; labelById: Map<string, string> }) {
   const parts: string[] = [];
   let count = 0;
+  // Show a resolved company / agent NAME when available — admins recognise
+  // "Acme Insurance" instantly but record numbers (INS-0001) are noise.
+  const refs = row.resolvedRefs ?? {};
   for (const [k, v] of Object.entries(row.rawValues)) {
     if (count >= 4) break;
     if (v === undefined || v === null || v === "") continue;
     const label = labelById.get(k) ?? k;
-    parts.push(`${label}: ${String(v)}`);
+    const ref = refs[k];
+    const display =
+      ref && ref.status === "ok" && ref.displayName
+        ? `${ref.displayName} (${ref.recordNumber || String(v)})`
+        : String(v);
+    parts.push(`${label}: ${display}`);
     count++;
   }
   if (row.lastCommitError) {
@@ -980,6 +1389,7 @@ function RowEditor({
             key={c.id}
             column={c}
             value={draft[c.id] ?? ""}
+            resolvedRef={row.resolvedRefs?.[c.id]}
             onChange={(v) => setDraft((d) => ({ ...d, [c.id]: v }))}
           />
         ))}
@@ -1003,10 +1413,14 @@ function RowEditor({
 function CellEditor({
   column,
   value,
+  resolvedRef,
   onChange,
 }: {
   column: Column;
   value: string;
+  /** If present, shows the resolved company / agent name under the input so
+   *  the admin can confirm "INS-0001" actually points at the right insurer. */
+  resolvedRef?: ResolvedRef;
   onChange: (v: string) => void;
 }) {
   // For select/radio: render a native dropdown when we have options.
@@ -1046,24 +1460,40 @@ function CellEditor({
           })}
         </select>
       ) : column.entityPicker ? (
-        <div className="flex items-center gap-1">
-          <Input
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            className="h-7 text-xs"
-            placeholder={isAgentPicker ? "user number" : "policy number"}
-          />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 shrink-0 px-2"
-            onClick={() => setPickerOpen(true)}
-            title={isAgentPicker ? "Search agents" : "Search existing records"}
-          >
-            <Search className="h-3.5 w-3.5" />
-            Pick
-          </Button>
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-1">
+            <Input
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              className="h-7 text-xs"
+              placeholder={isAgentPicker ? "user number or name" : "record number or name"}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 shrink-0 px-2"
+              onClick={() => setPickerOpen(true)}
+              title={isAgentPicker ? "Search agents" : "Search existing records"}
+            >
+              <Search className="h-3.5 w-3.5" />
+              Pick
+            </Button>
+          </div>
+          {value.trim() && resolvedRef && (
+            resolvedRef.status === "ok" ? (
+              <div className="text-[11px] text-green-700 dark:text-green-400">
+                {resolvedRef.displayName || "(no name)"}
+                {resolvedRef.recordNumber && resolvedRef.recordNumber !== value.trim() && (
+                  <span className="ml-1 text-neutral-500">→ {resolvedRef.recordNumber}</span>
+                )}
+              </div>
+            ) : (
+              <div className="text-[11px] text-red-700 dark:text-red-400">
+                Not found — pick an existing {isAgentPicker ? "agent" : "record"} or create one first
+              </div>
+            )
+          )}
         </div>
       ) : (
         <Input

@@ -322,6 +322,12 @@ export function buildPolicyPayload(
     insured["insured__category"] ?? insured["insured_category"];
   if (resolvedType) insured.insuredType = resolvedType;
 
+  // Driver-package auto-promotion: when the user filled the "Add More
+  // Drivers?" repeatable but left the OWNER driver fields empty, treat the
+  // first slot as the owner so the resulting snapshot matches a wizard-built
+  // policy byte-for-byte. See `promoteSingleDriverToOwner` for full rules.
+  promoteSingleDriverToOwner(packages);
+
   const payload: ImportPolicyPayload = {
     flowKey,
     insured,
@@ -329,4 +335,83 @@ export function buildPolicyPayload(
   };
 
   return { payload, clientNumber, agentNumber, entityRefs };
+}
+
+/**
+ * Maps the additional-driver slot sub-keys onto the equivalent OWNER driver
+ * field keys. Sourced from the live `driver_fields` form_options rows
+ * (slot keys live under `moreDriver.booleanChildren.true[0].repeatable.fields`,
+ * owner keys are the top-level driver fields).
+ *
+ * Only keys present in BOTH sides are listed — owner-only fields like
+ * `idNumber` and slot-only fields like `dExperience` have no counterpart
+ * and are intentionally excluded.
+ */
+const DRIVER_SLOT_TO_OWNER_KEY: Record<string, string> = {
+  lastName: "lastname",
+  firstName: "firstname",
+  dob: "ownerBoA",
+  dLicense: "ownerDLicence",
+  relationship: "relationshiptheOwner",
+  occuption: "occuption",
+  postion: "ownerPostion",
+};
+
+/**
+ * If the import row filled the "Add More Drivers?" repeatable as a single
+ * entry while leaving every OWNER driver field empty, promote that one entry
+ * into the owner fields so the resulting snapshot matches the wizard's
+ * common shape (owner = sole driver, `moreDriver = false`).
+ *
+ * Why this matters:
+ *   - The driver package has TWO sets of "Last Name / First Name / DoB / …"
+ *     columns in the import template — one for the owner, one for additional
+ *     drivers. Users frequently fill the second set when they meant the first
+ *     because the labels overlap (the pattern was reported twice).
+ *   - The wizard always stores the owner under the top-level keys
+ *     (`driver__lastname`, `driver__firstname`, …); having the import use a
+ *     different shape made the policy detail screen render the same data
+ *     under ugly nested labels.
+ *
+ * Safety guards (any failed guard short-circuits):
+ *   - Package must be `driver` and use the standard `moreDriver` boolean key.
+ *   - The slot array must have exactly ONE entry (multi-driver imports keep
+ *     the original shape — those legitimately ARE multiple drivers).
+ *   - Every owner field that has a slot counterpart must currently be empty
+ *     (we never overwrite admin-supplied owner data).
+ *
+ * Slot-only sub-fields (e.g. `dExperience`, which has no owner counterpart)
+ * are dropped silently — they're rare and were almost always entered by
+ * accident. If we ever need a corresponding owner field, the mapping table
+ * above is the single place to extend.
+ */
+function promoteSingleDriverToOwner(
+  packages: Record<string, { category?: string; values: Record<string, unknown> }>,
+): void {
+  const driver = packages.driver;
+  if (!driver) return;
+  const v = driver.values;
+
+  const slotKey = "driver__moreDriver__true__c0";
+  const slot = v[slotKey];
+  if (!Array.isArray(slot) || slot.length !== 1) return;
+  const entry = slot[0] as Record<string, unknown>;
+  if (!entry || typeof entry !== "object") return;
+
+  const ownerKeysToFill = Object.values(DRIVER_SLOT_TO_OWNER_KEY).map(
+    (k) => `driver__${k}`,
+  );
+  for (const k of ownerKeysToFill) {
+    const cur = v[k];
+    if (cur !== undefined && cur !== null && cur !== "") return;
+  }
+
+  for (const [slotSubKey, ownerSubKey] of Object.entries(DRIVER_SLOT_TO_OWNER_KEY)) {
+    const sv = entry[slotSubKey];
+    if (sv === undefined || sv === null || sv === "") continue;
+    v[`driver__${ownerSubKey}`] = sv;
+  }
+
+  v["driver__moreDriver"] = false;
+  delete v[slotKey];
 }

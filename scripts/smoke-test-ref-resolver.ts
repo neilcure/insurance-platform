@@ -13,7 +13,12 @@
  * Run:  npx tsx scripts/smoke-test-ref-resolver.ts
  */
 import { validateRows } from "../lib/import/validate";
-import { attachRefResolutionErrors, EntityResolutionCache } from "../lib/import/entity-resolver";
+import {
+  attachRefResolutionErrors,
+  EntityResolutionCache,
+  type ResolvedAgent,
+  type ResolvedEntity,
+} from "../lib/import/entity-resolver";
 import type { ImportFlowSchema } from "../lib/import/schema";
 
 function ok(name: string, cond: boolean, extra?: string) {
@@ -35,8 +40,23 @@ class MockCache extends EntityResolutionCache {
   ) {
     super();
   }
-  override async resolveAgent(userNumber: string): Promise<number | null> {
-    return this.knownAgents.has(userNumber.trim()) ? 1 : null;
+  override async resolveAgent(userNumber: string): Promise<ResolvedAgent | null> {
+    const trimmed = userNumber.trim();
+    if (!this.knownAgents.has(trimmed)) return null;
+    return { userId: 1, userNumber: trimmed, displayName: trimmed };
+  }
+  override async resolveEntity(
+    refFlow: string,
+    refValue: string,
+  ): Promise<ResolvedEntity | null> {
+    const flat = this.knownEntities.get(`${refFlow}::${refValue.trim()}`);
+    if (!flat) return null;
+    return {
+      policyId: 1,
+      policyNumber: refValue.trim(),
+      displayName: refValue.trim(),
+      flatSnapshot: flat,
+    };
   }
   override async resolveEntitySnapshot(
     refFlow: string,

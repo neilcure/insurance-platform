@@ -23,13 +23,21 @@ export function formatDDMMYYYYHHMM(iso: string): string {
 }
 
 /**
- * Parse a date string in DD-MM-YYYY or YYYY-MM-DD format.
+ * Parse a date string in DD-MM-YYYY, DD/MM/YYYY, or YYYY-MM-DD format.
  * Returns null for empty/invalid input.
+ *
+ * Accepting BOTH slash and hyphen separators is intentional: the wizard's
+ * date input mask emits hyphens (`maskDDMMYYYY`) but the bulk-import
+ * validator normalises to slashes (`formatDateDDMMYYYY` in lib/import/validate.ts),
+ * and formula evaluation (lib/formula.ts → here) needs to recognise both
+ * shapes so end-date / issue-date computations work for imported policies too.
  */
 export function parseAnyDate(s: string): Date | null {
   const trimmed = String(s ?? "").trim();
   if (!trimmed) return null;
-  const ddmmyyyy = /^(\d{2})-(\d{2})-(\d{4})$/.exec(trimmed);
+  // DD-MM-YYYY or DD/MM/YYYY (also tolerate "DD.MM.YYYY", same as the import
+  // parser does — keeps a single source of truth for accepted shapes).
+  const ddmmyyyy = /^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/.exec(trimmed);
   if (ddmmyyyy) {
     const d = new Date(Number(ddmmyyyy[3]), Number(ddmmyyyy[2]) - 1, Number(ddmmyyyy[1]));
     return Number.isNaN(d.getTime()) ? null : d;

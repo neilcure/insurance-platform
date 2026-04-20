@@ -22,6 +22,11 @@ import { DEFAULT_REPEAT_SLOTS, MAX_REPEAT_SLOTS } from "./schema";
 
 const SHEET_DATA = "Policies";
 const SHEET_README = "Instructions";
+// Hidden sheet that stores option lists too long for Excel's 255-char inline
+// data-validation formula limit. Range references (Lookups!$A$2:$A$57) bypass
+// that cap entirely. Sheet is marked "veryHidden" so users can't accidentally
+// edit / delete the lookup columns and break dropdowns.
+const SHEET_LOOKUPS = "Lookups";
 
 const SECTION_ROW = 1;
 const HEADER_LABEL_ROW = 2;
@@ -271,6 +276,14 @@ function buildLabelNote(f: ImportFieldDef): ExcelJS.Comment {
   if (f.unsupported) {
     texts.push({ text: `\nNot importable: ${f.unsupportedReason ?? "unsupported field"}` });
   }
+  // Show a sample value so admins know the expected shape (e.g. "1990-01-15"
+  // for a date, "Toyota" for Make). This used to live in row 4 of the data
+  // sheet but that demo row leaked into imports as phantom records — see
+  // EXAMPLE_ROW comment in buildImportTemplate.
+  const example = exampleValueFor(f);
+  if (example) {
+    texts.push({ text: `\nExample: ${example}` });
+  }
   return { texts };
 }
 
@@ -481,6 +494,18 @@ export async function buildImportTemplate(schema: ImportFlowSchema): Promise<Buf
     let labelText = `${f.label}${f.required ? " *" : ""}`;
     if (f.virtual?.kind === "category") {
       labelText += " (type)";
+      // Inline the valid values right in the column header — admins keep
+      // typing variants like "commercial" when the canonical list is
+      // "car|motorcycle|lorry" and only finding out after upload. Showing
+      // them here, AND in the in-cell dropdown below, eliminates that round
+      // trip. (Parser already strips the trailing [...] suffix.)
+      if (f.options.length > 0) {
+        const vals = f.options
+          .map((o) => o.value)
+          .filter(Boolean)
+          .join("|");
+        if (vals) labelText += ` [${vals}]`;
+      }
     } else if (f.virtual?.kind === "boolean_child") {
       labelText += f.virtual.branch === "true" ? " (if yes)" : " (if no)";
     } else if (f.virtual?.kind === "option_child") {
@@ -533,9 +558,19 @@ export async function buildImportTemplate(schema: ImportFlowSchema): Promise<Buf
       fgColor: { argb: "FFF7F8FA" },
     };
 
-    // Row 4 — example value
+    // Row 4 — intentionally LEFT BLANK.
+    //
+    // Older templates wrote a demo value here (e.g. "Toyota") so admins could
+    // see the expected shape. Problem: the parser only dropped that row if it
+    // matched the demo EXACTLY — the moment a user edited one cell, the whole
+    // row leaked into the import as a phantom record. Real-world consequence:
+    // "I imported 1 row, why does it want to create 2 policies?".
+    //
+    // The example/expected value now lives in the column header's hover note
+    // (see buildLabelNote → `Example: ...`). Row 4 stays empty as visual
+    // breathing room above the data; the parser silently skips empty rows.
     const exampleCell = data.getCell(EXAMPLE_ROW, colIdx);
-    exampleCell.value = exampleValueFor(f);
+    exampleCell.value = "";
     exampleCell.font = { italic: true, color: { argb: "FFAFAFAF" } };
   }
 
@@ -548,10 +583,39 @@ export async function buildImportTemplate(schema: ImportFlowSchema): Promise<Buf
   // Excel rejects DV blocks with overlapping sqref ranges — dedupe defensively.
   const seenRanges = new Set<string>();
   // Excel also has a 255-char hard cap on the dropdown formula content
-  // (including the surrounding quotes).
+  // (including the surrounding quotes). Lists that exceed this are written to
+  // a hidden Lookups sheet and referenced by absolute range, which has no
+  // length limit. We allocate one column per overflowing list, keyed by the
+  // option-value signature so identical lists share a column.
   const MAX_FORMULA_LEN = 255;
   // Conservative limit for the human-visible "Allowed: ..." error text shown by Excel.
   const MAX_ERROR_LEN = 200;
+
+  // Lazily-created hidden sheet — only added if at least one field overflows
+  // the inline limit. Keeps the file slim for small flows.
+  let lookups: ExcelJS.Worksheet | null = null;
+  const lookupColByKey = new Map<string, number>();
+  let nextLookupCol = 1;
+  const ensureLookupRange = (values: string[]): string => {
+    const key = values.join("\u0001");
+    let col = lookupColByKey.get(key);
+    if (col === undefined) {
+      if (!lookups) {
+        lookups = wb.addWorksheet(SHEET_LOOKUPS, { state: "veryHidden" });
+      }
+      col = nextLookupCol++;
+      lookupColByKey.set(key, col);
+      const colLtr = colNumberToLetters(col);
+      // Header row keeps the sheet self-documenting if anyone unhides it.
+      lookups.getCell(`${colLtr}1`).value = `(${values.length} options)`;
+      for (let i = 0; i < values.length; i++) {
+        lookups.getCell(`${colLtr}${i + 2}`).value = values[i];
+      }
+    }
+    const colLtr = colNumberToLetters(col);
+    // ABSOLUTE reference so it doesn't shift when Excel auto-fills the cell.
+    return `${SHEET_LOOKUPS}!$${colLtr}$2:$${colLtr}$${values.length + 1}`;
+  };
 
   for (const c of columns) {
     const f = c.field;
@@ -576,8 +640,14 @@ export async function buildImportTemplate(schema: ImportFlowSchema): Promise<Buf
         .map((o) => (o.value ?? "").trim())
         .filter((v) => v.length > 0 && isFormulaSafeValue(v));
       if (safeValues.length === 0) continue;
-      const formula = `"${safeValues.join(",")}"`;
-      if (formula.length > MAX_FORMULA_LEN) continue;
+      const inlineFormula = `"${safeValues.join(",")}"`;
+      // Pick the cheapest representation: inline list when it fits, otherwise
+      // a hidden-sheet range reference. Either way the user sees the same
+      // dropdown UX in Excel.
+      const formula =
+        inlineFormula.length <= MAX_FORMULA_LEN
+          ? inlineFormula
+          : ensureLookupRange(safeValues);
       const errorText = `Allowed: ${safeValues.join(", ")}`.slice(0, MAX_ERROR_LEN);
       dv.add(range, {
         type: "list",
@@ -635,24 +705,53 @@ export type ParsedImportSheet = {
   rows: ParsedImportRow[];
 };
 
+/**
+ * Strip Excel's "text-marker" leading apostrophe from a string value.
+ *
+ * Background:
+ *   In Excel, prefixing a cell with a single apostrophe (e.g. `'02/05/2026`)
+ *   forces the cell to be stored as plain text and prevents Excel's
+ *   auto-formatting (date detection, leading-zero stripping, etc.). The
+ *   apostrophe is hidden in the UI but, depending on how the .xlsx file was
+ *   produced or edited, can leak through into ExcelJS's `cell.value` as the
+ *   first character of the string.
+ *
+ *   Users who carried over old workbooks from a system that DID care about
+ *   that auto-formatting often have these escape apostrophes scattered through
+ *   their data. Our app re-parses every value from scratch, so the escape is
+ *   pure noise — it must be stripped before validation, otherwise dates fail
+ *   to parse, numbers come through as text, etc.
+ *
+ *   Only the FIRST character is stripped (one `'` only), so legitimate values
+ *   like names with embedded apostrophes (`O'Brien`) and double-apostrophe
+ *   escapes (`''actually-starts-with-quote`) survive the strip with the
+ *   expected behaviour.
+ */
+function stripLeadingApostrophe(s: string): string {
+  return s.length > 0 && s.charCodeAt(0) === 0x27 /* ' */ ? s.slice(1) : s;
+}
+
 function readCellValue(cell: ExcelJS.Cell): unknown {
   const v = cell.value;
   if (v === null || v === undefined) return "";
+  if (typeof v === "string") return stripLeadingApostrophe(v);
   if (typeof v === "object") {
     if (v instanceof Date) return v;
     if ("text" in v && typeof (v as { text?: unknown }).text === "string") {
-      return (v as { text: string }).text;
+      return stripLeadingApostrophe((v as { text: string }).text);
     }
     if ("result" in v && (v as { result?: unknown }).result !== undefined) {
-      return (v as { result: unknown }).result;
+      const r = (v as { result: unknown }).result;
+      return typeof r === "string" ? stripLeadingApostrophe(r) : r;
     }
     if ("richText" in v && Array.isArray((v as { richText?: unknown[] }).richText)) {
-      return (v as { richText: { text?: string }[] }).richText
+      const joined = (v as { richText: { text?: string }[] }).richText
         .map((r) => r.text ?? "")
         .join("");
+      return stripLeadingApostrophe(joined);
     }
     if ("hyperlink" in v && "text" in v) {
-      return (v as { text: string }).text;
+      return stripLeadingApostrophe((v as { text: string }).text);
     }
   }
   return v;
@@ -814,36 +913,89 @@ export async function parseImportWorkbook(
   const unknownColumns = headers.filter((h) => !knownIds.has(h.id)).map((h) => h.id);
   const missingColumns = [...requiredIds].filter((id) => !seenIds.has(id));
 
+  // Pre-compute which columns are "category selectors" — every meaningful
+  // policyset row has to declare at least one (insured.category, vehicleinfo.category,
+  // policyinfo.category, etc). A row with literally one stray cell and no
+  // category at all is almost certainly a paste artefact, not an intended
+  // record. We use this to suppress noise rows like "row 5 has only an email"
+  // (real-world bug: 1 real row + 1 stray email row = "I imported 1, system
+  // wants to create 2").
+  const categoryColumnIds = new Set(
+    fields
+      .filter((f) => f.virtual?.kind === "category")
+      .map((f) => fieldColumnId(f)),
+  );
+
   const rows: ParsedImportRow[] = [];
   const lastRow = ws.actualRowCount;
   for (let r = dataStartRow; r <= lastRow; r++) {
     const row = ws.getRow(r);
     const values: Record<string, unknown> = {};
-    let hasAny = false;
+    let filledCount = 0;
+    let hasCategoryValue = false;
     for (const h of headers) {
       if (!knownIds.has(h.id)) continue;
       const v = readCellValue(row.getCell(h.col));
-      if (v !== "" && v !== null && v !== undefined) hasAny = true;
+      const nonEmpty = v !== "" && v !== null && v !== undefined;
+      if (nonEmpty) {
+        filledCount += 1;
+        if (categoryColumnIds.has(h.id)) hasCategoryValue = true;
+      }
       values[h.id] = v;
     }
-    if (!hasAny) continue;
+    if (filledCount === 0) continue;
+    // Noise guard: tiny stray row with no category selector → ignore. We
+    // keep rows with >= 3 filled cells even without a category, because a
+    // very minimal (but intentional) row should still surface as an error
+    // in validation rather than silently disappear.
+    if (!hasCategoryValue && filledCount < 3) continue;
     rows.push({ excelRow: r, values });
   }
 
-  // Drop the example row if it still matches the example values exactly.
-  // Example row is wherever it lands relative to the detected header row.
-  const example: Record<string, unknown> = {};
-  for (const f of fields) example[fieldColumnId(f)] = exampleValueFor(f);
+  // Drop the demo / example row that OLDER templates seeded into row 4.
+  //
+  // History:
+  //   v1: required EXACT match on every cell → fragile (one tweaked cell let
+  //       the whole row leak through as a phantom).
+  //   v2: matched >= 30% of filled cells → false-positives on real data,
+  //       because lots of demo defaults ("company", "no", first-of-select)
+  //       collide with what users actually type. Result: real rows silently
+  //       disappear and the user sees "0 rows found" on a clearly-filled
+  //       template.  ←  the bug we're fixing here.
+  //   v3 (current): fingerprint-based.  Only drop the first row if it
+  //       contains AT LEAST ONE of the canonical demo "tells" — strings so
+  //       specific that no real record would ever contain them by accident:
+  //         • email field set to literally "name@example.com"
+  //         • phone/tel field set to literally "+852 1234 5678"
+  //         • date  field set to literally "31/12/2026"
+  //       Newly-generated templates ship with row 4 blank, so this branch
+  //       only matters for files generated before that change. Keeping it
+  //       narrow guarantees we don't eat real data.
+  const DEMO_FINGERPRINTS: Array<{ inputType: string; value: string }> = [
+    { inputType: "email", value: "name@example.com" },
+    { inputType: "tel", value: "+852 1234 5678" },
+    { inputType: "phone", value: "+852 1234 5678" },
+    { inputType: "date", value: "31/12/2026" },
+  ];
   if (rows.length > 0) {
     const r = rows[0];
-    let allMatch = true;
-    let matchedColumns = 0;
+    const fieldByColId = new Map(fields.map((f) => [fieldColumnId(f), f]));
+    let isDemo = false;
     for (const [k, v] of Object.entries(r.values)) {
-      const ev = String(example[k] ?? "");
-      if (ev !== "") matchedColumns += 1;
-      if (String(v ?? "") !== ev) { allMatch = false; break; }
+      const cell = String(v ?? "").trim();
+      if (cell === "") continue;
+      const f = fieldByColId.get(k);
+      if (!f) continue;
+      if (
+        DEMO_FINGERPRINTS.some(
+          (fp) => fp.inputType === f.inputType && fp.value === cell,
+        )
+      ) {
+        isDemo = true;
+        break;
+      }
     }
-    if (allMatch && matchedColumns > 0) rows.shift();
+    if (isDemo) rows.shift();
   }
 
   // Discard any leftover decoration / banner row consumed accidentally

@@ -77,11 +77,23 @@ function parseDate(v: unknown): Date | null {
   return null;
 }
 
+/**
+ * Canonical date string written into the staging payload.
+ *
+ * Uses HYPHENS (DD-MM-YYYY) so the import snapshot matches what the wizard
+ * writes via `maskDDMMYYYY` / `fmtDateDDMMYYYY` (lib/format/date.ts). Mixing
+ * separators caused the policy detail view to show "02/05/2026" for an
+ * imported started-date next to "01-05-2027" for the formula-computed end-date,
+ * which the user reported as inconsistent.
+ *
+ * Note: Excel CELLS are still accepted in either DD/MM/YYYY or DD-MM-YYYY
+ * (and dot-separated) — see `parseDate` above. Only the OUTPUT shape changed.
+ */
 function formatDateDDMMYYYY(d: Date): string {
   const day = String(d.getUTCDate()).padStart(2, "0");
   const month = String(d.getUTCMonth() + 1).padStart(2, "0");
   const year = d.getUTCFullYear();
-  return `${day}/${month}/${year}`;
+  return `${day}-${month}-${year}`;
 }
 
 type FieldIssue = { message: string; severity: "error" | "warning" };
@@ -238,6 +250,44 @@ export function validateRows(
       if (typeof v === "string" && v.length > 0) {
         rowCategoryByPkg.set(pkgKey, v.toLowerCase());
       }
+    }
+
+    // ---- Bad category value (hard error + suppress cascade) ----
+    // If the admin typed a value that isn't one of the category selector's
+    // options ("commercial" when the list is ["car","motorcycle","lorry"]),
+    // we MUST report it as a hard error on the selector itself — otherwise
+    // every other field in the package fires an "off-category" warning and
+    // the admin sees 30 confusing messages instead of one clear one
+    // ("Invalid Vehicle Type 'commercial'…").
+    for (const [pkgKey, selector] of categorySelectorByPkg) {
+      const id = fieldColumnId(selector);
+      const raw = cleaned[id];
+      if (raw === undefined || raw === null || raw === "") continue;
+      if (selector.options.length === 0) continue;
+      const lower = String(raw).toLowerCase();
+      const matched = selector.options.some(
+        (o) =>
+          (o.value ?? "").toLowerCase() === lower ||
+          (o.label ?? "").toLowerCase() === lower,
+      );
+      if (matched) continue;
+
+      // Demote the soft "Unknown value …" warning to a hard error so the row
+      // can't be committed until the selector itself is corrected.
+      for (let i = warnings.length - 1; i >= 0; i--) {
+        if (warnings[i].column === id) warnings.splice(i, 1);
+      }
+      const allowed = selector.options.map((o) => o.value).join(", ");
+      if (!errors.some((e) => e.column === id)) {
+        errors.push({
+          column: id,
+          message: `Invalid ${selector.label} "${raw}" — pick one of: [${allowed}]. Fix this first to clear the off-category cascade.`,
+        });
+      }
+      // Drop the bogus selector value so the off-category pass doesn't fire
+      // for every field in the package — admin sees ONE clear error, not 30.
+      delete cleaned[id];
+      rowCategoryByPkg.delete(pkgKey);
     }
 
     // ---- Off-category data (warning) ----
@@ -570,6 +620,12 @@ export function validateRows(
     // ---- Required-field check (category-aware, hard error) ----
     for (const f of fields) {
       if (!f.required) continue;
+      // Agent picker is always optional at import time. Many imported policies
+      // genuinely have no agent yet (assigned later in the dashboard) and
+      // forcing one upfront made admins paste throw-away values just to get
+      // past the validator. Existing wizard behaviour still requires it; this
+      // exception only applies to bulk imports.
+      if (f.entityPicker?.flow === "__agent__") continue;
       // Conditional children + repeatable slots are never auto-required —
       // their requirement is handled by the gating / slot passes above.
       if (

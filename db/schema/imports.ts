@@ -148,6 +148,22 @@ export const importBatchRows = pgTable(
       .$type<Array<{ column: string | null; message: string }>>()
       .notNull()
       .default([]),
+    /**
+     * Resolved entity-picker / agent-picker references for this row, keyed by
+     * column id. Populated by the staging-time resolver so the UI can render
+     * the human company / agent NAME alongside the raw record number the user
+     * typed. Shape mirrors `RowResolvedRefs` in lib/import/entity-resolver.ts.
+     */
+    resolvedRefs: jsonb("resolved_refs")
+      .$type<Record<string, {
+        status: "ok" | "missing";
+        displayName: string;
+        recordNumber: string;
+        kind: "agent" | "entity";
+        rawInput: string;
+      }>>()
+      .notNull()
+      .default({}),
     /** True if the admin has manually edited this row's values since upload */
     edited: boolean("edited").notNull().default(false),
     /** Commit attempts (for retry semantics) */
