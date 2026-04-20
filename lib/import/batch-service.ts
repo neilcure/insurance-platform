@@ -1028,6 +1028,28 @@ export async function cancelBatch(batchId: number): Promise<void> {
     .where(eq(importBatches.id, batchId));
 }
 
+/**
+ * Permanently delete a batch + its staging rows.
+ *
+ * Only the staging records go away — any policies/clients that were created
+ * during commit are NOT touched (the batch row's `created_policy_id` is just
+ * an `integer`, with no FK to `policies`). Used for housekeeping the
+ * /dashboard/imports list.
+ *
+ * Disallowed while the batch is actively being processed (`parsing` or
+ * `committing`) to avoid race conditions with the worker.
+ */
+export async function deleteBatch(batchId: number): Promise<void> {
+  const batch = await getBatchOrThrow(batchId);
+  if (batch.status === "parsing" || batch.status === "committing") {
+    throw new Error(
+      `Cannot delete a batch while it is ${batch.status}. Cancel it first or wait for it to finish.`,
+    );
+  }
+  // ON DELETE CASCADE on import_batch_rows.batch_id removes child rows.
+  await db.delete(importBatches).where(eq(importBatches.id, batchId));
+}
+
 /** Get the live progress snapshot for a batch. */
 export async function getBatchProgress(batchId: number): Promise<CommitProgressSnapshot> {
   const batch = await getBatchOrThrow(batchId);
