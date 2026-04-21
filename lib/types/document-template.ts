@@ -49,7 +49,13 @@ export type DocumentTemplateMeta = {
   accountingLineKey?: string;
   header: {
     title: string;
+    /** "sm" | "md" | "lg" | "xl" — controls the rendered title font-size (default "lg") */
+    titleSize?: "sm" | "md" | "lg" | "xl";
     subtitle?: string;
+    /** "xs" | "sm" | "md" — controls the rendered subtitle font-size (default "sm") */
+    subtitleSize?: "xs" | "sm" | "md";
+    /** Tailwind-compatible hex color for the subtitle text (default "#737373") */
+    subtitleColor?: string;
     showDate?: boolean;
     showPolicyNumber?: boolean;
   };

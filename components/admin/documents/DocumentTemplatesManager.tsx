@@ -13,7 +13,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
-import { Plus, Trash2, CheckSquare, Square, ArrowLeft, Copy, Pencil, EyeOff, Eye, FlaskConical, Loader2, CheckCircle2, ChevronUp, ChevronDown } from "lucide-react";
+import { Plus, Trash2, CheckSquare, Square, ArrowLeft, Copy, Pencil, EyeOff, Eye, FlaskConical, Loader2, CheckCircle2, ChevronUp, ChevronDown, Monitor } from "lucide-react";
+import { DocumentTemplateLivePreview } from "./DocumentTemplateLivePreview";
 import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
@@ -115,12 +116,21 @@ export default function DocumentTemplatesManager() {
   const [saving, setSaving] = React.useState(false);
   const [validating, setValidating] = React.useState(false);
   const [validatePolicyNum, setValidatePolicyNum] = React.useState("");
+  const [showPreview, setShowPreview] = React.useState(false);
   const [validationResult, setValidationResult] = React.useState<{
     policyNumber: string;
     totalFields: number;
     okCount: number;
     optionalCount: number;
-    results: { id: string; source: string; fieldKey: string; resolved: unknown; status: "ok" | "optional" }[];
+    results: {
+      id: string;
+      source: string;
+      fieldKey: string;
+      resolved: unknown;
+      /** Final string the document will print (option-mapped + formatted). */
+      display?: string;
+      status: "ok" | "optional";
+    }[];
   } | null>(null);
 
   async function validateFields() {
@@ -132,6 +142,7 @@ export default function DocumentTemplatesManager() {
           source: s.source,
           fieldKey: f.key,
           packageName: s.packageName,
+          format: f.format,
         })),
     );
     if (allFields.length === 0) {
@@ -242,6 +253,20 @@ export default function DocumentTemplatesManager() {
       const premFields = pkgFieldsCache["premiumRecord"] ?? [];
       for (const pf of premFields) {
         base.push({ key: `item_${pf.key}`, label: `${pf.label}`, group: "Line Item Premium Breakdown" });
+      }
+    }
+
+    if (source === "policy") {
+      // Policy Info exposes ONLY the real columns of the `policies` table
+      // plus the `documentTracking` JSON column. Everything else lives in a
+      // package snapshot (e.g. effectiveDate / expiryDate are in the
+      // `policyinfo` package). Group them so the distinction is visible.
+      const documentKeys = new Set([
+        "documentNumber", "documentStatus", "documentSentTo", "documentSentAt",
+      ]);
+      for (const f of base) {
+        if (documentKeys.has(f.key)) f.group = "Document Tracking";
+        else f.group = "Policy Record";
       }
     }
     return base;
@@ -960,6 +985,26 @@ export default function DocumentTemplatesManager() {
                   />
                 </div>
                 <div className="grid gap-1">
+                  <Label>Title Size</Label>
+                  <select
+                    className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                    value={meta.header.titleSize ?? "lg"}
+                    onChange={(e) =>
+                      setMeta((m) => ({
+                        ...m,
+                        header: { ...m.header, titleSize: e.target.value as "sm" | "md" | "lg" | "xl" },
+                      }))
+                    }
+                  >
+                    <option value="sm">Small</option>
+                    <option value="md">Medium</option>
+                    <option value="lg">Large (default)</option>
+                    <option value="xl">Extra Large</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="grid gap-1">
                   <Label>Subtitle</Label>
                   <Input
                     value={meta.header.subtitle ?? ""}
@@ -970,6 +1015,52 @@ export default function DocumentTemplatesManager() {
                       }))
                     }
                   />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="grid gap-1">
+                    <Label>Subtitle Size</Label>
+                    <select
+                      className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                      value={meta.header.subtitleSize ?? "sm"}
+                      onChange={(e) =>
+                        setMeta((m) => ({
+                          ...m,
+                          header: { ...m.header, subtitleSize: e.target.value as "xs" | "sm" | "md" },
+                        }))
+                      }
+                    >
+                      <option value="xs">Extra Small</option>
+                      <option value="sm">Small (default)</option>
+                      <option value="md">Medium</option>
+                    </select>
+                  </div>
+                  <div className="grid gap-1">
+                    <Label>Subtitle Color</Label>
+                    <div className="flex gap-2 items-center">
+                      <input
+                        type="color"
+                        className="h-10 w-10 cursor-pointer rounded border border-neutral-300 bg-white p-0.5 dark:border-neutral-700"
+                        value={meta.header.subtitleColor ?? "#737373"}
+                        onChange={(e) =>
+                          setMeta((m) => ({
+                            ...m,
+                            header: { ...m.header, subtitleColor: e.target.value },
+                          }))
+                        }
+                      />
+                      <Input
+                        className="flex-1 font-mono text-xs"
+                        placeholder="#737373"
+                        value={meta.header.subtitleColor ?? ""}
+                        onChange={(e) =>
+                          setMeta((m) => ({
+                            ...m,
+                            header: { ...m.header, subtitleColor: e.target.value || undefined },
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
               <div className="flex gap-6">
@@ -1184,6 +1275,20 @@ export default function DocumentTemplatesManager() {
                         )}
                       </div>
 
+                      {/* Policy source context note */}
+                      {section.source === "policy" && (
+                        <div className="text-[11px] sm:text-xs rounded-md border px-3 py-2 border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                          <strong>Policy Info</strong> only exposes fields that are <strong>actually columns on the policy record</strong>:
+                          <code className="mx-1 rounded bg-amber-100 px-1 dark:bg-amber-900/50">policyNumber</code>,
+                          <code className="mx-1 rounded bg-amber-100 px-1 dark:bg-amber-900/50">createdAt</code>,
+                          <code className="mx-1 rounded bg-amber-100 px-1 dark:bg-amber-900/50">flowKey</code>, plus document-tracking fields.
+                          Other common fields live in <strong>Package</strong> sources — for example
+                          <code className="mx-1 rounded bg-amber-100 px-1 dark:bg-amber-900/50">effectiveDate</code> /
+                          <code className="mx-1 rounded bg-amber-100 px-1 dark:bg-amber-900/50">expiryDate</code> are in the <strong>policyinfo</strong> package,
+                          and endorsement fields are in the endorsement package.
+                        </div>
+                      )}
+
                       {/* Premium context note */}
                       {section.source === "accounting" && (
                         <div className="text-[11px] sm:text-xs rounded-md border px-3 py-2 border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300">
@@ -1340,6 +1445,9 @@ export default function DocumentTemplatesManager() {
                                   {validationResult && <TableHead className="w-7" />}
                                   <TableHead className="w-[120px] sm:w-[140px]">Key</TableHead>
                                   <TableHead>Label</TableHead>
+                                  {validationResult && (
+                                    <TableHead className="w-[180px] sm:w-[220px]">Preview</TableHead>
+                                  )}
                                   <TableHead className="hidden sm:table-cell w-[90px]">Format</TableHead>
                                   <TableHead className="w-[72px] text-right">Actions</TableHead>
                                 </TableRow>
@@ -1352,7 +1460,11 @@ export default function DocumentTemplatesManager() {
                                     <TableRow key={`${field.key}-${fIdx}`}>
                                       {validationResult && (
                                         <TableCell className="px-1 py-1 text-center">
-                                          <span title={vr?.status === "ok" ? `Resolved: ${String(vr.resolved)}` : "Empty for this policy"}>
+                                          <span title={
+                                            vr?.status === "ok"
+                                              ? `Raw: ${JSON.stringify(vr.resolved)}\nDisplay: ${vr.display ?? ""}`
+                                              : "Empty for this policy"
+                                          }>
                                             {vr?.status === "ok" ? (
                                               <CheckCircle2 className="h-3.5 w-3.5 text-green-500 inline" />
                                             ) : vr ? (
@@ -1377,6 +1489,32 @@ export default function DocumentTemplatesManager() {
                                           placeholder={resolvedLabel || "Enter label..."}
                                         />
                                       </TableCell>
+                                      {validationResult && (() => {
+                                        const raw = vr?.resolved;
+                                        const display = vr?.display ?? "";
+                                        const rawStr = raw === null || raw === undefined ? "" : String(raw);
+                                        // Highlight when raw differs from display — that's where the
+                                        // admin's stored "value" was mapped to a friendlier "label".
+                                        const mapped = vr?.status === "ok" && rawStr !== display && display !== "";
+                                        return (
+                                          <TableCell className="px-1 py-0.5">
+                                            {vr?.status === "ok" ? (
+                                              <div className="flex flex-col gap-0.5 text-xs leading-tight">
+                                                <span className={mapped ? "font-medium text-green-700 dark:text-green-400" : ""}>
+                                                  {display || <span className="text-neutral-400 italic">(empty after format)</span>}
+                                                </span>
+                                                {mapped && (
+                                                  <span className="text-[10px] font-mono text-neutral-400 dark:text-neutral-500" title="Raw stored value">
+                                                    raw: {rawStr}
+                                                  </span>
+                                                )}
+                                              </div>
+                                            ) : vr ? (
+                                              <span className="text-xs italic text-neutral-400">no data</span>
+                                            ) : null}
+                                          </TableCell>
+                                        );
+                                      })()}
                                       <TableCell className="hidden sm:table-cell px-1 py-0.5">
                                         <select
                                           className="h-7 w-full rounded-md border border-neutral-300 bg-white px-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
@@ -1467,6 +1605,15 @@ export default function DocumentTemplatesManager() {
           </fieldset>
         </div>
 
+        {/* Live preview drawer — render the unsaved template against a real policy */}
+        <DocumentTemplateLivePreview
+          open={showPreview}
+          onOpenChange={setShowPreview}
+          meta={meta}
+          templateLabel={formLabel}
+          templateValue={formValue}
+        />
+
         {/* Validation result */}
         {validationResult && (
           <div className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300">
@@ -1500,6 +1647,16 @@ export default function DocumentTemplatesManager() {
             >
               {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
               Validate
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowPreview(true)}
+              className="gap-1.5"
+              title="Render this template against a real policy to see how it will look"
+            >
+              <Monitor className="h-3.5 w-3.5" />
+              Live Preview
             </Button>
           </div>
           <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>

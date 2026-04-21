@@ -168,12 +168,14 @@ export const DATA_SOURCE_OPTIONS: {
 
 export const FIELD_KEY_HINTS: Record<PdfFieldMapping["source"], string[]> = {
   policy: [
-    "policyNumber", "createdAt", "flowKey", "status",
-    "documentNumber",
-    "linkedPolicyId", "linkedPolicyNumber",
-    "endorsementType", "endorsementReason",
-    "effectiveDate", "expiryDate",
-    "latestClientPaidAmount", "latestClientPaidDate", "latestClientPaymentRef",
+    // ONLY actual columns of the `policies` table. Everything else
+    // (effectiveDate, expiryDate, endorsement*, status, etc.) lives in a
+    // package snapshot — pick it from the relevant Package source instead.
+    "policyNumber",
+    "createdAt",
+    "flowKey",
+    // Resolved from the `documentTracking` JSON column on the policy:
+    "documentNumber", "documentStatus", "documentSentTo", "documentSentAt",
   ],
   insured: [
     "displayName", "primaryId", "insuredType",

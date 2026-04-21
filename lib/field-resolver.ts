@@ -181,11 +181,13 @@ function firstNonEmpty(getter: (key: string) => unknown, ...keys: string[]): str
 
 function toTitleCase(s: string): string {
   if (!s) return s;
-  const lower = s.toLowerCase();
-  if (lower === s || s.toUpperCase() === s) {
+  // Replace underscores (stored as slug separators by deriveOptionValue) with spaces.
+  const normalised = s.replace(/_/g, " ");
+  const lower = normalised.toLowerCase();
+  if (lower === normalised || normalised.toUpperCase() === normalised) {
     return lower.replace(/(?:^|\s|[-'/])\S/g, (ch) => ch.toUpperCase());
   }
-  return s;
+  return normalised;
 }
 
 // ---------------------------------------------------------------------------
@@ -358,18 +360,17 @@ function resolvePolicy(ctx: ResolveContext, key: string): unknown {
   }
 
   const ext = ctx.policyExtra ?? {};
+  // Only keys that map to ACTUAL columns on the policies table are listed
+  // here. Anything else (effectiveDate, status, endorsement*, etc.) falls
+  // through to ext[key] / snapshot[key] for backward compatibility with old
+  // templates, but is not advertised in the admin Policy Info source.
   const map: Record<string, unknown> = {
     policyNumber: ctx.policyNumber,
     policyId: ctx.policyId,
     createdAt: ctx.createdAt,
     flowKey: ext.flowKey ?? "",
-    status: ext.status ?? "",
-    linkedPolicyId: ext.linkedPolicyId ?? "",
-    linkedPolicyNumber: ext.linkedPolicyNumber ?? "",
-    endorsementType: ext.endorsementType ?? "",
-    endorsementReason: ext.endorsementReason ?? "",
-    effectiveDate: ext.effectiveDate ?? "",
-    expiryDate: ext.expiryDate ?? "",
+    // Payment fields keep their explicit mapping because they have a clean
+    // resolver source (paymentData) that's distinct from the JSONB blob.
     latestClientPaidAmount: ctx.paymentData?.latestClientPaidAmount ?? "",
     latestClientPaidDate: ctx.paymentData?.latestClientPaidDate ?? "",
     latestClientPaymentRef: ctx.paymentData?.latestClientPaymentRef ?? "",
@@ -377,7 +378,12 @@ function resolvePolicy(ctx: ResolveContext, key: string): unknown {
     paymentDate: ctx.paymentData?.latestClientPaidDate ?? "",
     paymentReference: ctx.paymentData?.latestClientPaymentRef ?? "",
   };
-  return map[key] ?? ext[key] ?? ctx.snapshot[key] ?? "";
+  if (key in map) return map[key];
+  // Backward-compat fallback for templates that referenced fields living
+  // inside extraAttributes or the snapshot root.
+  if (key in ext) return ext[key];
+  if (key in ctx.snapshot) return ctx.snapshot[key];
+  return "";
 }
 
 function resolveAccountingTotal(

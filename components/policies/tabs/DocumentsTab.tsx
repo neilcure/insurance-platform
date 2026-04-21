@@ -155,10 +155,230 @@ function resolveFieldValue(
   );
 }
 
-const formatValue = formatResolvedValue;
+/**
+ * Document-template wrapper around the shared formatter. Boolean values are
+ * a special case: many admin-configured fields have `format: "text"` even
+ * though the underlying value is a boolean, which would otherwise render as
+ * the literal "true". `false` is already filtered upstream by
+ * `isEmptyFieldValue`, so we only need to map `true` to a friendly label.
+ */
+function formatValue(
+  raw: unknown,
+  format?: TemplateFieldMapping["format"],
+  currencyCode?: string,
+): string {
+  if ((raw === true || raw === "true") && (!format || format === "text" || format === "boolean")) {
+    return "Yes";
+  }
+  return formatResolvedValue(raw, format, currencyCode);
+}
 
 function isPerItemField(key: string): boolean {
   return key === "itemDescriptions" || key === "itemAmounts" || key === "itemStatuses" || key === "itemPaymentBadges" || key.startsWith("item_");
+}
+
+/**
+ * Returns true when a resolved field value should be hidden from the rendered
+ * document (no label/data row produced).
+ *
+ * Rules:
+ *  - null / undefined / empty string → always hidden.
+ *  - boolean `false` (or string "false") → hidden. Mirrors the policy
+ *    snapshot view behavior so a "no" answer doesn't pollute the document
+ *    with rows like "TAILGATE: false". Boolean `true` still renders.
+ *  - currency/number fields with a value of 0 → hidden, except in the
+ *    "totals" section where a zero balance is meaningful (e.g. statement
+ *    outstanding = $0.00).
+ *
+ * This keeps the invoice clean by suppressing optional premium lines like
+ * "Client Premium (PD)" or "Client Credit Premium" when no value is set,
+ * and yes/no questions whose answer is "no".
+ */
+function isEmptyFieldValue(
+  value: unknown,
+  format: TemplateFieldMapping["format"] | undefined,
+  sectionId: string,
+): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "boolean" && value === false) return true;
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (s === "") return true;
+    if (s.toLowerCase() === "false") return true;
+  }
+  if (sectionId === "totals") return false;
+  if (format === "currency" || format === "number") {
+    const n = typeof value === "number" ? value : Number(value);
+    if (Number.isFinite(n) && n === 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Configuration for a child field that lives under a boolean parent field.
+ * When the parent value is `true`/`false`, the matching branch's children
+ * (configured in admin via Field Editor → Boolean Children) are surfaced as
+ * additional rows below the parent in the rendered document.
+ *
+ * Snapshot keys follow the pattern `${parentKey}__${branch}__c${idx}` (see
+ * `components/policies/PackageBlock.tsx` where they are written).
+ */
+type BooleanChildDef = {
+  childKey: string;
+  label: string;
+  inputType: string;
+  options?: Record<string, string>;
+};
+type BooleanChildrenMap = Record<string, { true?: BooleanChildDef[]; false?: BooleanChildDef[] }>;
+type PackageBooleanChildrenCache = Record<string, BooleanChildrenMap>;
+
+/**
+ * Map of stored option value → human-readable label for select / multi-select
+ * fields, keyed by package name then by field key. Lets a snapshot value like
+ * `"hkonly"` render as `"Hong Kong Only"` instead of the raw key.
+ */
+type FieldOptionLabelsMap = Record<string, Record<string, string>>;
+type PackageFieldOptionLabelsCache = Record<string, FieldOptionLabelsMap>;
+
+/**
+ * Returns the original value mapped through the field's admin-configured
+ * select options when an entry exists. Handles arrays (multi-select) and
+ * comma-separated strings as well, otherwise returns the original value.
+ */
+function applyOptionLabel(
+  raw: unknown,
+  packageName: string | undefined,
+  fieldKey: string,
+  optionLabelsCache: PackageFieldOptionLabelsCache,
+): unknown {
+  if (!packageName) return raw;
+  const opts = optionLabelsCache[packageName]?.[fieldKey];
+  if (!opts || Object.keys(opts).length === 0) return raw;
+  const mapOne = (v: unknown): unknown => {
+    if (v === null || v === undefined) return v;
+    const key = String(v).trim();
+    if (!key) return v;
+    return opts[key] ?? v;
+  };
+  if (Array.isArray(raw)) return raw.map(mapOne);
+  if (typeof raw === "string" && raw.includes(",")) {
+    return raw.split(",").map((s) => String(mapOne(s.trim()))).join(", ");
+  }
+  return mapOne(raw);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function inputTypeToFormat(it: string): TemplateFieldMapping["format"] {
+  if (it === "currency" || it === "negative_currency") return "currency";
+  if (it === "number") return "number";
+  if (it === "boolean") return "boolean";
+  if (it === "date") return "date";
+  return "text";
+}
+
+function humanizeChildKey(childKey: string, parentKey: string): string {
+  // Strip "${parent}__true__c0" / "${parent}__opt_xxx__c0" / "${parent}__false__c0"
+  const stripped = childKey
+    .replace(new RegExp(`^${escapeRegExp(parentKey)}__(?:true|false|opt_[^_]+)__c\\d+$`), "")
+    .trim();
+  if (stripped) return stripped;
+  // Fallback: just show the index
+  const idxMatch = childKey.match(/c(\d+)$/);
+  return idxMatch ? `Detail ${Number(idxMatch[1]) + 1}` : childKey;
+}
+
+/**
+ * Resolves the child rows that should appear immediately below a boolean
+ * parent field.
+ *
+ * Strategy (fully data-driven, no hardcoded field names):
+ *  1. Determine the active branch from the parent value (`true`/`false`).
+ *  2. Auto-discover child keys directly from the snapshot using the well-
+ *     known pattern `${parentKey}__${branch}__c{idx}` (the same pattern
+ *     written by `PackageBlock` when the form is filled in). This means a
+ *     child shows up whenever data exists for it, even if the admin field
+ *     meta hasn't been (re)loaded yet.
+ *  3. Use admin-configured `meta.booleanChildren.${branch}` when available
+ *     for nice labels, input types, and select-option label mapping.
+ *     Falls back to a humanized label otherwise.
+ */
+function resolveBooleanChildRows(
+  packageName: string | undefined,
+  parentKey: string,
+  parentValue: unknown,
+  snapshot: SnapshotData,
+  pkgChildren: PackageBooleanChildrenCache,
+  sectionId: string,
+): Array<{ key: string; label: string; resolved: unknown; format: TemplateFieldMapping["format"] }> {
+  if (!packageName) return [];
+
+  const isTrue = parentValue === true || parentValue === "true";
+  const isFalse = parentValue === false || parentValue === "false";
+  if (!isTrue && !isFalse) return [];
+  const branch: "true" | "false" = isTrue ? "true" : "false";
+
+  const pkgs = (snapshot.packagesSnapshot ?? {}) as Record<string, unknown>;
+  const pkg = pkgs[packageName] as Record<string, unknown> | undefined;
+  if (!pkg) return [];
+  const values = (
+    "values" in (pkg ?? {})
+      ? (pkg as { values?: Record<string, unknown> }).values
+      : pkg
+  ) ?? {};
+
+  // Index admin-configured child defs by their bare childKey
+  // (e.g. "alarm__true__c0") for fast lookup.
+  const adminDefs = pkgChildren[packageName]?.[parentKey]?.[branch] ?? [];
+  const defByBareKey: Record<string, BooleanChildDef> = {};
+  for (const def of adminDefs) defByBareKey[def.childKey] = def;
+
+  // Auto-discover all child keys for this branch in the snapshot.
+  // The form writes keys as `${packageName}__${parentKey}__${branch}__c\d+`,
+  // but older/migrated snapshots may also store the bare `${parentKey}__${branch}__c\d+`.
+  // Match both so we render whatever shape the data is in.
+  const prefixedRe = new RegExp(
+    `^${escapeRegExp(packageName)}__${escapeRegExp(parentKey)}__${branch}__c\\d+$`,
+  );
+  const bareRe = new RegExp(`^${escapeRegExp(parentKey)}__${branch}__c\\d+$`);
+
+  const childEntries = Object.entries(values as Record<string, unknown>)
+    .filter(([k]) => prefixedRe.test(k) || bareRe.test(k))
+    .sort(([a], [b]) => {
+      const ai = Number(a.match(/c(\d+)$/)?.[1] ?? 0);
+      const bi = Number(b.match(/c(\d+)$/)?.[1] ?? 0);
+      return ai - bi;
+    });
+
+  const rows: Array<{ key: string; label: string; resolved: unknown; format: TemplateFieldMapping["format"] }> = [];
+  for (const [snapshotKey, rawValue] of childEntries) {
+    // Compute the "bare" admin childKey (without the package prefix) to look up the def.
+    const bareKey = snapshotKey.startsWith(`${packageName}__`)
+      ? snapshotKey.slice(packageName.length + 2)
+      : snapshotKey;
+    const def = defByBareKey[bareKey];
+    const inputType = def?.inputType ?? "text";
+    const fmt = inputTypeToFormat(inputType);
+
+    let displayRaw: unknown = rawValue;
+    if (
+      displayRaw !== undefined &&
+      displayRaw !== null &&
+      def?.options &&
+      Object.keys(def.options).length > 0
+    ) {
+      const mapped = def.options[String(displayRaw)];
+      if (mapped) displayRaw = mapped;
+    }
+
+    if (isEmptyFieldValue(displayRaw, fmt, sectionId)) continue;
+
+    const label = def?.label?.trim() || humanizeChildKey(bareKey, parentKey);
+    rows.push({ key: snapshotKey, label, resolved: displayRaw, format: fmt });
+  }
+  return rows;
 }
 
 /** Display-only hints — field order and labels come from the template. */
@@ -286,7 +506,7 @@ function needsConfirmation(meta: DocumentTemplateMeta): boolean {
   return meta.type === "quotation";
 }
 
-function DocumentPreview({
+export function DocumentPreview({
   template,
   detail,
   snapshot,
@@ -318,6 +538,109 @@ function DocumentPreview({
 
   const [extraCtx, setExtraCtx] = React.useState<ExtraDocContext>({});
   const [loadingExtra, setLoadingExtra] = React.useState(false);
+  /**
+   * Cache of boolean-children configuration per package (loaded lazily from
+   * `${pkg}_fields` form_options). Used to expand admin-configured follow-up
+   * fields below a boolean parent (e.g. ALARM=true → "Alarm — Brand: Sony").
+   * Keyed by the package name used in the template section's `packageName`.
+   */
+  const [pkgChildren, setPkgChildren] = React.useState<PackageBooleanChildrenCache>({});
+  /**
+   * Cache of select-option label maps per package field. Lets us render
+   * `Hong Kong Only` instead of the raw stored value `hkonly`.
+   */
+  const [pkgOptionLabels, setPkgOptionLabels] = React.useState<PackageFieldOptionLabelsCache>({});
+
+  React.useEffect(() => {
+    // Sources that read their field metadata from `${pkg}_fields` form_options.
+    // Mirrors the `dynamicSourceMap` in DocumentTemplatesManager.tsx — keep in sync.
+    const SOURCE_TO_PKG: Record<string, string> = {
+      insured: "insured",
+      contactinfo: "contactinfo",
+      accounting: "premiumRecord",
+    };
+    const pkgNames = Array.from(new Set(
+      meta.sections.flatMap((s) => {
+        if (s.source === "package" && typeof s.packageName === "string" && s.packageName.length > 0) {
+          return [s.packageName];
+        }
+        const mapped = SOURCE_TO_PKG[s.source];
+        return mapped ? [mapped] : [];
+      }),
+    ));
+    if (pkgNames.length === 0) return;
+    let cancelled = false;
+    const ts = Date.now();
+    Promise.all(
+      pkgNames.map((pkg) =>
+        fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}&_t=${ts}`, { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : []))
+          .catch(() => [])
+          .then((rows: Array<{ value?: unknown; meta?: unknown }>) => {
+            const childMap: BooleanChildrenMap = {};
+            const optionMap: FieldOptionLabelsMap = {};
+            for (const row of Array.isArray(rows) ? rows : []) {
+              const parentKey = String(row?.value ?? "").trim();
+              if (!parentKey) continue;
+              const m = (row?.meta ?? null) as Record<string, unknown> | null;
+
+              // Collect select / multi-select option label maps for value→label mapping.
+              if (m && Array.isArray((m as { options?: unknown }).options)) {
+                const opts = (m as { options: Array<{ value?: unknown; label?: unknown }> }).options;
+                const fieldOpts: Record<string, string> = {};
+                for (const o of opts) {
+                  const ov = String(o?.value ?? o?.label ?? "").trim();
+                  const ol = String(o?.label ?? o?.value ?? "").trim();
+                  if (ov) fieldOpts[ov] = ol || ov;
+                }
+                if (Object.keys(fieldOpts).length > 0) optionMap[parentKey] = fieldOpts;
+              }
+
+              // Collect boolean children configuration.
+              const bc = (m as { booleanChildren?: { true?: unknown[]; false?: unknown[] } } | null)?.booleanChildren;
+              if (bc) {
+                const buildBranch = (arr: unknown[] | undefined, branch: "true" | "false"): BooleanChildDef[] | undefined => {
+                  if (!Array.isArray(arr) || arr.length === 0) return undefined;
+                  return arr.map((c, idx) => {
+                    const child = (c ?? {}) as { label?: unknown; inputType?: unknown; options?: unknown };
+                    const childOptionMap: Record<string, string> = {};
+                    if (Array.isArray(child.options)) {
+                      for (const o of child.options as Array<{ value?: unknown; label?: unknown }>) {
+                        const ov = String(o?.value ?? o?.label ?? "");
+                        const ol = String(o?.label ?? o?.value ?? "");
+                        if (ov) childOptionMap[ov] = ol;
+                      }
+                    }
+                    return {
+                      childKey: `${parentKey}__${branch}__c${idx}`,
+                      label: String(child?.label ?? "").trim() || `Detail ${idx + 1}`,
+                      inputType: String(child?.inputType ?? "text"),
+                      options: childOptionMap,
+                    };
+                  });
+                };
+                childMap[parentKey] = {
+                  true: buildBranch(bc.true, "true"),
+                  false: buildBranch(bc.false, "false"),
+                };
+              }
+            }
+            return [pkg, childMap, optionMap] as const;
+          }),
+      ),
+    ).then((entries) => {
+      if (cancelled) return;
+      const nextChildren: PackageBooleanChildrenCache = {};
+      const nextOptions: PackageFieldOptionLabelsCache = {};
+      for (const [pkg, childMap, optionMap] of entries) {
+        nextChildren[pkg] = childMap;
+        nextOptions[pkg] = optionMap;
+      }
+      setPkgChildren(nextChildren);
+      setPkgOptionLabels(nextOptions);
+    });
+    return () => { cancelled = true; };
+  }, [meta.sections]);
 
   React.useEffect(() => {
     if (!needsExtraContext) return;
@@ -487,6 +810,73 @@ function DocumentPreview({
     return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()}`;
   })();
 
+  /**
+   * Takes a list of resolved+visible fields and inserts admin-configured
+   * boolean children (true-branch or false-branch) immediately after their
+   * parent. Each child is labelled as `${parentLabel} — ${childLabel}` so
+   * the relationship is obvious in flat label/value layouts (HTML, email,
+   * plain text). Children themselves use `isEmptyFieldValue` so empty
+   * sub-answers are still suppressed.
+   */
+  type ResolvedField = {
+    key: string;
+    label: string;
+    format?: TemplateFieldMapping["format"];
+    currencyCode?: string;
+    resolved: unknown;
+    isChild?: boolean;
+  };
+  function expandFieldsWithChildren(
+    fields: ResolvedField[],
+    section: TemplateSection,
+  ): ResolvedField[] {
+    // Resolve which form_options group provides this section's field metadata.
+    // Same mapping as the loader effect — kept inline for clarity.
+    const SOURCE_TO_PKG: Record<string, string> = {
+      insured: "insured",
+      contactinfo: "contactinfo",
+      accounting: "premiumRecord",
+    };
+    const pkgForLabels =
+      section.source === "package" ? section.packageName : SOURCE_TO_PKG[section.source];
+
+    // Apply select-option label mapping for every supported source, then
+    // expand boolean children (only meaningful for the `package` source where
+    // children are configured).
+    const mapped: ResolvedField[] = fields.map((f) =>
+      f.isChild
+        ? f
+        : { ...f, resolved: applyOptionLabel(f.resolved, pkgForLabels, f.key, pkgOptionLabels) },
+    );
+
+    if (section.source !== "package" || !section.packageName) return mapped;
+
+    const out: ResolvedField[] = [];
+    for (const f of mapped) {
+      out.push(f);
+      if (f.isChild) continue;
+      const children = resolveBooleanChildRows(
+        section.packageName,
+        f.key,
+        f.resolved,
+        snapshot,
+        pkgChildren,
+        section.id,
+      );
+      for (const c of children) {
+        out.push({
+          key: c.key,
+          label: `${f.label} — ${c.label}`,
+          format: c.format,
+          currencyCode: f.currencyCode,
+          resolved: c.resolved,
+          isChild: true,
+        });
+      }
+    }
+    return out;
+  }
+
   function generatePlainText(): string {
     const lines: string[] = [];
     lines.push(meta.header.title);
@@ -517,13 +907,16 @@ function DocumentPreview({
           (it) => it.status === "active" || it.status === "paid_individually",
         );
         const tableCols = visibleFlds.filter((f) => isPerItemField(f.key));
-        const scalarFlds = visibleFlds
-          .filter((f) => !isPerItemField(f.key))
-          .map((f) => ({
-            ...f,
-            resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
-          }))
-          .filter((f) => f.resolved !== "" && f.resolved !== null && f.resolved !== undefined);
+        const scalarFlds = expandFieldsWithChildren(
+          visibleFlds
+            .filter((f) => !isPerItemField(f.key))
+            .map((f) => ({
+              ...f,
+              resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
+            }))
+            .filter((f) => !isEmptyFieldValue(f.resolved, f.format, section.id)),
+          section,
+        );
 
         if (tableCols.length === 0 && scalarFlds.length === 0) continue;
 
@@ -638,12 +1031,15 @@ function DocumentPreview({
         continue;
       }
 
-      const fields = visibleFlds
-        .map((f) => ({
-          ...f,
-          resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
-        }))
-        .filter((f) => f.resolved !== "" && f.resolved !== null && f.resolved !== undefined);
+      const fields = expandFieldsWithChildren(
+        visibleFlds
+          .map((f) => ({
+            ...f,
+            resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
+          }))
+          .filter((f) => !isEmptyFieldValue(f.resolved, f.format, section.id)),
+        section,
+      );
 
       if (fields.length === 0) continue;
 
@@ -672,6 +1068,128 @@ function DocumentPreview({
     );
   }
 
+  /**
+   * Build an email-safe HTML body that renders consistently in Gmail/Outlook
+   * /Apple Mail. Email clients strip <style> tags and ignore most modern CSS
+   * (flexbox, grid, Tailwind classes), so we render label/value rows using
+   * `<table>` with inline styles. Without this the labels and values run
+   * together (e.g. "Display NameAlliance Motors Services Ltd").
+   */
+  function generateEmailHtml(): string {
+    const escape = (s: unknown): string =>
+      String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+
+    const parts: string[] = [];
+    parts.push(
+      '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:14px;line-height:1.5;max-width:700px;">',
+    );
+
+    // Header
+    parts.push(
+      '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-bottom:2px solid #333;padding-bottom:10px;margin-bottom:18px;">',
+      "<tr>",
+      '<td style="vertical-align:top;">',
+      `<div style="font-size:${({ sm: "14px", md: "18px", lg: "20px", xl: "26px" }[meta.header.titleSize ?? "lg"])};font-weight:bold;color:#1a1a1a;margin:0 0 2px 0;">${escape(meta.header.title)}</div>`,
+    );
+    if (meta.header.subtitle) {
+      const subPx = { xs: "11px", sm: "13px", md: "16px" }[meta.header.subtitleSize ?? "sm"];
+      const subColor = meta.header.subtitleColor ?? "#737373";
+      parts.push(`<div style="font-size:${subPx};color:${subColor};">${escape(meta.header.subtitle)}</div>`);
+    }
+    parts.push("</td>");
+    if (trackingEntry?.documentNumber) {
+      parts.push(
+        '<td style="vertical-align:top;text-align:right;">',
+        '<div style="font-size:10px;color:#a3a3a3;text-transform:uppercase;letter-spacing:0.05em;">Doc No.</div>',
+        `<div style="font-size:14px;font-weight:bold;color:#1a1a1a;">${escape(trackingEntry.documentNumber)}</div>`,
+        "</td>",
+      );
+    }
+    parts.push("</tr>");
+    parts.push("</table>");
+
+    const refParts: string[] = [];
+    if (meta.header.showPolicyNumber !== false) {
+      refParts.push(`Ref: <strong>${escape(detail.policyNumber)}</strong>`);
+    }
+    if (meta.header.showDate !== false) {
+      refParts.push(`Date: <strong>${escape(dateStr)}</strong>`);
+    }
+    if (refParts.length > 0) {
+      parts.push(
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:-12px 0 18px 0;font-size:12px;color:#737373;">',
+        "<tr>",
+        `<td style="text-align:left;">${refParts[0] ?? ""}</td>`,
+        `<td style="text-align:right;">${refParts[1] ?? ""}</td>`,
+        "</tr>",
+        "</table>",
+      );
+    }
+
+    // Sections — same visibility/empty-value rules as the on-screen preview.
+    if (!(meta.requiresStatement && !extraCtx.statementData)) {
+      for (const section of filteredSections) {
+        const isAgentFld = (f: { key: string; label: string }) =>
+          /agent/i.test(f.label) || /agent/i.test(f.key);
+        const isClientFld = (f: { key: string; label: string }) =>
+          /client/i.test(f.label) || /client/i.test(f.key);
+        const visibleFlds = section.fields.filter((f) => {
+          if (!hasAudienceSections) return true;
+          if (section.id === "line_items" || section.id === "totals") return true;
+          if (viewAudience === "client" && isAgentFld(f)) return false;
+          if (viewAudience === "agent" && isClientFld(f)) return false;
+          return true;
+        });
+
+        const fields = expandFieldsWithChildren(
+          visibleFlds
+            .filter((f) => !isPerItemField(f.key))
+            .map((f) => ({
+              ...f,
+              resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
+            }))
+            .filter((f) => !isEmptyFieldValue(f.resolved, f.format, section.id)),
+          section,
+        );
+
+        if (fields.length === 0) continue;
+
+        parts.push(
+          '<div style="margin:18px 0 6px 0;">',
+          `<div style="font-size:12px;font-weight:bold;color:#525252;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #d4d4d4;padding-bottom:4px;">${escape(section.title)}</div>`,
+          "</div>",
+          '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin-bottom:12px;">',
+        );
+        for (let i = 0; i < fields.length; i++) {
+          const f = fields[i];
+          const isLast = i === fields.length - 1;
+          const valueText = formatValue(f.resolved, f.format, f.currencyCode);
+          const borderStyle = isLast ? "" : "border-bottom:1px solid #f5f5f5;";
+          parts.push(
+            "<tr>",
+            `<td style="padding:6px 8px 6px 0;color:#737373;font-size:13px;vertical-align:top;width:40%;${borderStyle}">${escape(f.label)}</td>`,
+            `<td style="padding:6px 0;color:#1a1a1a;font-weight:600;font-size:13px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
+            "</tr>",
+          );
+        }
+        parts.push("</table>");
+      }
+    }
+
+    if (meta.footer?.text) {
+      parts.push(
+        `<div style="margin-top:24px;padding-top:10px;border-top:1px solid #d4d4d4;color:#a3a3a3;font-size:11px;">${escape(meta.footer.text)}</div>`,
+      );
+    }
+
+    parts.push("</div>");
+    return parts.join("");
+  }
+
   const trackingKey = (hasAudienceSections && viewAudience === "agent") || template.meta?.isAgentTemplate || (template.meta?.enableAgentCopy && viewAudience === "agent")
     ? toTrackingKey(template.label) + "_agent"
     : toTrackingKey(template.label);
@@ -687,8 +1205,7 @@ function DocumentPreview({
   }
 
   function handleEmail() {
-    if (!printRef.current) return;
-    const htmlContent = printRef.current.innerHTML;
+    const htmlContent = generateEmailHtml();
     const plainText = generatePlainText();
     const subject = `${meta.header.title} - ${detail.policyNumber}`;
     onOpenEmailDialog?.(subject, htmlContent, plainText);
@@ -719,9 +1236,22 @@ function DocumentPreview({
         <div className="border-b-2 border-neutral-800 pb-2 sm:pb-3 mb-3 sm:mb-5">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <h1 className="text-base sm:text-2xl font-bold leading-tight m-0 wrap-break-word">{meta.header.title}</h1>
+              <h1
+                className="font-bold leading-tight m-0 wrap-break-word"
+                style={{ fontSize: { sm: "13px", md: "16px", lg: "20px", xl: "26px" }[meta.header.titleSize ?? "lg"] }}
+              >
+                {meta.header.title}
+              </h1>
               {meta.header.subtitle && (
-                <div className="text-xs sm:text-[15px] text-neutral-500 mt-0.5">{meta.header.subtitle}</div>
+                <div
+                  className="mt-0.5"
+                  style={{
+                    fontSize: { xs: "11px", sm: "13px", md: "16px" }[meta.header.subtitleSize ?? "sm"],
+                    color: meta.header.subtitleColor ?? "#737373",
+                  }}
+                >
+                  {meta.header.subtitle}
+                </div>
               )}
             </div>
             {trackingEntry?.documentNumber && (
@@ -781,13 +1311,16 @@ function DocumentPreview({
               (it) => it.status === "active" || it.status === "paid_individually",
             );
             const tableCols = visibleFields.filter((f) => isPerItemField(f.key));
-            const scalarFields = visibleFields
-              .filter((f) => !isPerItemField(f.key))
-              .map((f) => ({
-                ...f,
-                resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
-              }))
-              .filter((f) => f.resolved !== "" && f.resolved !== null && f.resolved !== undefined);
+            const scalarFields = expandFieldsWithChildren(
+              visibleFields
+                .filter((f) => !isPerItemField(f.key))
+                .map((f) => ({
+                  ...f,
+                  resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
+                }))
+                .filter((f) => !isEmptyFieldValue(f.resolved, f.format, section.id)),
+              section,
+            );
 
             if (tableCols.length === 0 && scalarFields.length === 0) return null;
 
@@ -1048,17 +1581,15 @@ function DocumentPreview({
             );
           }
 
-          const fields = visibleFields
-            .map((f) => ({
-              ...f,
-              resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
-            }))
-            .filter(
-              (f) =>
-                f.resolved !== "" &&
-                f.resolved !== null &&
-                f.resolved !== undefined,
-            );
+          const fields = expandFieldsWithChildren(
+            visibleFields
+              .map((f) => ({
+                ...f,
+                resolved: resolveFieldValue(snapshot, detail, section, f.key, extraCtx, tracking, docTrackingKey),
+              }))
+              .filter((f) => !isEmptyFieldValue(f.resolved, f.format, section.id)),
+            section,
+          );
 
           if (fields.length === 0) return null;
 
