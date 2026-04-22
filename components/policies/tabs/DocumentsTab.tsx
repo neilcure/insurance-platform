@@ -506,6 +506,73 @@ function needsConfirmation(meta: DocumentTemplateMeta): boolean {
   return meta.type === "quotation";
 }
 
+/**
+ * For each visible field, decide whether a "group sub-header" line should
+ * be emitted ABOVE that field in the rendered document.
+ *
+ *   true  => emit a group header right before this field (group changed
+ *            from the previous visible field, or this is the first field
+ *            in the section and the group is non-empty)
+ *   false => no header
+ *
+ * Returns a parallel boolean[] aligned with the input array. The header
+ * label itself comes from `field.group`. Used by all three render paths
+ * (on-screen React, HTML email, plain text) so they stay consistent. Caller
+ * is responsible for first checking `section.showFieldGroupHeaders`.
+ */
+function computeGroupBoundaries<T extends { group?: string }>(
+  fields: T[],
+): boolean[] {
+  const out: boolean[] = new Array(fields.length).fill(false);
+  let prev: string | undefined = undefined;
+  for (let i = 0; i < fields.length; i++) {
+    const cur = fields[i].group?.trim() || undefined;
+    // Only emit a header when crossing INTO a real (non-empty) group from
+    // a different one. Fields without a group don't introduce a header,
+    // they just visually continue under whatever bucket came before — same
+    // behavior as the editor's Selected Fields table.
+    if (cur && cur !== prev) out[i] = true;
+    prev = cur;
+  }
+  return out;
+}
+
+/**
+ * Bucket a flat field list into group blocks for the multi-column group
+ * layout. Each bucket has a `name` (the group label, "" for the leading
+ * ungrouped fields if any) and the ordered fields belonging to it.
+ *
+ * Same bucketing rule as `computeGroupBoundaries`: a NEW bucket starts
+ * only when crossing into a different non-empty group. Fields without a
+ * group append to the previous bucket so the rendered output never
+ * "loses" a field.
+ *
+ * Used by the 2-column group layout (`fieldGroupColumns: 2`); the 1-column
+ * default still uses the simpler boundaries-based approach inline.
+ */
+function bucketFieldsByGroup<T extends { group?: string }>(
+  fields: T[],
+): { name: string; fields: T[] }[] {
+  if (fields.length === 0) return [];
+  const buckets: { name: string; fields: T[] }[] = [];
+  let cur: { name: string; fields: T[] } | null = null;
+  for (const f of fields) {
+    const g = f.group?.trim() || "";
+    if (g && (!cur || cur.name !== g)) {
+      cur = { name: g, fields: [f] };
+      buckets.push(cur);
+    } else {
+      if (!cur) {
+        cur = { name: g, fields: [f] };
+        buckets.push(cur);
+      } else {
+        cur.fields.push(f);
+      }
+    }
+  }
+  return buckets;
+}
+
 export function DocumentPreview({
   template,
   detail,
@@ -530,7 +597,74 @@ export function DocumentPreview({
   onOpenEmailDialog?: (subject: string, htmlContent: string, plainText: string) => void;
 }) {
   const meta = template.meta!;
-  const printRef = React.useRef<HTMLDivElement>(null);
+
+  // Resolved layout knobs — shared by on-screen, email, and print paths so
+  // the three render modes stay in sync. Defaults match the previous
+  // hard-coded behaviour ("sm" / "normal") so existing templates render
+  // identically until the user chooses a different option. Title size can
+  // additionally be overridden per-section (`section.titleSize`) — that
+  // override is resolved at render time via `pickTitleSize(section)`.
+  type TitleSizeKey = "xs" | "sm" | "md" | "lg";
+  const templateTitleSize: TitleSizeKey = meta.layout?.sectionTitleSize ?? "sm";
+  const sectionSpacing = meta.layout?.sectionSpacing ?? "normal";
+  const pickTitleSize = (s: TemplateSection): TitleSizeKey =>
+    (s.titleSize as TitleSizeKey | undefined) ?? templateTitleSize;
+
+  // Tailwind utility for the on-screen section title (mobile / desktop).
+  const sectionTitleClass: Record<TitleSizeKey, string> = {
+    xs: "text-[9px] sm:text-[11px]",
+    sm: "text-[11px] sm:text-sm",
+    md: "text-xs sm:text-base",
+    lg: "text-sm sm:text-lg",
+  };
+  const titleClassFor = (s: TemplateSection) => sectionTitleClass[pickTitleSize(s)];
+
+  // On-screen Tailwind classes that the spacing preset drives. These
+  // affect three slots simultaneously so the preset visibly changes the
+  // overall density (the title's bottom-padding/margin used to be hard
+  // coded which made "compact" look identical to "normal" in the live
+  // preview).
+  const sectionGapClass: Record<typeof sectionSpacing, string> = {
+    compact: "mb-0.5 sm:mb-1",
+    normal: "mb-3 sm:mb-5",
+    loose: "mb-5 sm:mb-8",
+  };
+  // pb-* on the title border + mb-* between title and field table.
+  const sectionTitleSpacingClass: Record<typeof sectionSpacing, string> = {
+    compact: "pb-0 mb-0.5",
+    normal: "pb-1 mb-1.5 sm:mb-2",
+    loose: "pb-1 mb-2 sm:mb-3",
+  };
+  // py-* on each label/value row.
+  const fieldRowPaddingClass: Record<typeof sectionSpacing, string> = {
+    compact: "py-0 sm:py-0.5",
+    normal: "py-1 sm:py-1.5",
+    loose: "py-1.5 sm:py-2",
+  };
+  const sectionGapClassName = sectionGapClass[sectionSpacing];
+  const sectionTitleSpacingClassName = sectionTitleSpacingClass[sectionSpacing];
+  const fieldRowPaddingClassName = fieldRowPaddingClass[sectionSpacing];
+
+  // Pixel sizes for the email/print HTML render (inline-styled, no CSS
+  // classes available there).
+  const emailTitlePxMap: Record<TitleSizeKey, number> = {
+    xs: 10,
+    sm: 12,
+    md: 14,
+    lg: 16,
+  };
+  const emailTitlePxFor = (s: TemplateSection) => emailTitlePxMap[pickTitleSize(s)];
+  // [topMargin, bottomMargin] of the section title block, plus the
+  // bottom margin of the field table that follows it. All values feed
+  // straight into inline `style="margin:..."`.
+  const emailGap: Record<
+    typeof sectionSpacing,
+    { titleMt: number; titleMb: number; tableMb: number; rowPy: number }
+  > = {
+    compact: { titleMt: 2, titleMb: 0, tableMb: 0, rowPy: 1 },
+    normal: { titleMt: 8, titleMb: 2, tableMb: 6, rowPy: 3 },
+    loose: { titleMt: 16, titleMb: 4, tableMb: 12, rowPy: 6 },
+  };
 
   const needsExtraContext = meta.type === "statement" || meta.type === "receipt" || meta.sections.some(
     (s) => s.source === "statement" || s.source === "accounting" || s.source === "client" || s.source === "organisation",
@@ -778,29 +912,46 @@ export function DocumentPreview({
     ? meta.sections.filter((s) => !s.audience || s.audience === "all" || s.audience === viewAudience)
     : meta.sections;
 
-  const printStyles = `
-    body { font-family: system-ui, -apple-system, sans-serif; padding: 40px; color: #1a1a1a; max-width: 800px; margin: 0 auto; font-size: 13px; }
-    .border-b { border-bottom: 1px solid #f0f0f0; }
-    .border-b-2 { border-bottom: 2px solid #333; }
-    .border-t { border-top: 1px solid #ddd; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th { padding: 6px 8px; font-weight: 600; color: #737373; border-bottom: 1px solid #e5e5e5; }
-    td { padding: 6px 8px; font-weight: 600; color: #1a1a1a; border-bottom: 1px solid #f5f5f5; }
-    tr:nth-child(even) td { background: #fafafa; }
-    @media print { body { padding: 20px; } }
+  // Page-level styles only — every visual rule for the document body lives
+  // INSIDE `generateEmailHtml()` as inline styles. We can't reuse the
+  // on-screen React HTML directly because it relies on Tailwind utility
+  // classes (flex, grid, w-[40%], text-[11px], etc.) that don't exist in
+  // the popped-out print window — labels and values would collapse with
+  // no spacing or alignment. Inline-styled HTML renders correctly in any
+  // chrome (browser print, save-as-PDF, mail clients) without external CSS.
+  // Print layout is tuned to fit a single typical insurance document on one
+  // A4 page when reasonable. We rely on @page for the actual paper margin
+  // and zero out the body padding in print so we don't double-up the
+  // margin (browser was effectively giving ~12mm + 24px before).
+  const printPageStyles = `
+    @page { margin: 10mm; }
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      color: #1a1a1a;
+      margin: 0;
+      padding: 16px;
+      background: #ffffff;
+    }
+    @media print {
+      body { padding: 0; }
+    }
   `;
 
   function handlePrint() {
-    if (!printRef.current) return;
-    const content = printRef.current.innerHTML;
+    // Reuse the email/print-safe HTML so the printout is bit-for-bit what
+    // the user would receive by email — matching layout (including the
+    // group sub-headers and 2-column group layout), label/value alignment,
+    // tables, dividers, etc. — instead of dumping Tailwind-classed React
+    // markup that loses all styling once outside the app.
+    const body = generateEmailHtml();
     const win = window.open("", "_blank", "width=800,height=600");
     if (!win) {
       toast.error("Please allow popups to print");
       return;
     }
     win.document.write(`<!DOCTYPE html>
-<html><head><title>${meta.header.title}</title>
-<style>${printStyles}</style></head><body>${content}</body></html>`);
+<html><head><meta charset="utf-8"><title>${meta.header.title}</title>
+<style>${printPageStyles}</style></head><body>${body}</body></html>`);
     win.document.close();
     setTimeout(() => { win.print(); }, 300);
   }
@@ -825,6 +976,14 @@ export function DocumentPreview({
     currencyCode?: string;
     resolved: unknown;
     isChild?: boolean;
+    /**
+     * Group label inherited from the underlying TemplateFieldMapping.group.
+     * Carried through so `computeGroupBoundaries` can still bucket fields
+     * after `expandFieldsWithChildren` rewrites the array (which adds child
+     * rows for boolean fields). Children inherit their parent's group so
+     * they stay under the same sub-heading rather than starting a new one.
+     */
+    group?: string;
   };
   function expandFieldsWithChildren(
     fields: ResolvedField[],
@@ -871,6 +1030,9 @@ export function DocumentPreview({
           currencyCode: f.currencyCode,
           resolved: c.resolved,
           isChild: true,
+          // Inherit parent's group so children render under the same
+          // sub-heading instead of being treated as a new bucket.
+          group: f.group,
         });
       }
     }
@@ -1045,7 +1207,16 @@ export function DocumentPreview({
 
       lines.push(`▸ ${section.title}`);
       const maxLabelLen = Math.max(...fields.map((f) => f.label.length));
-      for (const f of fields) {
+      const showGroups = !!section.showFieldGroupHeaders;
+      const hiddenSet = new Set(section.hiddenGroupHeaders ?? []);
+      const boundaries = showGroups ? computeGroupBoundaries(fields) : null;
+      for (let i = 0; i < fields.length; i++) {
+        const f = fields[i];
+        if (boundaries?.[i] && f.group && !hiddenSet.has(f.group)) {
+          // Indent matches field rows; "·" markers visually distinguish a
+          // sub-heading from the section title's "▸".
+          lines.push(`  · ${f.group}`);
+        }
         const val = formatValue(f.resolved, f.format, f.currencyCode);
         lines.push(`  ${f.label.padEnd(maxLabelLen)}  ${val}`);
       }
@@ -1090,7 +1261,7 @@ export function DocumentPreview({
 
     // Header
     parts.push(
-      '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-bottom:2px solid #333;padding-bottom:10px;margin-bottom:18px;">',
+      '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-bottom:2px solid #333;padding-bottom:6px;margin-bottom:10px;">',
       "<tr>",
       '<td style="vertical-align:top;">',
       `<div style="font-size:${({ sm: "14px", md: "18px", lg: "20px", xl: "26px" }[meta.header.titleSize ?? "lg"])};font-weight:bold;color:#1a1a1a;margin:0 0 2px 0;">${escape(meta.header.title)}</div>`,
@@ -1121,7 +1292,7 @@ export function DocumentPreview({
     }
     if (refParts.length > 0) {
       parts.push(
-        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:-12px 0 18px 0;font-size:12px;color:#737373;">',
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:-8px 0 10px 0;font-size:12px;color:#737373;">',
         "<tr>",
         `<td style="text-align:left;">${refParts[0] ?? ""}</td>`,
         `<td style="text-align:right;">${refParts[1] ?? ""}</td>`,
@@ -1158,31 +1329,157 @@ export function DocumentPreview({
 
         if (fields.length === 0) continue;
 
+        const gap = emailGap[sectionSpacing];
+        const titlePx = emailTitlePxFor(section);
         parts.push(
-          '<div style="margin:18px 0 6px 0;">',
-          `<div style="font-size:12px;font-weight:bold;color:#525252;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #d4d4d4;padding-bottom:4px;">${escape(section.title)}</div>`,
+          `<div style="margin:${gap.titleMt}px 0 ${gap.titleMb}px 0;">`,
+          `<div style="font-size:${titlePx}px;font-weight:bold;color:#525252;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #d4d4d4;padding-bottom:2px;">${escape(section.title)}</div>`,
           "</div>",
-          '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin-bottom:12px;">',
+          `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin-bottom:${gap.tableMb}px;">`,
         );
-        for (let i = 0; i < fields.length; i++) {
-          const f = fields[i];
-          const isLast = i === fields.length - 1;
-          const valueText = formatValue(f.resolved, f.format, f.currencyCode);
-          const borderStyle = isLast ? "" : "border-bottom:1px solid #f5f5f5;";
-          parts.push(
-            "<tr>",
-            `<td style="padding:6px 8px 6px 0;color:#737373;font-size:13px;vertical-align:top;width:40%;${borderStyle}">${escape(f.label)}</td>`,
-            `<td style="padding:6px 0;color:#1a1a1a;font-weight:600;font-size:13px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
-            "</tr>",
-          );
+
+        // 2-column layout pairs fields side-by-side. We use a 4-cell row
+        // (label | value | label | value). Each pair shares one bottom border
+        // so dividers stay aligned across columns. Email clients (Gmail /
+        // Outlook / Apple Mail) all support nested tables so this is safe.
+        const cols = section.columns === 2 ? 2 : 1;
+        // When group sub-headings are enabled they're inserted as full-width
+        // <tr>s between the regular field rows. They use colspan=2 (1-col)
+        // or colspan=4 (2-col) to span the whole row.
+        const showGroups = !!section.showFieldGroupHeaders;
+        const hiddenSet = new Set(section.hiddenGroupHeaders ?? []);
+        const isGroupHidden = (name: string | undefined) =>
+          !!name && hiddenSet.has(name);
+        const boundaries = showGroups ? computeGroupBoundaries(fields) : null;
+        const groupCols = showGroups && section.fieldGroupColumns === 2 ? 2 : 1;
+        const groupHeaderRow = (label: string, span: number) =>
+          `<tr><td colspan="${span}" style="padding:6px 0 2px 0;color:#525252;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #e5e5e5;">${escape(label)}</td></tr>`;
+
+        // 2-column GROUP layout: render each bucket as its own mini-table
+        // inside a 2-cell parent row. Email-safe nested tables keep this
+        // working in Gmail/Outlook/Apple Mail.
+        if (showGroups && groupCols === 2) {
+          const buckets = bucketFieldsByGroup(fields);
+          if (buckets.length > 1) {
+            const cellTable = (b: typeof buckets[number]) => {
+              const inner: string[] = [];
+              // Only emit a bucket title when the group is not on the
+              // section's hide list — the fields still render either way.
+              if (b.name && !isGroupHidden(b.name)) {
+                inner.push(
+                  `<div style="padding:0 0 4px 0;color:#525252;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #e5e5e5;margin-bottom:4px;">${escape(b.name)}</div>`,
+                );
+              }
+              inner.push('<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">');
+              for (let i = 0; i < b.fields.length; i++) {
+                const f = b.fields[i];
+                const isLast = i === b.fields.length - 1;
+                const valueText = formatValue(f.resolved, f.format, f.currencyCode);
+                const borderStyle = isLast ? "" : "border-bottom:1px solid #f5f5f5;";
+                inner.push(
+                  "<tr>",
+                  `<td style="padding:${gap.rowPy}px 6px ${gap.rowPy}px 0;color:#737373;font-size:13px;vertical-align:top;width:50%;${borderStyle}">${escape(f.label)}</td>`,
+                  `<td style="padding:${gap.rowPy}px 0;color:#1a1a1a;font-weight:600;font-size:13px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
+                  "</tr>",
+                );
+              }
+              inner.push("</table>");
+              return inner.join("");
+            };
+            // Replace the field <table> opener pushed earlier with a
+            // bucket-grid layout. We close the open table first.
+            parts.pop(); // remove the opening "<table ...>"
+            parts.push('<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:separate;border-spacing:12px 4px;margin:0 -12px 6px -12px;">');
+            for (let r = 0; r < buckets.length; r += 2) {
+              const left = buckets[r];
+              const right = buckets[r + 1];
+              parts.push(
+                "<tr>",
+                `<td valign="top" width="50%">${cellTable(left)}</td>`,
+                right
+                  ? `<td valign="top" width="50%">${cellTable(right)}</td>`
+                  : '<td valign="top" width="50%"></td>',
+                "</tr>",
+              );
+            }
+            parts.push("</table>");
+            continue; // skip the default per-section render below
+          }
+        }
+
+        // 2-col with group headers degrades to 1-col rendering for the same
+        // reason as on-screen — preserves alignment cleanly.
+        const has2ColWithGroups = cols === 2 && showGroups && boundaries?.some(Boolean);
+        if (cols === 2 && !has2ColWithGroups) {
+          const totalRows = Math.ceil(fields.length / 2);
+          for (let r = 0; r < totalRows; r++) {
+            const isLastRow = r === totalRows - 1;
+            const left = fields[r * 2];
+            const right = fields[r * 2 + 1];
+            const border = isLastRow ? "" : "border-bottom:1px solid #f5f5f5;";
+            const cell = (f: typeof left) =>
+              f
+                ? [
+                    `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:#737373;font-size:13px;vertical-align:top;width:20%;${border}">${escape(f.label)}</td>`,
+                    `<td style="padding:${gap.rowPy}px 12px ${gap.rowPy}px 0;color:#1a1a1a;font-weight:600;font-size:13px;text-align:right;vertical-align:top;white-space:pre-line;width:30%;${border}">${escape(formatValue(f.resolved, f.format, f.currencyCode))}</td>`,
+                  ].join("")
+                : `<td style="${border}" colspan="2"></td>`;
+            parts.push("<tr>", cell(left), cell(right), "</tr>");
+          }
+        } else {
+          for (let i = 0; i < fields.length; i++) {
+            const f = fields[i];
+            if (boundaries?.[i] && f.group && !isGroupHidden(f.group)) {
+              parts.push(groupHeaderRow(f.group, 2));
+            }
+            const isLast = i === fields.length - 1;
+            const valueText = formatValue(f.resolved, f.format, f.currencyCode);
+            // Suppress bottom border when the next field would inject a
+            // group header anyway — avoids stacking two divider lines.
+            // If the next group's header is hidden, still draw the border.
+            const nextField = fields[i + 1];
+            const nextIsHeader =
+              boundaries?.[i + 1] === true && !!nextField?.group && !isGroupHidden(nextField.group);
+            const borderStyle = isLast || nextIsHeader ? "" : "border-bottom:1px solid #f5f5f5;";
+            parts.push(
+              "<tr>",
+              `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:#737373;font-size:13px;vertical-align:top;width:40%;${borderStyle}">${escape(f.label)}</td>`,
+              `<td style="padding:${gap.rowPy}px 0;color:#1a1a1a;font-weight:600;font-size:13px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
+              "</tr>",
+            );
+          }
         }
         parts.push("</table>");
       }
     }
 
-    if (meta.footer?.text) {
+    // Match the on-screen render rule: when this template requires a
+    // statement (e.g. monthly statement) but no statement data is loaded,
+    // suppress the footer block entirely. Otherwise the recipient gets a
+    // signature page with no transactions above it.
+    const suppressFooter = !!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData);
+
+    if (!suppressFooter && meta.footer?.text) {
       parts.push(
-        `<div style="margin-top:24px;padding-top:10px;border-top:1px solid #d4d4d4;color:#a3a3a3;font-size:11px;">${escape(meta.footer.text)}</div>`,
+        `<div style="margin-top:14px;padding-top:6px;border-top:1px solid #d4d4d4;color:#a3a3a3;font-size:11px;">${escape(meta.footer.text)}</div>`,
+      );
+    }
+
+    // Signature lines — rendered as a 2-cell table so email clients and
+    // print-to-PDF both honor the column layout. The line itself is a
+    // top border on each cell; the label sits underneath.
+    if (!suppressFooter && meta.footer?.showSignature) {
+      parts.push(
+        '<table cellpadding="0" cellspacing="0" border="0" style="width:100%;margin-top:36px;border-collapse:collapse;">',
+        '<tr>',
+        '<td style="width:50%;padding-right:24px;vertical-align:top;">',
+        '<div style="border-top:1px solid #1a1a1a;padding-top:4px;font-size:11px;color:#1a1a1a;width:200px;">Authorized Signature</div>',
+        '</td>',
+        '<td style="width:50%;padding-left:24px;vertical-align:top;text-align:right;">',
+        '<div style="border-top:1px solid #1a1a1a;padding-top:4px;font-size:11px;color:#1a1a1a;width:200px;display:inline-block;text-align:left;">Client Signature</div>',
+        '</td>',
+        '</tr>',
+        '</table>',
       );
     }
 
@@ -1228,7 +1525,6 @@ export function DocumentPreview({
       </div>
 
       <div
-        ref={printRef}
         className="rounded-md border border-neutral-200 bg-white p-3 sm:p-6 text-neutral-900 dark:border-neutral-700 max-w-[800px] overflow-hidden"
         style={{ fontFamily: "system-ui, -apple-system, sans-serif", color: "#1a1a1a" }}
       >
@@ -1325,8 +1621,8 @@ export function DocumentPreview({
             if (tableCols.length === 0 && scalarFields.length === 0) return null;
 
             return (
-              <div key={section.id} className="mb-3 sm:mb-5">
-                <div className="text-[11px] sm:text-sm font-bold text-neutral-700 uppercase tracking-wide border-b border-neutral-300 pb-1 mb-1.5 sm:mb-2">
+              <div key={section.id} className={sectionGapClassName}>
+                <div className={cn(titleClassFor(section), "font-bold text-neutral-700 uppercase tracking-wide border-b border-neutral-300", sectionTitleSpacingClassName)}>
                   {section.title}
                 </div>
 
@@ -1374,7 +1670,7 @@ export function DocumentPreview({
                     ) : scalarFields.map((f, idx) => (
                       <div
                         key={f.key}
-                        className={`flex justify-between gap-3 py-1 sm:py-1.5 ${idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                        className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
                       >
                         <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[40%] shrink-0">
                           {f.label}
@@ -1594,8 +1890,8 @@ export function DocumentPreview({
           if (fields.length === 0) return null;
 
           return (
-            <div key={section.id} className="mb-3 sm:mb-5">
-              <div className="text-[11px] sm:text-sm font-bold text-neutral-700 uppercase tracking-wide border-b border-neutral-300 pb-1 mb-1.5 sm:mb-2">
+            <div key={section.id} className={sectionGapClassName}>
+              <div className={cn(titleClassFor(section), "font-bold text-neutral-700 uppercase tracking-wide border-b border-neutral-300", sectionTitleSpacingClassName)}>
                 {section.title}
               </div>
               <div>
@@ -1638,19 +1934,143 @@ export function DocumentPreview({
                       );
                     })}
                   </div>
-                ) : fields.map((f, idx) => (
-                  <div
-                    key={f.key}
-                    className={`flex justify-between gap-3 py-1 sm:py-1.5 ${idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}
-                  >
-                    <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[40%] shrink-0">
-                      {f.label}
-                    </span>
-                    <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
-                      {formatValue(f.resolved, f.format, f.currencyCode)}
-                    </span>
-                  </div>
-                ))}
+                ) : (() => {
+                  // 2-column layout: pack two label/value pairs per row to
+                  // save vertical space (typically used for vehicle info).
+                  // For 2-col we drop the per-row bottom border in favor of
+                  // a row-pair border to keep the divider lines aligned.
+                  const cols = section.columns === 2 ? 2 : 1;
+                  // Group boundaries — only consulted when the section has
+                  // showFieldGroupHeaders enabled. We compute them here once
+                  // either way; ignored when the flag is off.
+                  const showGroups = !!section.showFieldGroupHeaders;
+                  const hiddenSet = new Set(section.hiddenGroupHeaders ?? []);
+                  const isGroupHidden = (name: string | undefined) =>
+                    !!name && hiddenSet.has(name);
+                  const boundaries = showGroups ? computeGroupBoundaries(fields) : null;
+                  const groupCols = showGroups && section.fieldGroupColumns === 2 ? 2 : 1;
+
+                  // 2-column GROUP layout: each group block (header + its
+                  // fields) sits in its own grid cell. Buckets are arranged
+                  // 2-per-row. Within each bucket fields render 1-per-row
+                  // (mixing field-cols and group-cols would crowd the cells).
+                  if (showGroups && groupCols === 2) {
+                    const buckets = bucketFieldsByGroup(fields);
+                    // Single bucket would render at 50% width with empty
+                    // space on the right — degrade to 1-col rendering.
+                    if (buckets.length > 1) {
+                      return (
+                        <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+                          {buckets.map((b) => (
+                            <div key={`${b.name}::${b.fields[0]?.key ?? ""}`} className="min-w-0">
+                              {b.name && !isGroupHidden(b.name) && (
+                                <div className="mb-1 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700 pb-0.5">
+                                  {b.name}
+                                </div>
+                              )}
+                              {b.fields.map((f, idx) => (
+                                <div
+                                  key={f.key}
+                                  className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < b.fields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                                >
+                                  <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[45%] shrink-0">
+                                    {f.label}
+                                  </span>
+                                  <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
+                                    {formatValue(f.resolved, f.format, f.currencyCode)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    }
+                  }
+
+                  if (cols === 2) {
+                    // 2-col + group headers: when a header lands on the
+                    // right-hand cell of a pair, we'd break visual alignment.
+                    // To keep things simple and correct, switch back to a
+                    // single column for any group that has a header — the
+                    // header itself spans full width.
+                    if (showGroups && boundaries?.some(Boolean)) {
+                      return (
+                        <div className="space-y-0">
+                          {fields.map((f, idx) => {
+                            const nextField = fields[idx + 1];
+                            const nextHeaderShown =
+                              !!boundaries[idx + 1] && !isGroupHidden(nextField?.group);
+                            return (
+                              <React.Fragment key={f.key}>
+                                {boundaries[idx] && !isGroupHidden(f.group) && (
+                                  <div className="mt-2 mb-1 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700 pb-0.5">
+                                    {f.group}
+                                  </div>
+                                )}
+                                <div className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < fields.length - 1 && !nextHeaderShown ? "border-b border-neutral-100" : ""}`}>
+                                  <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[40%] shrink-0">
+                                    {f.label}
+                                  </span>
+                                  <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
+                                    {formatValue(f.resolved, f.format, f.currencyCode)}
+                                  </span>
+                                </div>
+                              </React.Fragment>
+                            );
+                          })}
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="grid grid-cols-2 gap-x-6">
+                        {fields.map((f, idx) => {
+                          const rowIdx = Math.floor(idx / 2);
+                          const lastRowIdx = Math.floor((fields.length - 1) / 2);
+                          const isLastRow = rowIdx === lastRowIdx;
+                          return (
+                            <div
+                              key={f.key}
+                              className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${isLastRow ? "" : "border-b border-neutral-100"}`}
+                            >
+                              <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[45%] shrink-0">
+                                {f.label}
+                              </span>
+                              <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
+                                {formatValue(f.resolved, f.format, f.currencyCode)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  }
+                  return fields.map((f, idx) => {
+                    const nextField = fields[idx + 1];
+                    const nextHeaderShown =
+                      !!boundaries?.[idx + 1] && !isGroupHidden(nextField?.group);
+                    const headerShown = !!boundaries?.[idx] && !isGroupHidden(f.group);
+                    return (
+                      <React.Fragment key={f.key}>
+                        {headerShown && (
+                          <div className="mt-2 mb-1 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700 pb-0.5">
+                            {f.group}
+                          </div>
+                        )}
+                        <div
+                          className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < fields.length - 1 && !nextHeaderShown ? "border-b border-neutral-100" : ""}`}
+                        >
+                          <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[40%] shrink-0">
+                            {f.label}
+                          </span>
+                          <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
+                            {formatValue(f.resolved, f.format, f.currencyCode)}
+                          </span>
+                        </div>
+                      </React.Fragment>
+                    );
+                  });
+                })()}
               </div>
             </div>
           );

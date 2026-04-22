@@ -16,9 +16,17 @@ export interface RowAction {
 interface RowActionMenuProps {
   actions: RowAction[];
   label?: string;
+  /**
+   * Direction the slide-out grows when opened.
+   *  - "start" (default): grows to the RIGHT of the "Actions" chip.
+   *  - "end": grows to the LEFT of the chip — use this in right-aligned
+   *    table cells so the buttons stay inside the viewport instead of
+   *    sliding off-screen and stealing the horizontal scrollbar.
+   */
+  align?: "start" | "end";
 }
 
-export function RowActionMenu({ actions, label = "Actions" }: RowActionMenuProps) {
+export function RowActionMenu({ actions, label = "Actions", align = "start" }: RowActionMenuProps) {
   const hasLoading = actions.some((a) => a.loading);
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -34,6 +42,8 @@ export function RowActionMenu({ actions, label = "Actions" }: RowActionMenuProps
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [open]);
 
+  const expandLeft = align === "end";
+
   return (
     <div ref={containerRef} className="relative inline-flex items-center">
       <span
@@ -48,11 +58,27 @@ export function RowActionMenu({ actions, label = "Actions" }: RowActionMenuProps
         <span className="hidden sm:inline">{label}</span>
       </span>
 
-      {/* Desktop: horizontal slide-out */}
+      {/*
+        Desktop: horizontal slide-out.
+        - Default (align="start"): inline layout — the slide-out pushes
+          neighbouring content as it grows. Original animation, 700ms ease.
+          This is what callers like Policies have always relied on.
+        - align="end": absolute layout — floats over adjacent cells instead
+          of widening the row, so the table never overflows and the bottom
+          scrollbar can't appear/vanish in a click-outside loop.
+          Use this in right-aligned table cells (e.g. Document Templates).
+      */}
       <div
         className={cn(
           "hidden sm:flex items-center overflow-hidden transition-all duration-700 ease-in-out",
-          open ? "max-w-[500px] opacity-100 ml-2" : "max-w-0 opacity-0 ml-0",
+          expandLeft
+            ? cn(
+                "absolute top-1/2 -translate-y-1/2 right-full z-30",
+                open ? "max-w-[500px] opacity-100 mr-2" : "max-w-0 opacity-0 mr-0",
+              )
+            : open
+              ? "max-w-[500px] opacity-100 ml-2"
+              : "max-w-0 opacity-0 ml-0",
         )}
       >
         <div className="flex items-center gap-0 rounded-md border border-neutral-200 bg-neutral-100 p-0.5 dark:border-neutral-700 dark:bg-neutral-800">

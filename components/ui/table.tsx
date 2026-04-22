@@ -63,12 +63,16 @@ export function TableFooter({
   );
 }
 
-export function TableRow({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLTableRowElement>) {
+// Uses forwardRef so libraries that need a row ref (e.g. drag-to-sort via
+// @dnd-kit) can attach one. Existing call sites that don't pass `ref`
+// continue to work unchanged.
+export const TableRow = React.forwardRef<
+  HTMLTableRowElement,
+  React.HTMLAttributes<HTMLTableRowElement>
+>(function TableRow({ className, ...props }, ref) {
   return (
     <tr
+      ref={ref}
       className={cn(
         "border-b transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-900/50",
         className
@@ -76,7 +80,7 @@ export function TableRow({
       {...props}
     />
   );
-}
+});
 
 export function TableHead({
   className,

@@ -1,0 +1,113 @@
+---
+description: Forbid native window.confirm / window.alert / window.prompt — use the lightbox dialog system from @/components/ui/global-dialogs instead
+globs: **/*.tsx,**/*.ts
+alwaysApply: true
+---
+
+# No Native Browser Dialogs
+
+The browser-native `window.confirm`, `window.alert`, and `window.prompt` are
+**banned** in this codebase. They:
+
+- Cannot be styled to match dark mode or our theme.
+- Are blocking and cause poor UX on mobile.
+- Cannot render rich content (line breaks, lists, formatted descriptions).
+- Look like a system pop-up rather than part of the app.
+
+## Use the global lightbox dialog API instead
+
+All confirmations, alerts, and text prompts must use the imperative API in
+`@/components/ui/global-dialogs`. The `<GlobalDialogHost />` is mounted once
+in `app/layout.tsx`, so any client component can call the helpers directly
+and `await` the user's response.
+
+### Examples
+
+Confirm before a destructive action:
+
+```tsx
+import { confirmDialog } from "@/components/ui/global-dialogs";
+
+async function handleDelete(row: { id: string; label: string }) {
+  const ok = await confirmDialog({
+    title: `Delete "${row.label}"?`,
+    description: "This cannot be undone.",
+    confirmLabel: "Delete",
+    destructive: true,
+  });
+  if (!ok) return;
+  await fetch(`/api/items/${row.id}`, { method: "DELETE" });
+}
+```
+
+Show an info message:
+
+```tsx
+import { alertDialog } from "@/components/ui/global-dialogs";
+
+await alertDialog({
+  title: "Saved",
+  description: "Your changes were saved successfully.",
+});
+```
+
+Ask for a value:
+
+```tsx
+import { promptDialog } from "@/components/ui/global-dialogs";
+
+const newName = await promptDialog({
+  title: "Rename template",
+  defaultValue: row.label,
+  placeholder: "Enter a new name…",
+});
+if (!newName) return; // user cancelled or cleared the input
+```
+
+### Rules
+
+1. **Never** call `window.confirm`, `window.alert`, or `window.prompt`
+   (or the global `confirm` / `alert` / `prompt` shortcuts) anywhere in
+   `app/`, `components/`, `lib/`, or any other workspace code. This is
+   enforced as a hard rule — replace with the helpers above.
+
+2. Use **`destructive: true`** on `confirmDialog` for delete / wipe / reset
+   actions so the confirm button renders in red.
+
+3. Keep `description` strings human-readable. The host renders descriptions
+   with `whitespace-pre-line`, so `\n` becomes a real line break — use it
+   for multi-line context (what will change, what is preserved, whether
+   the action is reversible).
+
+4. Always `await` the helper. Each call returns a Promise, and the dialog
+   queues if another one is already open. Never fire-and-forget.
+
+5. The host is mounted only once in `app/layout.tsx`. Do **not** mount
+   another `<GlobalDialogHost />` anywhere else.
+
+6. For truly modal flows that need richer content (multi-step forms,
+   pickers, custom layouts), build a dedicated `<Dialog>` from
+   `@/components/ui/dialog` and manage its `open` state locally — but for
+   any plain yes/no / OK / single-input prompt, **use the helpers**.
+
+### What to do when you see a violation
+
+When editing a file that still uses `window.confirm` / `alert` / `prompt`,
+migrate it as part of the same change:
+
+```tsx
+// Before
+if (!window.confirm("Delete this row?")) return;
+
+// After
+import { confirmDialog } from "@/components/ui/global-dialogs";
+const ok = await confirmDialog({
+  title: "Delete this row?",
+  confirmLabel: "Delete",
+  destructive: true,
+});
+if (!ok) return;
+```
+
+Don't introduce regressions: the rest of the surrounding logic must stay
+identical (same downstream branches, same error handling).

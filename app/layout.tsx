@@ -3,6 +3,7 @@ import "./globals.css";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "@/components/ui/theme-provider";
 import { AuthSessionProvider } from "@/components/auth/session-provider";
+import { GlobalDialogHost } from "@/components/ui/global-dialogs";
 
 export const metadata: Metadata = {
   title: {
@@ -45,6 +46,7 @@ export default function RootLayout({
           <AuthSessionProvider>
             {children}
             <Toaster richColors position="top-right" duration={2000} />
+            <GlobalDialogHost />
           </AuthSessionProvider>
         </ThemeProvider>
       </body>

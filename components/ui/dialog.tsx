@@ -46,9 +46,17 @@ export function DialogHeader({ children }: { children: React.ReactNode }) {
   return <div className="mb-2">{children}</div>;
 }
 
-export function DialogTitle({ children }: { children: React.ReactNode }) {
+export function DialogTitle({
+  className,
+  children,
+}: React.HTMLAttributes<HTMLHeadingElement>) {
   return (
-    <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
+    <h3
+      className={cn(
+        "text-base font-semibold text-neutral-900 dark:text-neutral-100",
+        className,
+      )}
+    >
       {children}
     </h3>
   );
