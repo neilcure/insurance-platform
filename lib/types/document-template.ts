@@ -25,6 +25,14 @@ export type TemplateSection = {
    * smaller without affecting the rest of the document.
    */
   titleSize?: "xs" | "sm" | "md" | "lg";
+  /**
+   * Tracks the most recent "Apply section to other templates" action.
+   * Set automatically by the editor after a successful apply — no need to
+   * edit this manually. Displayed as a small badge on the section header
+   * so admins can see at a glance which sections have been pushed out.
+   */
+  lastAppliedAt?: string;   // ISO-8601 timestamp
+  lastAppliedCount?: number; // number of templates successfully updated
   /** Where to pull data from in the snapshot */
   source: "insured" | "contactinfo" | "package" | "policy" | "agent" | "accounting" | "client" | "organisation" | "statement";
   /** Required when source is "package" */
@@ -76,6 +84,30 @@ export type TemplateSection = {
    * fields themselves still need a place to render.
    */
   hiddenGroupHeaders?: string[];
+  /**
+   * Per-group override for fields-per-row INSIDE a single group. Key =
+   * group name (matches `TemplateFieldMapping.group`). When unset for
+   * a group the section-level `columns` value is used. Lets a section
+   * mix dense and sparse groups (e.g. 2-per-row excesses next to
+   * 1-per-row notes) without needing a section split.
+   *
+   * Only honored when `showFieldGroupHeaders` is true — without group
+   * boundaries there is no "group" context to override. Falls back to
+   * `columns` for any group not present in the map.
+   */
+  groupColumns?: Record<string, 1 | 2>;
+  /**
+   * Group names that should occupy the FULL section width regardless of
+   * `fieldGroupColumns`. Only meaningful when `fieldGroupColumns: 2`
+   * (two group blocks per row) — listed groups break out of the 2-col
+   * grid and span the whole row, with adjacent narrower groups still
+   * pairing up two-per-row above/below them. Useful for one big group
+   * (e.g. premium breakdown) sitting alongside several short groups.
+   *
+   * Ignored when `fieldGroupColumns` is 1 (everything is full-width
+   * already). Empty/undefined => no group is forced full-width.
+   */
+  fullWidthGroups?: string[];
   fields: TemplateFieldMapping[];
 };
 
@@ -125,11 +157,102 @@ export type DocumentTemplateMeta = {
     subtitleColor?: string;
     showDate?: boolean;
     showPolicyNumber?: boolean;
+    /**
+     * Font size for the auto-generated document number (e.g. "INV-2025-0001")
+     * shown in the top-right of the header. Defaults to "md" which matches
+     * the previous hard-coded `text-base` (~14px in print) so existing
+     * templates render unchanged. Use a smaller value when the prefix is
+     * long and was wrapping or competing with the title.
+     */
+    documentNumberSize?: "xs" | "sm" | "md" | "lg" | "xl";
+    /**
+     * Hex color for the document number value. Defaults to "#1a1a1a"
+     * (the previous hard-coded near-black) so existing templates render
+     * unchanged. The "DOC NO." label above stays in the muted neutral
+     * palette so the number itself remains the visual anchor.
+     */
+    documentNumberColor?: string;
+    /**
+     * Stored filename of the logo image (uploaded to the shared template
+     * file store — see `lib/storage-pdf-templates.ts`). Empty/undefined
+     * means no logo. Served via `/api/pdf-templates/images/[storedName]`
+     * so the same auth + cache headers apply for free.
+     */
+    logoStoredName?: string;
+    /**
+     * Rendered logo height. Width auto-scales to preserve aspect ratio.
+     *  - "sm" ≈ 32px (compact, sits beside title text)
+     *  - "md" (default) ≈ 48px (typical letterhead)
+     *  - "lg" ≈ 72px (prominent, takes most of the header band)
+     */
+    logoSize?: "sm" | "md" | "lg";
+    /**
+     * Where the logo sits in the header row.
+     *  - "left" (default): logo on the left, title block to its right.
+     *  - "right": logo on the right (where the doc-no usually sits) —
+     *    doc-no falls underneath the title block in this mode.
+     *  - "center": logo centred above the title block (full-width row).
+     */
+    logoPosition?: "left" | "right" | "center";
   };
   sections: TemplateSection[];
   footer?: {
     text?: string;
+    /**
+     * @deprecated Use `showAuthorizedSignature` + `showClientSignature`
+     * instead. Kept for backward compatibility — when truthy and the new
+     * flags are both unset, both signature blocks are rendered (matches
+     * the legacy single-toggle behaviour).
+     */
     showSignature?: boolean;
+    /**
+     * Show the company-side signature block (e.g. director, agent rep).
+     * When unset, falls back to the legacy `showSignature` flag.  Independent
+     * from `showClientSignature` so a template can include only one.
+     */
+    showAuthorizedSignature?: boolean;
+    /**
+     * Show the recipient-side signature block (the client signs by hand
+     * after print, or — in a future iteration — captures an e-signature
+     * online).  When unset, falls back to `showSignature`.
+     */
+    showClientSignature?: boolean;
+    /**
+     * Stored filename of the AUTHORIZED signature image (the company's
+     * pre-signed signature, e.g. director's scanned wet sig).  When set,
+     * the image is rendered above the line so the document arrives
+     * already executed by the issuer.  Empty/undefined => render an empty
+     * line that the company representative can hand-sign on a printout.
+     * Stored in the same blob table as logos so the same /pdf-templates/
+     * images endpoint can serve it.
+     */
+    authorizedSignatureImage?: string;
+    /**
+     * Rendered height of the authorized-signature image. Width auto-scales
+     * to preserve aspect ratio. Defaults to "md" (~48px), which sits
+     * comfortably above the signature line without dominating it.
+     */
+    authorizedSignatureImageHeight?: "sm" | "md" | "lg";
+    /** Hex color for the footer text. Defaults to "#a3a3a3" (neutral-400). */
+    textColor?: string;
+    /** Footer text font size. Defaults to "xs" (~11px in print). */
+    textSize?: "xs" | "sm" | "md";
+    /** Horizontal alignment for the footer text. Defaults to "left". */
+    textAlign?: "left" | "center" | "right";
+    /**
+     * Custom labels for the two signature lines. When unset they fall back
+     * to the original "Authorized Signature" / "Client Signature" wording.
+     * Useful for templates that need different roles (e.g. "Issuer" /
+     * "Insured", "Agent" / "Client", "Broker" / "Underwriter").
+     */
+    signatureLeftLabel?: string;
+    signatureRightLabel?: string;
+    /**
+     * When true, render a small "Page X of Y" indicator under the footer
+     * text. Only meaningful for print/PDF — the on-screen preview shows a
+     * single "Page 1" placeholder so admins can see where it'll appear.
+     */
+    showPageNumbers?: boolean;
   };
   /**
    * Template-wide layout overrides. Applies to every section in the
@@ -152,8 +275,68 @@ export type DocumentTemplateMeta = {
      *  - "loose": extra breathing room — useful for sparse documents.
      */
     sectionSpacing?: "compact" | "normal" | "loose";
+    /**
+     * Body text size for field labels & values across the document.
+     * Defaults to "sm" which matches the previous hard-coded 11/13 px
+     * pair. Useful for fitting more content per A4 page (smaller) or
+     * making the document easier to read at distance (larger).
+     */
+    bodyFontSize?: "xs" | "sm" | "md" | "lg";
+    /**
+     * Hex color (e.g. "#737373") for field labels (the left-hand side
+     * of each row). Falls back to the previous neutral-500 default.
+     * Validated only as "starts with #" — render paths trust the value.
+     */
+    labelColor?: string;
+    /**
+     * Hex color for field values (the right-hand side of each row).
+     * Falls back to the previous neutral-900 default. Useful for
+     * brand-coloring a quote or making a draft watermark look subtler.
+     */
+    valueColor?: string;
+    /**
+     * Font size for field-group sub-headings inside sections (only shown
+     * when `section.showFieldGroupHeaders` is true). Defaults to "xs".
+     * Smaller keeps things tight; larger makes group boundaries prominent.
+     */
+    groupHeaderSize?: "xs" | "sm" | "md";
+    /**
+     * Hex color for field-group sub-headings. Defaults to "#737373"
+     * (neutral-500), matching the previous hard-coded style.
+     */
+    groupHeaderColor?: string;
   };
 };
+
+/**
+ * Resolve the effective "show authorized signature" / "show client signature"
+ * flags for a template footer.
+ *
+ * Compatibility table:
+ *   - New flags set explicitly → use them as-is.
+ *   - Only the legacy `showSignature` is set → both blocks show (mirrors
+ *     pre-split behaviour where one toggle controlled both).
+ *   - Nothing set → both flags false (no signature lines rendered).
+ *
+ * Centralising this logic prevents render paths (on-screen, email, print)
+ * from drifting on how the legacy flag should be interpreted.
+ */
+export function resolveSignatureFlags(
+  footer: DocumentTemplateMeta["footer"] | undefined,
+): { showAuthorized: boolean; showClient: boolean } {
+  if (!footer) return { showAuthorized: false, showClient: false };
+  const newFieldsSet =
+    typeof footer.showAuthorizedSignature === "boolean" ||
+    typeof footer.showClientSignature === "boolean";
+  if (newFieldsSet) {
+    return {
+      showAuthorized: footer.showAuthorizedSignature ?? false,
+      showClient: footer.showClientSignature ?? false,
+    };
+  }
+  if (footer.showSignature) return { showAuthorized: true, showClient: true };
+  return { showAuthorized: false, showClient: false };
+}
 
 export function resolveDocumentTemplateShowOn(
   meta: DocumentTemplateMeta | null | undefined,

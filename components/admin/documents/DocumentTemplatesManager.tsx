@@ -13,7 +13,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
-import { Plus, Trash2, ArrowLeft, Copy, Pencil, EyeOff, Eye, FlaskConical, Loader2, CheckCircle2, ChevronUp, ChevronDown, Monitor, Layers, Crown } from "lucide-react";
+import { Plus, Trash2, ArrowLeft, Copy, Pencil, EyeOff, Eye, FlaskConical, Loader2, CheckCircle2, ChevronUp, ChevronDown, ChevronRight, Monitor, Layers, Crown, Palette, X, Upload, Image as ImageIcon } from "lucide-react";
+import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
+import { CompactMultiCheck } from "@/components/ui/compact-multi-check";
 import {
   SortableList,
   SortableHandle,
@@ -22,6 +24,7 @@ import {
 } from "@/components/ui/sortable-list";
 import { DocumentTemplateLivePreview } from "./DocumentTemplateLivePreview";
 import { SectionApplyToOthersDialog } from "./SectionApplyToOthersDialog";
+import { StyleApplyToOthersDialog } from "./StyleApplyToOthersDialog";
 import { SyncFromMasterDialog } from "./SyncFromMasterDialog";
 import { SyncAllTargetsPickerDialog } from "./SyncAllTargetsPickerDialog";
 import { RowActionMenu, type RowAction } from "@/components/ui/row-action-menu";
@@ -34,6 +37,7 @@ import type {
 import { resolveDocumentTemplateShowOn } from "@/lib/types/document-template";
 import {
   mergeSectionsFromMaster,
+  mergeStyleFromMaster,
   BROADCAST_PROPERTIES,
 } from "@/lib/document-template-sync";
 import { confirmDialog, alertDialog } from "@/components/ui/global-dialogs";
@@ -129,11 +133,54 @@ export default function DocumentTemplatesManager() {
   const [availableInsurers, setAvailableInsurers] = React.useState<{ id: number; name: string }[]>([]);
   const [pkgFieldsCache, setPkgFieldsCache] = React.useState<Record<string, { key: string; label: string; group?: string }[]>>({});
   const [saving, setSaving] = React.useState(false);
+  // Logo-upload progress flag — disables the upload button while the
+  // POST is in flight so the admin can't queue duplicate uploads. Stored
+  // separately from `saving` because the upload happens in the Style
+  // drawer and shouldn't block the main "Save template" button.
+  const [uploadingLogo, setUploadingLogo] = React.useState(false);
+  const logoFileInputRef = React.useRef<HTMLInputElement | null>(null);
+  // Same shape as `uploadingLogo` but for the authorized-signature image.
+  // Kept separate so an admin can swap the logo and the sig in parallel
+  // without one upload's spinner blocking the other button.
+  const [uploadingSig, setUploadingSig] = React.useState(false);
+  const sigFileInputRef = React.useRef<HTMLInputElement | null>(null);
   const [validating, setValidating] = React.useState(false);
   const [validatePolicyNum, setValidatePolicyNum] = React.useState("");
   const [showPreview, setShowPreview] = React.useState(false);
+  // Right-side drawer for template-wide typography / spacing / color knobs.
+  // Lives at the editor level (not per-section) so changing it from the
+  // drawer is reflected immediately in the live preview / current edit.
+  // `layoutStyleOpen` is the public open state; `layoutStyleMounted` is
+  // a 1-tick-later flag used purely to drive the slide-in animation, so
+  // the panel translates *into* view rather than appearing instantly.
+  const [showLayoutStyle, setShowLayoutStyle] = React.useState(false);
+  const [layoutStyleMounted, setLayoutStyleMounted] = React.useState(false);
+  // Per-section collapse state — keyed by section.id so it survives
+  // section reorders. Collapsed sections show only a one-line summary
+  // (source + field count) instead of the full settings panel; this is
+  // pure UI state, never persisted to the template meta.
+  const [collapsedSectionIds, setCollapsedSectionIds] = React.useState<Set<string>>(new Set());
+  const toggleSectionCollapsed = React.useCallback((id: string) => {
+    setCollapsedSectionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  React.useEffect(() => {
+    if (showLayoutStyle) {
+      const t = window.setTimeout(() => setLayoutStyleMounted(true), 10);
+      return () => window.clearTimeout(t);
+    }
+    setLayoutStyleMounted(false);
+  }, [showLayoutStyle]);
   const [applySectionIdx, setApplySectionIdx] = React.useState<number | null>(null);
   const [showSyncFromMaster, setShowSyncFromMaster] = React.useState(false);
+  // Toggles the "Apply this template's style to others" dialog opened from
+  // the Style drawer header. Lets the admin push layout/header/footer
+  // settings to multiple templates without editing each one's drawer.
+  const [showApplyStyleToOthers, setShowApplyStyleToOthers] = React.useState(false);
   const [validationResult, setValidationResult] = React.useState<{
     policyNumber: string;
     totalFields: number;
@@ -385,7 +432,14 @@ export default function DocumentTemplatesManager() {
     setFormLabel(row.label);
     setFormValue(row.value);
     setFormSort(row.sortOrder);
-    setMeta(row.meta ?? defaultMeta());
+    const loadedMeta = row.meta ?? defaultMeta();
+    setMeta(loadedMeta);
+    // Collapse all sections by default when loading an existing
+    // template — most users want to scan the structure first, then
+    // expand only what they need to edit. New sections added later
+    // (via "Add Section") stay expanded because their id won't be
+    // in this set.
+    setCollapsedSectionIds(new Set(loadedMeta.sections.map((s) => s.id)));
     setValidationResult(null);
     setOpen(true);
   }
@@ -416,20 +470,141 @@ export default function DocumentTemplatesManager() {
     setFormValue(copyKey);
     setFormSort(row.sortOrder + 1);
     setMeta(copiedMeta);
+    // Same default-collapsed behavior as startEdit: copying brings
+    // over a populated structure that the user mainly skims, then
+    // tweaks selectively.
+    setCollapsedSectionIds(new Set(copiedMeta.sections.map((s) => s.id)));
     setOpen(true);
   }
 
-  async function save() {
+  /**
+   * Persists the current edits to the database. Returns `true` when the
+   * server confirmed the save (so callers can chain follow-up UI actions
+   * like closing a sub-drawer), `false` when validation or the request
+   * failed. Errors surface as toasts — callers don't need to re-report.
+   */
+  /**
+   * Upload a chosen image file as the template's header logo.
+   *
+   * Posts to the shared admin upload endpoint which writes to the same
+   * `pdfTemplateFiles` blob store the PDF editor uses, then stamps the
+   * returned `storedName` onto `meta.header.logoStoredName`. The image
+   * itself is served via `/api/pdf-templates/images/[storedName]`, so
+   * the on-screen preview, email and print HTML can all reference it
+   * with the same URL — no asset duplication.
+   *
+   * Errors are surfaced as toasts; the meta isn't mutated on failure
+   * so the previous logo (if any) stays intact.
+   */
+  async function uploadLogo(file: File) {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please choose an image file (PNG or JPG)");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Image must be under 2 MB");
+      return;
+    }
+    setUploadingLogo(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/admin/document-template-images", {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || "Upload failed");
+      }
+      const { storedName } = await res.json();
+      setMeta((m) => ({
+        ...m,
+        header: {
+          ...m.header,
+          logoStoredName: storedName,
+          // Default size + position only when the admin is adding a logo
+          // for the first time — preserves any custom values when they
+          // swap out an existing logo for a new file.
+          logoSize: m.header.logoSize ?? "md",
+          logoPosition: m.header.logoPosition ?? "left",
+        },
+      }));
+      toast.success("Logo uploaded");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Upload failed";
+      toast.error(msg);
+    } finally {
+      setUploadingLogo(false);
+      // Clear the input so re-selecting the same file still triggers
+      // onChange (browsers swallow the event when the value matches).
+      if (logoFileInputRef.current) logoFileInputRef.current.value = "";
+    }
+  }
+
+  /**
+   * Upload an image file to use as the AUTHORIZED signature on this
+   * template's footer.  Same storage + endpoint as `uploadLogo` (the
+   * shared blob table), just stamped onto a different meta field so the
+   * render paths can pick it up. PNG with transparent background gives
+   * the best result — the image renders on top of the signature line so
+   * a solid-background scan would obscure the line entirely.
+   */
+  async function uploadAuthorizedSignature(file: File) {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please choose an image file (PNG or JPG)");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Image must be under 2 MB");
+      return;
+    }
+    setUploadingSig(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/admin/document-template-images", {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || "Upload failed");
+      }
+      const { storedName } = await res.json();
+      setMeta((m) => ({
+        ...m,
+        footer: {
+          ...m.footer,
+          authorizedSignatureImage: storedName,
+          authorizedSignatureImageHeight:
+            m.footer?.authorizedSignatureImageHeight ?? "md",
+          // Auto-enable the authorized block when uploading the first
+          // sig so the admin doesn't have to also tick the checkbox.
+          showAuthorizedSignature: m.footer?.showAuthorizedSignature ?? true,
+        },
+      }));
+      toast.success("Signature uploaded");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Upload failed";
+      toast.error(msg);
+    } finally {
+      setUploadingSig(false);
+      if (sigFileInputRef.current) sigFileInputRef.current.value = "";
+    }
+  }
+
+  async function save(): Promise<boolean> {
     if (!formLabel.trim() || !formValue.trim()) {
       toast.error("Label and key are required");
-      return;
+      return false;
     }
     const duplicate = rows.find(
       (r) => r.value === formValue.trim() && r.id !== editing?.id,
     );
     if (duplicate) {
       toast.error(`Key "${formValue.trim()}" is already used by "${duplicate.label}"`);
-      return;
+      return false;
     }
     setSaving(true);
     // Re-snapshot each field's `group` from the latest package definitions
@@ -472,22 +647,41 @@ export default function DocumentTemplatesManager() {
           body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error(await res.text());
-        toast.success("Template updated");
-      } else {
+      // Reflect the just-saved meta locally so subsequent edits stack
+      // on top of what the server now holds, AND update the rows list
+      // directly so re-opening the editor doesn't load stale API data
+      // (Neon serverless connections can return slightly stale reads
+      // immediately after a write).
+      const savedRow = { ...editing, ...payload, meta: metaToSave };
+      setEditing(savedRow);
+      setRows((prev) => prev.map((r) => r.id === editing.id ? savedRow : r));
+      toast.success("Template updated");
+    } else {
         const res = await fetch("/api/admin/form-options", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error(await res.text());
+        // Switch the editor into edit-mode against the freshly created
+        // row so the next Save becomes a PATCH instead of another POST
+        // (which would fail on the unique key). The user can keep
+        // tweaking + previewing without losing context.
+        const created = (await res.json()) as DocumentTemplateRow;
+        setEditing(created);
         toast.success("Template created");
       }
-      setOpen(false);
+      // Refresh the list in the background so the template list reflects
+      // the change next time the user closes the editor. We intentionally
+      // do NOT call setOpen(false) here — the user often wants to keep
+      // editing and verify the result with Live Preview.
       await load();
+      return true;
     } catch (err: unknown) {
       toast.error(
         (err as { message?: string })?.message ?? "Save failed",
       );
+      return false;
     } finally {
       setSaving(false);
     }
@@ -602,14 +796,14 @@ export default function DocumentTemplatesManager() {
   const [pickerState, setPickerState] = React.useState<{
     master: DocumentTemplateRow;
     candidates: DocumentTemplateRow[];
-    resolve: (ids: number[] | null) => void;
+    resolve: (result: { ids: number[]; syncStyle: boolean } | null) => void;
   } | null>(null);
 
   function pickSyncTargets(
     master: DocumentTemplateRow,
     candidates: DocumentTemplateRow[],
-  ): Promise<number[] | null> {
-    return new Promise<number[] | null>((resolve) => {
+  ): Promise<{ ids: number[]; syncStyle: boolean } | null> {
+    return new Promise((resolve) => {
       setPickerState({ master, candidates, resolve });
     });
   }
@@ -632,8 +826,9 @@ export default function DocumentTemplatesManager() {
     }
 
     // Open picker and let the admin choose which compatible templates to hit.
-    const selectedIds = await pickSyncTargets(masterRow, candidates);
-    if (!selectedIds || selectedIds.length === 0) return;
+    const picked = await pickSyncTargets(masterRow, candidates);
+    if (!picked || picked.ids.length === 0) return;
+    const { ids: selectedIds, syncStyle } = picked;
     const selectedSet = new Set(selectedIds);
     const targets = candidates.filter((c) => selectedSet.has(c.id));
     if (targets.length === 0) return;
@@ -675,7 +870,13 @@ export default function DocumentTemplatesManager() {
           result.updated = merge.updated;
           result.appended = merge.appended;
           result.untouched = merge.untouchedTargetTitles;
-          if (merge.updatedCount === 0 && merge.appendedCount === 0) {
+
+          // Optionally layer style settings on top of the merged meta.
+          const finalMeta = syncStyle
+            ? mergeStyleFromMaster(merge.meta, masterRow.meta!)
+            : merge.meta;
+
+          if (merge.updatedCount === 0 && merge.appendedCount === 0 && !syncStyle) {
             // Nothing to do for this target — skip the network call but still record.
             perTarget.push(result);
             continue;
@@ -683,7 +884,7 @@ export default function DocumentTemplatesManager() {
           const res = await fetch(`/api/admin/form-options/${target.id}`, {
             method: "PATCH",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ meta: merge.meta }),
+            body: JSON.stringify({ meta: finalMeta }),
           });
           if (!res.ok) {
             result.error = `HTTP ${res.status}`;
@@ -938,6 +1139,24 @@ export default function DocumentTemplatesManager() {
     }));
   }
 
+  // Generic per-section patch — used by the SortableFieldsTable's group-header
+  // row to update section-level maps that are keyed by group name
+  // (`groupColumns`, `fullWidthGroups`). Kept generic instead of two
+  // single-purpose helpers so future per-group settings (e.g. per-group
+  // audience) can use the same plumbing without growing the prop surface
+  // of the table component.
+  function patchSection(
+    sectionIdx: number,
+    patch: Partial<TemplateSection>,
+  ) {
+    setMeta((m) => ({
+      ...m,
+      sections: m.sections.map((s, si) =>
+        si === sectionIdx ? { ...s, ...patch } : s,
+      ),
+    }));
+  }
+
   const [seeding, setSeeding] = React.useState(false);
   const [copyDropdownOpen, setCopyDropdownOpen] = React.useState(false);
 
@@ -1029,165 +1248,97 @@ export default function DocumentTemplatesManager() {
             </div>
           </div>
 
-          {/* Flow restriction */}
-          <div className="grid gap-1">
-            <Label>
-              Restrict to Flows{" "}
-              <span className="text-xs text-neutral-400">(optional)</span>
-            </Label>
-            <div className="flex flex-wrap gap-3">
-              {flows.map((f) => (
-                <label
-                  key={f.value}
-                  className="flex items-center gap-1.5 text-sm"
-                >
-                  <input
-                    type="checkbox"
-                    checked={meta.flows?.includes(f.value) ?? false}
-                    onChange={(e) =>
-                      setMeta((m) => ({
-                        ...m,
-                        flows: e.target.checked
-                          ? [...(m.flows ?? []), f.value]
-                          : (m.flows ?? []).filter((v) => v !== f.value),
-                      }))
-                    }
-                  />
-                  {f.label}
-                </label>
-              ))}
-              {flows.length === 0 && (
-                <span className="text-xs text-neutral-400">
-                  No flows defined
-                </span>
-              )}
-            </div>
-          </div>
+          {/* Flow restriction — collapsed-by-default chip picker. */}
+          <CompactMultiCheck
+            label="Restrict to Flows"
+            hint="(optional)"
+            options={flows}
+            value={meta.flows ?? []}
+            onChange={(next) =>
+              setMeta((m) => ({ ...m, flows: next.length ? next : undefined }))
+            }
+            emptyLabel="All flows"
+            noOptionsLabel="No flows defined"
+          />
 
-          {/* Show When Status */}
+          {/* Status visibility — three slots all share the same status
+              option list, just write to different meta arrays. Empty
+              meaning differs slightly per slot, so emptyLabel reflects
+              that ("Always shown" vs "Use default"). */}
           {statusOptions.length > 0 && (
-            <div className="grid gap-1">
-              <Label>
-                Show When Status{" "}
-                <span className="text-xs text-neutral-400">(optional - empty = always)</span>
-              </Label>
-              <div className="flex flex-wrap gap-3">
-                {statusOptions.map((s) => (
-                  <label key={s.value} className="flex items-center gap-1.5 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={meta.showWhenStatus?.includes(s.value) ?? false}
-                      onChange={(e) =>
-                        setMeta((m) => ({
-                          ...m,
-                          showWhenStatus: e.target.checked
-                            ? [...(m.showWhenStatus ?? []), s.value]
-                            : (m.showWhenStatus ?? []).filter((v) => v !== s.value),
-                        }))
-                      }
-                    />
-                    {s.label}
-                  </label>
-                ))}
-              </div>
-              <p className="text-xs text-neutral-400">
-                Default status rule used for both audiences unless overridden below.
-              </p>
-            </div>
+            <CompactMultiCheck
+              label="Show When Status"
+              hint="(optional - empty = always)"
+              description="Default status rule used for both audiences unless overridden below."
+              options={statusOptions}
+              value={meta.showWhenStatus ?? []}
+              onChange={(next) =>
+                setMeta((m) => ({
+                  ...m,
+                  showWhenStatus: next.length ? next : undefined,
+                }))
+              }
+              emptyLabel="Always shown"
+            />
           )}
 
           {statusOptions.length > 0 && (
-            <div className="grid gap-1">
-              <Label>
-                Show When Status (Client Override){" "}
-                <span className="text-xs text-neutral-400">(optional)</span>
-              </Label>
-              <div className="flex flex-wrap gap-3">
-                {statusOptions.map((s) => (
-                  <label key={`client-${s.value}`} className="flex items-center gap-1.5 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={meta.showWhenStatusClient?.includes(s.value) ?? false}
-                      onChange={(e) =>
-                        setMeta((m) => ({
-                          ...m,
-                          showWhenStatusClient: e.target.checked
-                            ? [...(m.showWhenStatusClient ?? []), s.value]
-                            : (m.showWhenStatusClient ?? []).filter((v) => v !== s.value),
-                        }))
-                      }
-                    />
-                    {s.label}
-                  </label>
-                ))}
-              </div>
-              <p className="text-xs text-neutral-400">
-                When set, this overrides default status visibility for client documents only.
-              </p>
-            </div>
+            <CompactMultiCheck
+              label="Show When Status (Client Override)"
+              hint="(optional)"
+              description="When set, this overrides default status visibility for client documents only."
+              options={statusOptions}
+              value={meta.showWhenStatusClient ?? []}
+              onChange={(next) =>
+                setMeta((m) => ({
+                  ...m,
+                  showWhenStatusClient: next.length ? next : undefined,
+                }))
+              }
+              emptyLabel="Use default rule"
+            />
           )}
 
           {statusOptions.length > 0 && (
-            <div className="grid gap-1">
-              <Label>
-                Show When Status (Agent Override){" "}
-                <span className="text-xs text-neutral-400">(optional)</span>
-              </Label>
-              <div className="flex flex-wrap gap-3">
-                {statusOptions.map((s) => (
-                  <label key={`agent-${s.value}`} className="flex items-center gap-1.5 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={meta.showWhenStatusAgent?.includes(s.value) ?? false}
-                      onChange={(e) =>
-                        setMeta((m) => ({
-                          ...m,
-                          showWhenStatusAgent: e.target.checked
-                            ? [...(m.showWhenStatusAgent ?? []), s.value]
-                            : (m.showWhenStatusAgent ?? []).filter((v) => v !== s.value),
-                        }))
-                      }
-                    />
-                    {s.label}
-                  </label>
-                ))}
-              </div>
-              <p className="text-xs text-neutral-400">
-                When set, this overrides default status visibility for agent documents only.
-              </p>
-            </div>
+            <CompactMultiCheck
+              label="Show When Status (Agent Override)"
+              hint="(optional)"
+              description="When set, this overrides default status visibility for agent documents only."
+              options={statusOptions}
+              value={meta.showWhenStatusAgent ?? []}
+              onChange={(next) =>
+                setMeta((m) => ({
+                  ...m,
+                  showWhenStatusAgent: next.length ? next : undefined,
+                }))
+              }
+              emptyLabel="Use default rule"
+            />
           )}
 
-          {/* Insurance Company restriction */}
+          {/* Insurance Company restriction — adapt {id, name} → {value, label}.
+              CompactMultiCheck operates on string values, so we serialize
+              the numeric insurer IDs at the boundary and parse them back
+              on the way out.  Keeps the component generic while preserving
+              `meta.insurerPolicyIds` as `number[]` everywhere else. */}
           {availableInsurers.length > 0 && (
-            <div className="grid gap-1">
-              <Label>
-                Insurance Company{" "}
-                <span className="text-xs text-neutral-400">(optional - empty = all companies)</span>
-              </Label>
-              <p className="text-xs text-neutral-400 mb-1">
-                Restrict this template to policies linked to specific insurance companies.
-              </p>
-              <div className="flex flex-wrap gap-3">
-                {availableInsurers.map((ins) => (
-                  <label key={ins.id} className="flex items-center gap-1.5 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={meta.insurerPolicyIds?.includes(ins.id) ?? false}
-                      onChange={(e) =>
-                        setMeta((m) => ({
-                          ...m,
-                          insurerPolicyIds: e.target.checked
-                            ? [...(m.insurerPolicyIds ?? []), ins.id]
-                            : (m.insurerPolicyIds ?? []).filter((id) => id !== ins.id),
-                        }))
-                      }
-                    />
-                    {ins.name}
-                  </label>
-                ))}
-              </div>
-            </div>
+            <CompactMultiCheck
+              label="Insurance Company"
+              hint="(optional - empty = all companies)"
+              description="Restrict this template to policies linked to specific insurance companies."
+              options={availableInsurers.map((ins) => ({ value: String(ins.id), label: ins.name }))}
+              value={(meta.insurerPolicyIds ?? []).map(String)}
+              onChange={(next) => {
+                const ids = next
+                  .map((v) => Number(v))
+                  .filter((n) => Number.isFinite(n));
+                setMeta((m) => ({
+                  ...m,
+                  insurerPolicyIds: ids.length ? ids : undefined,
+                }));
+              }}
+              emptyLabel="All companies"
+            />
           )}
 
           {/* Document Prefix & Number */}
@@ -1362,135 +1513,9 @@ export default function DocumentTemplatesManager() {
             </p>
           </div>
 
-          {/* Header */}
-          <fieldset className="rounded-md border border-neutral-200 p-4 dark:border-neutral-700">
-            <legend className="px-1 text-sm font-medium">Header</legend>
-            <div className="grid gap-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-1">
-                  <Label>Title</Label>
-                  <Input
-                    value={meta.header.title}
-                    onChange={(e) =>
-                      setMeta((m) => ({
-                        ...m,
-                        header: { ...m.header, title: e.target.value },
-                      }))
-                    }
-                  />
-                </div>
-                <div className="grid gap-1">
-                  <Label>Title Size</Label>
-                  <select
-                    className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                    value={meta.header.titleSize ?? "lg"}
-                    onChange={(e) =>
-                      setMeta((m) => ({
-                        ...m,
-                        header: { ...m.header, titleSize: e.target.value as "sm" | "md" | "lg" | "xl" },
-                      }))
-                    }
-                  >
-                    <option value="sm">Small</option>
-                    <option value="md">Medium</option>
-                    <option value="lg">Large (default)</option>
-                    <option value="xl">Extra Large</option>
-                  </select>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-1">
-                  <Label>Subtitle</Label>
-                  <Input
-                    value={meta.header.subtitle ?? ""}
-                    onChange={(e) =>
-                      setMeta((m) => ({
-                        ...m,
-                        header: { ...m.header, subtitle: e.target.value },
-                      }))
-                    }
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="grid gap-1">
-                    <Label>Subtitle Size</Label>
-                    <select
-                      className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                      value={meta.header.subtitleSize ?? "sm"}
-                      onChange={(e) =>
-                        setMeta((m) => ({
-                          ...m,
-                          header: { ...m.header, subtitleSize: e.target.value as "xs" | "sm" | "md" },
-                        }))
-                      }
-                    >
-                      <option value="xs">Extra Small</option>
-                      <option value="sm">Small (default)</option>
-                      <option value="md">Medium</option>
-                    </select>
-                  </div>
-                  <div className="grid gap-1">
-                    <Label>Subtitle Color</Label>
-                    <div className="flex gap-2 items-center">
-                      <input
-                        type="color"
-                        className="h-10 w-10 cursor-pointer rounded border border-neutral-300 bg-white p-0.5 dark:border-neutral-700"
-                        value={meta.header.subtitleColor ?? "#737373"}
-                        onChange={(e) =>
-                          setMeta((m) => ({
-                            ...m,
-                            header: { ...m.header, subtitleColor: e.target.value },
-                          }))
-                        }
-                      />
-                      <Input
-                        className="flex-1 font-mono text-xs"
-                        placeholder="#737373"
-                        value={meta.header.subtitleColor ?? ""}
-                        onChange={(e) =>
-                          setMeta((m) => ({
-                            ...m,
-                            header: { ...m.header, subtitleColor: e.target.value || undefined },
-                          }))
-                        }
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div className="flex gap-6">
-                <label className="flex items-center gap-1.5 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={meta.header.showDate !== false}
-                    onChange={(e) =>
-                      setMeta((m) => ({
-                        ...m,
-                        header: { ...m.header, showDate: e.target.checked },
-                      }))
-                    }
-                  />
-                  Show Date
-                </label>
-                <label className="flex items-center gap-1.5 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={meta.header.showPolicyNumber !== false}
-                    onChange={(e) =>
-                      setMeta((m) => ({
-                        ...m,
-                        header: {
-                          ...m.header,
-                          showPolicyNumber: e.target.checked,
-                        },
-                      }))
-                    }
-                  />
-                  Show Policy #
-                </label>
-              </div>
-            </div>
-          </fieldset>
+          {/* Header settings (title, subtitle, sizes, colors, toggles)
+              now live in the right-side Style drawer, alongside Layout
+              and Footer — see the <Drawer> below. */}
 
           {/* Sections */}
           <fieldset className="rounded-md border border-neutral-200 p-4 dark:border-neutral-700">
@@ -1501,6 +1526,29 @@ export default function DocumentTemplatesManager() {
               <strong>Tip:</strong> Select ALL fields you might need — fields with no data are <strong>automatically hidden</strong> when the document is generated. 
               For example, you can include <code className="rounded bg-blue-100 px-1 text-xs dark:bg-blue-900/50">make</code>, <code className="rounded bg-blue-100 px-1 text-xs dark:bg-blue-900/50">commake</code>, <code className="rounded bg-blue-100 px-1 text-xs dark:bg-blue-900/50">solomake</code> in one template — only the one with data will appear. No need for separate templates per vehicle type or insured type.
             </div>
+
+            {/* Bulk collapse / expand — handy when a template has many
+                sections and you want to scan structure without scroll. */}
+            {meta.sections.length > 1 && (
+              <div className="mb-2 flex items-center justify-end gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCollapsedSectionIds(new Set(meta.sections.map((s) => s.id)))
+                  }
+                  className="rounded px-2 py-1 text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                >
+                  Collapse all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCollapsedSectionIds(new Set())}
+                  className="rounded px-2 py-1 text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                >
+                  Expand all
+                </button>
+              </div>
+            )}
 
             <div className="space-y-4">
               {meta.sections.map((section, sIdx) => {
@@ -1604,10 +1652,28 @@ export default function DocumentTemplatesManager() {
                     ? { border: "border-amber-400 dark:border-amber-600", bg: "bg-amber-50 dark:bg-amber-950/20", tag: "Agent Only", tagColor: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300" }
                     : { border: "border-neutral-200 dark:border-neutral-700", bg: "", tag: "", tagColor: "" };
 
+                const isCollapsed = collapsedSectionIds.has(section.id);
+                const sourceLabel =
+                  ALL_SOURCE_OPTIONS.find((o) => o.value === section.source)?.label ?? section.source;
+
                 return (
                   <div key={section.id} className={`rounded-lg border overflow-hidden ${audienceTag.border}`}>
-                    {/* Section header bar */}
-                    <div className={`flex items-center gap-2 px-3 py-2 border-b ${audienceTag.border} ${audienceTag.bg || "bg-neutral-50 dark:bg-neutral-800/50"}`}>
+                    {/* Section header bar — the chevron toggles the body
+                        below. Border-bottom is dropped while collapsed
+                        so the bar reads as a slim single-line summary. */}
+                    <div
+                      className={`flex items-center gap-2 px-3 py-2 ${isCollapsed ? "" : `border-b ${audienceTag.border}`} ${audienceTag.bg || "bg-neutral-50 dark:bg-neutral-800/50"}`}
+                    >
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => toggleSectionCollapsed(section.id)}
+                        className="h-6 w-6 shrink-0 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+                        aria-label={isCollapsed ? "Expand section" : "Collapse section"}
+                        title={isCollapsed ? "Expand section" : "Collapse section"}
+                      >
+                        {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                      </Button>
                       <span className="text-xs font-bold text-neutral-400 w-5 text-center shrink-0">{sIdx + 1}</span>
                       <Input
                         className="h-8 flex-1 text-sm font-medium bg-transparent border-0 shadow-none focus-visible:ring-0 px-1"
@@ -1642,6 +1708,20 @@ export default function DocumentTemplatesManager() {
                           {audienceTag.tag}
                         </span>
                       )}
+                      {/* "Applied to N templates" badge — appears after the
+                          first successful "Apply section to others" action.
+                          The timestamp is formatted as a relative label
+                          (Today / Yesterday / Nd ago) so admins can tell at
+                          a glance how fresh the sync is. */}
+                      {section.lastAppliedAt && section.lastAppliedCount != null && (
+                        <span
+                          className="shrink-0 inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                          title={`Last applied to ${section.lastAppliedCount} template${section.lastAppliedCount === 1 ? "" : "s"} on ${new Date(section.lastAppliedAt).toLocaleString()}`}
+                        >
+                          <Layers className="h-3 w-3" />
+                          {`→ ${section.lastAppliedCount}`}
+                        </span>
+                      )}
                       <div className="shrink-0 flex items-center gap-0.5 ml-auto">
                         <Button
                           size="icon"
@@ -1665,6 +1745,33 @@ export default function DocumentTemplatesManager() {
                       </div>
                     </div>
 
+                    {/* Collapsed summary — clickable to expand. Shows
+                        source + field count so the user can scan many
+                        sections at a glance without expanding each. */}
+                    {isCollapsed && (
+                      <button
+                        type="button"
+                        onClick={() => toggleSectionCollapsed(section.id)}
+                        className="w-full text-left px-3 py-1.5 text-[11px] text-neutral-500 hover:bg-neutral-50 dark:text-neutral-400 dark:hover:bg-neutral-800/50"
+                      >
+                        <span className="font-medium">{sourceLabel}</span>
+                        {section.source === "package" && section.packageName ? (
+                          <span className="text-neutral-400"> · {section.packageName}</span>
+                        ) : null}
+                        <span className="text-neutral-400">
+                          {" · "}
+                          {section.fields.length} field{section.fields.length === 1 ? "" : "s"}
+                        </span>
+                        {section.fields.length > 0 && (
+                          <span className="ml-1 text-neutral-400">
+                            ({section.fields.slice(0, 3).map((f) => f.label || f.key).join(", ")}
+                            {section.fields.length > 3 ? `, +${section.fields.length - 3} more` : ""})
+                          </span>
+                        )}
+                      </button>
+                    )}
+
+                    {!isCollapsed && (
                     <div className="p-3 sm:p-4 space-y-4">
                       {/* Settings */}
                       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-x-4 sm:gap-y-2">
@@ -2048,11 +2155,13 @@ export default function DocumentTemplatesManager() {
                               onMove={(fIdx, dir) => moveField(sIdx, fIdx, dir)}
                               onRemove={(fIdx) => removeField(sIdx, fIdx)}
                               onReorder={(nextFields) => reorderFields(sIdx, nextFields)}
+                              onPatchSection={(patch) => patchSection(sIdx, patch)}
                             />
                           </div>
                         </div>
                       )}
                     </div>
+                    )}
                   </div>
                 );
               })}
@@ -2073,98 +2182,14 @@ export default function DocumentTemplatesManager() {
             </Button>
           </fieldset>
 
-          {/* Layout — template-wide section title size & section spacing.
-              Kept here (template-level rather than per-section) so the
-              whole document feels visually consistent and the section
-              editor doesn't get cluttered with tiny knobs. */}
-          <fieldset className="rounded-md border border-neutral-200 p-4 dark:border-neutral-700">
-            <legend className="px-1 text-sm font-medium">Layout</legend>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-1">
-                <Label>Section title size</Label>
-                <select
-                  className="w-full rounded-md border border-neutral-200 bg-transparent px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700"
-                  value={meta.layout?.sectionTitleSize ?? "sm"}
-                  onChange={(e) =>
-                    setMeta((m) => ({
-                      ...m,
-                      layout: {
-                        ...m.layout,
-                        sectionTitleSize: e.target.value as "xs" | "sm" | "md" | "lg",
-                      },
-                    }))
-                  }
-                >
-                  <option value="xs">Extra small</option>
-                  <option value="sm">Small (default)</option>
-                  <option value="md">Medium</option>
-                  <option value="lg">Large</option>
-                </select>
-                <p className="text-[11px] text-neutral-500">
-                  Controls the font size of every section title in the rendered output.
-                </p>
-              </div>
-              <div className="grid gap-1">
-                <Label>Section spacing</Label>
-                <select
-                  className="w-full rounded-md border border-neutral-200 bg-transparent px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700"
-                  value={meta.layout?.sectionSpacing ?? "normal"}
-                  onChange={(e) =>
-                    setMeta((m) => ({
-                      ...m,
-                      layout: {
-                        ...m.layout,
-                        sectionSpacing: e.target.value as "compact" | "normal" | "loose",
-                      },
-                    }))
-                  }
-                >
-                  <option value="compact">Compact (best A4 fit)</option>
-                  <option value="normal">Normal (default)</option>
-                  <option value="loose">Loose</option>
-                </select>
-                <p className="text-[11px] text-neutral-500">
-                  Vertical gap between sections. Use Compact when you need the document to fit on one A4 page.
-                </p>
-              </div>
-            </div>
-          </fieldset>
+          {/* Layout & Style now lives in a right-side drawer triggered
+              from the action bar — see the <Drawer> below. Keeping all
+              the typography / spacing / color knobs out of the main
+              edit form makes for a much shorter, less daunting editor
+              while staying one click away. */}
 
-          {/* Footer */}
-          <fieldset className="rounded-md border border-neutral-200 p-4 dark:border-neutral-700">
-            <legend className="px-1 text-sm font-medium">Footer</legend>
-            <div className="grid gap-3">
-              <div className="grid gap-1">
-                <Label>Footer Text</Label>
-                <Input
-                  value={meta.footer?.text ?? ""}
-                  onChange={(e) =>
-                    setMeta((m) => ({
-                      ...m,
-                      footer: { ...m.footer, text: e.target.value },
-                    }))
-                  }
-                  placeholder="Terms and conditions apply..."
-                />
-              </div>
-              <label className="flex items-center gap-1.5 text-sm">
-                <input
-                  type="checkbox"
-                  checked={meta.footer?.showSignature ?? false}
-                  onChange={(e) =>
-                    setMeta((m) => ({
-                      ...m,
-                      footer: {
-                        ...m.footer,
-                        showSignature: e.target.checked,
-                      },
-                    }))
-                  }
-                />
-                Show Signature Lines
-              </label>
-            </div>
-          </fieldset>
+          {/* Footer settings (text + signature lines) live in the
+              right-side Style drawer alongside Header and Layout. */}
         </div>
 
         {/* Live preview drawer — render the unsaved template against a real policy */}
@@ -2175,6 +2200,996 @@ export default function DocumentTemplatesManager() {
           templateLabel={formLabel}
           templateValue={formValue}
         />
+
+        {/* Style drawer — slides in from the right and consolidates
+            Header + Page Layout + Footer settings into one panel so
+            the main editor body can stay focused on Sections & Fields.
+            All controls write straight to `meta.header`, `meta.layout`
+            and `meta.footer`, identical to the old inline fieldsets. */}
+        <Drawer
+          open={showLayoutStyle}
+          onOpenChange={setShowLayoutStyle}
+          side="right"
+          overlayClassName={`bg-black/40! transition-opacity duration-300 ${layoutStyleMounted ? "opacity-100" : "opacity-0"}`}
+        >
+          <DrawerContent
+            className={`w-full max-w-md flex flex-col ${layoutStyleMounted ? "translate-x-0" : "translate-x-full"}`}
+          >
+            <DrawerHeader>
+              <div className="flex items-center justify-between">
+                <DrawerTitle>
+                  <span className="inline-flex items-center gap-2">
+                    <Palette className="h-4 w-4" />
+                    Style
+                  </span>
+                </DrawerTitle>
+                <div className="flex items-center gap-1">
+                  {/* "Apply to others" — push this template's style to other
+                      templates in one shot. Only meaningful when we're
+                      editing an existing template (need an id to exclude
+                      from the target list and to avoid pushing to "self"). */}
+                  {editing && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowApplyStyleToOthers(true)}
+                      className="h-7 gap-1 px-2 text-[11px]"
+                      title="Push this template's layout / header / footer style to other templates"
+                    >
+                      <Layers className="h-3.5 w-3.5" />
+                      Apply to others...
+                    </Button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowLayoutStyle(false)}
+                    className="rounded p-1 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                    aria-label="Close"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+              <p className="mt-1 text-xs text-neutral-500">
+                Header, page layout and footer for this template. Each section can still override its own title size from the section header bar.
+              </p>
+            </DrawerHeader>
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="space-y-6">
+
+                {/* ─── HEADER ───────────────────────────────────── */}
+                <section>
+                  <h4 className="mb-2 border-b border-neutral-200 pb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+                    Header
+                  </h4>
+                  <div className="grid gap-3">
+
+                    {/* ── Logo ──────────────────────────────────────
+                        Optional brand logo shown in the header band.
+                        Stored in the shared `pdfTemplateFiles` blob
+                        table so it benefits from the same auth + cache
+                        rules as PDF-template images. Position/size live
+                        on the template meta so the same logo file can be
+                        rendered differently per template (e.g. centred
+                        big on a quote, small left on an invoice). */}
+                    <div className="grid gap-2 rounded-md border border-dashed border-neutral-300 p-3 dark:border-neutral-700">
+                      <Label className="text-xs uppercase tracking-wide text-neutral-500">
+                        Logo
+                      </Label>
+                      {meta.header.logoStoredName ? (
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-16 w-24 items-center justify-center overflow-hidden rounded border border-neutral-200 bg-white dark:border-neutral-700">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={`/api/pdf-templates/images/${meta.header.logoStoredName}`}
+                              alt="Template logo"
+                              className="max-h-full max-w-full object-contain"
+                            />
+                          </div>
+                          <div className="flex flex-1 flex-col gap-1.5">
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={uploadingLogo}
+                                onClick={() => logoFileInputRef.current?.click()}
+                              >
+                                {uploadingLogo ? (
+                                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Upload className="mr-1.5 h-3.5 w-3.5" />
+                                )}
+                                Replace
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                  setMeta((m) => ({
+                                    ...m,
+                                    header: { ...m.header, logoStoredName: undefined },
+                                  }))
+                                }
+                              >
+                                <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                                Remove
+                              </Button>
+                            </div>
+                            <p className="text-[11px] text-neutral-500">
+                              PNG / JPG · max 2 MB · transparent backgrounds work best.
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-3">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={uploadingLogo}
+                            onClick={() => logoFileInputRef.current?.click()}
+                          >
+                            {uploadingLogo ? (
+                              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <ImageIcon className="mr-1.5 h-3.5 w-3.5" />
+                            )}
+                            Upload logo
+                          </Button>
+                          <p className="text-[11px] text-neutral-500">
+                            PNG / JPG · max 2 MB
+                          </p>
+                        </div>
+                      )}
+                      <input
+                        ref={logoFileInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) void uploadLogo(file);
+                        }}
+                      />
+                      {meta.header.logoStoredName && (
+                        <div className="grid grid-cols-2 gap-3 pt-1">
+                          <div className="grid gap-1">
+                            <Label>Logo size</Label>
+                            <select
+                              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                              value={meta.header.logoSize ?? "md"}
+                              onChange={(e) =>
+                                setMeta((m) => ({
+                                  ...m,
+                                  header: {
+                                    ...m.header,
+                                    logoSize: e.target.value as "sm" | "md" | "lg",
+                                  },
+                                }))
+                              }
+                            >
+                              <option value="sm">Small (~32px)</option>
+                              <option value="md">Medium (~48px, default)</option>
+                              <option value="lg">Large (~72px)</option>
+                            </select>
+                          </div>
+                          <div className="grid gap-1">
+                            <Label>Logo position</Label>
+                            <select
+                              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                              value={meta.header.logoPosition ?? "left"}
+                              onChange={(e) =>
+                                setMeta((m) => ({
+                                  ...m,
+                                  header: {
+                                    ...m.header,
+                                    logoPosition: e.target.value as "left" | "right" | "center",
+                                  },
+                                }))
+                              }
+                            >
+                              <option value="left">Left of title (default)</option>
+                              <option value="right">Right (replaces doc-no slot)</option>
+                              <option value="center">Centered above title</option>
+                            </select>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="grid gap-1">
+                      <Label>Title</Label>
+                      <Input
+                        value={meta.header.title}
+                        onChange={(e) =>
+                          setMeta((m) => ({
+                            ...m,
+                            header: { ...m.header, title: e.target.value },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="grid gap-1">
+                      <Label>Title size</Label>
+                      <select
+                        className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                        value={meta.header.titleSize ?? "lg"}
+                        onChange={(e) =>
+                          setMeta((m) => ({
+                            ...m,
+                            header: { ...m.header, titleSize: e.target.value as "sm" | "md" | "lg" | "xl" },
+                          }))
+                        }
+                      >
+                        <option value="sm">Small</option>
+                        <option value="md">Medium</option>
+                        <option value="lg">Large (default)</option>
+                        <option value="xl">Extra Large</option>
+                      </select>
+                    </div>
+                    <div className="grid gap-1">
+                      <Label>Subtitle</Label>
+                      <Input
+                        value={meta.header.subtitle ?? ""}
+                        onChange={(e) =>
+                          setMeta((m) => ({
+                            ...m,
+                            header: { ...m.header, subtitle: e.target.value },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="grid gap-1">
+                        <Label>Subtitle size</Label>
+                        <select
+                          className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                          value={meta.header.subtitleSize ?? "sm"}
+                          onChange={(e) =>
+                            setMeta((m) => ({
+                              ...m,
+                              header: { ...m.header, subtitleSize: e.target.value as "xs" | "sm" | "md" },
+                            }))
+                          }
+                        >
+                          <option value="xs">Extra small</option>
+                          <option value="sm">Small (default)</option>
+                          <option value="md">Medium</option>
+                        </select>
+                      </div>
+                      <div className="grid gap-1">
+                        <Label>Subtitle color</Label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            className="h-9 w-10 cursor-pointer rounded-md border border-neutral-200 bg-transparent dark:border-neutral-700"
+                            value={meta.header.subtitleColor ?? "#737373"}
+                            onChange={(e) =>
+                              setMeta((m) => ({
+                                ...m,
+                                header: { ...m.header, subtitleColor: e.target.value },
+                              }))
+                            }
+                          />
+                          <Input
+                            className="flex-1 font-mono text-xs"
+                            placeholder="#737373"
+                            value={meta.header.subtitleColor ?? ""}
+                            onChange={(e) =>
+                              setMeta((m) => ({
+                                ...m,
+                                header: { ...m.header, subtitleColor: e.target.value || undefined },
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    {/* Document number style — tunes the auto-generated doc
+                        number in the top-right (e.g. INV-2025-0001). Falls
+                        back to "md" + #1a1a1a (the previous hard-coded look)
+                        so existing templates stay visually identical. */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="grid gap-1">
+                        <Label>Document number size</Label>
+                        <select
+                          className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                          value={meta.header.documentNumberSize ?? "md"}
+                          onChange={(e) =>
+                            setMeta((m) => ({
+                              ...m,
+                              header: {
+                                ...m.header,
+                                documentNumberSize: e.target.value as "xs" | "sm" | "md" | "lg" | "xl",
+                              },
+                            }))
+                          }
+                        >
+                          <option value="xs">Extra small</option>
+                          <option value="sm">Small</option>
+                          <option value="md">Medium (default)</option>
+                          <option value="lg">Large</option>
+                          <option value="xl">Extra large</option>
+                        </select>
+                      </div>
+                      <div className="grid gap-1">
+                        <Label>Document number color</Label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            className="h-9 w-10 cursor-pointer rounded-md border border-neutral-200 bg-transparent dark:border-neutral-700"
+                            value={meta.header.documentNumberColor ?? "#1a1a1a"}
+                            onChange={(e) =>
+                              setMeta((m) => ({
+                                ...m,
+                                header: { ...m.header, documentNumberColor: e.target.value },
+                              }))
+                            }
+                          />
+                          <Input
+                            className="flex-1 font-mono text-xs"
+                            placeholder="#1a1a1a"
+                            value={meta.header.documentNumberColor ?? ""}
+                            onChange={(e) =>
+                              setMeta((m) => ({
+                                ...m,
+                                header: { ...m.header, documentNumberColor: e.target.value || undefined },
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-x-4 gap-y-1.5 pt-1">
+                      <label className="flex items-center gap-1.5 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={meta.header.showDate !== false}
+                          onChange={(e) =>
+                            setMeta((m) => ({
+                              ...m,
+                              header: { ...m.header, showDate: e.target.checked },
+                            }))
+                          }
+                        />
+                        Show date
+                      </label>
+                      <label className="flex items-center gap-1.5 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={meta.header.showPolicyNumber !== false}
+                          onChange={(e) =>
+                            setMeta((m) => ({
+                              ...m,
+                              header: {
+                                ...m.header,
+                                showPolicyNumber: e.target.checked,
+                              },
+                            }))
+                          }
+                        />
+                        Show policy #
+                      </label>
+                    </div>
+                  </div>
+                </section>
+
+                {/* ─── PAGE LAYOUT ──────────────────────────────── */}
+                <section>
+                  <h4 className="mb-2 border-b border-neutral-200 pb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+                    Page Layout
+                  </h4>
+                  <div className="grid gap-4">
+
+                    {/* ── Font sizes ──────────────────────────────── */}
+                    <div className="grid gap-2">
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
+                        Font sizes
+                      </p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="grid gap-1">
+                          <Label>Section title</Label>
+                          <select
+                            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                            value={meta.layout?.sectionTitleSize ?? "sm"}
+                            onChange={(e) =>
+                              setMeta((m) => ({
+                                ...m,
+                                layout: {
+                                  ...m.layout,
+                                  sectionTitleSize: e.target.value as "xs" | "sm" | "md" | "lg",
+                                },
+                              }))
+                            }
+                          >
+                            <option value="xs">Extra small</option>
+                            <option value="sm">Small (default)</option>
+                            <option value="md">Medium</option>
+                            <option value="lg">Large</option>
+                          </select>
+                          <p className="text-[11px] text-neutral-500">
+                            Override per-section in its own header bar.
+                          </p>
+                        </div>
+                        <div className="grid gap-1">
+                          <Label>Group header</Label>
+                          <select
+                            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                            value={meta.layout?.groupHeaderSize ?? "xs"}
+                            onChange={(e) =>
+                              setMeta((m) => ({
+                                ...m,
+                                layout: {
+                                  ...m.layout,
+                                  groupHeaderSize: e.target.value as "xs" | "sm" | "md",
+                                },
+                              }))
+                            }
+                          >
+                            <option value="xs">Extra small (default)</option>
+                            <option value="sm">Small</option>
+                            <option value="md">Medium</option>
+                          </select>
+                          <p className="text-[11px] text-neutral-500">
+                            Sub-headings inside sections (when groups are on).
+                          </p>
+                        </div>
+                      </div>
+                      <div className="grid gap-1">
+                        <Label>Body text size</Label>
+                        <select
+                          className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                          value={meta.layout?.bodyFontSize ?? "sm"}
+                          onChange={(e) =>
+                            setMeta((m) => ({
+                              ...m,
+                              layout: {
+                                ...m.layout,
+                                bodyFontSize: e.target.value as "xs" | "sm" | "md" | "lg",
+                              },
+                            }))
+                          }
+                        >
+                          <option value="xs">Extra small</option>
+                          <option value="sm">Small (default)</option>
+                          <option value="md">Medium</option>
+                          <option value="lg">Large</option>
+                        </select>
+                        <p className="text-[11px] text-neutral-500">
+                          Font size of every field label and value.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* ── Spacing ─────────────────────────────────── */}
+                    <div className="grid gap-2">
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
+                        Spacing
+                      </p>
+                      <div className="grid gap-1">
+                        <Label>Section spacing</Label>
+                        <select
+                          className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                          value={meta.layout?.sectionSpacing ?? "normal"}
+                          onChange={(e) =>
+                            setMeta((m) => ({
+                              ...m,
+                              layout: {
+                                ...m.layout,
+                                sectionSpacing: e.target.value as "compact" | "normal" | "loose",
+                              },
+                            }))
+                          }
+                        >
+                          <option value="compact">Compact (best A4 fit)</option>
+                          <option value="normal">Normal (default)</option>
+                          <option value="loose">Loose</option>
+                        </select>
+                        <p className="text-[11px] text-neutral-500">
+                          Margin / padding between sections, rows and titles.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* ── Colors ──────────────────────────────────── */}
+                    <div className="grid gap-2">
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
+                        Colors
+                      </p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="grid gap-1">
+                          <Label>Field label</Label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              className="h-9 w-10 cursor-pointer rounded-md border border-neutral-200 bg-transparent dark:border-neutral-700"
+                              value={meta.layout?.labelColor ?? "#737373"}
+                              onChange={(e) =>
+                                setMeta((m) => ({
+                                  ...m,
+                                  layout: { ...m.layout, labelColor: e.target.value },
+                                }))
+                              }
+                            />
+                            <Input
+                              className="flex-1 font-mono text-xs"
+                              placeholder="#737373"
+                              value={meta.layout?.labelColor ?? ""}
+                              onChange={(e) =>
+                                setMeta((m) => ({
+                                  ...m,
+                                  layout: { ...m.layout, labelColor: e.target.value || undefined },
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+                        <div className="grid gap-1">
+                          <Label>Field value</Label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              className="h-9 w-10 cursor-pointer rounded-md border border-neutral-200 bg-transparent dark:border-neutral-700"
+                              value={meta.layout?.valueColor ?? "#1a1a1a"}
+                              onChange={(e) =>
+                                setMeta((m) => ({
+                                  ...m,
+                                  layout: { ...m.layout, valueColor: e.target.value },
+                                }))
+                              }
+                            />
+                            <Input
+                              className="flex-1 font-mono text-xs"
+                              placeholder="#1a1a1a"
+                              value={meta.layout?.valueColor ?? ""}
+                              onChange={(e) =>
+                                setMeta((m) => ({
+                                  ...m,
+                                  layout: { ...m.layout, valueColor: e.target.value || undefined },
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+                        <div className="grid gap-1 col-span-2">
+                          <Label>Group header</Label>
+                          <div className="flex items-center gap-2 max-w-[50%]">
+                            <input
+                              type="color"
+                              className="h-9 w-10 cursor-pointer rounded-md border border-neutral-200 bg-transparent dark:border-neutral-700"
+                              value={meta.layout?.groupHeaderColor ?? "#737373"}
+                              onChange={(e) =>
+                                setMeta((m) => ({
+                                  ...m,
+                                  layout: { ...m.layout, groupHeaderColor: e.target.value },
+                                }))
+                              }
+                            />
+                            <Input
+                              className="flex-1 font-mono text-xs"
+                              placeholder="#737373"
+                              value={meta.layout?.groupHeaderColor ?? ""}
+                              onChange={(e) =>
+                                setMeta((m) => ({
+                                  ...m,
+                                  layout: { ...m.layout, groupHeaderColor: e.target.value || undefined },
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <p className="text-[11px] text-neutral-500">
+                        Reset page layout to defaults.
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setMeta((m) => ({ ...m, layout: undefined }))}
+                      >
+                        Reset
+                      </Button>
+                    </div>
+                  </div>
+                </section>
+
+                {/* ─── FOOTER ───────────────────────────────────── */}
+                <section>
+                  <h4 className="mb-2 border-b border-neutral-200 pb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+                    Footer
+                  </h4>
+                  <div className="grid gap-4">
+
+                    {/* Footer text + its style knobs */}
+                    <div className="grid gap-2">
+                      <div className="grid gap-1">
+                        <Label>Footer text</Label>
+                        <Input
+                          value={meta.footer?.text ?? ""}
+                          onChange={(e) =>
+                            setMeta((m) => ({
+                              ...m,
+                              footer: { ...m.footer, text: e.target.value },
+                            }))
+                          }
+                          placeholder="Terms and conditions apply..."
+                        />
+                        <p className="text-[11px] text-neutral-500">
+                          Renders below the last section, separated by a thin line.
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="grid gap-1">
+                          <Label>Size</Label>
+                          <select
+                            className="w-full rounded-md border border-neutral-300 bg-white px-2 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                            value={meta.footer?.textSize ?? "xs"}
+                            onChange={(e) =>
+                              setMeta((m) => ({
+                                ...m,
+                                footer: {
+                                  ...m.footer,
+                                  textSize: e.target.value as "xs" | "sm" | "md",
+                                },
+                              }))
+                            }
+                          >
+                            <option value="xs">Extra small (default)</option>
+                            <option value="sm">Small</option>
+                            <option value="md">Medium</option>
+                          </select>
+                        </div>
+                        <div className="grid gap-1">
+                          <Label>Align</Label>
+                          <select
+                            className="w-full rounded-md border border-neutral-300 bg-white px-2 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                            value={meta.footer?.textAlign ?? "left"}
+                            onChange={(e) =>
+                              setMeta((m) => ({
+                                ...m,
+                                footer: {
+                                  ...m.footer,
+                                  textAlign: e.target.value as "left" | "center" | "right",
+                                },
+                              }))
+                            }
+                          >
+                            <option value="left">Left (default)</option>
+                            <option value="center">Center</option>
+                            <option value="right">Right</option>
+                          </select>
+                        </div>
+                        <div className="grid gap-1">
+                          <Label>Color</Label>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="color"
+                              className="h-9 w-10 cursor-pointer rounded-md border border-neutral-200 bg-transparent dark:border-neutral-700"
+                              value={meta.footer?.textColor ?? "#a3a3a3"}
+                              onChange={(e) =>
+                                setMeta((m) => ({
+                                  ...m,
+                                  footer: { ...m.footer, textColor: e.target.value },
+                                }))
+                              }
+                            />
+                            <Input
+                              className="flex-1 font-mono text-xs"
+                              placeholder="#a3a3a3"
+                              value={meta.footer?.textColor ?? ""}
+                              onChange={(e) =>
+                                setMeta((m) => ({
+                                  ...m,
+                                  footer: { ...m.footer, textColor: e.target.value || undefined },
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Signature block — split into two independent controls
+                        so a template can include only the company sig (e.g.
+                        a receipt that's already executed by the issuer),
+                        only the client sig (e.g. a quotation acceptance
+                        page), both, or neither.  Reads through the legacy
+                        `showSignature` flag via the `currentSig*` locals
+                        below so old templates render unchanged until the
+                        admin edits them. */}
+                    {(() => {
+                      // Resolve the effective on/off state of each block,
+                      // honoring the legacy `showSignature` umbrella
+                      // toggle when the new fields haven't been set.
+                      const newFlagsSet =
+                        typeof meta.footer?.showAuthorizedSignature === "boolean" ||
+                        typeof meta.footer?.showClientSignature === "boolean";
+                      const currentSigAuth = newFlagsSet
+                        ? !!meta.footer?.showAuthorizedSignature
+                        : !!meta.footer?.showSignature;
+                      const currentSigClient = newFlagsSet
+                        ? !!meta.footer?.showClientSignature
+                        : !!meta.footer?.showSignature;
+                      // Setting either new flag clears the legacy umbrella
+                      // so we don't end up with three flags telling
+                      // different stories on the same template.
+                      const setSigFlag = (
+                        which: "showAuthorizedSignature" | "showClientSignature",
+                        value: boolean,
+                      ) =>
+                        setMeta((m) => ({
+                          ...m,
+                          footer: {
+                            ...m.footer,
+                            [which]: value,
+                            // Once split, drop the legacy flag.
+                            showSignature: undefined,
+                            // Mirror the OTHER side from its current
+                            // resolved value so toggling one doesn't
+                            // accidentally clear the other.
+                            ...(which === "showAuthorizedSignature"
+                              ? {
+                                  showClientSignature:
+                                    m.footer?.showClientSignature ?? currentSigClient,
+                                }
+                              : {
+                                  showAuthorizedSignature:
+                                    m.footer?.showAuthorizedSignature ?? currentSigAuth,
+                                }),
+                          },
+                        }));
+
+                      return (
+                        <div className="grid gap-3">
+                          <div className="grid grid-cols-2 gap-3">
+                            {/* ── Authorized signature ────────────── */}
+                            <div className="rounded-md border border-neutral-200 p-2.5 dark:border-neutral-700">
+                              <label className="flex items-center gap-1.5 text-sm font-medium">
+                                <input
+                                  type="checkbox"
+                                  checked={currentSigAuth}
+                                  onChange={(e) =>
+                                    setSigFlag("showAuthorizedSignature", e.target.checked)
+                                  }
+                                />
+                                Authorized signature
+                              </label>
+                              {currentSigAuth && (
+                                <div className="mt-2 grid gap-2">
+                                  <div className="grid gap-1">
+                                    <Label className="text-xs">Label</Label>
+                                    <Input
+                                      value={meta.footer?.signatureLeftLabel ?? ""}
+                                      onChange={(e) =>
+                                        setMeta((m) => ({
+                                          ...m,
+                                          footer: {
+                                            ...m.footer,
+                                            signatureLeftLabel: e.target.value || undefined,
+                                          },
+                                        }))
+                                      }
+                                      placeholder="Authorized Signature"
+                                    />
+                                  </div>
+                                  {/* E-signature image — uploaded once per
+                                      template, stamped on every render so
+                                      the doc arrives pre-signed.  Without
+                                      it the line is blank and the company
+                                      rep would have to wet-sign a printout. */}
+                                  <div className="grid gap-1">
+                                    <Label className="text-xs">E-signature image</Label>
+                                    {meta.footer?.authorizedSignatureImage ? (
+                                      <div className="flex items-start gap-2">
+                                        <div className="flex h-12 w-24 items-center justify-center overflow-hidden rounded border border-neutral-200 bg-white dark:border-neutral-700">
+                                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                                          <img
+                                            src={`/api/pdf-templates/images/${meta.footer.authorizedSignatureImage}`}
+                                            alt="Authorized signature"
+                                            className="max-h-full max-w-full object-contain"
+                                          />
+                                        </div>
+                                        <div className="flex flex-col gap-1">
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={uploadingSig}
+                                            onClick={() => sigFileInputRef.current?.click()}
+                                          >
+                                            {uploadingSig ? (
+                                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            ) : (
+                                              <Upload className="h-3.5 w-3.5" />
+                                            )}
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() =>
+                                              setMeta((m) => ({
+                                                ...m,
+                                                footer: {
+                                                  ...m.footer,
+                                                  authorizedSignatureImage: undefined,
+                                                },
+                                              }))
+                                            }
+                                          >
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={uploadingSig}
+                                        onClick={() => sigFileInputRef.current?.click()}
+                                        className="w-fit"
+                                      >
+                                        {uploadingSig ? (
+                                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                          <ImageIcon className="mr-1.5 h-3.5 w-3.5" />
+                                        )}
+                                        Upload signature
+                                      </Button>
+                                    )}
+                                    <input
+                                      ref={sigFileInputRef}
+                                      type="file"
+                                      accept="image/png,image/jpeg"
+                                      className="hidden"
+                                      onChange={(e) => {
+                                        const file = e.target.files?.[0];
+                                        if (file) void uploadAuthorizedSignature(file);
+                                      }}
+                                    />
+                                    {meta.footer?.authorizedSignatureImage && (
+                                      <select
+                                        className="mt-1 w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                                        value={meta.footer?.authorizedSignatureImageHeight ?? "md"}
+                                        onChange={(e) =>
+                                          setMeta((m) => ({
+                                            ...m,
+                                            footer: {
+                                              ...m.footer,
+                                              authorizedSignatureImageHeight: e.target.value as
+                                                | "sm"
+                                                | "md"
+                                                | "lg",
+                                            },
+                                          }))
+                                        }
+                                      >
+                                        <option value="sm">Small (~32px)</option>
+                                        <option value="md">Medium (~48px)</option>
+                                        <option value="lg">Large (~72px)</option>
+                                      </select>
+                                    )}
+                                    <p className="text-[10px] text-neutral-500">
+                                      PNG with transparent background works best.
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* ── Client signature ────────────────── */}
+                            <div className="rounded-md border border-neutral-200 p-2.5 dark:border-neutral-700">
+                              <label className="flex items-center gap-1.5 text-sm font-medium">
+                                <input
+                                  type="checkbox"
+                                  checked={currentSigClient}
+                                  onChange={(e) =>
+                                    setSigFlag("showClientSignature", e.target.checked)
+                                  }
+                                />
+                                Client signature
+                              </label>
+                              {currentSigClient && (
+                                <div className="mt-2 grid gap-2">
+                                  <div className="grid gap-1">
+                                    <Label className="text-xs">Label</Label>
+                                    <Input
+                                      value={meta.footer?.signatureRightLabel ?? ""}
+                                      onChange={(e) =>
+                                        setMeta((m) => ({
+                                          ...m,
+                                          footer: {
+                                            ...m.footer,
+                                            signatureRightLabel: e.target.value || undefined,
+                                          },
+                                        }))
+                                      }
+                                      placeholder="Client Signature"
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-neutral-500">
+                                    Renders as a blank line for the client to sign by hand.
+                                    {" "}
+                                    <span className="text-neutral-400">
+                                      (Online e-sign capture is on the roadmap.)
+                                    </span>
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Page numbers */}
+                    <label className="flex items-center gap-1.5 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={meta.footer?.showPageNumbers ?? false}
+                        onChange={(e) =>
+                          setMeta((m) => ({
+                            ...m,
+                            footer: {
+                              ...m.footer,
+                              showPageNumbers: e.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                      Show page numbers
+                      <span className="text-[11px] text-neutral-500">
+                        (visible when printed / saved as PDF)
+                      </span>
+                    </label>
+                  </div>
+                </section>
+              </div>
+            </div>
+            <div className="space-y-2 border-t border-neutral-200 p-3 dark:border-neutral-800">
+              {/* Make it crystal-clear that the Style drawer changes only
+                  live in memory until the template itself is saved.
+                  Previously the single "Done" button looked like a save
+                  action and admins lost their edits by closing the main
+                  editor without realising. */}
+              <p className="text-[11px] leading-snug text-neutral-500 dark:text-neutral-400">
+                Style edits update the preview live but are <strong>not yet saved</strong>.
+                Click <strong>Save &amp; Close</strong> to persist to the template, or <strong>Close</strong> to
+                keep them in memory and save later from the main editor.
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => setShowLayoutStyle(false)}
+                >
+                  Close
+                </Button>
+                <Button
+                  type="button"
+                  className="flex-1"
+                  disabled={saving}
+                  onClick={async () => {
+                    const ok = await save();
+                    if (ok) setShowLayoutStyle(false);
+                  }}
+                >
+                  {saving ? "Saving…" : "Save & Close"}
+                </Button>
+              </div>
+            </div>
+          </DrawerContent>
+        </Drawer>
 
         {/* Sync from Master dialog */}
         {showSyncFromMaster && (() => {
@@ -2204,8 +3219,41 @@ export default function DocumentTemplatesManager() {
             sourceSection={meta.sections[applySectionIdx]}
             sourceTemplateId={editing?.id ?? null}
             allTemplates={rows}
-            onApplied={() => {
+            onApplied={(appliedCount) => {
+              // Stamp the badge on the source section so the header bar
+              // shows "Applied to N templates" immediately after the dialog
+              // closes — no need to re-open or save manually.
+              if (applySectionIdx !== null) {
+                setMeta((m) => ({
+                  ...m,
+                  sections: m.sections.map((s, i) =>
+                    i === applySectionIdx
+                      ? {
+                          ...s,
+                          lastAppliedAt: new Date().toISOString(),
+                          lastAppliedCount: appliedCount,
+                        }
+                      : s,
+                  ),
+                }));
+              }
               setApplySectionIdx(null);
+              void load();
+            }}
+          />
+        )}
+
+        {/* "Apply this template's style to other templates" dialog */}
+        {showApplyStyleToOthers && editing && (
+          <StyleApplyToOthersDialog
+            open={showApplyStyleToOthers}
+            onOpenChange={setShowApplyStyleToOthers}
+            sourceMeta={meta}
+            sourceTemplateId={editing.id}
+            sourceTemplateLabel={editing.label}
+            allTemplates={rows}
+            onApplied={() => {
+              setShowApplyStyleToOthers(false);
               void load();
             }}
           />
@@ -2265,6 +3313,16 @@ export default function DocumentTemplatesManager() {
             <Button
               variant="outline"
               size="sm"
+              onClick={() => setShowLayoutStyle(true)}
+              className="gap-1.5"
+              title="Edit header, page layout and footer for this template"
+            >
+              <Palette className="h-3.5 w-3.5" />
+              Style
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setShowPreview(true)}
               className="gap-1.5"
               title="Render this template against a real policy to see how it will look"
@@ -2273,12 +3331,17 @@ export default function DocumentTemplatesManager() {
               Live Preview
             </Button>
           </div>
-          <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
-            Cancel
-          </Button>
           <Button onClick={save} disabled={saving}>
             {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {editing ? "Save" : "Create"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setOpen(false)}
+            disabled={saving}
+            title="Close the editor. Unsaved changes will be lost."
+          >
+            Close
           </Button>
         </div>
       </div>
@@ -2481,9 +3544,9 @@ export default function DocumentTemplatesManager() {
             setPickerState(null);
           }
         }}
-        onConfirm={(ids) => {
+        onConfirm={(ids, syncStyle) => {
           if (pickerState) {
-            pickerState.resolve(ids);
+            pickerState.resolve({ ids, syncStyle });
             setPickerState(null);
           }
         }}
@@ -2546,6 +3609,13 @@ type SortableFieldsTableProps = {
   onMove: (fieldIdx: number, dir: -1 | 1) => void;
   onRemove: (fieldIdx: number) => void;
   onReorder: (nextFields: TemplateFieldMapping[]) => void;
+  /**
+   * Patch section-level fields that the per-group header row needs to
+   * update (currently `groupColumns` and `fullWidthGroups`). Same shape
+   * as React.useState's setter argument so callers can pass partial
+   * updates without rebuilding the whole section.
+   */
+  onPatchSection: (patch: Partial<TemplateSection>) => void;
 };
 
 function SortableFieldsTable({
@@ -2557,6 +3627,7 @@ function SortableFieldsTable({
   onMove,
   onRemove,
   onReorder,
+  onPatchSection,
 }: SortableFieldsTableProps) {
   // Bucket the selected fields by their group. Group order = first appearance
   // in the array; field order within a group = array order of just-those
@@ -2608,6 +3679,61 @@ function SortableFieldsTable({
     [onReorder],
   );
 
+  // Reorder one whole group as a contiguous block. The bucketing logic
+  // above derives group order from "first appearance in section.fields",
+  // so to move a group up/down we re-pack the array group-by-group in the
+  // new order. Fields keep their *intra*-group order; only the group
+  // blocks swap with the neighbour. Used by the up/down arrows on each
+  // group-header row so admins can reorder groups without having to
+  // drag individual fields across group boundaries.
+  const moveGroup = React.useCallback(
+    (groupName: string, dir: -1 | 1) => {
+      const fromIdx = grouped.buckets.findIndex((b) => b.name === groupName);
+      const toIdx = fromIdx + dir;
+      if (fromIdx < 0 || toIdx < 0 || toIdx >= grouped.buckets.length) return;
+      const next = [...grouped.buckets];
+      [next[fromIdx], next[toIdx]] = [next[toIdx], next[fromIdx]];
+      onReorder(next.flatMap((b) => b.items.map((it) => it.field)));
+    },
+    [grouped.buckets, onReorder],
+  );
+
+  // Per-group "Cols" override. Setting `value` to "default" deletes the
+  // entry so the section-level `columns` is used (keeps `groupColumns`
+  // sparse — only groups that diverge from the default are persisted).
+  const setGroupColumns = React.useCallback(
+    (groupName: string, value: 1 | 2 | "default") => {
+      const next: Record<string, 1 | 2> = { ...(section.groupColumns ?? {}) };
+      if (value === "default") {
+        delete next[groupName];
+      } else {
+        next[groupName] = value;
+      }
+      onPatchSection({
+        groupColumns: Object.keys(next).length > 0 ? next : undefined,
+      });
+    },
+    [section.groupColumns, onPatchSection],
+  );
+
+  // Toggle a group's "full width" status — i.e. whether it spans both
+  // columns in the section's 2-group-blocks-per-row grid. Stored as a
+  // sparse list so a fresh template never carries `fullWidthGroups: []`.
+  const toggleFullWidthGroup = React.useCallback(
+    (groupName: string) => {
+      const current = new Set(section.fullWidthGroups ?? []);
+      if (current.has(groupName)) {
+        current.delete(groupName);
+      } else {
+        current.add(groupName);
+      }
+      onPatchSection({
+        fullWidthGroups: current.size > 0 ? Array.from(current) : undefined,
+      });
+    },
+    [section.fullWidthGroups, onPatchSection],
+  );
+
   // Column count for the group-header row's colSpan. Mobile hides the
   // "Format" column via CSS but it still counts toward colSpan, so this
   // stays correct across breakpoints.
@@ -2643,7 +3769,7 @@ function SortableFieldsTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {grouped.buckets.map((bucket) => (
+          {grouped.buckets.map((bucket, bucketIdx) => (
             <React.Fragment key={bucket.name}>
               {grouped.hasGroups && (
                 <TableRow className="bg-neutral-50 hover:bg-neutral-50 dark:bg-neutral-800/40 dark:hover:bg-neutral-800/40">
@@ -2651,10 +3777,105 @@ function SortableFieldsTable({
                     colSpan={colSpan}
                     className="px-2 py-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400"
                   >
-                    <span>{bucket.name}</span>
-                    <span className="ml-2 font-normal normal-case tracking-normal text-neutral-400">
-                      {bucket.items.length} field{bucket.items.length !== 1 ? "s" : ""}
-                    </span>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <span>{bucket.name}</span>
+                        <span className="ml-2 font-normal normal-case tracking-normal text-neutral-400">
+                          {bucket.items.length} field{bucket.items.length !== 1 ? "s" : ""}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {/* Per-group: fields-per-row override. "Default" =
+                            inherit section-level `columns`. Skipped for
+                            the synthetic "Other" bucket because that is
+                            for fields without a group label and there is
+                            no way to refer to it from a saved override
+                            (it is purely a render-time bucket). */}
+                        {bucket.name !== "Other" && (
+                          <label
+                            className="flex items-center gap-1 normal-case tracking-normal text-[10px] sm:text-[11px] font-normal text-neutral-500 dark:text-neutral-400"
+                            title="Fields per row inside this group. Default uses the section's Columns setting."
+                          >
+                            Cols:
+                            <select
+                              className="h-6 rounded border border-neutral-300 bg-white px-1 text-[11px] dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100"
+                              value={String(section.groupColumns?.[bucket.name] ?? "default")}
+                              onChange={(e) =>
+                                setGroupColumns(
+                                  bucket.name,
+                                  e.target.value === "default"
+                                    ? "default"
+                                    : (Number(e.target.value) as 1 | 2),
+                                )
+                              }
+                            >
+                              <option value="default">default</option>
+                              <option value="1">1</option>
+                              <option value="2">2</option>
+                            </select>
+                          </label>
+                        )}
+                        {/* Per-group: full-width toggle. Only meaningful
+                            when the section is in 2-group-blocks-per-row
+                            mode — otherwise every group is already
+                            full-width. We still render the checkbox as
+                            disabled in that case (instead of hiding it)
+                            so admins can discover the setting and see
+                            why it has no effect. */}
+                        {bucket.name !== "Other" && (
+                          <label
+                            className={`flex items-center gap-1 normal-case tracking-normal text-[10px] sm:text-[11px] font-normal ${
+                              section.fieldGroupColumns === 2
+                                ? "text-neutral-500 dark:text-neutral-400 cursor-pointer"
+                                : "text-neutral-400 dark:text-neutral-500 cursor-not-allowed opacity-60"
+                            }`}
+                            title={
+                              section.fieldGroupColumns === 2
+                                ? "Force this group to span the full section width, even when other groups are paired 2-per-row."
+                                : "Only available when the section's Group columns is set to 2."
+                            }
+                          >
+                            <input
+                              type="checkbox"
+                              className="h-3 w-3"
+                              checked={!!section.fullWidthGroups?.includes(bucket.name)}
+                              disabled={section.fieldGroupColumns !== 2}
+                              onChange={() => toggleFullWidthGroup(bucket.name)}
+                            />
+                            Full width
+                          </label>
+                        )}
+                        {/* Reorder this whole group (block) up or down.
+                            Hidden when there is only one group because
+                            there is nothing to swap with. */}
+                        {grouped.buckets.length > 1 && (
+                          <div className="flex items-center gap-0.5">
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              onClick={() => moveGroup(bucket.name, -1)}
+                              disabled={bucketIdx === 0}
+                              className="h-6 w-6"
+                              aria-label={`Move group ${bucket.name} up`}
+                              title="Move this group up"
+                            >
+                              <ChevronUp className="h-3 w-3" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              onClick={() => moveGroup(bucket.name, 1)}
+                              disabled={bucketIdx === grouped.buckets.length - 1}
+                              className="h-6 w-6"
+                              aria-label={`Move group ${bucket.name} down`}
+                              title="Move this group down"
+                            >
+                              <ChevronDown className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </TableCell>
                 </TableRow>
               )}

@@ -21,7 +21,7 @@ import type {
   TemplateSection,
   TemplateFieldMapping,
 } from "@/lib/types/document-template";
-import { resolveDocumentTemplateShowOn } from "@/lib/types/document-template";
+import { resolveDocumentTemplateShowOn, resolveSignatureFlags } from "@/lib/types/document-template";
 import type { PolicyDetail } from "@/lib/types/policy";
 import {
   resolveRawValue,
@@ -584,6 +584,7 @@ export function DocumentPreview({
   renderMode,
   onConfirmDoc,
   onOpenEmailDialog,
+  previewShowEmptySections,
 }: {
   template: DocumentTemplateRow;
   detail: PolicyDetail;
@@ -595,6 +596,16 @@ export function DocumentPreview({
   renderMode?: "policy" | "agent_statement";
   onConfirmDoc?: (trackingKey: string) => void;
   onOpenEmailDialog?: (subject: string, htmlContent: string, plainText: string) => void;
+  /**
+   * Live-preview-only flag. When true, sections that would normally be hidden
+   * because every visible field resolved to empty are rendered with a small
+   * "(no fields with data)" hint instead of being dropped. This lets admins
+   * verify the document layout against any policy without needing one that
+   * happens to have data in every field — especially useful when previewing
+   * the agent copy for a policy that has no agent-specific values.
+   * Production renders never set this so end-user output stays unchanged.
+   */
+  previewShowEmptySections?: boolean;
 }) {
   const meta = template.meta!;
 
@@ -654,6 +665,55 @@ export function DocumentPreview({
     lg: 16,
   };
   const emailTitlePxFor = (s: TemplateSection) => emailTitlePxMap[pickTitleSize(s)];
+
+  // Body text size (label + value pair). Defaults to "sm" which matches
+  // the previous hard-coded pair (~11/13 px on screen, 13 px in print).
+  type BodySizeKey = "xs" | "sm" | "md" | "lg";
+  const bodyFontSize: BodySizeKey = (meta.layout?.bodyFontSize as BodySizeKey | undefined) ?? "sm";
+  // On-screen Tailwind utilities for label/value spans.
+  const bodyLabelClass: Record<BodySizeKey, string> = {
+    xs: "text-[10px] sm:text-[11px]",
+    sm: "text-[11px] sm:text-[13px]",
+    md: "text-xs sm:text-[15px]",
+    lg: "text-[13px] sm:text-[17px]",
+  };
+  const bodyValueClass: Record<BodySizeKey, string> = {
+    xs: "text-[10px] sm:text-[11px]",
+    sm: "text-xs sm:text-[13px]",
+    md: "text-[13px] sm:text-[15px]",
+    lg: "text-sm sm:text-[17px]",
+  };
+  const bodyLabelClassName = bodyLabelClass[bodyFontSize];
+  const bodyValueClassName = bodyValueClass[bodyFontSize];
+  // Equivalent pixel values for the email/print HTML inline-style path.
+  const bodyPxMap: Record<BodySizeKey, number> = { xs: 11, sm: 13, md: 15, lg: 17 };
+  const bodyPx = bodyPxMap[bodyFontSize];
+
+  // Field label / value colors. Empty string is treated as "no override"
+  // so we fall back to the previous neutral palette. Inline styles win
+  // over Tailwind text-color utilities so the override applies cleanly.
+  const labelColor = meta.layout?.labelColor || "";
+  const valueColor = meta.layout?.valueColor || "";
+  const labelStyle: React.CSSProperties | undefined = labelColor ? { color: labelColor } : undefined;
+  const valueStyle: React.CSSProperties = { whiteSpace: "pre-line", ...(valueColor ? { color: valueColor } : {}) };
+  // For email/print HTML — these get spliced into inline `style="color:..."`
+  const labelColorStyle = labelColor || "#737373";
+  const valueColorStyle = valueColor || "#1a1a1a";
+
+  // Group sub-heading (shown when section.showFieldGroupHeaders is true).
+  // Size maps to Tailwind class pairs for on-screen and pixel values for
+  // email/print inline styles. Color defaults to neutral-500 (#737373).
+  const groupHeaderSizeKey = (meta.layout?.groupHeaderSize ?? "xs") as "xs" | "sm" | "md";
+  const groupHeaderTailwindClass: Record<"xs" | "sm" | "md", string> = {
+    xs: "text-[10px] sm:text-[11px]",
+    sm: "text-[11px] sm:text-[13px]",
+    md: "text-xs sm:text-[15px]",
+  };
+  const groupHeaderPxMap: Record<"xs" | "sm" | "md", number> = { xs: 11, sm: 13, md: 15 };
+  const groupHeaderClassName = groupHeaderTailwindClass[groupHeaderSizeKey];
+  const groupHeaderPx = groupHeaderPxMap[groupHeaderSizeKey];
+  const groupHeaderColorStyle = meta.layout?.groupHeaderColor || "#737373";
+  const groupHeaderStyle: React.CSSProperties = { color: groupHeaderColorStyle };
   // [topMargin, bottomMargin] of the section title block, plus the
   // bottom margin of the field table that follows it. All values feed
   // straight into inline `style="margin:..."`.
@@ -923,37 +983,307 @@ export function DocumentPreview({
   // A4 page when reasonable. We rely on @page for the actual paper margin
   // and zero out the body padding in print so we don't double-up the
   // margin (browser was effectively giving ~12mm + 24px before).
+  // The body is laid out as a flex column with a min-height matching the
+  // printable A4 area so the footer (text + signature lines) pushes to the
+  // BOTTOM of the page when content is short. For multi-page documents the
+  // footer naturally falls after the last content block on the final page.
+  // Without this, the signature line sits flush under the last section
+  // leaving a large empty band at the bottom of an A4 sheet — see also the
+  // matching `mt-auto` wrapper in the on-screen preview and the
+  // `margin-top:auto` footer block in `generateEmailHtml`.
   const printPageStyles = `
-    @page { margin: 10mm; }
+    @page { size: A4; margin: 10mm; }
     body {
       font-family: Arial, Helvetica, sans-serif;
       color: #1a1a1a;
       margin: 0;
       padding: 16px;
       background: #ffffff;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
     }
+    body > div { flex: 1 0 auto; display: flex; flex-direction: column; }
     @media print {
-      body { padding: 0; }
+      body { padding: 0; min-height: calc(297mm - 20mm); }
     }
   `;
 
-  function handlePrint() {
+  /**
+   * Replace every `<img src="…/api/pdf-templates/images/…">` URL in
+   * the generated HTML with a base64 `data:` URL containing the same
+   * bytes. This sidesteps every "image won't show" problem in two
+   * places at once:
+   *
+   *   1. Print preview popup — the `about:blank` window's network
+   *      requests can race the print snapshot, lose cookies, or be
+   *      blocked by Chrome's third-party storage rules.  An inlined
+   *      data: URL needs zero network and is always there before
+   *      `window.print()` runs.
+   *   2. Outbound email — recipients of the email aren't logged into
+   *      our app, so a normal protected URL would 401 in their inbox.
+   *      Inlined data: URLs are self-contained and viewable anywhere.
+   *
+   * Failures are silent: a 404/403 leaves the original `<img src>`
+   * in place so we degrade to "missing image" rather than blowing up
+   * the whole document. A small in-call cache prevents fetching the
+   * same logo / signature multiple times when both appear in the same
+   * HTML (the image-serving endpoint already sets max-age but local
+   * caching avoids the round-trip entirely).
+   */
+  async function inlineTemplateImages(
+    html: string,
+    opts?: { showToast?: boolean },
+  ): Promise<string> {
+    // Capture every image URL that points at our blob-serving endpoint,
+    // whether absolute (`http://host/api/...`) or root-relative
+    // (`/api/...`). The path segment is identical in both cases so a
+    // single regex covers logo + sig + future images.  The regex also
+    // tolerates single OR double quotes around the value because some
+    // HTML serializers swap them depending on the value's contents.
+    const re = /src=(["'])((?:[^"']*?)?\/api\/pdf-templates\/images\/[^"']+)\1/g;
+    const matches = Array.from(html.matchAll(re));
+    const showToast = opts?.showToast === true;
+    if (matches.length === 0) {
+      console.debug("[print-inline] no template images found in HTML");
+      if (showToast) {
+        toast.message("Print: no images to inline", {
+          description:
+            "Template HTML has no <img> tags. Did you upload a logo and click Save in the template editor?",
+        });
+      }
+      return html;
+    }
+    const urls = Array.from(new Set(matches.map((m) => m[2])));
+    console.debug("[print-inline] inlining", urls.length, "image(s)", urls);
+
+    let okCount = 0;
+    const failures: { url: string; reason: string }[] = [];
+    const cache: Record<string, string> = {};
+    await Promise.all(
+      urls.map(async (url) => {
+        try {
+          const res = await fetch(url, { credentials: "include" });
+          if (!res.ok) {
+            failures.push({ url, reason: `HTTP ${res.status}` });
+            return;
+          }
+          const blob = await res.blob();
+          // Decode + re-encode the bitmap through a <canvas> instead of
+          // base64-ing the raw file bytes.  Two reasons:
+          //   1. Chrome's print/PDF rasterizer is finicky about PNGs
+          //      that carry less-common ancillary chunks (sBIT, sRGB,
+          //      iCCP, tRNS, …).  The exact same file streams fine
+          //      from a network URL but is silently dropped when fed
+          //      back through a data: URL.  Re-encoding via canvas
+          //      strips every ancillary chunk and produces the
+          //      simplest possible PNG, which the print pipeline
+          //      always accepts.
+          //   2. Re-encoding also normalises orientation / colour
+          //      profile metadata that some image tools attach.
+          // Object URLs are scoped to the parent document, so we have
+          // to revoke them after canvas grabs the pixels.
+          const objUrl = URL.createObjectURL(blob);
+          let dataUrl = "";
+          try {
+            const img = new Image();
+            await new Promise<void>((resolve, reject) => {
+              img.onload = () => resolve();
+              img.onerror = () =>
+                reject(new Error("decode failed"));
+              img.src = objUrl;
+            });
+            const canvas = document.createElement("canvas");
+            canvas.width = img.naturalWidth || 1;
+            canvas.height = img.naturalHeight || 1;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) throw new Error("no 2d context");
+            // White background for any transparent pixels — print is
+            // on white paper, so this is the visually-correct flatten.
+            // Skip the fill for SVGs (which we trust to be intentional).
+            if (blob.type !== "image/svg+xml") {
+              ctx.fillStyle = "#ffffff";
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+            ctx.drawImage(img, 0, 0);
+            dataUrl = canvas.toDataURL("image/png");
+          } finally {
+            URL.revokeObjectURL(objUrl);
+          }
+          if (!dataUrl || dataUrl === "data:,") {
+            // Canvas refused to encode (rare — happens with tainted
+            // canvases on cross-origin images, but ours are same-origin).
+            // Fall back to FileReader so we at least try to print
+            // something.
+            const fallback = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result));
+              reader.onerror = () => reject(reader.error);
+              reader.readAsDataURL(blob);
+            });
+            cache[url] = fallback;
+          } else {
+            cache[url] = dataUrl;
+          }
+          okCount += 1;
+        } catch (e) {
+          failures.push({
+            url,
+            reason: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }),
+    );
+
+    let replaced = 0;
+    const out = html.replace(re, (full, quote: string, url: string) => {
+      const data = cache[url];
+      if (!data) return full;
+      replaced += 1;
+      return `src=${quote}${data}${quote}`;
+    });
+    console.debug(
+      "[print-inline] replaced",
+      replaced,
+      "of",
+      urls.length,
+      "src attribute(s)",
+      failures.length ? `failures: ${JSON.stringify(failures)}` : "",
+    );
+    if (showToast) {
+      if (failures.length === 0) {
+        toast.success(`Print: inlined ${replaced}/${urls.length} image(s)`);
+      } else {
+        toast.error(
+          `Print: ${replaced}/${urls.length} images inlined, ${failures.length} failed`,
+          {
+            description: failures
+              .slice(0, 3)
+              .map((f) => `${f.reason} — ${f.url.split("/").pop()}`)
+              .join(" · "),
+          },
+        );
+      }
+    }
+    return out;
+  }
+
+  async function handlePrint() {
     // Reuse the email/print-safe HTML so the printout is bit-for-bit what
     // the user would receive by email — matching layout (including the
     // group sub-headers and 2-column group layout), label/value alignment,
     // tables, dividers, etc. — instead of dumping Tailwind-classed React
     // markup that loses all styling once outside the app.
-    const body = generateEmailHtml();
-    const win = window.open("", "_blank", "width=800,height=600");
-    if (!win) {
-      toast.error("Please allow popups to print");
+    //
+    // Images (logo + authorized signature) are inlined as base64 data
+    // URLs first so the print snapshot has zero pending network
+    // requests. We then mount the HTML in a hidden iframe inside this
+    // page — NOT a popup — for three reasons:
+    //   1. iframes share the parent's cookie / auth context, so even
+    //      unanticipated `<img>`s with API URLs still resolve.
+    //   2. We can `await img.decode()` on every image before calling
+    //      print(), guaranteeing the print engine snapshots a fully
+    //      painted document. Popups (`about:blank`) have flaky timing
+    //      where the print dialog can fire before data-URL images
+    //      finish decoding, leaving blank slots in the printout.
+    //   3. No popup-blocker prompts — the print dialog opens directly
+    //      from the user gesture without a separate window.
+    const rawBody = generateEmailHtml();
+    const body = await inlineTemplateImages(rawBody);
+    // Stash the resolved HTML on `window.__lastPrintHtml` so it can be
+    // copied straight from DevTools if anything ever looks off in the
+    // printout — saves having to reproduce the chain of state changes.
+    if (typeof window !== "undefined") {
+      (window as unknown as { __lastPrintHtml?: string }).__lastPrintHtml = body;
+    }
+
+    // Wipe any previous print iframe (e.g., user clicked Print twice
+    // in a row before the dialog closed).
+    const PRINT_IFRAME_ID = "__doc-print-frame";
+    const existing = document.getElementById(PRINT_IFRAME_ID);
+    if (existing) existing.remove();
+
+    const iframe = document.createElement("iframe");
+    iframe.id = PRINT_IFRAME_ID;
+    // Off-screen but rendered (not display:none — that can suppress
+    // image loading in some browsers).
+    iframe.setAttribute(
+      "style",
+      "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;",
+    );
+    iframe.setAttribute("aria-hidden", "true");
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentDocument;
+    const frameWin = iframe.contentWindow;
+    if (!doc || !frameWin) {
+      iframe.remove();
+      toast.error("Could not prepare print view");
       return;
     }
-    win.document.write(`<!DOCTYPE html>
+
+    doc.open();
+    doc.write(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>${meta.header.title}</title>
 <style>${printPageStyles}</style></head><body>${body}</body></html>`);
-    win.document.close();
-    setTimeout(() => { win.print(); }, 300);
+    doc.close();
+
+    // Wait until every <img> is fully loaded AND decoded — only then
+    // is the document guaranteed to be paint-ready.  Without the decode
+    // step Chrome will sometimes fire print() before the data-URL
+    // bitmaps are rasterised, producing blank slots in the PDF.
+    try {
+      const images = Array.from(doc.images);
+      await Promise.all(
+        images.map(async (img) => {
+          if (!img.complete || img.naturalWidth === 0) {
+            await new Promise<void>((resolve) => {
+              const done = () => {
+                img.removeEventListener("load", done);
+                img.removeEventListener("error", done);
+                resolve();
+              };
+              img.addEventListener("load", done);
+              img.addEventListener("error", done);
+              // Safety net in case load/error never fires (e.g., bad
+              // data URL): don't block the print indefinitely.
+              setTimeout(done, 3000);
+            });
+          }
+          try {
+            await img.decode();
+          } catch {
+            // Decode can reject for broken images; we still want to
+            // print whatever rendered correctly.
+          }
+        }),
+      );
+      // One more rAF tick for layout to settle after image decode.
+      await new Promise<void>((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => r())),
+      );
+    } catch {
+      // Don't let an unexpected error block the print dialog.
+    }
+
+    try {
+      frameWin.focus();
+      frameWin.print();
+    } catch {
+      // ignore — user may have navigated away
+    }
+
+    // Tear down the iframe shortly after the print dialog fires.  We
+    // delay so the dialog has a stable document to render from on
+    // browsers that re-snapshot when the user changes settings (paper
+    // size, scale, etc.) inside the print preview.
+    setTimeout(() => {
+      try {
+        iframe.remove();
+      } catch {
+        // already removed
+      }
+    }, 60_000);
   }
 
   const dateStr = (() => {
@@ -1255,32 +1585,106 @@ export function DocumentPreview({
         .replace(/"/g, "&quot;");
 
     const parts: string[] = [];
+    // Outer wrapper is a flex column so the footer block (rendered with
+    // `margin-top:auto` below) can be pushed to the bottom of the available
+    // space. In email clients that ignore flex this is a no-op and the
+    // document still flows top-to-bottom as before. The print stylesheet
+    // additionally gives `body > div` a `flex:1 0 auto` so this wrapper
+    // fills the printable A4 area.
     parts.push(
-      '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:14px;line-height:1.5;max-width:700px;">',
+      '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:14px;line-height:1.5;max-width:700px;display:flex;flex-direction:column;min-height:100%;">',
     );
 
-    // Header
+    // Header — three layouts depending on logo position. Using a 2-cell
+    // <table> for the standard layout keeps email clients (which often
+    // don't support flex/grid) honoring the title-vs-doc-no columns.
+    // Logo URLs are absolute so print-to-PDF and authenticated email
+    // clients can load them from outside the app's same-origin context.
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const logoStored = meta.header.logoStoredName;
+    const logoHeightPx = { sm: 32, md: 48, lg: 72 }[
+      (meta.header.logoSize ?? "md") as "sm" | "md" | "lg"
+    ];
+    const logoPos = meta.header.logoPosition ?? "left";
+    const logoUrl = logoStored ? `${origin}/api/pdf-templates/images/${logoStored}` : "";
+    const logoImg = logoStored
+      ? `<img src="${logoUrl}" alt="" style="height:${logoHeightPx}px;width:auto;max-width:100%;display:block;" />`
+      : "";
+
+    const titleHtml =
+      `<div style="font-size:${({ sm: "14px", md: "18px", lg: "20px", xl: "26px" }[meta.header.titleSize ?? "lg"])};font-weight:bold;color:#1a1a1a;margin:0 0 2px 0;">${escape(meta.header.title)}</div>` +
+      (meta.header.subtitle
+        ? `<div style="font-size:${{ xs: "11px", sm: "13px", md: "16px" }[meta.header.subtitleSize ?? "sm"]};color:${meta.header.subtitleColor ?? "#737373"};">${escape(meta.header.subtitle)}</div>`
+        : "");
+
+    let docNoHtml = "";
+    if (trackingEntry?.documentNumber) {
+      // Pixel sizes mirror the on-screen scale used in the React render so
+      // the email/print HTML matches what admins see in the live preview.
+      // Defaults preserve the old 14px / #1a1a1a so existing templates are
+      // visually identical until someone tunes the new settings.
+      const docNoPxMap = { xs: 11, sm: 12, md: 14, lg: 18, xl: 22 } as const;
+      const docNoPx = docNoPxMap[(meta.header.documentNumberSize ?? "md") as keyof typeof docNoPxMap];
+      const docNoColor = meta.header.documentNumberColor || "#1a1a1a";
+      docNoHtml =
+        '<div style="font-size:10px;color:#a3a3a3;text-transform:uppercase;letter-spacing:0.05em;">Doc No.</div>' +
+        `<div style="font-size:${docNoPx}px;font-weight:bold;color:${docNoColor};">${escape(trackingEntry.documentNumber)}</div>`;
+    }
+
     parts.push(
       '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-bottom:2px solid #333;padding-bottom:6px;margin-bottom:10px;">',
-      "<tr>",
-      '<td style="vertical-align:top;">',
-      `<div style="font-size:${({ sm: "14px", md: "18px", lg: "20px", xl: "26px" }[meta.header.titleSize ?? "lg"])};font-weight:bold;color:#1a1a1a;margin:0 0 2px 0;">${escape(meta.header.title)}</div>`,
     );
-    if (meta.header.subtitle) {
-      const subPx = { xs: "11px", sm: "13px", md: "16px" }[meta.header.subtitleSize ?? "sm"];
-      const subColor = meta.header.subtitleColor ?? "#737373";
-      parts.push(`<div style="font-size:${subPx};color:${subColor};">${escape(meta.header.subtitle)}</div>`);
-    }
-    parts.push("</td>");
-    if (trackingEntry?.documentNumber) {
+    if (logoImg && logoPos === "center") {
+      // Centered logo on its own row, then the standard 2-cell layout
+      // beneath. `text-align:center` is the safest cross-client way to
+      // centre a block image in HTML email.
       parts.push(
-        '<td style="vertical-align:top;text-align:right;">',
-        '<div style="font-size:10px;color:#a3a3a3;text-transform:uppercase;letter-spacing:0.05em;">Doc No.</div>',
-        `<div style="font-size:14px;font-weight:bold;color:#1a1a1a;">${escape(trackingEntry.documentNumber)}</div>`,
-        "</td>",
+        '<tr><td colspan="2" style="text-align:center;padding-bottom:6px;">',
+        logoImg,
+        "</td></tr>",
+        "<tr>",
+        `<td style="vertical-align:top;">${titleHtml}</td>`,
+        docNoHtml ? `<td style="vertical-align:top;text-align:right;">${docNoHtml}</td>` : "<td></td>",
+        "</tr>",
       );
+    } else if (logoImg && logoPos === "right") {
+      // Logo right -> doc-no drops into a tiny third row under the
+      // title cell to avoid two right-aligned blocks competing for the
+      // same column.  `min-width` reserves visible space for the logo
+      // even when the image fails to render — see comment in the
+      // default branch below.
+      parts.push(
+        "<tr>",
+        `<td style="vertical-align:top;">${titleHtml}</td>`,
+        `<td style="vertical-align:top;text-align:right;width:1%;min-width:${logoHeightPx + 10}px;padding-left:10px;">${logoImg}</td>`,
+        "</tr>",
+      );
+      if (docNoHtml) {
+        parts.push(
+          `<tr><td colspan="2" style="text-align:right;padding-top:4px;">${docNoHtml}</td></tr>`,
+        );
+      }
+    } else {
+      // Default: optional logo cell on the left, title in the middle,
+      // doc-no on the right. width:1% keeps the logo + doc-no columns
+      // tight to their content while the title cell soaks up the rest.
+      // `min-width` reserves a guaranteed visible space for the logo
+      // even if the image fails to render (e.g. broken file, blocked
+      // remote image in an email client) so the title doesn't slam
+      // against the page edge — keeps the layout looking deliberate
+      // rather than broken in every fallback scenario.
+      parts.push("<tr>");
+      if (logoImg) {
+        parts.push(
+          `<td style="vertical-align:top;width:1%;min-width:${logoHeightPx + 10}px;padding-right:10px;">${logoImg}</td>`,
+        );
+      }
+      parts.push(`<td style="vertical-align:top;">${titleHtml}</td>`);
+      if (docNoHtml) {
+        parts.push(`<td style="vertical-align:top;text-align:right;width:1%;">${docNoHtml}</td>`);
+      }
+      parts.push("</tr>");
     }
-    parts.push("</tr>");
     parts.push("</table>");
 
     const refParts: string[] = [];
@@ -1338,79 +1742,158 @@ export function DocumentPreview({
           `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin-bottom:${gap.tableMb}px;">`,
         );
 
-        // 2-column layout pairs fields side-by-side. We use a 4-cell row
-        // (label | value | label | value). Each pair shares one bottom border
-        // so dividers stay aligned across columns. Email clients (Gmail /
-        // Outlook / Apple Mail) all support nested tables so this is safe.
+        // -----------------------------------------------------------------
+        // Layout selection (mirrors the on-screen renderer in DocumentPreview)
+        //   - section.columns           : section-default fields-per-row
+        //   - section.fieldGroupColumns : group-blocks per row (1 or 2)
+        //   - section.groupColumns[g]   : per-group fields-per-row override
+        //   - section.fullWidthGroups   : groups that span the full section
+        //                                 width when the section is in
+        //                                 2-group-blocks-per-row mode
+        // The per-group knobs only matter when `showFieldGroupHeaders`
+        // is true.
+        // -----------------------------------------------------------------
         const cols = section.columns === 2 ? 2 : 1;
-        // When group sub-headings are enabled they're inserted as full-width
-        // <tr>s between the regular field rows. They use colspan=2 (1-col)
-        // or colspan=4 (2-col) to span the whole row.
         const showGroups = !!section.showFieldGroupHeaders;
         const hiddenSet = new Set(section.hiddenGroupHeaders ?? []);
         const isGroupHidden = (name: string | undefined) =>
           !!name && hiddenSet.has(name);
         const boundaries = showGroups ? computeGroupBoundaries(fields) : null;
         const groupCols = showGroups && section.fieldGroupColumns === 2 ? 2 : 1;
-        const groupHeaderRow = (label: string, span: number) =>
-          `<tr><td colspan="${span}" style="padding:6px 0 2px 0;color:#525252;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #e5e5e5;">${escape(label)}</td></tr>`;
+        const fullWidthSet = new Set(section.fullWidthGroups ?? []);
+        const colsForBucket = (name: string): 1 | 2 =>
+          section.groupColumns?.[name] === 2 ? 2 : section.groupColumns?.[name] === 1 ? 1 : cols;
 
-        // 2-column GROUP layout: render each bucket as its own mini-table
-        // inside a 2-cell parent row. Email-safe nested tables keep this
-        // working in Gmail/Outlook/Apple Mail.
-        if (showGroups && groupCols === 2) {
-          const buckets = bucketFieldsByGroup(fields);
-          if (buckets.length > 1) {
-            const cellTable = (b: typeof buckets[number]) => {
-              const inner: string[] = [];
-              // Only emit a bucket title when the group is not on the
-              // section's hide list — the fields still render either way.
-              if (b.name && !isGroupHidden(b.name)) {
-                inner.push(
-                  `<div style="padding:0 0 4px 0;color:#525252;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #e5e5e5;margin-bottom:4px;">${escape(b.name)}</div>`,
-                );
-              }
-              inner.push('<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">');
-              for (let i = 0; i < b.fields.length; i++) {
-                const f = b.fields[i];
-                const isLast = i === b.fields.length - 1;
-                const valueText = formatValue(f.resolved, f.format, f.currencyCode);
-                const borderStyle = isLast ? "" : "border-bottom:1px solid #f5f5f5;";
-                inner.push(
-                  "<tr>",
-                  `<td style="padding:${gap.rowPy}px 6px ${gap.rowPy}px 0;color:#737373;font-size:13px;vertical-align:top;width:50%;${borderStyle}">${escape(f.label)}</td>`,
-                  `<td style="padding:${gap.rowPy}px 0;color:#1a1a1a;font-weight:600;font-size:13px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
-                  "</tr>",
-                );
-              }
-              inner.push("</table>");
-              return inner.join("");
-            };
-            // Replace the field <table> opener pushed earlier with a
-            // bucket-grid layout. We close the open table first.
-            parts.pop(); // remove the opening "<table ...>"
-            parts.push('<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:separate;border-spacing:12px 4px;margin:0 -12px 6px -12px;">');
-            for (let r = 0; r < buckets.length; r += 2) {
-              const left = buckets[r];
-              const right = buckets[r + 1];
-              parts.push(
+        // Render the inner field rows of one bucket as an HTML <table>.
+        // Used by both the bucket-grid layout (Path A) and the per-bucket
+        // 1-block-per-row layout (Path B). Centralising it keeps the
+        // colour/border styling consistent across both paths.
+        const renderBucketTable = (
+          b: { name: string; fields: typeof fields },
+          bcols: 1 | 2,
+        ): string => {
+          const inner: string[] = [];
+          if (b.name && !isGroupHidden(b.name)) {
+            inner.push(
+              `<div style="padding:0 0 4px 0;color:${groupHeaderColorStyle};font-size:${groupHeaderPx}px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #e5e5e5;margin-bottom:4px;">${escape(b.name)}</div>`,
+            );
+          }
+          inner.push('<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">');
+          if (bcols === 2) {
+            const totalRows = Math.ceil(b.fields.length / 2);
+            for (let r = 0; r < totalRows; r++) {
+              const isLastRow = r === totalRows - 1;
+              const left = b.fields[r * 2];
+              const right = b.fields[r * 2 + 1];
+              const border = isLastRow ? "" : "border-bottom:1px solid #f5f5f5;";
+              const cell = (f: typeof left) =>
+                f
+                  ? [
+                      `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:${labelColorStyle};font-size:${bodyPx}px;vertical-align:top;width:20%;${border}">${escape(f.label)}</td>`,
+                      `<td style="padding:${gap.rowPy}px 12px ${gap.rowPy}px 0;color:${valueColorStyle};font-weight:600;font-size:${bodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;width:30%;${border}">${escape(formatValue(f.resolved, f.format, f.currencyCode))}</td>`,
+                    ].join("")
+                  : `<td style="${border}" colspan="2"></td>`;
+              inner.push("<tr>", cell(left), cell(right), "</tr>");
+            }
+          } else {
+            for (let i = 0; i < b.fields.length; i++) {
+              const f = b.fields[i];
+              const isLast = i === b.fields.length - 1;
+              const borderStyle = isLast ? "" : "border-bottom:1px solid #f5f5f5;";
+              const valueText = formatValue(f.resolved, f.format, f.currencyCode);
+              inner.push(
                 "<tr>",
-                `<td valign="top" width="50%">${cellTable(left)}</td>`,
-                right
-                  ? `<td valign="top" width="50%">${cellTable(right)}</td>`
-                  : '<td valign="top" width="50%"></td>',
+                `<td style="padding:${gap.rowPy}px 6px ${gap.rowPy}px 0;color:${labelColorStyle};font-size:${bodyPx}px;vertical-align:top;width:50%;${borderStyle}">${escape(f.label)}</td>`,
+                `<td style="padding:${gap.rowPy}px 0;color:${valueColorStyle};font-weight:600;font-size:${bodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
                 "</tr>",
               );
             }
+          }
+          inner.push("</table>");
+          return inner.join("");
+        };
+
+        // -----------------------------------------------------------------
+        // Path A: 2 group blocks per row (with optional full-width groups).
+        // Email-safe nested tables keep this working in Gmail/Outlook/Apple
+        // Mail. Full-width buckets get their own row spanning width=100%;
+        // the rest pair up 2-by-2.
+        // -----------------------------------------------------------------
+        if (showGroups && groupCols === 2) {
+          const buckets = bucketFieldsByGroup(fields);
+          if (buckets.length > 1) {
+            type Row =
+              | { kind: "full"; bucket: typeof buckets[number] }
+              | { kind: "pair"; left: typeof buckets[number]; right: typeof buckets[number] | null };
+            const rows: Row[] = [];
+            let pending: typeof buckets[number] | null = null;
+            for (const b of buckets) {
+              if (fullWidthSet.has(b.name)) {
+                if (pending) { rows.push({ kind: "pair", left: pending, right: null }); pending = null; }
+                rows.push({ kind: "full", bucket: b });
+              } else if (pending) {
+                rows.push({ kind: "pair", left: pending, right: b });
+                pending = null;
+              } else {
+                pending = b;
+              }
+            }
+            if (pending) rows.push({ kind: "pair", left: pending, right: null });
+            // Replace the per-section <table> opener pushed earlier with a
+            // bucket-grid layout. We close the open table first.
+            parts.pop();
+            parts.push('<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:separate;border-spacing:12px 4px;margin:0 -12px 6px -12px;">');
+            for (const row of rows) {
+              if (row.kind === "full") {
+                parts.push(
+                  "<tr>",
+                  `<td colspan="2" valign="top">${renderBucketTable(row.bucket, colsForBucket(row.bucket.name))}</td>`,
+                  "</tr>",
+                );
+              } else {
+                parts.push(
+                  "<tr>",
+                  `<td valign="top" width="50%">${renderBucketTable(row.left, colsForBucket(row.left.name))}</td>`,
+                  row.right
+                    ? `<td valign="top" width="50%">${renderBucketTable(row.right, colsForBucket(row.right.name))}</td>`
+                    : '<td valign="top" width="50%"></td>',
+                  "</tr>",
+                );
+              }
+            }
             parts.push("</table>");
-            continue; // skip the default per-section render below
+            continue;
           }
         }
 
-        // 2-col with group headers degrades to 1-col rendering for the same
-        // reason as on-screen — preserves alignment cleanly.
-        const has2ColWithGroups = cols === 2 && showGroups && boundaries?.some(Boolean);
-        if (cols === 2 && !has2ColWithGroups) {
+        // -----------------------------------------------------------------
+        // Path B: 1 group block per row WITH group headers. Per-group
+        // `columns` override controls each bucket's internal field layout.
+        // We reuse renderBucketTable so a section with mixed-cols groups
+        // looks identical here and inside the 2-block-per-row layout.
+        // -----------------------------------------------------------------
+        if (showGroups && boundaries?.some(Boolean)) {
+          const buckets = bucketFieldsByGroup(fields);
+          // Replace the per-section <table> opener pushed earlier with a
+          // stacked one-bucket-per-row layout — each bucket emits its own
+          // <table> via renderBucketTable, so the outer table is no longer
+          // needed.
+          parts.pop();
+          parts.push('<div style="margin-bottom:6px;">');
+          for (let bi = 0; bi < buckets.length; bi++) {
+            const b = buckets[bi];
+            parts.push(
+              `<div style="${bi > 0 ? "margin-top:6px;" : ""}">${renderBucketTable(b, colsForBucket(b.name))}</div>`,
+            );
+          }
+          parts.push("</div>");
+          continue;
+        }
+
+        // -----------------------------------------------------------------
+        // Path C: section.columns === 2, NO groups.
+        // -----------------------------------------------------------------
+        if (cols === 2) {
           const totalRows = Math.ceil(fields.length / 2);
           for (let r = 0; r < totalRows; r++) {
             const isLastRow = r === totalRows - 1;
@@ -1420,31 +1903,25 @@ export function DocumentPreview({
             const cell = (f: typeof left) =>
               f
                 ? [
-                    `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:#737373;font-size:13px;vertical-align:top;width:20%;${border}">${escape(f.label)}</td>`,
-                    `<td style="padding:${gap.rowPy}px 12px ${gap.rowPy}px 0;color:#1a1a1a;font-weight:600;font-size:13px;text-align:right;vertical-align:top;white-space:pre-line;width:30%;${border}">${escape(formatValue(f.resolved, f.format, f.currencyCode))}</td>`,
+                    `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:${labelColorStyle};font-size:${bodyPx}px;vertical-align:top;width:20%;${border}">${escape(f.label)}</td>`,
+                    `<td style="padding:${gap.rowPy}px 12px ${gap.rowPy}px 0;color:${valueColorStyle};font-weight:600;font-size:${bodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;width:30%;${border}">${escape(formatValue(f.resolved, f.format, f.currencyCode))}</td>`,
                   ].join("")
                 : `<td style="${border}" colspan="2"></td>`;
             parts.push("<tr>", cell(left), cell(right), "</tr>");
           }
         } else {
+          // -----------------------------------------------------------------
+          // Path D: 1-per-row, no group headers (the simplest case).
+          // -----------------------------------------------------------------
           for (let i = 0; i < fields.length; i++) {
             const f = fields[i];
-            if (boundaries?.[i] && f.group && !isGroupHidden(f.group)) {
-              parts.push(groupHeaderRow(f.group, 2));
-            }
             const isLast = i === fields.length - 1;
             const valueText = formatValue(f.resolved, f.format, f.currencyCode);
-            // Suppress bottom border when the next field would inject a
-            // group header anyway — avoids stacking two divider lines.
-            // If the next group's header is hidden, still draw the border.
-            const nextField = fields[i + 1];
-            const nextIsHeader =
-              boundaries?.[i + 1] === true && !!nextField?.group && !isGroupHidden(nextField.group);
-            const borderStyle = isLast || nextIsHeader ? "" : "border-bottom:1px solid #f5f5f5;";
+            const borderStyle = isLast ? "" : "border-bottom:1px solid #f5f5f5;";
             parts.push(
               "<tr>",
-              `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:#737373;font-size:13px;vertical-align:top;width:40%;${borderStyle}">${escape(f.label)}</td>`,
-              `<td style="padding:${gap.rowPy}px 0;color:#1a1a1a;font-weight:600;font-size:13px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
+              `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:${labelColorStyle};font-size:${bodyPx}px;vertical-align:top;width:40%;${borderStyle}">${escape(f.label)}</td>`,
+              `<td style="padding:${gap.rowPy}px 0;color:${valueColorStyle};font-weight:600;font-size:${bodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
               "</tr>",
             );
           }
@@ -1459,28 +1936,89 @@ export function DocumentPreview({
     // signature page with no transactions above it.
     const suppressFooter = !!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData);
 
-    if (!suppressFooter && meta.footer?.text) {
-      parts.push(
-        `<div style="margin-top:14px;padding-top:6px;border-top:1px solid #d4d4d4;color:#a3a3a3;font-size:11px;">${escape(meta.footer.text)}</div>`,
+    // Footer (text + signature) lives inside a `margin-top:auto` wrapper so
+    // it gets pushed to the BOTTOM of the page when the outer container is
+    // a flex column with a min-height (see `printPageStyles` for print and
+    // the inline `display:flex` on the wrapper above). This keeps the
+    // signature line anchored to the bottom of an A4 sheet for short
+    // documents, while still flowing naturally after the last content block
+    // for tall multi-page documents. Email clients that ignore flex render
+    // the block as a normal trailing div — graceful degradation.
+    // Resolve the effective signature flags up-front so the various
+    // checks below don't drift from the helper's compatibility logic.
+    const sigFlags = resolveSignatureFlags(meta.footer);
+    const hasFooter =
+      !suppressFooter && (
+        !!meta.footer?.text ||
+        sigFlags.showAuthorized ||
+        sigFlags.showClient ||
+        !!meta.footer?.showPageNumbers
       );
-    }
-
-    // Signature lines — rendered as a 2-cell table so email clients and
-    // print-to-PDF both honor the column layout. The line itself is a
-    // top border on each cell; the label sits underneath.
-    if (!suppressFooter && meta.footer?.showSignature) {
-      parts.push(
-        '<table cellpadding="0" cellspacing="0" border="0" style="width:100%;margin-top:36px;border-collapse:collapse;">',
-        '<tr>',
-        '<td style="width:50%;padding-right:24px;vertical-align:top;">',
-        '<div style="border-top:1px solid #1a1a1a;padding-top:4px;font-size:11px;color:#1a1a1a;width:200px;">Authorized Signature</div>',
-        '</td>',
-        '<td style="width:50%;padding-left:24px;vertical-align:top;text-align:right;">',
-        '<div style="border-top:1px solid #1a1a1a;padding-top:4px;font-size:11px;color:#1a1a1a;width:200px;display:inline-block;text-align:left;">Client Signature</div>',
-        '</td>',
-        '</tr>',
-        '</table>',
-      );
+    if (hasFooter) {
+      parts.push('<div style="margin-top:auto;">');
+      if (meta.footer?.text) {
+        // Pixel sizes mirror the on-screen scale; defaults preserve the
+        // pre-existing 11px / #a3a3a3 / left look so untouched templates
+        // render identically.
+        const footerPx = { xs: 11, sm: 13, md: 15 }[
+          (meta.footer.textSize ?? "xs") as "xs" | "sm" | "md"
+        ];
+        const footerColor = meta.footer.textColor || "#a3a3a3";
+        const footerAlign = meta.footer.textAlign ?? "left";
+        parts.push(
+          `<div style="margin-top:14px;padding-top:6px;border-top:1px solid #d4d4d4;color:${footerColor};font-size:${footerPx}px;text-align:${footerAlign};">${escape(meta.footer.text)}</div>`,
+        );
+      }
+      // Signature lines — rendered as a 2-cell table so email clients and
+      // print-to-PDF both honor the column layout. The line itself is a
+      // top border on each cell; the label sits underneath. When only
+      // one side is enabled we emit an empty cell on the other side so
+      // the visible cell holds its standard column position rather than
+      // re-flowing to the centre.
+      if (sigFlags.showAuthorized || sigFlags.showClient) {
+        const sigLeftLabel = meta.footer?.signatureLeftLabel || "Authorized Signature";
+        const sigRightLabel = meta.footer?.signatureRightLabel || "Client Signature";
+        const sigImg = meta.footer?.authorizedSignatureImage;
+        const sigImgPx = sigImg
+          ? { sm: 32, md: 48, lg: 72 }[
+              (meta.footer?.authorizedSignatureImageHeight ?? "md") as "sm" | "md" | "lg"
+            ]
+          : 0;
+        // Pre-signed image lives ABOVE the line so the line itself
+        // stays a clean visual anchor.  The empty <div> below acts as
+        // a height-reserving spacer when there's no image so both
+        // signature cells line up vertically (label baseline matches).
+        const authImgHtml = sigImg
+          ? `<img src="${origin}/api/pdf-templates/images/${sigImg}" alt="" style="height:${sigImgPx}px;width:auto;max-width:100%;display:block;" />`
+          : "";
+        const reserveHeightPx = sigImgPx ? sigImgPx + 4 : 0;
+        const authCell = sigFlags.showAuthorized
+          ? `<div style="min-height:${reserveHeightPx}px;display:flex;align-items:flex-end;">${authImgHtml}</div>` +
+            `<div style="border-top:1px solid #1a1a1a;padding-top:4px;font-size:11px;color:#1a1a1a;width:200px;">${escape(sigLeftLabel)}</div>`
+          : "";
+        const clientCell = sigFlags.showClient
+          ? `<div style="min-height:${reserveHeightPx}px;"></div>` +
+            `<div style="border-top:1px solid #1a1a1a;padding-top:4px;font-size:11px;color:#1a1a1a;width:200px;display:inline-block;text-align:left;">${escape(sigRightLabel)}</div>`
+          : "";
+        parts.push(
+          '<table cellpadding="0" cellspacing="0" border="0" style="width:100%;margin-top:36px;border-collapse:collapse;">',
+          '<tr>',
+          `<td style="width:50%;padding-right:24px;vertical-align:bottom;">${authCell}</td>`,
+          `<td style="width:50%;padding-left:24px;vertical-align:bottom;text-align:right;">${clientCell}</td>`,
+          '</tr>',
+          '</table>',
+        );
+      }
+      // Page-number indicator — print-only flag we still emit in the
+      // email HTML as a static "Page 1" placeholder so the WYSIWYG of
+      // the live preview holds. Print CSS in `printPageStyles` adds the
+      // real X/Y via @page rules when the user prints to PDF.
+      if (meta.footer?.showPageNumbers) {
+        parts.push(
+          '<div style="margin-top:8px;text-align:center;font-size:10px;color:#a3a3a3;">Page 1</div>',
+        );
+      }
+      parts.push("</div>");
     }
 
     parts.push("</div>");
@@ -1501,8 +2039,15 @@ export function DocumentPreview({
     window.open(url, "_blank");
   }
 
-  function handleEmail() {
-    const htmlContent = generateEmailHtml();
+  async function handleEmail() {
+    // Inline images so external recipients (who aren't logged into our
+    // app) can still see the logo + authorized signature in their
+    // inbox. Without this the protected /api/pdf-templates/images URL
+    // would 401 in any email client and the slot would render as a
+    // broken-image icon. Plain text path doesn't reference images so
+    // it stays synchronous.
+    const rawHtml = generateEmailHtml();
+    const htmlContent = await inlineTemplateImages(rawHtml);
     const plainText = generatePlainText();
     const subject = `${meta.header.title} - ${detail.policyNumber}`;
     onOpenEmailDialog?.(subject, htmlContent, plainText);
@@ -1525,38 +2070,125 @@ export function DocumentPreview({
       </div>
 
       <div
-        className="rounded-md border border-neutral-200 bg-white p-3 sm:p-6 text-neutral-900 dark:border-neutral-700 max-w-[800px] overflow-hidden"
+        // `flex flex-col` + an A4-aspect `min-h-[1100px]` (800px wide *
+        // 297/210 ≈ 1131px) lets the footer's `mt-auto` wrapper push the
+        // signature line to the bottom of the page area, mirroring how
+        // it'll print on A4. For tall documents that exceed the min-height
+        // the layout grows naturally and the footer falls right after the
+        // last section. On very narrow viewports we shrink the min-height
+        // so mobile previews don't show a giant empty band.
+        className="rounded-md border border-neutral-200 bg-white p-3 sm:p-6 text-neutral-900 dark:border-neutral-700 max-w-[800px] overflow-hidden flex flex-col min-h-[600px] sm:min-h-[1100px]"
         style={{ fontFamily: "system-ui, -apple-system, sans-serif", color: "#1a1a1a" }}
       >
-        {/* Header */}
+        {/* Header — supports an optional brand logo with three layout
+            modes: left of the title (default, classic letterhead),
+            right (replaces the doc-no slot — doc-no falls under the
+            title), or centered above the title (full-width row).  The
+            `<img>` is served by the shared template-image endpoint so
+            no extra auth/cache wiring is needed. */}
         <div className="border-b-2 border-neutral-800 pb-2 sm:pb-3 mb-3 sm:mb-5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <h1
-                className="font-bold leading-tight m-0 wrap-break-word"
-                style={{ fontSize: { sm: "13px", md: "16px", lg: "20px", xl: "26px" }[meta.header.titleSize ?? "lg"] }}
-              >
-                {meta.header.title}
-              </h1>
-              {meta.header.subtitle && (
-                <div
-                  className="mt-0.5"
-                  style={{
-                    fontSize: { xs: "11px", sm: "13px", md: "16px" }[meta.header.subtitleSize ?? "sm"],
-                    color: meta.header.subtitleColor ?? "#737373",
-                  }}
+          {(() => {
+            const logoStored = meta.header.logoStoredName;
+            const logoPos = meta.header.logoPosition ?? "left";
+            const logoHeightPx = { sm: 32, md: 48, lg: 72 }[
+              (meta.header.logoSize ?? "md") as "sm" | "md" | "lg"
+            ];
+            const logoEl = logoStored ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={`/api/pdf-templates/images/${logoStored}`}
+                alt=""
+                style={{ height: logoHeightPx, width: "auto", maxWidth: "100%" }}
+                className="object-contain"
+              />
+            ) : null;
+
+            const titleBlock = (
+              <div className="min-w-0 flex-1">
+                <h1
+                  className="font-bold leading-tight m-0 wrap-break-word"
+                  style={{ fontSize: { sm: "13px", md: "16px", lg: "20px", xl: "26px" }[meta.header.titleSize ?? "lg"] }}
                 >
-                  {meta.header.subtitle}
-                </div>
-              )}
-            </div>
-            {trackingEntry?.documentNumber && (
+                  {meta.header.title}
+                </h1>
+                {meta.header.subtitle && (
+                  <div
+                    className="mt-0.5"
+                    style={{
+                      fontSize: { xs: "11px", sm: "13px", md: "16px" }[meta.header.subtitleSize ?? "sm"],
+                      color: meta.header.subtitleColor ?? "#737373",
+                    }}
+                  >
+                    {meta.header.subtitle}
+                  </div>
+                )}
+              </div>
+            );
+
+            const docNoSizeKey = (meta.header.documentNumberSize ?? "md") as
+              "xs" | "sm" | "md" | "lg" | "xl";
+            const docNoSizeClass: Record<typeof docNoSizeKey, string> = {
+              xs: "text-[10px] sm:text-[11px]",
+              sm: "text-[11px] sm:text-xs",
+              md: "text-xs sm:text-base",
+              lg: "text-sm sm:text-lg",
+              xl: "text-base sm:text-xl",
+            };
+            const docNoColor = meta.header.documentNumberColor || "#1a1a1a";
+            const docNoBlock = trackingEntry?.documentNumber ? (
               <div className="text-right ml-2 shrink-0 max-w-[45%]">
                 <div className="text-[10px] sm:text-xs text-neutral-400 uppercase tracking-wider">Doc No.</div>
-                <div className="text-xs sm:text-base font-bold text-neutral-800 break-all">{trackingEntry.documentNumber}</div>
+                <div
+                  className={`${docNoSizeClass[docNoSizeKey]} font-bold break-all`}
+                  style={{ color: docNoColor }}
+                >
+                  {trackingEntry.documentNumber}
+                </div>
               </div>
-            )}
-          </div>
+            ) : null;
+
+            // Logo on the right -> doc-no slides UNDER the title block to
+            // avoid two competing right-aligned elements stacking weirdly.
+            if (logoEl && logoPos === "right") {
+              return (
+                <>
+                  <div className="flex items-start justify-between gap-2">
+                    {titleBlock}
+                    <div className="ml-2 shrink-0">{logoEl}</div>
+                  </div>
+                  {docNoBlock && (
+                    <div className="mt-1 flex justify-end">{docNoBlock}</div>
+                  )}
+                </>
+              );
+            }
+
+            // Centered logo gets its own row above the standard
+            // title / doc-no layout — gives the logo the most visual
+            // prominence and matches a common letterhead style.
+            if (logoEl && logoPos === "center") {
+              return (
+                <>
+                  <div className="mb-2 flex justify-center">{logoEl}</div>
+                  <div className="flex items-start justify-between gap-2">
+                    {titleBlock}
+                    {docNoBlock}
+                  </div>
+                </>
+              );
+            }
+
+            // Default: logo left (or no logo at all).
+            return (
+              <div className="flex items-start justify-between gap-2">
+                {logoEl && (
+                  <div className="mr-2 shrink-0 self-start">{logoEl}</div>
+                )}
+                {titleBlock}
+                {docNoBlock}
+              </div>
+            );
+          })()}
           <div className="flex justify-between mt-1 sm:mt-2 text-[11px] sm:text-[13px] text-neutral-500">
             {meta.header.showPolicyNumber !== false && (
               <span>Ref: <strong>{detail.policyNumber}</strong></span>
@@ -1672,10 +2304,10 @@ export function DocumentPreview({
                         key={f.key}
                         className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
                       >
-                        <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[40%] shrink-0">
+                        <span className={`${bodyLabelClassName} text-neutral-500 font-medium w-[40%] shrink-0`} style={labelStyle}>
                           {f.label}
                         </span>
-                        <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
+                        <span className={`${bodyValueClassName} font-semibold text-neutral-900 wrap-break-word text-right`} style={valueStyle}>
                           {formatValue(f.resolved, f.format, f.currencyCode)}
                         </span>
                       </div>
@@ -1887,7 +2519,35 @@ export function DocumentPreview({
             section,
           );
 
-          if (fields.length === 0) return null;
+          if (fields.length === 0) {
+            // In production we drop empty sections so recipients don't see
+            // empty headers. In live preview the admin opted in to keep
+            // them so they can see the full template structure even when
+            // the chosen policy lacks data for some fields (very common
+            // for the agent copy if the policy has no agent extras).
+            // Render is intentionally minimal — just the section title in
+            // muted gray with a tiny "empty" badge — so it's obvious at a
+            // glance which sections would be dropped without dominating
+            // the layout. No verbose text, no extra borders.
+            if (!previewShowEmptySections) return null;
+            return (
+              <div key={section.id} className={sectionGapClassName}>
+                <div className={cn(titleClassFor(section), "flex items-center gap-2 font-bold text-neutral-400 uppercase tracking-wide border-b border-neutral-200 dark:border-neutral-800", sectionTitleSpacingClassName)}>
+                  <span>{section.title}</span>
+                  <span
+                    className="rounded px-1.5 py-0.5 text-[10px] font-semibold normal-case tracking-normal"
+                    style={{
+                      backgroundColor: "#f59e0b",
+                      color: "#ffffff",
+                    }}
+                    title="This section has no field with a value for the selected policy. End-users will not see it in the actual document."
+                  >
+                    Hidden in production · no data
+                  </span>
+                </div>
+              </div>
+            );
+          }
 
           return (
             <div key={section.id} className={sectionGapClassName}>
@@ -1935,93 +2595,173 @@ export function DocumentPreview({
                     })}
                   </div>
                 ) : (() => {
-                  // 2-column layout: pack two label/value pairs per row to
-                  // save vertical space (typically used for vehicle info).
-                  // For 2-col we drop the per-row bottom border in favor of
-                  // a row-pair border to keep the divider lines aligned.
+                  // -------------------------------------------------------
+                  // Layout selection
+                  // -------------------------------------------------------
+                  // Three orthogonal knobs feed the rendering choice:
+                  //   - section.columns           : section-default fields-per-row
+                  //   - section.fieldGroupColumns : group-blocks per row in the
+                  //                                 section grid (1 or 2)
+                  //   - section.groupColumns[g]   : per-group override of the
+                  //                                 fields-per-row above
+                  //   - section.fullWidthGroups   : groups that span both grid
+                  //                                 cells in the 2-block-per-row
+                  //                                 layout
+                  // The per-group knobs only matter when
+                  // `showFieldGroupHeaders` is true — without group context
+                  // there is no group to override.
                   const cols = section.columns === 2 ? 2 : 1;
-                  // Group boundaries — only consulted when the section has
-                  // showFieldGroupHeaders enabled. We compute them here once
-                  // either way; ignored when the flag is off.
                   const showGroups = !!section.showFieldGroupHeaders;
                   const hiddenSet = new Set(section.hiddenGroupHeaders ?? []);
                   const isGroupHidden = (name: string | undefined) =>
                     !!name && hiddenSet.has(name);
                   const boundaries = showGroups ? computeGroupBoundaries(fields) : null;
                   const groupCols = showGroups && section.fieldGroupColumns === 2 ? 2 : 1;
+                  const fullWidthSet = new Set(section.fullWidthGroups ?? []);
+                  // Resolve the fields-per-row for one bucket. Falls back to
+                  // the section-level default when the bucket has no override.
+                  const colsForBucket = (name: string): 1 | 2 =>
+                    section.groupColumns?.[name] === 2 ? 2 : section.groupColumns?.[name] === 1 ? 1 : cols;
 
-                  // 2-column GROUP layout: each group block (header + its
-                  // fields) sits in its own grid cell. Buckets are arranged
-                  // 2-per-row. Within each bucket fields render 1-per-row
-                  // (mixing field-cols and group-cols would crowd the cells).
-                  if (showGroups && groupCols === 2) {
-                    const buckets = bucketFieldsByGroup(fields);
-                    // Single bucket would render at 50% width with empty
-                    // space on the right — degrade to 1-col rendering.
-                    if (buckets.length > 1) {
-                      return (
-                        <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-                          {buckets.map((b) => (
-                            <div key={`${b.name}::${b.fields[0]?.key ?? ""}`} className="min-w-0">
-                              {b.name && !isGroupHidden(b.name) && (
-                                <div className="mb-1 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700 pb-0.5">
-                                  {b.name}
-                                </div>
-                              )}
-                              {b.fields.map((f, idx) => (
+                  // Single helper to render the contents of one bucket
+                  // (header + fields) using a chosen fields-per-row count.
+                  // Used by both the 2-group-block layout (Path A) and the
+                  // 1-block-per-row layout (Path B). Centralising the markup
+                  // keeps spacing/borders consistent across both paths.
+                  const renderBucket = (
+                    b: { name: string; fields: typeof fields },
+                    bcols: 1 | 2,
+                  ) => {
+                    const showHeader = !!b.name && !isGroupHidden(b.name);
+                    return (
+                      <>
+                        {showHeader && (
+                          <div
+                            className={`mb-1 ${groupHeaderClassName} font-semibold uppercase tracking-wider border-b border-neutral-200 dark:border-neutral-700 pb-0.5`}
+                            style={groupHeaderStyle}
+                          >
+                            {b.name}
+                          </div>
+                        )}
+                        {bcols === 2 ? (
+                          <div className="grid grid-cols-2 gap-x-6">
+                            {b.fields.map((f, idx) => {
+                              const rowIdx = Math.floor(idx / 2);
+                              const lastRowIdx = Math.floor((b.fields.length - 1) / 2);
+                              const isLastRow = rowIdx === lastRowIdx;
+                              return (
                                 <div
                                   key={f.key}
-                                  className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < b.fields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                                  className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${isLastRow ? "" : "border-b border-neutral-100"}`}
                                 >
-                                  <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[45%] shrink-0">
+                                  <span className={`${bodyLabelClassName} text-neutral-500 font-medium w-[45%] shrink-0`} style={labelStyle}>
                                     {f.label}
                                   </span>
-                                  <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
+                                  <span className={`${bodyValueClassName} font-semibold text-neutral-900 wrap-break-word text-right`} style={valueStyle}>
                                     {formatValue(f.resolved, f.format, f.currencyCode)}
                                   </span>
                                 </div>
-                              ))}
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          b.fields.map((f, idx) => (
+                            <div
+                              key={f.key}
+                              className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < b.fields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                            >
+                              <span className={`${bodyLabelClassName} text-neutral-500 font-medium w-[40%] shrink-0`} style={labelStyle}>
+                                {f.label}
+                              </span>
+                              <span className={`${bodyValueClassName} font-semibold text-neutral-900 wrap-break-word text-right`} style={valueStyle}>
+                                {formatValue(f.resolved, f.format, f.currencyCode)}
+                              </span>
                             </div>
-                          ))}
+                          ))
+                        )}
+                      </>
+                    );
+                  };
+
+                  // -------------------------------------------------------
+                  // Path A: 2 group blocks per row (with optional full-width)
+                  // -------------------------------------------------------
+                  if (showGroups && groupCols === 2) {
+                    const buckets = bucketFieldsByGroup(fields);
+                    if (buckets.length > 1) {
+                      // Partition into rows. A "full" bucket gets its own
+                      // row spanning both grid cells; the rest pair up
+                      // 2-by-2. A trailing odd bucket renders alone in the
+                      // left cell (right cell stays empty for alignment).
+                      type Row =
+                        | { kind: "full"; bucket: typeof buckets[number] }
+                        | { kind: "pair"; left: typeof buckets[number]; right: typeof buckets[number] | null };
+                      const rows: Row[] = [];
+                      let pending: typeof buckets[number] | null = null;
+                      for (const b of buckets) {
+                        if (fullWidthSet.has(b.name)) {
+                          if (pending) { rows.push({ kind: "pair", left: pending, right: null }); pending = null; }
+                          rows.push({ kind: "full", bucket: b });
+                        } else if (pending) {
+                          rows.push({ kind: "pair", left: pending, right: b });
+                          pending = null;
+                        } else {
+                          pending = b;
+                        }
+                      }
+                      if (pending) rows.push({ kind: "pair", left: pending, right: null });
+                      return (
+                        <div className="space-y-3">
+                          {rows.map((row, ri) =>
+                            row.kind === "full" ? (
+                              <div key={ri} className="min-w-0">
+                                {renderBucket(row.bucket, colsForBucket(row.bucket.name))}
+                              </div>
+                            ) : (
+                              <div key={ri} className="grid grid-cols-2 gap-x-6">
+                                <div className="min-w-0">
+                                  {renderBucket(row.left, colsForBucket(row.left.name))}
+                                </div>
+                                {row.right ? (
+                                  <div className="min-w-0">
+                                    {renderBucket(row.right, colsForBucket(row.right.name))}
+                                  </div>
+                                ) : (
+                                  <div />
+                                )}
+                              </div>
+                            ),
+                          )}
                         </div>
                       );
                     }
                   }
 
+                  // -------------------------------------------------------
+                  // Path B: 1 group block per row, WITH group headers.
+                  // Per-group `columns` override controls each bucket's
+                  // internal field layout. When there is no per-group
+                  // override and the section is in 2-col mode, falls back
+                  // to the legacy "degrade to 1-col around boundaries"
+                  // behaviour to keep alignment clean.
+                  // -------------------------------------------------------
+                  if (showGroups && boundaries?.some(Boolean)) {
+                    const buckets = bucketFieldsByGroup(fields);
+                    return (
+                      <div className="space-y-0">
+                        {buckets.map((b) => (
+                          <div key={`${b.name}::${b.fields[0]?.key ?? ""}`} className="mt-2 first:mt-0">
+                            {renderBucket(b, colsForBucket(b.name))}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  }
+
+                  // -------------------------------------------------------
+                  // Path C: section.columns === 2, NO groups.
+                  // -------------------------------------------------------
                   if (cols === 2) {
-                    // 2-col + group headers: when a header lands on the
-                    // right-hand cell of a pair, we'd break visual alignment.
-                    // To keep things simple and correct, switch back to a
-                    // single column for any group that has a header — the
-                    // header itself spans full width.
-                    if (showGroups && boundaries?.some(Boolean)) {
-                      return (
-                        <div className="space-y-0">
-                          {fields.map((f, idx) => {
-                            const nextField = fields[idx + 1];
-                            const nextHeaderShown =
-                              !!boundaries[idx + 1] && !isGroupHidden(nextField?.group);
-                            return (
-                              <React.Fragment key={f.key}>
-                                {boundaries[idx] && !isGroupHidden(f.group) && (
-                                  <div className="mt-2 mb-1 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700 pb-0.5">
-                                    {f.group}
-                                  </div>
-                                )}
-                                <div className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < fields.length - 1 && !nextHeaderShown ? "border-b border-neutral-100" : ""}`}>
-                                  <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[40%] shrink-0">
-                                    {f.label}
-                                  </span>
-                                  <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
-                                    {formatValue(f.resolved, f.format, f.currencyCode)}
-                                  </span>
-                                </div>
-                              </React.Fragment>
-                            );
-                          })}
-                        </div>
-                      );
-                    }
                     return (
                       <div className="grid grid-cols-2 gap-x-6">
                         {fields.map((f, idx) => {
@@ -2033,10 +2773,10 @@ export function DocumentPreview({
                               key={f.key}
                               className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${isLastRow ? "" : "border-b border-neutral-100"}`}
                             >
-                              <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[45%] shrink-0">
+                              <span className={`${bodyLabelClassName} text-neutral-500 font-medium w-[45%] shrink-0`} style={labelStyle}>
                                 {f.label}
                               </span>
-                              <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
+                              <span className={`${bodyValueClassName} font-semibold text-neutral-900 wrap-break-word text-right`} style={valueStyle}>
                                 {formatValue(f.resolved, f.format, f.currencyCode)}
                               </span>
                             </div>
@@ -2045,49 +2785,148 @@ export function DocumentPreview({
                       </div>
                     );
                   }
-                  return fields.map((f, idx) => {
-                    const nextField = fields[idx + 1];
-                    const nextHeaderShown =
-                      !!boundaries?.[idx + 1] && !isGroupHidden(nextField?.group);
-                    const headerShown = !!boundaries?.[idx] && !isGroupHidden(f.group);
-                    return (
-                      <React.Fragment key={f.key}>
-                        {headerShown && (
-                          <div className="mt-2 mb-1 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700 pb-0.5">
-                            {f.group}
-                          </div>
-                        )}
-                        <div
-                          className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < fields.length - 1 && !nextHeaderShown ? "border-b border-neutral-100" : ""}`}
-                        >
-                          <span className="text-[11px] sm:text-[13px] text-neutral-500 font-medium w-[40%] shrink-0">
-                            {f.label}
-                          </span>
-                          <span className="text-xs sm:text-[13px] font-semibold text-neutral-900 wrap-break-word text-right" style={{ whiteSpace: "pre-line" }}>
-                            {formatValue(f.resolved, f.format, f.currencyCode)}
-                          </span>
-                        </div>
-                      </React.Fragment>
-                    );
-                  });
+
+                  // -------------------------------------------------------
+                  // Path D: 1-per-row, no group headers (the simplest case).
+                  // -------------------------------------------------------
+                  return fields.map((f, idx) => (
+                    <div
+                      key={f.key}
+                      className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                    >
+                      <span className={`${bodyLabelClassName} text-neutral-500 font-medium w-[40%] shrink-0`} style={labelStyle}>
+                        {f.label}
+                      </span>
+                      <span className={`${bodyValueClassName} font-semibold text-neutral-900 wrap-break-word text-right`} style={valueStyle}>
+                        {formatValue(f.resolved, f.format, f.currencyCode)}
+                      </span>
+                    </div>
+                  ));
                 })()}
               </div>
             </div>
           );
         })}
 
-        {/* Footer — hide when requiresStatement and no data */}
-        {!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData) && meta.footer?.text && (
-          <div className="mt-6 sm:mt-8 pt-2 sm:pt-3 border-t border-neutral-300 text-[10px] sm:text-xs text-neutral-400">
-            {meta.footer.text}
-          </div>
-        )}
-        {!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData) && meta.footer?.showSignature && (
-          <div className="mt-10 sm:mt-16 flex justify-between">
-            <div className="w-36 sm:w-[200px] border-t border-neutral-800 pt-1 text-[10px] sm:text-xs">Authorized Signature</div>
-            <div className="w-36 sm:w-[200px] border-t border-neutral-800 pt-1 text-[10px] sm:text-xs">Client Signature</div>
-          </div>
-        )}
+        {/* Footer — hide when requiresStatement and no data. The wrapper
+            uses `mt-auto` so in the flex-column container above the footer
+            block (text + signature) is pushed to the BOTTOM of the page
+            area, anchoring the signature line at the bottom of an A4 sheet
+            for short documents. For tall documents that already overflow
+            the min-height it sits naturally after the last section. */}
+        {!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData) && (() => {
+          // Footer style knobs — all optional, falling back to the
+          // pre-existing hard-coded look when unset so untouched
+          // templates render identically to before.
+          const sigFlags = resolveSignatureFlags(meta.footer);
+          const hasAnything =
+            !!meta.footer?.text ||
+            sigFlags.showAuthorized ||
+            sigFlags.showClient ||
+            !!meta.footer?.showPageNumbers;
+          if (!hasAnything) return null;
+          const footerSizeKey = (meta.footer?.textSize ?? "xs") as "xs" | "sm" | "md";
+          const footerSizeClass: Record<typeof footerSizeKey, string> = {
+            xs: "text-[10px] sm:text-xs",
+            sm: "text-[11px] sm:text-[13px]",
+            md: "text-xs sm:text-sm",
+          };
+          const footerAlign = meta.footer?.textAlign ?? "left";
+          const footerAlignClass = {
+            left: "text-left",
+            center: "text-center",
+            right: "text-right",
+          }[footerAlign];
+          const footerColor = meta.footer?.textColor || "#a3a3a3";
+          const sigLeftLabel = meta.footer?.signatureLeftLabel || "Authorized Signature";
+          const sigRightLabel = meta.footer?.signatureRightLabel || "Client Signature";
+          const sigImg = meta.footer?.authorizedSignatureImage;
+          const sigImgPx = sigImg
+            ? { sm: 32, md: 48, lg: 72 }[
+                (meta.footer?.authorizedSignatureImageHeight ?? "md") as "sm" | "md" | "lg"
+              ]
+            : 0;
+
+          // Signature row — built dynamically based on which sides are
+          // enabled.  When only one side is shown we still render a
+          // 2-cell grid so the visible cell sits at its normal column
+          // (left = company-side, right = client-side) instead of
+          // hopping to the centre, which would look like a layout bug.
+          const renderSignatureCell = (
+            side: "left" | "right",
+            label: string,
+            imgStored?: string,
+            imgPx?: number,
+          ) => (
+            <div
+              className={
+                side === "left"
+                  ? "w-36 sm:w-[200px]"
+                  : "w-36 sm:w-[200px] ml-auto text-right"
+              }
+            >
+              {/* The signature image sits ABOVE the line so the line
+                  itself stays a clean visual anchor regardless of
+                  whether the e-sig is present or not. Without the image
+                  the cell renders a blank slot (height matches typical
+                  hand-sign room) so the layout doesn't jump. */}
+              <div
+                className="flex items-end"
+                style={{
+                  minHeight: imgPx ? `${imgPx + 4}px` : "0px",
+                  justifyContent: side === "right" ? "flex-end" : "flex-start",
+                }}
+              >
+                {imgStored && imgPx ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`/api/pdf-templates/images/${imgStored}`}
+                    alt=""
+                    style={{ height: imgPx, width: "auto", maxWidth: "100%" }}
+                    className="object-contain"
+                  />
+                ) : null}
+              </div>
+              <div className="border-t border-neutral-800 pt-1 text-[10px] sm:text-xs">
+                {label}
+              </div>
+            </div>
+          );
+
+          return (
+            <div className="mt-auto">
+              {meta.footer?.text && (
+                <div
+                  className={`mt-6 sm:mt-8 pt-2 sm:pt-3 border-t border-neutral-300 ${footerSizeClass[footerSizeKey]} ${footerAlignClass}`}
+                  style={{ color: footerColor }}
+                >
+                  {meta.footer.text}
+                </div>
+              )}
+              {(sigFlags.showAuthorized || sigFlags.showClient) && (
+                <div className="mt-10 sm:mt-16 grid grid-cols-2 gap-4">
+                  <div>
+                    {sigFlags.showAuthorized &&
+                      renderSignatureCell("left", sigLeftLabel, sigImg, sigImgPx)}
+                  </div>
+                  <div>
+                    {sigFlags.showClient &&
+                      renderSignatureCell("right", sigRightLabel)}
+                  </div>
+                </div>
+              )}
+              {meta.footer?.showPageNumbers && (
+                // Static "Page 1" placeholder so admins can see where the
+                // page-number indicator will appear; the real X/Y is
+                // injected by the print path's @page rules and email
+                // clients ignore it (which is fine — emails are 1 page).
+                <div className="mt-2 text-center text-[10px] text-neutral-400">
+                  Page 1
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Action buttons — 3-stage: icon / text / icon+text, 2 per row */}
@@ -3109,15 +3948,15 @@ export function DocumentsTab({
           if (onlyTemplateValue) return r.value === onlyTemplateValue;
           const placements = resolveDocumentTemplateShowOn(r.meta);
           if (!placements.includes("policy")) return false;
-          const hasInsurerRestriction = r.meta.insurerPolicyIds && r.meta.insurerPolicyIds.length > 0;
-          if (!hasInsurerRestriction) {
-            const flows = r.meta.flows;
-            if (flows && flows.length > 0) {
-              if (!flowKey || !flows.includes(flowKey)) return false;
-            }
-          } else {
-            if (!matchesInsurer(r.meta.insurerPolicyIds)) return false;
+          // Flow + Insurer restrictions are now AND-ed (previously the
+          // presence of any insurer restriction silently bypassed the
+          // flow check, which led to unexpected templates appearing
+          // on policies of restricted insurers regardless of flow).
+          const flows = r.meta.flows;
+          if (flows && flows.length > 0) {
+            if (!flowKey || !flows.includes(flowKey)) return false;
           }
+          if (!matchesInsurer(r.meta.insurerPolicyIds)) return false;
           if (!matchesTemplateStatus(r.meta)) return false;
           if (!matchesLineKey(r.meta.accountingLineKey)) return false;
           return true;
@@ -3141,15 +3980,14 @@ export function DocumentsTab({
           const placements = resolvePdfTemplateShowOn(meta);
           if (!placements.includes("policy")) return false;
           if (!meta.fields?.length && !meta.pages?.length) return false;
-          const hasInsurerRestriction = meta.insurerPolicyIds && meta.insurerPolicyIds.length > 0;
-          if (!hasInsurerRestriction) {
-            const flows = meta.flows;
-            if (flows && flows.length > 0) {
-              if (!flowKey || !flows.includes(flowKey)) return false;
-            }
-          } else {
-            if (!matchesInsurer(meta.insurerPolicyIds)) return false;
+          // Flow + Insurer restrictions are now AND-ed (see HTML
+          // template filter above for rationale). Both must pass when
+          // both are configured.
+          const flows = meta.flows;
+          if (flows && flows.length > 0) {
+            if (!flowKey || !flows.includes(flowKey)) return false;
           }
+          if (!matchesInsurer(meta.insurerPolicyIds)) return false;
           if (!matchesStatus(meta.showWhenStatus, "client")) return false;
           if (!matchesLineKey(meta.accountingLineKey)) return false;
           return true;

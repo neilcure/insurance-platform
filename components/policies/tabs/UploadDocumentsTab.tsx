@@ -176,15 +176,15 @@ export function UploadDocumentsTab({
       ]));
 
       const applicable = types.filter((t) => {
-        const hasInsurerRestriction = t.meta?.insurerPolicyIds && t.meta.insurerPolicyIds.length > 0;
-        if (!hasInsurerRestriction) {
-          const flows = t.meta?.flows;
-          if (flows && flows.length > 0) {
-            if (!flowKey || !flows.includes(flowKey)) return false;
-          }
-        } else {
-          if (!matchesInsurer(t.meta?.insurerPolicyIds)) return false;
+        // Flow + Insurer restrictions are AND-ed: a template flagged
+        // for both flow X and insurer Y now only shows on policies
+        // that match BOTH (previously the insurer restriction
+        // silently bypassed the flow check).
+        const flows = t.meta?.flows;
+        if (flows && flows.length > 0) {
+          if (!flowKey || !flows.includes(flowKey)) return false;
         }
+        if (!matchesInsurer(t.meta?.insurerPolicyIds)) return false;
 
         const sws = t.meta?.showWhenStatus;
         if (sws && sws.length > 0) {

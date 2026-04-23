@@ -17,6 +17,7 @@ import type {
   DocumentTemplateRow,
 } from "@/lib/types/document-template";
 import type { PolicyDetail } from "@/lib/types/policy";
+import type { DocumentStatusEntry } from "@/lib/types/accounting";
 
 type RecentPolicy = {
   policyId: number;
@@ -84,6 +85,39 @@ export function DocumentTemplateLivePreview({
   const [detail, setDetail] = React.useState<PolicyDetail | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // Audience toggle — only meaningful when the template either flags
+  // `enableAgentCopy`, is itself an agent template, or has at least one
+  // section with `audience: "agent" | "client"`. For client-only templates
+  // the toggle is hidden and we always render as client.
+  const [previewAudience, setPreviewAudience] = React.useState<"client" | "agent">("client");
+  // When ON, sections with no field data are still rendered (with a hint)
+  // so the admin can verify the full template layout against any policy.
+  // ON by default because the live preview's job is to help admins verify
+  // their template structure — silently dropping sections when the chosen
+  // policy lacks data caused real confusion (admin thought sections were
+  // missing from the template). Untick to see exactly what end-users will
+  // get for THIS policy.
+  const [showEmptySections, setShowEmptySections] = React.useState(true);
+
+  // Whether the template can render anything different for the agent view.
+  // Mirrors the same heuristic used in DocumentsTab so what the admin sees
+  // in the preview matches what end-users actually get.
+  const supportsAgent = React.useMemo(() => {
+    if (meta.isAgentTemplate) return true;
+    if (meta.enableAgentCopy) return true;
+    return (meta.sections ?? []).some(
+      (s) => s.audience === "client" || s.audience === "agent",
+    );
+  }, [meta.isAgentTemplate, meta.enableAgentCopy, meta.sections]);
+
+  // Reset audience back to "client" whenever the template loses agent support
+  // (e.g. admin toggles enableAgentCopy off mid-edit) so the toggle never
+  // shows a stale "agent" state without a UI control to flip it back.
+  React.useEffect(() => {
+    if (!supportsAgent && previewAudience !== "client") {
+      setPreviewAudience("client");
+    }
+  }, [supportsAgent, previewAudience]);
 
   // Load the "recent policies" list whenever the drawer opens, so the admin
   // can pick a policy without remembering its number.
@@ -153,6 +187,25 @@ export function DocumentTemplateLivePreview({
     () => (detail?.extraAttributes ?? {}) as SnapshotData,
     [detail],
   );
+
+  // Synthetic tracking entry so the preview can show what the document-number
+  // area will look like once the doc is actually prepared. In production this
+  // entry is only created when the admin clicks "Prepare" — until then there
+  // is no real number, which is why the live preview used to show an empty
+  // doc-no slot. We mirror that production format here using the template's
+  // configured `documentPrefix` and add a "(A)" suffix for the agent copy
+  // (matches the agent-copy numbering convention in DocumentsTab).
+  const previewTrackingEntry = React.useMemo<DocumentStatusEntry | undefined>(() => {
+    const prefix = (meta.documentPrefix ?? "").trim();
+    if (!prefix) return undefined; // template has no prefix — render as it would in production (no number)
+    const isAgentCopy =
+      meta.isAgentTemplate || (supportsAgent && previewAudience === "agent");
+    const number = `${prefix}-PREVIEW${isAgentCopy ? " (A)" : ""}`;
+    return {
+      status: "prepared",
+      documentNumber: number,
+    };
+  }, [meta.documentPrefix, meta.isAgentTemplate, supportsAgent, previewAudience]);
 
   return (
     <Drawer
@@ -248,7 +301,68 @@ export function DocumentTemplateLivePreview({
                 </select>
               </div>
             )}
+
+            {/* Audience toggle — only meaningful when the template renders
+                differently for the agent (has agent-only sections, is an
+                agent template, or has Agent Copy enabled). */}
+            {supportsAgent && (
+              <div className="flex flex-col gap-1">
+                <Label className="text-xs font-medium">View as</Label>
+                <div className="inline-flex h-8 overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-700">
+                  <button
+                    type="button"
+                    onClick={() => setPreviewAudience("client")}
+                    className={`px-3 text-xs font-medium transition-colors ${
+                      previewAudience === "client"
+                        ? "bg-blue-600 text-white"
+                        : "bg-white text-neutral-700 hover:bg-neutral-50 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                    }`}
+                    aria-pressed={previewAudience === "client"}
+                  >
+                    Client
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewAudience("agent")}
+                    className={`px-3 text-xs font-medium transition-colors ${
+                      previewAudience === "agent"
+                        ? "bg-amber-600 text-white"
+                        : "bg-white text-neutral-700 hover:bg-neutral-50 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                    }`}
+                    aria-pressed={previewAudience === "agent"}
+                  >
+                    Agent
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
+          {supportsAgent && (
+            <div className="mt-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+              {previewAudience === "agent"
+                ? "Showing the Agent copy — agent-only sections (e.g. Agent Premium) are visible; client-only sections are hidden."
+                : "Showing the Client copy — client-only sections are visible; agent-only sections are hidden. Switch to Agent above to preview the Agent copy."}
+            </div>
+          )}
+          {/* Show-empty toggle — lets admins verify the layout even when the
+              chosen policy lacks data for some fields. Especially useful for
+              the agent copy when the policy has no agent-specific values
+              (Agent Premium, agent name, etc.) and sections would otherwise
+              collapse to nothing. */}
+          <label className="mt-1.5 flex cursor-pointer items-center gap-1.5 text-[11px] text-neutral-600 dark:text-neutral-400">
+            <input
+              type="checkbox"
+              checked={showEmptySections}
+              onChange={(e) => setShowEmptySections(e.target.checked)}
+              className="h-3 w-3"
+            />
+            <span>
+              <strong>Show empty sections</strong> (preview-only) — render
+              section headers even when the chosen policy has no data for
+              them. Untick to see exactly what end-users will get for this
+              policy (production always hides empty sections).
+            </span>
+          </label>
         </div>
 
         {/* Scrollable preview body */}
@@ -279,6 +393,9 @@ export function DocumentTemplateLivePreview({
               template={fakeTemplate}
               detail={detail}
               snapshot={snapshot}
+              audience={supportsAgent ? previewAudience : undefined}
+              trackingEntry={previewTrackingEntry}
+              previewShowEmptySections={showEmptySections}
             />
           )}
         </div>

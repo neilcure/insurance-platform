@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
@@ -47,7 +48,11 @@ export type SyncAllTargetsPickerDialogProps = {
   /** Human-readable label for each type code, used to render the type badge. */
   typeLabels: Record<string, string>;
   onCancel: () => void;
-  onConfirm: (selectedIds: number[]) => void;
+  /**
+   * Called with the chosen target ids AND whether the admin wants style
+   * settings copied in addition to sections.
+   */
+  onConfirm: (selectedIds: number[], syncStyle: boolean) => void;
 };
 
 export function SyncAllTargetsPickerDialog({
@@ -70,11 +75,15 @@ export function SyncAllTargetsPickerDialog({
   const [selected, setSelected] = React.useState<Set<number>>(
     () => new Set(compatibleIds),
   );
+  const [syncStyle, setSyncStyle] = React.useState(false);
 
   // Reset selection whenever the dialog opens with a new candidate set so
   // an old selection from a previous master doesn't leak in.
   React.useEffect(() => {
-    if (open) setSelected(new Set(compatibleIds));
+    if (open) {
+      setSelected(new Set(compatibleIds));
+      setSyncStyle(false);
+    }
   }, [open, compatibleIds]);
 
   function toggle(id: number) {
@@ -115,6 +124,29 @@ export function SyncAllTargetsPickerDialog({
             Section titles, header, type, and flow settings are not changed.
             Master sections missing from a target will be appended.
           </p>
+
+          {/* Style sync option */}
+          <div className="rounded-md border border-neutral-200 dark:border-neutral-700">
+            <label className="flex cursor-pointer items-start gap-2 px-3 py-2.5 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-900">
+              <Checkbox
+                checked={syncStyle}
+                onChange={(e) => setSyncStyle(e.currentTarget.checked)}
+                className="mt-0.5"
+              />
+              <div>
+                <Label className="cursor-pointer font-medium text-neutral-800 dark:text-neutral-100">
+                  Also copy style settings from Master
+                </Label>
+                <p className="mt-0.5 text-neutral-500">
+                  Copies layout &amp; spacing, body font size, label/value colors, footer text &amp; signature,
+                  and header display settings (sizes, show date/policy#).{" "}
+                  <strong className="text-neutral-700 dark:text-neutral-300">
+                    Title and subtitle text are always kept from each template.
+                  </strong>
+                </p>
+              </div>
+            </label>
+          </div>
 
           <div className="flex items-center justify-between rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-900">
             <span className="text-neutral-600 dark:text-neutral-300">
@@ -214,10 +246,11 @@ export function SyncAllTargetsPickerDialog({
           </Button>
           <Button
             type="button"
-            onClick={() => onConfirm(Array.from(selected))}
+            onClick={() => onConfirm(Array.from(selected), syncStyle)}
             disabled={selectedCount === 0}
           >
             Sync {selectedCount} template{selectedCount === 1 ? "" : "s"}
+            {syncStyle ? " + style" : ""}
           </Button>
         </DialogFooter>
       </DialogContent>
