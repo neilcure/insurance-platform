@@ -1,8 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { Upload } from "lucide-react";
+import { Mail, Upload } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { DocumentUploadCard } from "@/components/ui/document-upload-card";
+import {
+  EmailUploadedFilesDialog,
+  type EmailableDocGroup,
+} from "@/components/policies/EmailUploadedFilesDialog";
 import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 import type {
   DocumentStatus,
@@ -74,6 +79,8 @@ export function UploadDocumentsTab({
   filter = "all",
   parentPolicyId,
   parentSchedules,
+  policyNumber,
+  defaultEmail,
 }: {
   policyId: number;
   flowKey?: string;
@@ -86,6 +93,10 @@ export function UploadDocumentsTab({
   filter?: "all" | "documents" | "payments";
   parentPolicyId?: number;
   parentSchedules?: ScheduleInfo[];
+  /** Used to pre-fill the email subject. */
+  policyNumber?: string;
+  /** Pre-filled recipient when the user opens the Email Files dialog. */
+  defaultEmail?: string;
 }) {
   const { allOptions: statusOptionsFromHook } = usePolicyStatuses();
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
@@ -279,6 +290,39 @@ export function UploadDocumentsTab({
     onPaymentRecorded?.();
   }
 
+  // Group ALL non-rejected uploads across the visible requirements
+  // for the "Email Files" picker. We deliberately skip rejected
+  // files (per product spec) — verified + pending verification are
+  // the meaningful "the file exists, it's worth sending" states.
+  // Filter only kicks in when this tab is showing the "documents"
+  // (or "all") slice; when filter==="payments" the parent already
+  // hides everything else, so the picker is naturally scoped.
+  const emailableGroups: EmailableDocGroup[] = React.useMemo(() => {
+    const groups: EmailableDocGroup[] = [];
+    for (const req of requirements) {
+      const usable = req.uploads.filter((u) => u.status !== "rejected");
+      if (usable.length === 0) continue;
+      groups.push({
+        typeKey: req.typeKey,
+        label: req.label,
+        uploads: usable,
+      });
+    }
+    return groups;
+  }, [requirements]);
+
+  const totalEmailableFiles = emailableGroups.reduce(
+    (sum, g) => sum + g.uploads.length,
+    0,
+  );
+  const [emailDialogOpen, setEmailDialogOpen] = React.useState(false);
+  // The Email Files affordance only makes sense for the
+  // "documents" slice — rendering it next to payment cards would
+  // be confusing. The "all" filter (no parent filtering) also
+  // benefits, e.g. when this tab is mounted standalone.
+  const showEmailFilesButton =
+    filter !== "payments" && totalEmailableFiles > 0;
+
   if (loading) {
     if (filter === "payments") return null;
     return (
@@ -319,6 +363,24 @@ export function UploadDocumentsTab({
 
   return (
     <div className="space-y-3">
+      {showEmailFilesButton && (
+        <div className="flex items-center justify-between gap-2 pb-1">
+          <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+            {totalEmailableFiles} file{totalEmailableFiles === 1 ? "" : "s"} available
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 text-[11px] px-2"
+            onClick={() => setEmailDialogOpen(true)}
+            title="Send selected uploaded files in one email"
+          >
+            <Mail className="h-3.5 w-3.5" />
+            Email Files
+          </Button>
+        </div>
+      )}
+
       {requirements.map((req) => (
         <DocumentUploadCard
           key={req.typeKey}
@@ -338,6 +400,17 @@ export function UploadDocumentsTab({
           hasStatementInvoices={hasStatementInvoices}
         />
       ))}
+
+      {showEmailFilesButton && (
+        <EmailUploadedFilesDialog
+          open={emailDialogOpen}
+          onOpenChange={setEmailDialogOpen}
+          policyId={policyId}
+          policyNumber={policyNumber}
+          defaultEmail={defaultEmail}
+          groups={emailableGroups}
+        />
+      )}
     </div>
   );
 }

@@ -65,6 +65,23 @@ export function WorkflowTab({
     ? (statusExtra.statusHistoryAgent as Array<{ status: string; changedAt: string; changedBy?: string; note?: string }>)
     : [];
 
+  // Pre-fill recipient for the "Email Files" dialog. Mirrors the
+  // logic used by DocumentsTab when picking a default recipient
+  // for client-facing PDF templates: prefer the insured's email
+  // captured in the snapshot, fall back to common alternative
+  // keys. Falls through to empty string when nothing is on file —
+  // the dialog still opens, the user just types it in.
+  const defaultEmailRecipient = React.useMemo(() => {
+    const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
+    const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
+    const candidate =
+      insured.email ??
+      insured.contactinfo__email ??
+      insured.contact_email ??
+      "";
+    return String(candidate ?? "").trim();
+  }, [detail.extraAttributes]);
+
   const { insuredType, hasNcb } = React.useMemo(() => {
     const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
     const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
@@ -498,6 +515,8 @@ export function WorkflowTab({
                     onSummaryChange={setUploadSummary}
                     onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
                     filter="documents"
+                    policyNumber={detail.policyNumber}
+                    defaultEmail={defaultEmailRecipient}
                   />
                 </div>
                 {isParentPolicy && linkedEndorsements.map((e) => (
@@ -518,6 +537,8 @@ export function WorkflowTab({
                       }}
                       onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
                       filter="documents"
+                      policyNumber={e.policyNumber}
+                      defaultEmail={defaultEmailRecipient}
                     />
                   </div>
                 ))}
