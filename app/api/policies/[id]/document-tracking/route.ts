@@ -373,18 +373,11 @@ function resolveSetCode(
   return null;
 }
 
-const DOC_ACTION_TO_STATUS: Record<string, Record<string, string>> = {
-  quotation: { prepare: "quotation_prepared", send: "quotation_sent", confirm: "quotation_confirmed" },
-  invoice:   { prepare: "invoice_prepared", send: "invoice_sent" },
-  receipt:   { send: "payment_received" },
-};
-
-const ACTION_NOTE_LABELS: Record<string, string> = {
-  prepare: "prepared",
-  send: "sent",
-  confirm: "confirmed",
-};
-
+// Thin positional-args wrapper that preserves the original
+// signature used by all callers in this route. Actual mapping
+// (docType + action -> target status) lives in
+// `lib/auto-advance-status.ts` so other entry points (e.g.
+// /api/sign/[token]/submit) follow identical rules.
 async function autoAdvancePolicyStatus(
   policyId: number,
   docType: string,
@@ -393,33 +386,15 @@ async function autoAdvancePolicyStatus(
   templateType?: string,
   track: "client" | "agent" = "client",
 ): Promise<string | null> {
-  if (action !== "send" && action !== "confirm" && action !== "prepare") return null;
-
-  let targetStatus: string | null = null;
-
-  if (templateType && DOC_ACTION_TO_STATUS[templateType]?.[action]) {
-    targetStatus = DOC_ACTION_TO_STATUS[templateType][action];
-  } else {
-    const docLower = docType.toLowerCase();
-    for (const [keyword, mapping] of Object.entries(DOC_ACTION_TO_STATUS)) {
-      if (docLower.includes(keyword) && mapping[action]) {
-        targetStatus = mapping[action];
-        break;
-      }
-    }
-  }
-
-  if (!targetStatus) return null;
-
-  const { advancePolicyStatus } = await import("@/lib/auto-advance-status");
-  const noteLabel = ACTION_NOTE_LABELS[action] ?? action;
-  return advancePolicyStatus(
+  const { autoAdvanceFromTrackingAction } = await import("@/lib/auto-advance-status");
+  return autoAdvanceFromTrackingAction({
     policyId,
-    targetStatus,
+    docType,
+    action,
     changedBy,
-    `Auto: ${docType.replace(/_/g, " ")} ${noteLabel}`,
+    templateType,
     track,
-  );
+  });
 }
 
 // autoCreateAccountingInvoices is imported from @/lib/auto-create-invoices

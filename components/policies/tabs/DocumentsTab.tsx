@@ -11,6 +11,7 @@ import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 import {
   FileText, Printer, ChevronLeft, Stamp, Download, Loader2,
   Mail, MessageCircle, CheckCircle2, Send, XCircle, X, Paperclip, Upload, ShieldCheck,
+  PenLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DocumentStatusMap, DocumentStatusEntry } from "@/lib/types/accounting";
@@ -31,6 +32,8 @@ import {
   type FieldRef,
   type DocTrackingEntry,
 } from "@/lib/field-resolver";
+import { PRINT_PAGE_STYLES } from "@/lib/pdf/print-styles";
+import { useSession } from "next-auth/react";
 
 function toTrackingKey(label: string): string {
   return label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
@@ -972,42 +975,15 @@ export function DocumentPreview({
     ? meta.sections.filter((s) => !s.audience || s.audience === "all" || s.audience === viewAudience)
     : meta.sections;
 
-  // Page-level styles only — every visual rule for the document body lives
-  // INSIDE `generateEmailHtml()` as inline styles. We can't reuse the
-  // on-screen React HTML directly because it relies on Tailwind utility
-  // classes (flex, grid, w-[40%], text-[11px], etc.) that don't exist in
-  // the popped-out print window — labels and values would collapse with
-  // no spacing or alignment. Inline-styled HTML renders correctly in any
-  // chrome (browser print, save-as-PDF, mail clients) without external CSS.
-  // Print layout is tuned to fit a single typical insurance document on one
-  // A4 page when reasonable. We rely on @page for the actual paper margin
-  // and zero out the body padding in print so we don't double-up the
-  // margin (browser was effectively giving ~12mm + 24px before).
-  // The body is laid out as a flex column with a min-height matching the
-  // printable A4 area so the footer (text + signature lines) pushes to the
-  // BOTTOM of the page when content is short. For multi-page documents the
-  // footer naturally falls after the last content block on the final page.
-  // Without this, the signature line sits flush under the last section
-  // leaving a large empty band at the bottom of an A4 sheet — see also the
-  // matching `mt-auto` wrapper in the on-screen preview and the
-  // `margin-top:auto` footer block in `generateEmailHtml`.
-  const printPageStyles = `
-    @page { size: A4; margin: 10mm; }
-    body {
-      font-family: Arial, Helvetica, sans-serif;
-      color: #1a1a1a;
-      margin: 0;
-      padding: 16px;
-      background: #ffffff;
-      display: flex;
-      flex-direction: column;
-      min-height: 100vh;
-    }
-    body > div { flex: 1 0 auto; display: flex; flex-direction: column; }
-    @media print {
-      body { padding: 0; min-height: calc(297mm - 20mm); }
-    }
-  `;
+  // Page-level styles for the print iframe and the server-side
+  // Puppeteer PDF renderer live in `lib/pdf/print-styles.ts` so the
+  // emailed PDF attachment is byte-identical to what the user prints
+  // from this dialog.  Every visual rule for the document body lives
+  // INSIDE `generateEmailHtml()` as inline styles (the on-screen
+  // React HTML uses Tailwind classes which don't exist in the print
+  // window or the Puppeteer page, so we re-emit the layout as
+  // inline-styled HTML that renders the same in any chrome).
+  const printPageStyles = PRINT_PAGE_STYLES;
 
   /**
    * Replace every `<img src="…/api/pdf-templates/images/…">` URL in
@@ -2017,7 +1993,7 @@ export function DocumentPreview({
             `<div style="border-top:1px solid #1a1a1a;padding-top:4px;font-size:11px;color:#1a1a1a;width:200px;">${escape(sigLeftLabel)}</div>`
           : "";
         const clientCell = sigFlags.showClient
-          ? `<div style="min-height:${reserveHeightPx}px;"></div>` +
+          ? `<div data-client-signature-slot="" style="min-height:${reserveHeightPx}px;display:flex;align-items:flex-end;justify-content:flex-end;"></div>` +
             `<div style="border-top:1px solid #1a1a1a;padding-top:4px;font-size:11px;color:#1a1a1a;width:200px;display:inline-block;text-align:left;">${escape(sigRightLabel)}</div>`
           : "";
         parts.push(
@@ -2060,26 +2036,30 @@ export function DocumentPreview({
   }
 
   async function handleEmail() {
-    // Email path uses the PUBLIC `/api/pdf-templates/images/<storedName>`
-    // URL directly (the endpoint is public-read precisely for this
-    // flow — see app/api/pdf-templates/images/[storedName]/route.ts).
+    // The document is delivered to the recipient as a PDF
+    // ATTACHMENT (not as the email body). The email body itself is
+    // a short editable note that the user fills in via the dialog.
     //
-    // We deliberately do NOT call `inlineTemplateImages` here:
-    //   - Brevo doesn't support inline CID attachments, and
-    //   - Gmail/Outlook unreliably render large `data:` URLs in
-    //     `<img>` tags (they often appear as a broken icon).
-    // A plain absolute URL works in every email client and lets
-    // Gmail's image proxy cache the asset across recipients.
+    // Why a PDF attachment instead of an HTML body:
+    //   - Email clients vary wildly in how they render complex
+    //     HTML (Gmail strips/rewrites flex, ignores some inline
+    //     styles, blocks large data: URI images, etc.). Every
+    //     workaround for one client tends to break another.
+    //   - The Print/PDF path already produces a perfect, byte-
+    //     identical render via Chromium's print engine. By
+    //     delivering that exact PDF as an attachment, the
+    //     recipient sees the document the same way the sender
+    //     previewed it — no client-specific layout drift.
     //
-    // The server-side `send-document` route rewrites the URL's origin
-    // from `window.location.origin` (which on dev is localhost:3000
-    // and unreachable from a remote inbox) to the configured
-    // `APP_URL`, so the recipient's mail client can actually fetch
-    // the image. See `rewriteImageSrcsForEmail` in that route.
-    const htmlContent = generateEmailHtml();
+    // We inline images here (same as the print path) so the PDF
+    // generator running on the server doesn't need to fetch images
+    // back from the app — the HTML is fully self-contained when it
+    // arrives at the server.
+    const rawHtml = generateEmailHtml();
+    const documentHtml = await inlineTemplateImages(rawHtml);
     const plainText = generatePlainText();
     const subject = `${meta.header.title} - ${detail.policyNumber}`;
-    onOpenEmailDialog?.(subject, htmlContent, plainText);
+    onOpenEmailDialog?.(subject, documentHtml, plainText);
   }
 
   return (
@@ -2981,7 +2961,7 @@ export function DocumentPreview({
       {/* Tracking status */}
       {trackingEntry && (
         <div className="flex items-center justify-between rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {(() => {
               const badge = trackingEntry.status ? STATUS_BADGE[trackingEntry.status] : null;
               if (!badge) return null;
@@ -2989,22 +2969,55 @@ export function DocumentPreview({
                 <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium", badge.bg, badge.text)}>
                   {trackingEntry.status === "confirmed" && <CheckCircle2 className="h-2.5 w-2.5" />}
                   {trackingEntry.status === "sent" && <Send className="h-2.5 w-2.5" />}
-                  {badge.label}
+                  {/* Same swap-in as the PDF row: when this entry was
+                      confirmed via the public sign page, show
+                      "Signed online" instead of generic "Confirmed"
+                      so the user can immediately tell which path
+                      confirmed the doc. */}
+                  {trackingEntry.status === "confirmed" && trackingEntry.confirmMethod === "online_signature"
+                    ? "Signed online"
+                    : badge.label}
                 </span>
               );
             })()}
+            {/* In-flight signing pill (recipient was emailed a sign
+                link, hasn't acted yet). */}
+            {trackingEntry.signingSessionToken && !trackingEntry.signedPdfStoredName && trackingEntry.status !== "rejected" && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+                <PenLine className="h-2.5 w-2.5" />
+                Awaiting signature
+              </span>
+            )}
             {trackingEntry.sentAt && (
               <span className="text-[10px] text-neutral-400">
                 {new Date(trackingEntry.sentAt).toLocaleDateString()}
               </span>
             )}
           </div>
-          {trackingEntry.status === "sent" && onConfirmDoc && needsConfirmation(meta) && (
-            <Button size="sm" variant="outline" className="h-6 text-[10px] px-2" onClick={() => onConfirmDoc(trackingKey)}>
-              <CheckCircle2 className="h-3 w-3 mr-1" />
-              Confirm Received
-            </Button>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Prominent download for the signed PDF on this HTML
+                document row. Mirrors the equivalent button on the
+                PDF-template row so the user finds the signed file
+                in the same place regardless of template type. */}
+            {trackingEntry.signedPdfStoredName && trackingEntry.signingSessionToken && (
+              <a
+                href={`/api/sign/${trackingEntry.signingSessionToken}/signed.pdf`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Download signed PDF"
+                className="inline-flex items-center gap-1 rounded-md bg-green-100 px-2 py-1 text-[10px] font-semibold text-green-700 transition-colors hover:bg-green-200 dark:bg-green-900/40 dark:text-green-300 dark:hover:bg-green-900/60"
+              >
+                <Download className="h-3 w-3" />
+                Signed PDF
+              </a>
+            )}
+            {trackingEntry.status === "sent" && onConfirmDoc && needsConfirmation(meta) && (
+              <Button size="sm" variant="outline" className="h-6 text-[10px] px-2" onClick={() => onConfirmDoc(trackingKey)}>
+                <CheckCircle2 className="h-3 w-3 mr-1" />
+                Confirm Received
+              </Button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -3171,7 +3184,25 @@ function PdfMergeButton({
                   {status === "confirmed" && <CheckCircle2 className="h-2.5 w-2.5" />}
                   {status === "sent" && <Send className="h-2.5 w-2.5" />}
                   {status === "rejected" && <XCircle className="h-2.5 w-2.5" />}
-                  {badge.label}
+                  {/* When the row was confirmed via the online-sign
+                      flow, swap the generic "Confirmed" label for
+                      a more informative "Signed online" so the user
+                      can tell at a glance which docs were e-signed
+                      vs. admin-confirmed vs. confirmed-by-upload. */}
+                  {status === "confirmed" && entry?.confirmMethod === "online_signature"
+                    ? "Signed online"
+                    : badge.label}
+                </span>
+              )}
+              {/* Extra "Awaiting signature" pill while the recipient
+                  has been emailed a sign link but hasn't acted yet.
+                  Sits next to the regular status badge so the user
+                  sees the in-flight signing state without expanding
+                  the row. */}
+              {entry?.signingSessionToken && !entry?.signedPdfStoredName && status !== "rejected" && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0 text-[9px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+                  <PenLine className="h-2.5 w-2.5" />
+                  Awaiting signature
                 </span>
               )}
             </div>
@@ -3190,6 +3221,25 @@ function PdfMergeButton({
           </div>
         </button>
         <div className="flex shrink-0 items-center gap-1 border-l border-neutral-200 pl-2 dark:border-neutral-700">
+          {/* Prominent download button for the signed PDF. We surface
+              it here (top of the row, next to the send icons) instead
+              of buried in the tracking-detail footer because for
+              signed documents this is the single most common action
+              the user wants to take after the recipient signs.
+              Only renders when the row actually has a signed PDF
+              attached, so non-signed rows stay uncluttered. */}
+          {entry?.signedPdfStoredName && entry?.signingSessionToken && (
+            <a
+              href={`/api/sign/${entry.signingSessionToken}/signed.pdf`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Download signed PDF"
+              className="inline-flex items-center gap-1 rounded-md bg-green-100 px-2 py-1 text-[11px] font-semibold text-green-700 transition-colors hover:bg-green-200 dark:bg-green-900/40 dark:text-green-300 dark:hover:bg-green-900/60"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Signed PDF
+            </a>
+          )}
           <button
             type="button"
             title="Send via Email"
@@ -3269,6 +3319,7 @@ function PdfMergeButton({
           {entry.confirmedBy && ` by ${entry.confirmedBy}`}
           {entry.confirmMethod === "admin" && " (Admin)"}
           {entry.confirmMethod === "upload" && " (Proof uploaded)"}
+          {entry.confirmMethod === "online_signature" && " (Online signature)"}
         </div>
       )}
       {entry?.confirmNote && (
@@ -3287,9 +3338,59 @@ function PdfMergeButton({
           {entry.confirmProofName}
         </a>
       )}
-      {status === "rejected" && entry?.rejectionNote && (
+      {/* Online-signature affordances. We surface up to three
+          actions when a signing session exists for this tracking row:
+            - Always: a "Sign link" so the sender can re-share the
+              public URL (e.g. paste into WhatsApp).
+            - Until signed: a "Resend" button that re-sends the
+              original email (same link, same PDF) so the recipient
+              gets a reminder if they lost the first email. We
+              hide it once `signedPdfStoredName` is set because at
+              that point there's nothing left to sign.
+            - When signed: a "Download signed PDF" link that hits
+              the public-by-token signed-PDF endpoint. */}
+      {entry?.signingSessionToken && (
+        <div className="mt-0.5 pl-8 flex flex-wrap items-center gap-2 text-[10px]">
+          <a
+            href={`/sign/${entry.signingSessionToken}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline"
+          >
+            <PenLine className="h-2.5 w-2.5" />
+            Sign link
+          </a>
+          {!entry.signedPdfStoredName && (
+            <ResendSigningLinkButton
+              policyId={policyId}
+              token={entry.signingSessionToken}
+            />
+          )}
+          {entry.signedPdfStoredName && (
+            <a
+              href={`/api/sign/${entry.signingSessionToken}/signed.pdf`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-green-600 dark:text-green-400 hover:underline"
+            >
+              <Download className="h-2.5 w-2.5" />
+              Signed PDF
+            </a>
+          )}
+        </div>
+      )}
+      {status === "rejected" && (entry?.rejectionNote || entry?.rejectedBy) && (
         <div className="mt-0.5 pl-8 text-[10px] text-red-500">
-          Rejected: {entry.rejectionNote}
+          {/* Online-decline rows populate `rejectedBy` (recipient
+              name/email) so we can show the more informative
+              "Declined by Jane: <reason>" instead of just the bare
+              rejection text. Falls back gracefully for older rows
+              that only have `rejectionNote`. */}
+          {entry?.rejectedBy ? (
+            <>Declined by {entry.rejectedBy}{entry.rejectionNote ? `: ${entry.rejectionNote}` : ""}</>
+          ) : (
+            <>Rejected: {entry.rejectionNote}</>
+          )}
         </div>
       )}
 
@@ -3616,6 +3717,16 @@ export function DocumentsTab({
   const [tracking, setTracking] = React.useState<DocumentStatusMap>({});
   const [trackingUpdating, setTrackingUpdating] = React.useState(false);
 
+  // Current user's display name — used as the default sign-off in
+  // the email-document dialog's editable cover message. Falls back
+  // to email or empty string when the session hasn't loaded yet so
+  // the dialog can still open.
+  const session = useSession();
+  const currentUserName =
+    (session.data?.user?.name as string | undefined) ||
+    (session.data?.user?.email as string | undefined) ||
+    "";
+
   const snapshot = (detail.extraAttributes ?? {}) as SnapshotData;
   const statusClient = currentStatusClient ?? currentStatus ?? "quotation_prepared";
   const statusAgent = currentStatusAgent ?? statusClient;
@@ -3793,13 +3904,32 @@ export function DocumentsTab({
   const [htmlConfirmFile, setHtmlConfirmFile] = React.useState<File | null>(null);
   const [htmlConfirmSubmitting, setHtmlConfirmSubmitting] = React.useState(false);
 
-  // HTML document email dialog state
+  // Document-email dialog state.
+  //
+  // The dialog now sends the document as a PDF ATTACHMENT instead of
+  // an HTML body — the user types a short cover message in
+  // `htmlEmailMessage`, the recipient sees that as the body, and the
+  // full document is attached as a PDF rendered server-side via
+  // Puppeteer (see `lib/pdf/html-to-pdf.ts`).
+  //
+  // `htmlEmailHtml` holds the full inline-styled document HTML
+  // (already image-inlined by `inlineTemplateImages`) that gets sent
+  // to the server as `documentHtml`. We keep the var name to avoid a
+  // sweeping rename across the component.
   const [htmlEmailOpen, setHtmlEmailOpen] = React.useState(false);
   const [htmlEmailTo, setHtmlEmailTo] = React.useState("");
+  const [htmlEmailToName, setHtmlEmailToName] = React.useState("");
   const [htmlEmailSubject, setHtmlEmailSubject] = React.useState("");
   const [htmlEmailHtml, setHtmlEmailHtml] = React.useState("");
   const [htmlEmailPlain, setHtmlEmailPlain] = React.useState("");
+  const [htmlEmailMessage, setHtmlEmailMessage] = React.useState("");
   const [htmlEmailSending, setHtmlEmailSending] = React.useState(false);
+  // Whether the recipient should also receive an "online sign"
+  // link in the email body. Off by default — most documents are
+  // informational (quotations, receipts) and don't need a counter-
+  // signature. Toggling on creates a signing-session row server-
+  // side and renders a CTA button in the email body.
+  const [htmlEmailRequestSignature, setHtmlEmailRequestSignature] = React.useState(false);
 
   const handleOpenHtmlEmail = React.useCallback((subject: string, htmlContent: string, plainText: string) => {
     setHtmlEmailSubject(subject);
@@ -3807,31 +3937,89 @@ export function DocumentsTab({
     setHtmlEmailPlain(plainText);
 
     const insured = (detail.extraAttributes as Record<string, unknown> | undefined)?.insuredSnapshot as Record<string, unknown> | undefined;
+    let recipientEmail = "";
+    let recipientName = "";
     if (selectedAudience === "agent" && detail.agent?.email) {
-      setHtmlEmailTo(detail.agent.email);
+      recipientEmail = detail.agent.email;
+      recipientName = detail.agent.name || "";
     } else {
-      const clientEmail = String(insured?.email ?? insured?.contactinfo__email ?? "");
-      setHtmlEmailTo(clientEmail);
+      recipientEmail = String(insured?.email ?? insured?.contactinfo__email ?? "");
+      recipientName = String(
+        insured?.name ?? insured?.contactName ?? insured?.contactinfo__name ?? "",
+      );
     }
+    setHtmlEmailTo(recipientEmail);
+    setHtmlEmailToName(recipientName);
+    // Reset the signature toggle each time the dialog opens so
+    // the previous send doesn't leak its choice into the next.
+    setHtmlEmailRequestSignature(false);
+
+    // Default cover message — short, polite, and gives the recipient
+    // immediate context. The user can edit it in the dialog before
+    // sending. Falls back to a generic greeting when we don't have
+    // a recipient name on file.
+    const greeting = recipientName ? `Dear ${recipientName},` : "Hello,";
+    const senderName = currentUserName || "Insurance Platform";
+    setHtmlEmailMessage(
+      `${greeting}\n\nPlease find attached the ${subject} for your reference.\n\nFeel free to reach out if you have any questions.\n\nBest regards,\n${senderName}`,
+    );
 
     setHtmlEmailOpen(true);
-  }, [detail.extraAttributes, detail.agent, selectedAudience]);
+  }, [detail.extraAttributes, detail.agent, selectedAudience, currentUserName]);
 
   const handleSendHtmlEmail = React.useCallback(async () => {
     if (!htmlEmailTo.includes("@")) {
       toast.error("Please enter a valid email address");
       return;
     }
+    if (!htmlEmailHtml) {
+      toast.error("Document content is missing — please reopen the dialog");
+      return;
+    }
     setHtmlEmailSending(true);
     try {
+      // Filename is derived from the subject so the recipient sees
+      // a recognisable name in their inbox attachment list rather
+      // than a generic "document.pdf". The route sanitises further.
+      const filename = htmlEmailSubject || "document";
+      // Compute the tracking key for this send so the server can
+      // (a) update the right tracking row when the recipient signs
+      // online and (b) derive a sensible document label for the
+      // sign page header. Mirrors the calculation below for the
+      // `handleTrackingAction` call so we stay consistent.
+      const sigContext = (() => {
+        if (!selected) return null;
+        const hasAudienceSections = selected.meta?.sections?.some(
+          (s) => s.audience === "client" || s.audience === "agent",
+        );
+        const isAgent = hasAudienceSections
+          ? selectedAudience === "agent"
+          : !!(selected.meta?.isAgentTemplate || (selected.meta?.enableAgentCopy && selectedAudience === "agent"));
+        const trackKey = isAgent
+          ? toTrackingKey(selected.label) + "_agent"
+          : toTrackingKey(selected.label);
+        return { trackingKey: trackKey, documentLabel: selected.label };
+      })();
+
       const res = await fetch(`/api/policies/${detail.policyId}/send-document`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: htmlEmailTo.trim(),
           subject: htmlEmailSubject,
-          htmlContent: htmlEmailHtml,
+          messageBody: htmlEmailMessage,
+          documentHtml: htmlEmailHtml,
           plainText: htmlEmailPlain,
+          filename,
+          // Online-signing fields — only meaningful when the
+          // sender ticked "Request signature" in the dialog. The
+          // server validates them only when `requestSignature` is
+          // true so a missing trackingKey on info-only sends is
+          // fine.
+          requestSignature: htmlEmailRequestSignature,
+          trackingKey: sigContext?.trackingKey,
+          documentLabel: sigContext?.documentLabel,
+          recipientName: htmlEmailToName.trim() || undefined,
         }),
       });
       if (!res.ok) {
@@ -3859,7 +4047,7 @@ export function DocumentsTab({
     } finally {
       setHtmlEmailSending(false);
     }
-  }, [htmlEmailTo, htmlEmailSubject, htmlEmailHtml, htmlEmailPlain, detail.policyId, selected, selectedAudience, tracking, handleTrackingAction]);
+  }, [htmlEmailTo, htmlEmailToName, htmlEmailSubject, htmlEmailHtml, htmlEmailPlain, htmlEmailMessage, htmlEmailRequestSignature, detail.policyId, selected, selectedAudience, tracking, handleTrackingAction]);
 
   const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
   const [policyLineKeys, setPolicyLineKeys] = React.useState<Set<string> | null>(null);
@@ -4408,12 +4596,56 @@ export function DocumentsTab({
                   className="mt-1"
                 />
               </div>
+              <div>
+                <Label htmlFor="html-email-message">Message</Label>
+                <textarea
+                  id="html-email-message"
+                  value={htmlEmailMessage}
+                  onChange={(e) => setHtmlEmailMessage(e.target.value)}
+                  rows={6}
+                  placeholder="Hi, please find the attached document..."
+                  className="mt-1 w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                />
+                <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                  This is the body of the email itself. The full document is attached as a PDF.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                <FileText className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">
+                  Attachment: <strong>{(htmlEmailSubject || "document").replace(/[^\p{L}\p{N}._\- ]+/gu, "_").trim() || "document"}.pdf</strong>
+                </span>
+              </div>
+              {/* Online-signing toggle. When ON we additionally
+                  generate a unique signing URL and embed a CTA
+                  button in the email body so the recipient can
+                  draw / type / accept their signature in their
+                  browser. Off by default — only invoices,
+                  quotations awaiting acceptance, etc. need this. */}
+              <label className="flex items-start gap-2 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                <input
+                  type="checkbox"
+                  checked={htmlEmailRequestSignature}
+                  onChange={(e) => setHtmlEmailRequestSignature(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <strong className="block text-neutral-900 dark:text-neutral-100">
+                    Request online signature
+                  </strong>
+                  <span className="text-neutral-600 dark:text-neutral-400">
+                    Adds a &quot;Sign Online&quot; button to the email so the recipient
+                    can sign in their browser. The signed PDF is stored automatically
+                    and the document is marked as confirmed.
+                  </span>
+                </span>
+              </label>
             </div>
             <DialogFooter>
               <Button variant="outline" size="sm" onClick={() => setHtmlEmailOpen(false)} disabled={htmlEmailSending}>
                 Cancel
               </Button>
-              <Button size="sm" onClick={handleSendHtmlEmail} disabled={htmlEmailSending || !htmlEmailTo.trim()}>
+              <Button size="sm" onClick={handleSendHtmlEmail} disabled={htmlEmailSending || !htmlEmailTo.trim() || !htmlEmailHtml}>
                 {htmlEmailSending ? (
                   <>
                     <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
@@ -4422,7 +4654,7 @@ export function DocumentsTab({
                 ) : (
                   <>
                     <Mail className="mr-1.5 h-3.5 w-3.5" />
-                    Send via Brevo
+                    Send Email with PDF
                   </>
                 )}
               </Button>
@@ -4709,5 +4941,83 @@ export function DocumentsTab({
         }}
       />
     </div>
+  );
+}
+
+/**
+ * Tiny inline button that re-sends the existing signing email
+ * (same token, same URL, same PDF). Lives next to the "Sign link"
+ * affordance in the per-tracking-row footer. Stays self-contained
+ * so the parent row component doesn't need extra state per row.
+ *
+ * Behaviour:
+ *  - Click → POST to the resend endpoint with no body (uses the
+ *    server-side recipient on file).
+ *  - Disabled while the request is in flight.
+ *  - On success: green "Sent" toast + button briefly shows "Sent"
+ *    so the user gets visual confirmation without us mutating
+ *    anything in the parent.
+ *  - On failure: red toast with the server error message.
+ */
+function ResendSigningLinkButton({
+  policyId,
+  token,
+}: {
+  policyId: number;
+  token: string;
+}) {
+  const [busy, setBusy] = React.useState(false);
+  const [justSent, setJustSent] = React.useState(false);
+
+  const onClick = React.useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(
+        `/api/policies/${policyId}/signing-sessions/${token}/resend`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      );
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; sentTo?: string };
+      if (!res.ok || !data.ok) {
+        toast.error(data.error || "Failed to resend signing link");
+        return;
+      }
+      toast.success(`Signing link re-sent${data.sentTo ? ` to ${data.sentTo}` : ""}`);
+      setJustSent(true);
+      // Reset the visual confirmation after a few seconds so the
+      // button is reusable for a second resend if the recipient
+      // claims they STILL didn't get it.
+      window.setTimeout(() => setJustSent(false), 3000);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Network error while resending",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, policyId, token]);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      className={cn(
+        "flex items-center gap-1 hover:underline disabled:opacity-50 disabled:cursor-not-allowed",
+        justSent
+          ? "text-green-600 dark:text-green-400"
+          : "text-amber-600 dark:text-amber-400",
+      )}
+      title="Resend signing email to the recipient"
+    >
+      {busy ? (
+        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+      ) : justSent ? (
+        <CheckCircle2 className="h-2.5 w-2.5" />
+      ) : (
+        <Send className="h-2.5 w-2.5" />
+      )}
+      {busy ? "Sending..." : justSent ? "Sent" : "Resend"}
+    </button>
   );
 }

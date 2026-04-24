@@ -87,11 +87,29 @@ export type DocumentStatusEntry = {
   sentTo?: string;
   confirmedAt?: string;
   confirmedBy?: string;
-  confirmMethod?: "admin" | "upload";
+  // "admin" / "upload" are the original in-app paths.
+  // "online_signature" is set automatically when the recipient
+  // signs the document via the public /sign/<token> page.
+  confirmMethod?: "admin" | "upload" | "online_signature";
   confirmNote?: string;
   confirmProofPath?: string;
   confirmProofName?: string;
+  // When confirmMethod === "online_signature", we keep a reference
+  // to the signed PDF in pdf_template_files so the in-app UI can
+  // offer a "Download signed PDF" link without re-fetching the
+  // signing-session row each time.
+  signedPdfStoredName?: string;
+  // Token of the signing session that produced this entry. Lets
+  // the in-app UI link to the public /sign/<token> page (so the
+  // sender can re-share the link, or watch the live preview the
+  // recipient sees) and to the public signed-PDF endpoint.
+  signingSessionToken?: string;
   rejectedAt?: string;
+  // Display label for whoever rejected the document. Set when an
+  // online-sign recipient declines (recipient name/email) so the
+  // sender's UI can show "Rejected by <person>" instead of just
+  // "Rejected: <reason>".
+  rejectedBy?: string;
   rejectionNote?: string;
 };
 

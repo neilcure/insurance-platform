@@ -176,6 +176,78 @@ export function WorkflowTab({
     setExpandedSection((prev) => (prev === id ? null : id));
   };
 
+  // ─────────────────────────────────────────────────────────────
+  // Documents-section summary.
+  //
+  // Fetched directly from the tracking endpoint (independent of
+  // whether the heavy DocumentsTab below has mounted yet) so the
+  // section header can show "1 signed · 2 sent" badges even with
+  // the section still collapsed. Two side-effects use this:
+  //   1. Header badges (rendered alongside the existing uploads /
+  //      payments badges).
+  //   2. Auto-expand: if there's at least one signed doc and the
+  //      user hasn't manually picked a section yet, default-open
+  //      Documents so the signed PDF download is one click away.
+  //
+  // We deliberately treat ALL keys (client + agent variants) as
+  // a single bucket because the user's mental model is "did
+  // anyone sign this policy yet?" — splitting client/agent here
+  // would just clutter the header.
+  // ─────────────────────────────────────────────────────────────
+  type WorkflowTrackingEntry = {
+    status?: string;
+    signingSessionToken?: string;
+    signedPdfStoredName?: string;
+    confirmMethod?: string;
+  };
+  const [docsTrackingMap, setDocsTrackingMap] = React.useState<Record<string, WorkflowTrackingEntry>>({});
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/policies/${detail.policyId}/document-tracking`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((data: Record<string, WorkflowTrackingEntry>) => {
+        if (!cancelled) setDocsTrackingMap(data ?? {});
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [detail.policyId]);
+
+  const docsSummary = React.useMemo(() => {
+    let signed = 0;
+    let awaitingSignature = 0;
+    let sent = 0;
+    let confirmed = 0;
+    let rejected = 0;
+    for (const [key, entry] of Object.entries(docsTrackingMap ?? {})) {
+      // Internal underscore-prefixed keys (e.g. "_audit") aren't
+      // real document rows — skip them.
+      if (key.startsWith("_")) continue;
+      if (!entry || typeof entry !== "object") continue;
+      if (entry.signedPdfStoredName) signed++;
+      else if (entry.signingSessionToken) awaitingSignature++;
+      if (entry.status === "sent") sent++;
+      if (entry.status === "confirmed") confirmed++;
+      if (entry.status === "rejected") rejected++;
+    }
+    return { signed, awaitingSignature, sent, confirmed, rejected };
+  }, [docsTrackingMap]);
+
+  // Auto-expand Documents the FIRST time we see a signed/awaiting
+  // entry, but only if the user hasn't already picked a section
+  // and no `initialSection` was passed in. Tracked by a ref so a
+  // user collapsing the section after auto-expand doesn't get it
+  // re-popped open every render.
+  const docsAutoExpandedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (docsAutoExpandedRef.current) return;
+    if (initialSection) return;
+    if (expandedSection !== null) return;
+    if (docsSummary.signed > 0 || docsSummary.awaitingSignature > 0) {
+      setExpandedSection("documents");
+      docsAutoExpandedRef.current = true;
+    }
+  }, [docsSummary.signed, docsSummary.awaitingSignature, expandedSection, initialSection]);
+
   const combinedUploadSummary = React.useMemo(() => {
     const base = uploadSummary ?? { total: 0, verified: 0, pending: 0, outstanding: 0, rejected: 0 };
     let total = base.total;
@@ -279,6 +351,46 @@ export function WorkflowTab({
                 {sec.label}
               </span>
               <span className="flex flex-wrap items-center justify-end gap-1">
+                {sec.id === "documents" && (docsSummary.signed > 0 || docsSummary.awaitingSignature > 0 || docsSummary.sent > 0) && (
+                  <>
+                    {docsSummary.signed > 0 && (
+                      <Badge
+                        variant="custom"
+                        className="text-[10px] bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                        title="Documents that have been signed online by the recipient"
+                      >
+                        {docsSummary.signed} signed
+                      </Badge>
+                    )}
+                    {docsSummary.awaitingSignature > 0 && (
+                      <Badge
+                        variant="custom"
+                        className="text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+                        title="Sign link sent — waiting for recipient to act"
+                      >
+                        {docsSummary.awaitingSignature} awaiting
+                      </Badge>
+                    )}
+                    {docsSummary.sent > 0 && (
+                      <Badge
+                        variant="custom"
+                        className="text-[10px] bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200"
+                        title="Documents sent that have not yet been signed or confirmed"
+                      >
+                        {docsSummary.sent} sent
+                      </Badge>
+                    )}
+                    {docsSummary.rejected > 0 && (
+                      <Badge
+                        variant="custom"
+                        className="text-[10px] bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                        title="Documents rejected by the recipient"
+                      >
+                        {docsSummary.rejected} declined
+                      </Badge>
+                    )}
+                  </>
+                )}
                 {sec.id === "uploads" && combinedUploadSummary.total > 0 && (() => {
                   const s = combinedUploadSummary;
                   const allDone = s.verified === s.total;

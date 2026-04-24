@@ -320,3 +320,86 @@ export async function syncPolicyStatusFromPayments(
 }
 
 export { STATUS_ORDER, AGENT_COMMISSION_STATUSES };
+
+// ─────────────────────────────────────────────────────────────────
+// Shared "auto-advance from a tracking action" helper.
+//
+// Originally lived inside `app/api/policies/[id]/document-tracking/
+// route.ts` as a private function. Lifted out here so the same
+// rules apply when the policy status changes via OTHER paths too —
+// notably `/api/sign/[token]/submit` which flips a tracking row to
+// `confirmed` when the recipient signs online.
+//
+// Keep this in lock-step with the route's behaviour: anything that
+// "confirms" / "sends" a quotation/invoice/receipt should drive
+// the same status transitions, regardless of whether it came from
+// admin-confirm, upload-confirm, or online-signature confirm.
+// ─────────────────────────────────────────────────────────────────
+
+const DOC_ACTION_TO_STATUS: Record<string, Record<string, string>> = {
+  quotation: { prepare: "quotation_prepared", send: "quotation_sent", confirm: "quotation_confirmed" },
+  invoice: { prepare: "invoice_prepared", send: "invoice_sent" },
+  receipt: { send: "payment_received" },
+};
+
+const ACTION_NOTE_LABELS: Record<string, string> = {
+  prepare: "prepared",
+  send: "sent",
+  confirm: "confirmed",
+};
+
+/**
+ * Resolve which `STATUS_ORDER` entry a given (docType, action,
+ * templateType) should advance the policy to, then call
+ * `advancePolicyStatus` with it. Returns the new status, or null
+ * if no advance was needed (action irrelevant, or current status
+ * already past the target).
+ *
+ * `templateType` takes priority over the docType keyword scan so
+ * a custom template named e.g. "client_quote" can still map onto
+ * the quotation status chain by setting templateType = "quotation".
+ */
+export async function autoAdvanceFromTrackingAction(input: {
+  policyId: number;
+  docType: string;
+  action: "prepare" | "send" | "confirm" | string;
+  changedBy: string;
+  templateType?: string;
+  track?: PolicyStatusTrack;
+}): Promise<string | null> {
+  const { policyId, docType, action, changedBy, templateType, track = "client" } = input;
+  if (action !== "send" && action !== "confirm" && action !== "prepare") return null;
+
+  let targetStatus: string | null = null;
+  if (templateType && DOC_ACTION_TO_STATUS[templateType]?.[action]) {
+    targetStatus = DOC_ACTION_TO_STATUS[templateType][action];
+  } else {
+    const docLower = docType.toLowerCase();
+    for (const [keyword, mapping] of Object.entries(DOC_ACTION_TO_STATUS)) {
+      if (docLower.includes(keyword) && mapping[action]) {
+        targetStatus = mapping[action];
+        break;
+      }
+    }
+  }
+  if (!targetStatus) return null;
+
+  const noteLabel = ACTION_NOTE_LABELS[action] ?? action;
+  return advancePolicyStatus(
+    policyId,
+    targetStatus,
+    changedBy,
+    `Auto: ${docType.replace(/_/g, " ")} ${noteLabel}`,
+    track,
+  );
+}
+
+/**
+ * Quick check used by callers that need to know whether a tracking
+ * key targets the agent track (e.g. `motor_insurance_quotation_agent`)
+ * vs the client track. Centralised here so the logic doesn't drift
+ * across the tracking route, sign route, and any future caller.
+ */
+export function isAgentTrackingDocType(docType: string): boolean {
+  return docType.toLowerCase().endsWith("_agent");
+}
