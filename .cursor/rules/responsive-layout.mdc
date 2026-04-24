@@ -1,7 +1,7 @@
 ---
 description: Responsive layout rules — sidebar, tables, padding, and mobile-first design
 globs: **/*.tsx
-alwaysApply: false
+alwaysApply: true
 ---
 
 # Responsive Layout Rules

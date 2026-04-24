@@ -1202,7 +1202,7 @@ export default function DocumentTemplatesManager() {
 
         <div className="grid gap-6">
           {/* Basic info */}
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="grid gap-1">
               <Label>Template Name</Label>
               <Input
@@ -1660,27 +1660,36 @@ export default function DocumentTemplatesManager() {
                   <div key={section.id} className={`rounded-lg border overflow-hidden ${audienceTag.border}`}>
                     {/* Section header bar — the chevron toggles the body
                         below. Border-bottom is dropped while collapsed
-                        so the bar reads as a slim single-line summary. */}
+                        so the bar reads as a slim single-line summary.
+
+                        Mobile layout: the title row (chevron + number +
+                        title input) stays on its own line, and the
+                        meta/action controls (size dropdown, audience tag,
+                        applied badge, action buttons) wrap to a second
+                        row below it. On `sm:` and up everything sits on
+                        a single horizontal line as before. */}
                     <div
-                      className={`flex items-center gap-2 px-3 py-2 ${isCollapsed ? "" : `border-b ${audienceTag.border}`} ${audienceTag.bg || "bg-neutral-50 dark:bg-neutral-800/50"}`}
+                      className={`flex flex-wrap items-center gap-2 px-3 py-2 ${isCollapsed ? "" : `border-b ${audienceTag.border}`} ${audienceTag.bg || "bg-neutral-50 dark:bg-neutral-800/50"}`}
                     >
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        onClick={() => toggleSectionCollapsed(section.id)}
-                        className="h-6 w-6 shrink-0 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
-                        aria-label={isCollapsed ? "Expand section" : "Collapse section"}
-                        title={isCollapsed ? "Expand section" : "Collapse section"}
-                      >
-                        {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                      </Button>
-                      <span className="text-xs font-bold text-neutral-400 w-5 text-center shrink-0">{sIdx + 1}</span>
-                      <Input
-                        className="h-8 flex-1 text-sm font-medium bg-transparent border-0 shadow-none focus-visible:ring-0 px-1"
-                        placeholder="Section title (e.g. Vehicle Details)"
-                        value={section.title}
-                        onChange={(e) => updateSection(sIdx, { title: e.target.value })}
-                      />
+                      <div className="flex items-center gap-2 min-w-0 flex-1 basis-full sm:basis-auto">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          onClick={() => toggleSectionCollapsed(section.id)}
+                          className="h-6 w-6 shrink-0 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+                          aria-label={isCollapsed ? "Expand section" : "Collapse section"}
+                          title={isCollapsed ? "Expand section" : "Collapse section"}
+                        >
+                          {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                        </Button>
+                        <span className="text-xs font-bold text-neutral-400 w-5 text-center shrink-0">{sIdx + 1}</span>
+                        <Input
+                          className="h-8 flex-1 min-w-0 text-sm font-medium bg-transparent border-0 shadow-none focus-visible:ring-0 px-1"
+                          placeholder="Section title (e.g. Vehicle Details)"
+                          value={section.title}
+                          onChange={(e) => updateSection(sIdx, { title: e.target.value })}
+                        />
+                      </div>
                       {/* Per-section title size — overrides the template-wide
                           default set under Layout at the bottom of the editor.
                           "Default" leaves it falling back to that template-wide
@@ -2355,7 +2364,7 @@ export default function DocumentTemplatesManager() {
                         }}
                       />
                       {meta.header.logoStoredName && (
-                        <div className="grid grid-cols-2 gap-3 pt-1">
+                        <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
                           <div className="grid gap-1">
                             <Label>Logo size</Label>
                             <select
@@ -2442,7 +2451,7 @@ export default function DocumentTemplatesManager() {
                         }
                       />
                     </div>
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="grid gap-1">
                         <Label>Subtitle size</Label>
                         <select
@@ -2492,7 +2501,7 @@ export default function DocumentTemplatesManager() {
                         number in the top-right (e.g. INV-2025-0001). Falls
                         back to "md" + #1a1a1a (the previous hard-coded look)
                         so existing templates stay visually identical. */}
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="grid gap-1">
                         <Label>Document number size</Label>
                         <select
@@ -2590,7 +2599,7 @@ export default function DocumentTemplatesManager() {
                       <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
                         Font sizes
                       </p>
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div className="grid gap-1">
                           <Label>Section title</Label>
                           <select
@@ -2700,7 +2709,7 @@ export default function DocumentTemplatesManager() {
                       <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
                         Colors
                       </p>
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div className="grid gap-1">
                           <Label>Field label</Label>
                           <div className="flex items-center gap-2">
@@ -2826,7 +2835,7 @@ export default function DocumentTemplatesManager() {
                           Renders below the last section, separated by a thin line.
                         </p>
                       </div>
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                         <div className="grid gap-1">
                           <Label>Size</Label>
                           <select
@@ -2949,7 +2958,7 @@ export default function DocumentTemplatesManager() {
 
                       return (
                         <div className="grid gap-3">
-                          <div className="grid grid-cols-2 gap-3">
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                             {/* ── Authorized signature ────────────── */}
                             <div className="rounded-md border border-neutral-200 p-2.5 dark:border-neutral-700">
                               <label className="flex items-center gap-1.5 text-sm font-medium">
@@ -3298,7 +3307,7 @@ export default function DocumentTemplatesManager() {
               value={validatePolicyNum}
               onChange={(e) => setValidatePolicyNum(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && validateFields()}
-              className="h-8 w-48 text-xs"
+              className="h-8 w-full text-xs sm:w-48"
             />
             <Button
               variant="outline"

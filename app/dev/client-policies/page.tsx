@@ -43,7 +43,7 @@ export default async function ClientPoliciesDebugPage({
   const [rows, one] = await Promise.all([fetchPolicies(), fetchOne()]);
 
   return (
-    <main className="mx-auto max-w-6xl space-y-6 p-6">
+    <main className="mx-auto max-w-6xl space-y-6 p-3 sm:p-6">
       <h1 className="text-xl font-semibold">Client Policies Debug</h1>
 
       <div className="rounded-md border border-neutral-200 p-3 text-sm dark:border-neutral-800">

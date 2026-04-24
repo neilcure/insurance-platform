@@ -1015,6 +1015,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
           </ul>
         )}
       </div>
+      <div className="overflow-x-auto">
       <Table className="min-w-[720px]">
         <TableHeader className="hidden sm:table-header-group">
           <TableRow>
@@ -1113,6 +1114,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
           ) : null}
         </TableBody>
       </Table>
+      </div>
 
       <Dialog
         open={open}

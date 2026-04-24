@@ -931,13 +931,16 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
           </Button>
         </div>
       </div>
-      <div>
+      {/* Horizontal scroll on small screens — column count is user-configurable
+          via presets, so we can't predict which to hide. Scrolling is the safe
+          mobile fallback. */}
+      <div className="overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow>
             {activeColumns.length > 0 ? (
               activeColumns.map((path) => (
-                <TableHead key={path} className="text-xs">{getFieldLabel(path)}</TableHead>
+                <TableHead key={path} className="text-xs whitespace-nowrap">{getFieldLabel(path)}</TableHead>
               ))
             ) : (
               <TableHead>

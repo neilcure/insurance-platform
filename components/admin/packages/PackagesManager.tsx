@@ -170,6 +170,7 @@ export default function PackagesManager() {
           Add
         </Button>
       </div>
+      <div className="overflow-x-auto">
       <Table className="min-w-[640px]">
         <TableHeader className="hidden sm:table-header-group">
           <TableRow>
@@ -235,6 +236,7 @@ export default function PackagesManager() {
           ) : null}
         </TableBody>
       </Table>
+      </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>

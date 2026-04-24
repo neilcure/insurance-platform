@@ -96,7 +96,7 @@ export default function RepeatableTestPage() {
   };
 
   return (
-    <main className="mx-auto max-w-3xl space-y-6 p-6">
+    <main className="mx-auto max-w-3xl space-y-6 p-3 sm:p-6">
       <h1 className="text-xl font-semibold">Repeatable Field — Dev Test</h1>
       <section className="space-y-2 rounded-md border border-neutral-200 p-4 dark:border-neutral-800">
         <div className="flex items-center justify-between">

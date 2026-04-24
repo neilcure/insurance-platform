@@ -88,7 +88,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
         <CardContent className="grid gap-3 text-sm">
           {agent ? (
             <>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div className="text-neutral-500 dark:text-neutral-400">Agent No.</div>
                 <div className="col-span-2">
                   <span className={agent.isActive ? "text-green-600 dark:text-green-400 font-mono" : "text-neutral-500 dark:text-neutral-400 font-mono"}>
@@ -96,27 +96,27 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
                   </span>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div className="text-neutral-500 dark:text-neutral-400">Name</div>
                 <div className="col-span-2">{agent.name ?? "—"}</div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div className="text-neutral-500 dark:text-neutral-400">Email</div>
                 <div className="col-span-2">{agent.email}</div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div className="text-neutral-500 dark:text-neutral-400">Role</div>
                 <div className="col-span-2 capitalize">{agent.userType}</div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div className="text-neutral-500 dark:text-neutral-400">Status</div>
                 <div className="col-span-2">{agent.isActive ? "Active" : "Inactive"}</div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div className="text-neutral-500 dark:text-neutral-400">Created</div>
                 <div className="col-span-2">{formatDDMMYYYYHHMM(agent.createdAt)}</div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div className="text-neutral-500 dark:text-neutral-400">Updated</div>
                 <div className="col-span-2">{agent.updatedAt ? formatDDMMYYYYHHMM(agent.updatedAt) : "—"}</div>
               </div>

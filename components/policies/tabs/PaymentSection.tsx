@@ -1032,7 +1032,7 @@ export function PaymentSection({
 
         {isExpanded && (
           <div className="border-t border-neutral-200 dark:border-neutral-700 px-3 py-3 space-y-3">
-            <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
               <div className="rounded-md bg-neutral-50 dark:bg-neutral-800/50 p-2">
                 <div className="text-neutral-500 dark:text-neutral-400">Total</div>
                 <div className="font-semibold">{formatCurrency(inv.totalAmountCents, inv.currency)}</div>

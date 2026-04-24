@@ -211,7 +211,8 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
           Add
         </Button>
       </div>
-      <Table className="min-w[640px]">
+      <div className="overflow-x-auto">
+      <Table className="min-w-[640px]">
         <TableHeader className="hidden sm:table-header-group">
           <TableRow>
             <TableHead className="p-2 sm:p-4">Label</TableHead>
@@ -284,6 +285,7 @@ export default function GenericCategoryManager({ groupKey }: { groupKey: string 
           ) : null}
         </TableBody>
       </Table>
+      </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">

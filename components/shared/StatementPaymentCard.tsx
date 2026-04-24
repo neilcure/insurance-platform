@@ -660,7 +660,7 @@ export function StatementPaymentCard({
 
         {isExpanded && invoice && (
           <div className="border-t border-neutral-200 dark:border-neutral-700 px-3 py-2 space-y-2">
-            <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
               <div className="rounded bg-neutral-50 dark:bg-neutral-800/50 p-1.5">
                 <div className="text-[10px] text-neutral-500 dark:text-neutral-400">Invoice</div>
                 <div className="font-medium text-[11px]">{invoice.invoiceNumber}</div>

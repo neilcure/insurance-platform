@@ -46,7 +46,7 @@ export default function DevDiagVehicle() {
   }, [values, target, meta]);
 
   return (
-    <main className="mx-auto max-w-3xl space-y-6 p-6">
+    <main className="mx-auto max-w-3xl space-y-6 p-3 sm:p-6">
       <h1 className="text-xl font-semibold">Dev — Vehicle diag</h1>
 
       <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">

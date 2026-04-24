@@ -168,7 +168,7 @@ export default function ExistingClientDebugPage() {
   }, [detail?.extraAttributes, insuredFields]);
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="p-3 space-y-5 sm:p-6">
       <div className="space-y-1">
         <div className="text-xl font-semibold">Existing Client Debug Picker</div>
         <div className="text-sm text-neutral-500">

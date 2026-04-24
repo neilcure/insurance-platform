@@ -84,7 +84,7 @@ export default function BranchDetectionTestPage() {
   }, [append, clientId, requiresSelection, rows, selected, step]);
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-3 space-y-6 sm:p-6">
       <h1 className="text-xl font-semibold">Branch Detection Test</h1>
       <div className="flex items-center gap-3">
         <span className="text-sm px-2 py-1 rounded bg-neutral-200 dark:bg-neutral-800">Step {step}</span>

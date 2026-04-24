@@ -272,7 +272,10 @@ export function SignPageClient({
                 setErrorMsg(null);
               }}
             >
-              <TabsList className="grid w-full grid-cols-4">
+              {/* 2-row grid on phones (h-auto so the second row isn't clipped),
+                  flat 4-across on sm and up. Keeps icon+label readable on
+                  narrow viewports without forcing horizontal scroll. */}
+              <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-4">
                 <TabsTrigger value="draw" className="gap-1">
                   <PenLine className="h-3 w-3" /> Draw
                 </TabsTrigger>
