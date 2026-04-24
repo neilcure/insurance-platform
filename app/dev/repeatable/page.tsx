@@ -202,7 +202,7 @@ export default function RepeatableTestPage() {
       </section>
       <section className="rounded-md border border-neutral-200 p-4 text-xs dark:border-neutral-800">
         <div className="mb-2 font-medium">Form values</div>
-        <pre className="whitespace-pre-wrap break-words">{JSON.stringify(values ?? {}, null, 2)}</pre>
+        <pre className="whitespace-pre-wrap wrap-break-word">{JSON.stringify(values ?? {}, null, 2)}</pre>
       </section>
     </main>
   );

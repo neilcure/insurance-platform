@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useForm, useWatch } from "react-hook-form";
+import { useForm, useWatch, type Path } from "react-hook-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,7 +21,7 @@ export default function DevDiagVehicle() {
     async function load() {
       try {
         const res = await fetch(`/api/form-options?groupKey=${encodeURIComponent(groupKey)}`, { cache: "no-store" });
-        const data = (await res.json()) as any[];
+        const data = (await res.json()) as { id: number; label: string; value: string; meta?: AnyRecord; sortOrder?: number }[];
         if (!cancelled) setFields(Array.isArray(data) ? data : []);
       } catch {
         if (!cancelled) setFields([]);
@@ -34,7 +34,7 @@ export default function DevDiagVehicle() {
   }, [groupKey]);
 
   const target = React.useMemo(() => fields.find((f) => f.value === "2leveltest"), [fields]);
-  const meta = (target?.meta ?? {}) as AnyRecord;
+  const meta = React.useMemo(() => (target?.meta ?? {}) as AnyRecord, [target]);
 
   const yesRaw = (meta?.booleanChildren as AnyRecord | undefined)?.["true"] ?? [];
   const yesChildren = (Array.isArray(yesRaw) ? yesRaw : [yesRaw]) as AnyRecord[];
@@ -63,7 +63,7 @@ export default function DevDiagVehicle() {
 
       <div className="rounded-md border border-neutral-200 p-3 text-xs dark:border-neutral-800">
         <div className="mb-2 text-sm font-medium">Raw field (2leveltest)</div>
-        <pre className="whitespace-pre-wrap break-words">{JSON.stringify(target ?? null, null, 2)}</pre>
+        <pre className="whitespace-pre-wrap wrap-break-word">{JSON.stringify(target ?? null, null, 2)}</pre>
       </div>
 
       <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
@@ -79,7 +79,7 @@ export default function DevDiagVehicle() {
                   <input
                     type="radio"
                     value="true"
-                    {...form.register(target.value as any, {
+                    {...form.register(target.value as Path<AnyRecord>, {
                       setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
                     })}
                   />
@@ -89,7 +89,7 @@ export default function DevDiagVehicle() {
                   <input
                     type="radio"
                     value="false"
-                    {...form.register(target.value as any, {
+                    {...form.register(target.value as Path<AnyRecord>, {
                       setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
                     })}
                   />
@@ -125,25 +125,28 @@ function YesBranchRenderer({
   const first = yesChildren?.[0] ?? {};
   const isRepeatable =
     String(first?.inputType ?? "").trim().toLowerCase() === "repeatable" || !!first?.repeatable;
-  if (!isRepeatable) {
-    return <div className="text-sm text-red-500">First child is not repeatable.</div>;
-  }
   const rep = (first?.repeatable ?? {}) as {
     itemLabel?: string;
     min?: number;
     max?: number;
     fields?: { label?: string; value?: string; inputType?: string }[];
   };
-  const items = (useWatch({ control: form.control, name: `${nameBase}__true__c0_list` as any }) as AnyRecord[]) ?? [];
+  const listName = `${nameBase}__true__c0_list` as Path<AnyRecord>;
+  const items = (useWatch({ control: form.control, name: listName }) as AnyRecord[]) ?? [];
+  const childFields = Array.isArray(rep?.fields) ? rep.fields : [];
+
   const add = () => {
     const next = [...(Array.isArray(items) ? items : []), {}];
-    form.setValue(`${nameBase}__true__c0_list` as any, next as any, { shouldDirty: true });
+    form.setValue(listName, next as unknown, { shouldDirty: true });
   };
   const remove = (idx: number) => {
     const next = (Array.isArray(items) ? items : []).filter((_, i) => i !== idx);
-    form.setValue(`${nameBase}__true__c0_list` as any, next as any, { shouldDirty: true });
+    form.setValue(listName, next as unknown, { shouldDirty: true });
   };
-  const childFields = Array.isArray(rep?.fields) ? rep.fields : [];
+
+  if (!isRepeatable) {
+    return <div className="text-sm text-red-500">First child is not repeatable.</div>;
+  }
 
   return (
     <div className="space-y-2">
@@ -171,7 +174,7 @@ function YesBranchRenderer({
                 return (
                   <div key={name} className="space-y-1">
                     <Label>{cf?.label ?? "Value"}</Label>
-                    <Input type={t === "number" ? "number" : "text"} {...form.register(name as any)} />
+                    <Input type={t === "number" ? "number" : "text"} {...form.register(name as Path<AnyRecord>)} />
                   </div>
                 );
               })}
