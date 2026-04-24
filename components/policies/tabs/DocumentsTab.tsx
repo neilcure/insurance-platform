@@ -1585,14 +1585,26 @@ export function DocumentPreview({
         .replace(/"/g, "&quot;");
 
     const parts: string[] = [];
-    // Outer wrapper is a flex column so the footer block (rendered with
-    // `margin-top:auto` below) can be pushed to the bottom of the available
-    // space. In email clients that ignore flex this is a no-op and the
-    // document still flows top-to-bottom as before. The print stylesheet
-    // additionally gives `body > div` a `flex:1 0 auto` so this wrapper
-    // fills the printable A4 area.
+    // Plain block wrapper. We deliberately do NOT use `display:flex`
+    // here even though the print path wants a flex column to push the
+    // footer to the bottom of an A4 sheet. Gmail Web honors the
+    // `display:flex` declaration but silently strips/ignores
+    // `flex-direction:column` on inline-styled <div>s, which causes
+    // every direct child of this wrapper (the header table, the Ref
+    // table, every section <div>/<table>, the footer block) to lay out
+    // as flex ROW items — i.e. a row of narrow vertical strips with
+    // text wrapping one or two words per line. That's the "broken into
+    // 3 columns" symptom users report when they receive the email.
+    //
+    // The print/PDF path is unaffected because `printPageStyles`
+    // declares `body { display:flex; flex-direction:column; min-height:100vh; }`
+    // and `body > div { flex:1 0 auto; display:flex; flex-direction:column; }`
+    // via a real <style> block (see `printPageStyles`), which Chrome's
+    // print engine handles correctly. So we keep the email wrapper as
+    // a normal block and let the footer flow naturally after the last
+    // section in email clients — graceful degradation.
     parts.push(
-      '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:14px;line-height:1.5;max-width:700px;display:flex;flex-direction:column;min-height:100%;">',
+      '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:14px;line-height:1.5;max-width:700px;">',
     );
 
     // Header — three layouts depending on logo position. Using a 2-cell
@@ -1936,14 +1948,15 @@ export function DocumentPreview({
     // signature page with no transactions above it.
     const suppressFooter = !!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData);
 
-    // Footer (text + signature) lives inside a `margin-top:auto` wrapper so
-    // it gets pushed to the BOTTOM of the page when the outer container is
-    // a flex column with a min-height (see `printPageStyles` for print and
-    // the inline `display:flex` on the wrapper above). This keeps the
-    // signature line anchored to the bottom of an A4 sheet for short
-    // documents, while still flowing naturally after the last content block
-    // for tall multi-page documents. Email clients that ignore flex render
-    // the block as a normal trailing div — graceful degradation.
+    // Footer (text + signature). For PRINT, `printPageStyles` makes
+    // `body` a flex column with `min-height:100vh` and `body > div`
+    // a flex column with `flex:1 0 auto`, so the footer naturally
+    // ends up at the bottom of an A4 sheet because it's the last
+    // child of the outer wrapper. For EMAIL, the wrapper is a plain
+    // block (see comment above the wrapper push) so the footer just
+    // flows after the last content block — Gmail/Outlook can't
+    // reliably bottom-anchor anything inside a fixed-height email
+    // body anyway, so we don't try.
     // Resolve the effective signature flags up-front so the various
     // checks below don't drift from the helper's compatibility logic.
     const sigFlags = resolveSignatureFlags(meta.footer);
@@ -1955,6 +1968,13 @@ export function DocumentPreview({
         !!meta.footer?.showPageNumbers
       );
     if (hasFooter) {
+      // `margin-top:auto` is what bottom-anchors the footer to an A4
+      // sheet in the PRINT path: `printPageStyles` makes the outer
+      // wrapper a flex column with `flex:1 0 auto`, so an `auto`
+      // margin on the last child eats the remaining vertical space.
+      // In EMAIL the wrapper is a plain block, so `margin-top:auto`
+      // computes to `0` and the footer just flows after the last
+      // section — which is exactly what we want there.
       parts.push('<div style="margin-top:auto;">');
       if (meta.footer?.text) {
         // Pixel sizes mirror the on-screen scale; defaults preserve the
@@ -2040,14 +2060,23 @@ export function DocumentPreview({
   }
 
   async function handleEmail() {
-    // Inline images so external recipients (who aren't logged into our
-    // app) can still see the logo + authorized signature in their
-    // inbox. Without this the protected /api/pdf-templates/images URL
-    // would 401 in any email client and the slot would render as a
-    // broken-image icon. Plain text path doesn't reference images so
-    // it stays synchronous.
-    const rawHtml = generateEmailHtml();
-    const htmlContent = await inlineTemplateImages(rawHtml);
+    // Email path uses the PUBLIC `/api/pdf-templates/images/<storedName>`
+    // URL directly (the endpoint is public-read precisely for this
+    // flow — see app/api/pdf-templates/images/[storedName]/route.ts).
+    //
+    // We deliberately do NOT call `inlineTemplateImages` here:
+    //   - Brevo doesn't support inline CID attachments, and
+    //   - Gmail/Outlook unreliably render large `data:` URLs in
+    //     `<img>` tags (they often appear as a broken icon).
+    // A plain absolute URL works in every email client and lets
+    // Gmail's image proxy cache the asset across recipients.
+    //
+    // The server-side `send-document` route rewrites the URL's origin
+    // from `window.location.origin` (which on dev is localhost:3000
+    // and unreachable from a remote inbox) to the configured
+    // `APP_URL`, so the recipient's mail client can actually fetch
+    // the image. See `rewriteImageSrcsForEmail` in that route.
+    const htmlContent = generateEmailHtml();
     const plainText = generatePlainText();
     const subject = `${meta.header.title} - ${detail.policyNumber}`;
     onOpenEmailDialog?.(subject, htmlContent, plainText);
