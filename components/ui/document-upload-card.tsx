@@ -687,8 +687,8 @@ export function DocumentUploadCard({
                         setLightboxIndex(idx >= 0 ? idx : 0);
                       }}
                     >
-                      <Eye className="h-3 w-3" />
-                      Preview
+                      <Eye className="h-3 w-3 sm:hidden lg:inline" />
+                      <span className="hidden sm:inline">Preview</span>
                     </Button>
                     {isAdmin && docStatus === "uploaded" && (
                       <>
@@ -698,9 +698,13 @@ export function DocumentUploadCard({
                           className="h-6 gap-1 px-1.5 text-[10px] text-green-600 hover:text-green-700 dark:text-green-400"
                           onClick={() => handleVerify(doc.id)}
                           disabled={actionBusy === doc.id}
+                          title="Verify"
                         >
                           {actionBusy === doc.id ? <Loader2 className="h-3 w-3 animate-spin" /> : (
-                            <><CheckCircle2 className="h-3 w-3" />Verify</>
+                            <>
+                              <CheckCircle2 className="h-3 w-3 sm:hidden lg:inline" />
+                              <span className="hidden sm:inline">Verify</span>
+                            </>
                           )}
                         </Button>
                         <Button
@@ -709,9 +713,10 @@ export function DocumentUploadCard({
                           className="h-6 gap-1 px-1.5 text-[10px] text-red-600 hover:text-red-700 dark:text-red-400"
                           onClick={() => openReject(doc.id)}
                           disabled={actionBusy === doc.id}
+                          title="Reject"
                         >
-                          <XCircle className="h-3 w-3" />
-                          Reject
+                          <XCircle className="h-3 w-3 sm:hidden lg:inline" />
+                          <span className="hidden sm:inline">Reject</span>
                         </Button>
                       </>
                     )}

@@ -701,18 +701,20 @@ export function StatementPaymentCard({
                       </Badge>
                     </div>
                     {isAdmin && (
-                      <div className="flex items-center gap-1 shrink-0">
+                      <div className="flex flex-wrap items-center gap-1 shrink-0">
                         {p.status === "submitted" && (
                           <>
-                            <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px] text-green-600" disabled={verifyingId === p.id} onClick={() => handleVerify(invoice.id, p.id, "verify")}>
-                              <Check className="h-3 w-3 mr-0.5" />Verify
+                            <Button size="sm" variant="ghost" className="h-5 gap-0.5 px-1 text-[10px] text-green-600" disabled={verifyingId === p.id} onClick={() => handleVerify(invoice.id, p.id, "verify")} title="Verify">
+                              <Check className="h-3 w-3 sm:hidden lg:inline" />
+                              <span className="hidden sm:inline">Verify</span>
                             </Button>
-                            <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px] text-red-600" disabled={verifyingId === p.id} onClick={() => openRejectDialog(invoice.id, p.id)}>
-                              <X className="h-3 w-3 mr-0.5" />Reject
+                            <Button size="sm" variant="ghost" className="h-5 gap-0.5 px-1 text-[10px] text-red-600" disabled={verifyingId === p.id} onClick={() => openRejectDialog(invoice.id, p.id)} title="Reject">
+                              <X className="h-3 w-3 sm:hidden lg:inline" />
+                              <span className="hidden sm:inline">Reject</span>
                             </Button>
                           </>
                         )}
-                        <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px] text-neutral-500 hover:text-red-600" disabled={verifyingId === p.id} onClick={() => openDeleteDialog(invoice.id, p.id)}>
+                        <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px] text-neutral-500 hover:text-red-600" disabled={verifyingId === p.id} onClick={() => openDeleteDialog(invoice.id, p.id)} title="Delete">
                           <Trash2 className="h-3 w-3" />
                         </Button>
                       </div>

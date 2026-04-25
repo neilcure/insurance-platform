@@ -206,9 +206,9 @@ export function UserRowActions({
               Linked: {linkedClientName}
             </span>
           ) : (
-            <Button size="sm" variant="outline" className="h-6 text-xs px-2" onClick={openLinkPanel} disabled={loading}>
-              <Link2 className="mr-1 h-3 w-3" />
-              Link Client
+            <Button size="sm" variant="outline" className="h-6 gap-1 text-xs px-2" onClick={openLinkPanel} disabled={loading} title="Link Client">
+              <Link2 className="h-3 w-3 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Link Client</span>
             </Button>
           )}
         </div>

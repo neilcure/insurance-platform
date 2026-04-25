@@ -129,9 +129,13 @@ export function PasswordPolicyCard() {
         </div>
 
         <div className="flex justify-end pt-2">
-          <Button onClick={handleSave} disabled={saving}>
-            {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-            Save Policy
+          <Button onClick={handleSave} disabled={saving} title="Save Policy">
+            {saving ? (
+              <Loader2 className="h-4 w-4 animate-spin sm:hidden lg:inline" />
+            ) : (
+              <Save className="h-4 w-4 sm:hidden lg:inline" />
+            )}
+            <span className="hidden sm:inline">Save Policy</span>
           </Button>
         </div>
       </CardContent>

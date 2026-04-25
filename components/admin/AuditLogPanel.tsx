@@ -118,9 +118,9 @@ export function AuditLogPanel() {
           <span className="text-sm text-neutral-600 dark:text-neutral-400">
             {unreadCount} unread
           </span>
-          <Button size="sm" variant="outline" onClick={markAllRead}>
-            <CheckCheck className="mr-1.5 h-4 w-4" />
-            Mark all read
+          <Button size="sm" variant="outline" onClick={markAllRead} title="Mark all read">
+            <CheckCheck className="h-4 w-4 sm:hidden lg:inline" />
+            <span className="hidden sm:inline">Mark all read</span>
           </Button>
         </div>
       )}

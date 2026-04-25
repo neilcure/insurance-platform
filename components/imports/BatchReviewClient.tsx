@@ -552,8 +552,9 @@ export default function BatchReviewClient({
                   Skip filtered
                 </Button>
               )}
-              <Button variant="ghost" size="sm" onClick={() => { refreshRows(); refreshBatch(); }} disabled={busy}>
-                <RefreshCw className="h-4 w-4" /> Refresh
+              <Button variant="ghost" size="sm" onClick={() => { refreshRows(); refreshBatch(); }} disabled={busy} title="Refresh">
+                <RefreshCw className="h-4 w-4 sm:hidden lg:inline" />
+                <span className="hidden sm:inline">Refresh</span>
               </Button>
             </div>
           </div>

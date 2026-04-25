@@ -266,7 +266,7 @@ export default function FlowsManager() {
               <TableCell className="hidden font-mono text-xs p-2 sm:table-cell sm:p-4">{r.value}</TableCell>
               <TableCell className="hidden p-2 sm:table-cell sm:p-4">{r.sortOrder}</TableCell>
               <TableCell className="hidden text-right sm:table-cell p-2 sm:p-4">
-                <div className="flex justify-end gap-2">
+                <div className="flex flex-wrap justify-end gap-2">
                   <Button size="sm" variant="secondary" onClick={() => startEdit(r)}>
                     Edit
                   </Button>

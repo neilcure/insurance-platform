@@ -51,7 +51,7 @@ export function IconPicker({
         value={search}
         onChange={(e) => setSearch(e.target.value)}
       />
-      <div className="grid max-h-40 grid-cols-8 gap-1 overflow-y-auto rounded-md border border-neutral-200 p-1 dark:border-neutral-700">
+      <div className="grid max-h-40 grid-cols-6 gap-1 overflow-y-auto rounded-md border border-neutral-200 p-1 sm:grid-cols-8 dark:border-neutral-700">
         {filtered.map((opt) => (
           <button
             key={opt.kebab}

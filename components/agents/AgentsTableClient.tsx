@@ -511,23 +511,23 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Input
           placeholder="Search..."
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
-          className="max-w-[420px]"
+          className="max-w-full sm:max-w-[420px]"
         />
         <Button size="sm" onClick={() => setQuery(searchText)}>
           Search
         </Button>
       </div>
 
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs text-neutral-500 dark:text-neutral-400">
           Agents # {filteredRows.length}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <CompactSelect
             options={[
               { value: "all", label: "All Agents" },
@@ -543,16 +543,17 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
             variant="outline"
             className="gap-1"
             onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+            title={sortDir === "asc" ? "Sort ascending" : "Sort descending"}
           >
-            <ArrowUpDown className="h-3.5 w-3.5" />
-            {sortDir === "asc" ? "Asc" : "Desc"}
+            <ArrowUpDown className="h-3.5 w-3.5 sm:hidden lg:inline" />
+            <span className="hidden sm:inline">{sortDir === "asc" ? "Asc" : "Desc"}</span>
           </Button>
           {mounted ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button size="sm" variant="outline" className="gap-1">
-                  <Settings2 className="h-3.5 w-3.5" />
-                  Columns
+                <Button size="sm" variant="outline" className="gap-1" title="Toggle columns">
+                  <Settings2 className="h-3.5 w-3.5 sm:hidden lg:inline" />
+                  <span className="hidden sm:inline">Columns</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-44">
@@ -585,9 +586,9 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
               </DropdownMenuContent>
             </DropdownMenu>
           ) : (
-            <Button size="sm" variant="outline" className="gap-1" disabled>
-              <Settings2 className="h-3.5 w-3.5" />
-              Columns
+            <Button size="sm" variant="outline" className="gap-1" disabled title="Toggle columns">
+              <Settings2 className="h-3.5 w-3.5 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Columns</span>
             </Button>
           )}
         </div>

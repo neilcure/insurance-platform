@@ -124,17 +124,17 @@ export default function PdfTemplateManager() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm text-neutral-600 dark:text-neutral-400">
           {loading ? "Loading..." : `${templates.length} template${templates.length !== 1 ? "s" : ""}`}
         </div>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => setShowCreate(true)} className="gap-1.5">
-            <FilePlus2 className="h-4 w-4" />
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" onClick={() => setShowCreate(true)} className="gap-1.5" title="Create Blank">
+            <FilePlus2 className="h-4 w-4 sm:hidden lg:inline" />
             <span className="hidden sm:inline">Create Blank</span>
           </Button>
-          <Button size="sm" onClick={() => setShowUpload(true)} className="gap-1.5">
-            <UploadCloud className="h-4 w-4" />
+          <Button size="sm" onClick={() => setShowUpload(true)} className="gap-1.5" title="Upload PDF">
+            <UploadCloud className="h-4 w-4 sm:hidden lg:inline" />
             <span className="hidden sm:inline">Upload PDF</span>
           </Button>
         </div>

@@ -209,15 +209,16 @@ function LineEditor({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm font-medium">Edit — {lineLabel}</div>
-        <div className="flex items-center gap-1.5">
-          <Button size="sm" variant="ghost" onClick={onCancel} disabled={saving}>
-            <X className="mr-1 h-3 w-3" /> Cancel
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button size="sm" variant="ghost" onClick={onCancel} disabled={saving} title="Cancel">
+            <X className="h-3 w-3 sm:hidden lg:inline" />
+            <span className="hidden sm:inline">Cancel</span>
           </Button>
-          <Button size="sm" onClick={() => onSave(lineKey, lineLabel, values, insurerId, collabId)} disabled={saving}>
-            {saving ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
-            Save
+          <Button size="sm" onClick={() => onSave(lineKey, lineLabel, values, insurerId, collabId)} disabled={saving} title="Save">
+            {saving ? <Loader2 className="h-3 w-3 animate-spin sm:hidden lg:inline" /> : <Save className="h-3 w-3 sm:hidden lg:inline" />}
+            <span className="hidden sm:inline">Save</span>
           </Button>
         </div>
       </div>
@@ -370,8 +371,9 @@ function LineView({ line, fields, canEdit, onEdit, displayPolicyNumber }: { line
           )}
         </div>
         {canEdit && (
-          <Button size="sm" variant="ghost" className="h-6 text-[11px]" onClick={onEdit}>
-            <Pencil className="mr-1 h-3 w-3" /> Edit
+          <Button size="sm" variant="ghost" className="h-6 gap-1 text-[11px]" onClick={onEdit} title="Edit">
+            <Pencil className="h-3 w-3 sm:hidden lg:inline" />
+            <span className="hidden sm:inline">Edit</span>
           </Button>
         )}
       </div>
@@ -593,10 +595,12 @@ function AccountingRecordView({
           <Button
             size="sm"
             variant="outline"
-            className="h-6 text-[11px]"
+            className="h-6 gap-1 text-[11px]"
             onClick={() => onEdit(record)}
+            title="Edit"
           >
-            <Pencil className="mr-1 h-3 w-3" /> Edit
+            <Pencil className="h-3 w-3 sm:hidden lg:inline" />
+            <span className="hidden sm:inline">Edit</span>
           </Button>
         </div>
       )}

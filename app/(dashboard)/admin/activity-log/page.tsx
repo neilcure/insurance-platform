@@ -8,7 +8,7 @@ export default async function ActivityLogPage() {
   if (me.userType !== "admin" && me.userType !== "internal_staff") redirect("/dashboard");
 
   return (
-    <main className="mx-auto max-w-4xl space-y-8 px-4 py-8">
+    <main className="mx-auto max-w-4xl space-y-6 px-3 py-3 sm:space-y-8 sm:px-4 sm:py-8">
       <div>
         <h1 className="text-2xl font-bold">Activity Log</h1>
         <p className="text-sm text-neutral-500 dark:text-neutral-400">

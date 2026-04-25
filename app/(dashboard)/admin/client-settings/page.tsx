@@ -155,7 +155,7 @@ export default async function ClientSettingsPage({ searchParams }: { searchParam
           <form action={saveAction}>
             <div>
               <h3 className="text-sm font-medium mb-2">User Type Prefixes</h3>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-1">
                   <Label>Admin</Label>
                   <Input id="prefix_admin" name="prefix_admin" defaultValue={settings.userTypePrefixes.admin} required />
@@ -190,7 +190,7 @@ export default async function ClientSettingsPage({ searchParams }: { searchParam
                 <p className="mb-4 text-xs text-neutral-500 dark:text-neutral-400">
                   Configure the button on each dashboard page. Set the label and which flow it opens.
                 </p>
-                <div className="grid grid-cols-[1fr_1fr_5rem] gap-4 mb-2">
+                <div className="hidden sm:grid sm:grid-cols-[1fr_1fr_5rem] sm:gap-4 mb-2">
                   <Label className="text-xs font-medium">Button Label</Label>
                   <Label className="text-xs font-medium">Assigned Flow</Label>
                   <Label className="text-xs font-medium">Prefix</Label>
@@ -209,15 +209,17 @@ export default async function ClientSettingsPage({ searchParams }: { searchParam
                           placeholder={f.label}
                           className="mb-1 h-7 border-dashed text-xs text-neutral-500 dark:text-neutral-400"
                         />
-                        <div className="grid grid-cols-[1fr_1fr_5rem] gap-4">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_5rem] sm:gap-4">
                           <Input
                             name={`fb_label_${f.value}`}
                             defaultValue={cfg?.label ?? ""}
                             placeholder={`New ${displayName}`}
+                            aria-label="Button Label"
                           />
                           <select
                             name={`fb_flow_${f.value}`}
                             defaultValue={assignedFlow}
+                            aria-label="Assigned Flow"
                             className="flex h-10 w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                           >
                             {allFlows.map((opt) => (

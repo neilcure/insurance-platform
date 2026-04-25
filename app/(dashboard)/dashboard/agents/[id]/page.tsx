@@ -69,14 +69,14 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
 
   return (
     <main className="mx-auto max-w-4xl">
-      <div className="mb-4 flex items-center justify-between gap-2">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-semibold">Agent Details</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link href={`/dashboard/agents/${agentId}/logs`}>
-            <Button variant="secondary">View Logs</Button>
+            <Button variant="secondary" size="sm">View Logs</Button>
           </Link>
           <Link href="/dashboard/agents">
-            <Button>Back to Agents</Button>
+            <Button size="sm">Back to Agents</Button>
           </Link>
         </div>
       </div>

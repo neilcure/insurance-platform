@@ -229,10 +229,15 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
         {inviteLink ? (
           <div className="grid gap-2">
             <Label>Invite Link (development)</Label>
-            <div className="flex gap-2">
-              <Input value={inviteLink} readOnly />
-              <Button variant="secondary" onClick={() => navigator.clipboard.writeText(inviteLink!)} className="inline-flex items-center gap-2">
-                <Copy className="h-4 w-4" />
+            <div className="flex flex-wrap gap-2">
+              <Input value={inviteLink} readOnly className="min-w-0 flex-1" />
+              <Button
+                variant="secondary"
+                onClick={() => navigator.clipboard.writeText(inviteLink!)}
+                className="inline-flex items-center gap-2 shrink-0"
+                title="Copy invite link"
+              >
+                <Copy className="h-4 w-4 sm:hidden lg:inline" />
                 <span className="hidden sm:inline">Copy</span>
               </Button>
             </div>

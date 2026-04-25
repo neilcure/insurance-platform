@@ -208,7 +208,7 @@ export default function PolicyStatusesManager() {
             <DialogTitle>{editing ? "Edit Status" : "Add Status"}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-4">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label>Label</Label>
                 <Input value={formLabel} onChange={(e) => setFormLabel(e.target.value)} placeholder="Quotation Prepared" />
@@ -218,7 +218,7 @@ export default function PolicyStatusesManager() {
                 <Input value={formValue} onChange={(e) => setFormValue(e.target.value)} placeholder="quotation_prepared" />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label>Color</Label>
                 <div className="flex flex-wrap gap-1.5">

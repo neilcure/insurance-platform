@@ -312,7 +312,7 @@ export default function PaymentSchedulesPage() {
 
   return (
     <main className="mx-auto max-w-4xl space-y-6 p-3 pt-0 sm:p-6 sm:pt-0">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
         <div>
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
             Payment Schedules
@@ -321,7 +321,7 @@ export default function PaymentSchedulesPage() {
             Manage client billing schedules and agent settlement schedules.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             variant="ghost"
@@ -358,7 +358,7 @@ export default function PaymentSchedulesPage() {
                 ? "Agent schedules are for settlement items such as commission returns and other payable balances."
                 : "Client schedules are for policy premium billing and periodic client-facing statements."}
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label className="text-xs">Entity Type</Label>
                 <select
@@ -399,7 +399,7 @@ export default function PaymentSchedulesPage() {
                 )}
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label className="text-xs">Frequency</Label>
                 <select
@@ -505,7 +505,7 @@ export default function PaymentSchedulesPage() {
                   <div className="border-t border-neutral-200 dark:border-neutral-700 px-4 py-3 space-y-3">
                     {isEditing ? (
                       <div className="space-y-3">
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           <div>
                             <Label className="text-xs">Frequency</Label>
                             <select

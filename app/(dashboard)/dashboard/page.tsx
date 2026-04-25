@@ -63,10 +63,10 @@ export default async function DashboardPage() {
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Dashboard</h1>
         {isAdmin && (
-          <Button asChild size="sm">
+          <Button asChild size="sm" title="Create Flow">
             <Link href="/admin/policy-settings/flows?create=1">
-              <GitBranch className="h-4 w-4 shrink-0" />
-              Create Flow
+              <GitBranch className="h-4 w-4 shrink-0 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Create Flow</span>
             </Link>
           </Button>
         )}
@@ -79,7 +79,7 @@ export default async function DashboardPage() {
           <div className="text-sm text-neutral-600 dark:text-neutral-400">
             Signed in as <span className="font-medium">{user?.name ?? user?.email}</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm text-neutral-600 dark:text-neutral-400">Role</span>
             <Badge>{user?.userType ?? "user"}</Badge>
             {accountComplete ? <Badge variant="success">Account setup complete</Badge> : null}

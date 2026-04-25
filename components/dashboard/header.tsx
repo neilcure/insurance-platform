@@ -51,11 +51,15 @@ export async function Header() {
   }
 
   return (
-    <header className="flex h-14 items-center justify-between border-b border-neutral-200 px-4 dark:border-neutral-800">
-      <div className="flex items-center gap-3">
+    <header className="flex min-h-14 flex-wrap items-center justify-between gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3">
         <span className="text-sm text-neutral-600 dark:text-neutral-400">Role</span>
         <Badge>{user?.userType ?? "user"}</Badge>
-        {accountComplete ? <Badge variant="success">Account setup complete</Badge> : null}
+        {accountComplete ? (
+          <Badge variant="success" className="hidden sm:inline-flex">
+            Account setup complete
+          </Badge>
+        ) : null}
         {updatedAtIso ? <LocalUpdatedBadge ts={updatedAtIso} timeZone={userTimeZone} /> : null}
       </div>
       <div className="flex items-center gap-3">

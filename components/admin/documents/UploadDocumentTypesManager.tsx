@@ -312,7 +312,7 @@ export default function UploadDocumentTypesManager() {
           </DialogHeader>
 
           <div className="grid gap-4">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label>Display Name</Label>
                 <Input
@@ -340,7 +340,7 @@ export default function UploadDocumentTypesManager() {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label>Max Size (MB)</Label>
                 <Input

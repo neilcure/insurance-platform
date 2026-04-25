@@ -283,7 +283,7 @@ export default function WorkflowActionsManager() {
           </DialogHeader>
 
           <div className="grid gap-4">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label>Action Name</Label>
                 <Input
@@ -302,7 +302,7 @@ export default function WorkflowActionsManager() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label>Type</Label>
                 <select
@@ -383,7 +383,7 @@ export default function WorkflowActionsManager() {
             </label>
 
             {meta.requiresInput && (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="grid gap-1">
                   <Label>Input Label</Label>
                   <Input

@@ -1911,8 +1911,8 @@ export default function FlowNewPage() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
           {wizardNums.length > 1 ? wizardNums.map((n, i) => (
             <StepDot
               key={n}
@@ -1923,7 +1923,7 @@ export default function FlowNewPage() {
             />
           )) : null}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {hasAddressFields ? (
             <AddressTool
               form={form}
@@ -1933,6 +1933,7 @@ export default function FlowNewPage() {
           ) : null}
           <Button
             variant="secondary"
+            size="sm"
             onClick={() => (hasClientStep || isEmbeddedClientStep) ? setClientPickerOpen(true) : setRecordPickerOpen(true)}
           >
             {(hasClientStep || isEmbeddedClientStep) ? "Select Existing Client" : recordPickerButtonLabel}

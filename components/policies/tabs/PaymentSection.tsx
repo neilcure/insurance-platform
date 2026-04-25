@@ -1107,21 +1107,26 @@ export function PaymentSection({
                       {p.rejectionNote && <div className="text-red-600 dark:text-red-400">Rejected: {p.rejectionNote}</div>}
                     </div>
                     {isAdmin && (
-                      <div className="flex items-center gap-1 shrink-0">
+                      <div className="flex flex-wrap items-center gap-1 shrink-0">
                         {p.status === "submitted" && (
                           <>
                             <Button size="sm" variant="ghost" className="h-7 px-2 text-green-600 hover:bg-green-50 hover:text-green-700"
-                              disabled={verifyingId === p.id} onClick={() => handleVerify(inv.id, p.id, "verify")}>
-                              <Check className="h-3.5 w-3.5 mr-0.5" />Verify
+                              disabled={verifyingId === p.id} onClick={() => handleVerify(inv.id, p.id, "verify")}
+                              title="Verify payment">
+                              <Check className="h-3.5 w-3.5 sm:hidden lg:inline" />
+                              <span className="hidden sm:inline">Verify</span>
                             </Button>
                         <Button size="sm" variant="ghost" className="h-7 px-2 text-red-600 hover:bg-red-50 hover:text-red-700"
-                          disabled={verifyingId === p.id} onClick={() => openRejectDialog(inv.id, p.id)}>
-                          <X className="h-3.5 w-3.5 mr-0.5" />Reject
+                          disabled={verifyingId === p.id} onClick={() => openRejectDialog(inv.id, p.id)}
+                          title="Reject payment">
+                          <X className="h-3.5 w-3.5 sm:hidden lg:inline" />
+                          <span className="hidden sm:inline">Reject</span>
                         </Button>
                           </>
                         )}
                         <Button size="sm" variant="ghost" className="h-7 px-2 text-neutral-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
-                          disabled={verifyingId === p.id} onClick={() => openDeleteDialog(inv.id, p.id)}>
+                          disabled={verifyingId === p.id} onClick={() => openDeleteDialog(inv.id, p.id)}
+                          title="Delete payment">
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>

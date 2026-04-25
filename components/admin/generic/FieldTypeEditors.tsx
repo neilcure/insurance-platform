@@ -647,7 +647,7 @@ export function TopLevelRepeatableEditor({
           onChange={(e) => onChange({ ...rep, itemLabel: e.target.value })}
         />
       </div>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         <div className="grid gap-1">
           <Label>Min items</Label>
           <Input

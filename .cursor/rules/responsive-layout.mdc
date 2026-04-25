@@ -45,6 +45,43 @@ Drawers and panels are narrow, so reduce text size, spacing, and padding on smal
 | Section margin | `mb-3` | `sm:mb-5` |
 | Label/value layout | Stacked (`flex-col`) | Side-by-side (`sm:flex-row`) |
 
+## Buttons in tables, toolbars, and card headers
+
+Action buttons that have **icon + text** must use the three-stage collapse pattern from `ui-component-conventions.mdc`:
+
+```tsx
+<Button size="sm" variant="outline">
+  <Pencil className="h-4 w-4 sm:hidden lg:inline" />
+  <span className="hidden sm:inline">Edit</span>
+</Button>
+```
+
+| Screen | Shows | Why |
+|---|---|---|
+| Mobile (<640px) | Icon only | save horizontal space in narrow toolbars |
+| Tablet (640–1023px) | Text only | text alone is clearer at this size |
+| Desktop (≥1024px) | Icon + text | maximum legibility |
+
+**When to apply:** any `<Button>` in a table row, card header, accounting/payment row, or page-header toolbar. Standalone full-width buttons (`w-full`) and dialog footer buttons are exempt.
+
+A `flex` row holding **2+ icon-text buttons** must either:
+1. Use the three-stage pattern on every button, OR
+2. Add `flex-wrap` to the parent so the row falls to multiple lines on mobile.
+
+Never leave a row of long-text buttons in a fixed `flex` container — they will overflow narrow viewports.
+
+## Badges
+
+Containers holding **3+ `<Badge>` elements** in a row must use `flex flex-wrap gap-1` (or `gap-1.5`) so badges fall to a new line on narrow widths instead of clipping.
+
+Badges that render **dynamic / potentially long text** (file names, email addresses, formatted dates, status labels driven by user-configured strings) must add `truncate max-w-[140px]` (or similar) so they don't blow out their container:
+
+```tsx
+<Badge className="truncate max-w-[140px]" title={fullValue}>{fullValue}</Badge>
+```
+
+Inside narrow drawers / cards (where the surrounding text is `text-[11px]`), prefer `text-[10px] px-1.5 py-0.5` so badges feel proportional.
+
 ## General rules
 
 - Use Tailwind responsive prefixes (`sm:`, `md:`, `lg:`) — never custom `@media` queries

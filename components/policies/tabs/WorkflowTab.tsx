@@ -297,17 +297,19 @@ export function WorkflowTab({
           className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
         >
           <span>Current Status</span>
-          <span className="flex items-center gap-2">
+          <span className="flex flex-wrap items-center justify-end gap-2 min-w-0">
             <Badge
               variant="custom"
-              className="bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
+              className="max-w-[160px] truncate bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
+              title={`Client: ${getLabel(curStatusClient)}`}
             >
               Client: {getLabel(curStatusClient)}
             </Badge>
             {isAdmin && detail.agent && (
               <Badge
                 variant="custom"
-                className="bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                className="max-w-[160px] truncate bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                title={`Agent: ${getLabel(curStatusAgent)}`}
               >
                 Agent: {getLabel(curStatusAgent)}
               </Badge>

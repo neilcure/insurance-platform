@@ -181,17 +181,21 @@ export function FieldResolverDiagPanel() {
   return (
     <div className="space-y-6">
       {/* Policy number input */}
-      <div className="flex gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row">
         <Input
           placeholder="Enter policy number (e.g. P000123)"
           value={policyNumber}
           onChange={(e) => setPolicyNumber(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && runFullTest()}
-          className="max-w-sm"
+          className="w-full sm:max-w-sm"
         />
-        <Button onClick={runFullTest} disabled={loading || !policyNumber.trim()}>
-          {loading ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Search className="mr-1.5 h-4 w-4" />}
-          Scan All Fields
+        <Button onClick={runFullTest} disabled={loading || !policyNumber.trim()} title="Scan All Fields">
+          {loading ? (
+            <Loader2 className="h-4 w-4 animate-spin sm:hidden lg:inline" />
+          ) : (
+            <Search className="h-4 w-4 sm:hidden lg:inline" />
+          )}
+          <span className="hidden sm:inline">Scan All Fields</span>
         </Button>
       </div>
 

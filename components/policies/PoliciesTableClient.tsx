@@ -75,9 +75,11 @@ function NotesPanel({ notes, onDelete }: { notes: NoteEntry[]; onDelete?: (index
             variant="ghost"
             className="h-6 gap-1 text-[11px]"
             onClick={() => setExpanded((v) => !v)}
+            title={expanded ? "Show less" : `Show all ${notes.length}`}
           >
             {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-            {expanded ? "Show less" : `Show all ${notes.length}`}
+            <span className="hidden sm:inline">{expanded ? "Show less" : `Show all ${notes.length}`}</span>
+            <span className="sm:hidden">{expanded ? "Less" : notes.length}</span>
           </Button>
         )}
       </div>

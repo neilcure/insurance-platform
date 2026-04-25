@@ -52,7 +52,7 @@ export default function HomeActions({
   if (isLoggedIn) {
     return (
       <div className="mx-auto flex max-w-2xl flex-col items-center gap-4 pb-20 mt-6">
-        <div className="flex items-center gap-2 mt-2 py-2">
+        <div className="flex flex-wrap items-center justify-center gap-2 mt-2 py-2">
           <Link href="/dashboard" className={cn(buttonVariants({ size: "sm" }))}>
             Go to Dashboard
           </Link>

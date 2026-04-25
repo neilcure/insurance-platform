@@ -1973,7 +1973,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                 }}
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <div className="grid gap-1">
                     <Label>Min items</Label>
                     <Input
@@ -2507,7 +2507,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                               ) : null}
                               {String(child?.inputType ?? "") === "repeatable" ? (
                                 <div className="col-span-12 mt-2 space-y-3 rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-                                  <div className="grid grid-cols-2 gap-2">
+                                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                     <div className="grid gap-1">
                                       <Label>Item label</Label>
                                       <Input
@@ -3048,7 +3048,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                               ) : null}
                               {String(child?.inputType ?? "") === "repeatable" ? (
                                 <div className="col-span-12 mt-2 space-y-3 rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-                                  <div className="grid grid-cols-2 gap-2">
+                                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                                     <div className="grid gap-1">
                                       <Label>Item label</Label>
                                       <Input

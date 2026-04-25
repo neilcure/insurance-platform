@@ -2123,10 +2123,11 @@ export default function DocumentTemplatesManager() {
                           <span className="text-sm text-neutral-400">Loading fields...</span>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-2 py-2">
+                        <div className="flex flex-wrap items-center gap-2 py-2">
                           <p className="text-sm text-neutral-400">No predefined fields.</p>
-                          <Button size="sm" variant="ghost" className="gap-1" onClick={() => addField(sIdx)}>
-                            <Plus className="h-3.5 w-3.5" /> Add Manually
+                          <Button size="sm" variant="ghost" className="gap-1" onClick={() => addField(sIdx)} title="Add Manually">
+                            <Plus className="h-3.5 w-3.5 sm:hidden lg:inline" />
+                            <span className="hidden sm:inline">Add Manually</span>
                           </Button>
                         </div>
                       )}
@@ -2180,6 +2181,7 @@ export default function DocumentTemplatesManager() {
               size="sm"
               variant="outline"
               className="mt-4 gap-1"
+              title="Add Section"
               onClick={() =>
                 setMeta((m) => ({
                   ...m,
@@ -2187,7 +2189,8 @@ export default function DocumentTemplatesManager() {
                 }))
               }
             >
-              <Plus className="h-4 w-4" /> Add Section
+              <Plus className="h-4 w-4 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Add Section</span>
             </Button>
           </fieldset>
 
@@ -3283,8 +3286,8 @@ export default function DocumentTemplatesManager() {
         )}
 
         {/* Bottom save bar */}
-        <div className="flex items-center justify-end gap-2 border-t border-neutral-200 pt-4 dark:border-neutral-700">
-          <div className="mr-auto flex flex-wrap items-center gap-2">
+        <div className="flex flex-col gap-2 border-t border-neutral-200 pt-4 sm:flex-row sm:items-center sm:justify-end dark:border-neutral-700">
+          <div className="flex flex-wrap items-center gap-2 sm:mr-auto">
             {/* Sync from Master — only shown when a master exists and this is not the master */}
             {(() => {
               const masterTemplate = rows.find((r) => r.meta?.isMaster && r.id !== editing?.id);
@@ -3297,8 +3300,8 @@ export default function DocumentTemplatesManager() {
                   className="gap-1.5 border-yellow-300 text-yellow-700 hover:bg-yellow-50 dark:border-yellow-700 dark:text-yellow-400 dark:hover:bg-yellow-950/30"
                   title={`Pull section settings from the Master template: "${masterTemplate.label}"`}
                 >
-                  <Crown className="h-3.5 w-3.5" />
-                  Sync from Master
+                  <Crown className="h-3.5 w-3.5 sm:hidden lg:inline" />
+                  <span className="hidden sm:inline">Sync from Master</span>
                 </Button>
               );
             })()}
@@ -3315,9 +3318,14 @@ export default function DocumentTemplatesManager() {
               onClick={validateFields}
               disabled={validating}
               className="gap-1.5"
+              title="Validate"
             >
-              {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
-              Validate
+              {validating ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin sm:hidden lg:inline" />
+              ) : (
+                <FlaskConical className="h-3.5 w-3.5 sm:hidden lg:inline" />
+              )}
+              <span className="hidden sm:inline">Validate</span>
             </Button>
             <Button
               variant="outline"
@@ -3326,8 +3334,8 @@ export default function DocumentTemplatesManager() {
               className="gap-1.5"
               title="Edit header, page layout and footer for this template"
             >
-              <Palette className="h-3.5 w-3.5" />
-              Style
+              <Palette className="h-3.5 w-3.5 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Style</span>
             </Button>
             <Button
               variant="outline"
@@ -3336,22 +3344,24 @@ export default function DocumentTemplatesManager() {
               className="gap-1.5"
               title="Render this template against a real policy to see how it will look"
             >
-              <Monitor className="h-3.5 w-3.5" />
-              Live Preview
+              <Monitor className="h-3.5 w-3.5 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Live Preview</span>
             </Button>
           </div>
-          <Button onClick={save} disabled={saving}>
-            {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {editing ? "Save" : "Create"}
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => setOpen(false)}
-            disabled={saving}
-            title="Close the editor. Unsaved changes will be lost."
-          >
-            Close
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button onClick={save} disabled={saving}>
+              {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {editing ? "Save" : "Create"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setOpen(false)}
+              disabled={saving}
+              title="Close the editor. Unsaved changes will be lost."
+            >
+              Close
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -3359,11 +3369,11 @@ export default function DocumentTemplatesManager() {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm text-neutral-500 dark:text-neutral-400">
           {rows.length} template{rows.length !== 1 ? "s" : ""}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {rows.length === 0 && (
             <Button
               size="sm"

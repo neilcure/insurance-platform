@@ -237,7 +237,7 @@ export function InlinePaymentForm({
         </Button>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
           disabled={saving || !amount || Number(amount) <= 0}
@@ -246,7 +246,7 @@ export function InlinePaymentForm({
           {saving ? <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />Saving...</> : buttonLabel}
         </Button>
         <Button size="sm" variant="ghost" onClick={reset}>Cancel</Button>
-        <span className="text-[11px] text-neutral-400 ml-auto">
+        <span className="text-[11px] text-neutral-400 sm:ml-auto">
           Max: {formatCurrency(remainingCents, currency)}
         </span>
       </div>

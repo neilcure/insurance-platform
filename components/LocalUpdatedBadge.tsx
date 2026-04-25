@@ -26,6 +26,11 @@ export function LocalUpdatedBadge({ ts, timeZone }: { ts?: string | Date | null;
     hour12: false,
     timeZone: timeZone || "Asia/Hong_Kong",
   }).format(date);
-  return <Badge variant="secondary">{`Updated ${label}`}</Badge>;
+  const text = `Updated ${label}`;
+  return (
+    <Badge variant="secondary" className="max-w-full truncate" title={text}>
+      {text}
+    </Badge>
+  );
 }
 
