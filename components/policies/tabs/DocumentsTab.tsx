@@ -1561,6 +1561,19 @@ export function DocumentPreview({
         .replace(/"/g, "&quot;");
 
     const parts: string[] = [];
+    // When page numbers are requested, inject a <style> block with an
+    // @page @bottom-center rule so Chrome's print engine (both the
+    // window.print() iframe and Puppeteer's page.pdf()) renders real
+    // "X / Y" counters in the bottom margin of each page. Chrome 128+
+    // (Puppeteer 24.x ships Chrome 136+) supports @page margin boxes
+    // natively. Email clients ignore <style> tags in the body, so this
+    // has no effect on the emailed HTML — correct since emails are
+    // single-page and don't need page numbers in the body.
+    if (meta.footer?.showPageNumbers) {
+      parts.push(
+        '<style>@page{@bottom-center{content:counter(page)" / "counter(pages);font-family:Arial,Helvetica,sans-serif;font-size:10px;color:#a3a3a3;}}</style>',
+      );
+    }
     // Plain block wrapper. We deliberately do NOT use `display:flex`
     // here even though the print path wants a flex column to push the
     // footer to the bottom of an A4 sheet. Gmail Web honors the
@@ -1581,6 +1594,15 @@ export function DocumentPreview({
     // section in email clients — graceful degradation.
     parts.push(
       '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:14px;line-height:1.5;max-width:700px;">',
+    );
+    // Outer table whose <thead> repeats on every printed page (Chrome /
+    // Puppeteer honour the HTML spec: a thead's rows are re-emitted at
+    // the top of each new page). The footer lives OUTSIDE this table in
+    // the flex column so margin-top:auto still bottom-anchors it on the
+    // last page. The tbody's single <td> is a transparent container.
+    parts.push(
+      '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">',
+      '<thead><tr><td style="padding:0;vertical-align:top;">',
     );
 
     // Header — three layouts depending on logo position. Using a 2-cell
@@ -1615,8 +1637,10 @@ export function DocumentPreview({
       const docNoPx = docNoPxMap[(meta.header.documentNumberSize ?? "md") as keyof typeof docNoPxMap];
       const docNoColor = meta.header.documentNumberColor || "#1a1a1a";
       docNoHtml =
+        '<div style="white-space:nowrap;">' +
         '<div style="font-size:10px;color:#a3a3a3;text-transform:uppercase;letter-spacing:0.05em;">Doc No.</div>' +
-        `<div style="font-size:${docNoPx}px;font-weight:bold;color:${docNoColor};">${escape(trackingEntry.documentNumber)}</div>`;
+        `<div style="font-size:${docNoPx}px;font-weight:bold;color:${docNoColor};">${escape(trackingEntry.documentNumber)}</div>` +
+        '</div>';
     }
 
     parts.push(
@@ -1669,7 +1693,7 @@ export function DocumentPreview({
       }
       parts.push(`<td style="vertical-align:top;">${titleHtml}</td>`);
       if (docNoHtml) {
-        parts.push(`<td style="vertical-align:top;text-align:right;width:1%;">${docNoHtml}</td>`);
+        parts.push(`<td style="vertical-align:top;text-align:right;width:1%;white-space:nowrap;">${docNoHtml}</td>`);
       }
       parts.push("</tr>");
     }
@@ -1692,6 +1716,9 @@ export function DocumentPreview({
         "</table>",
       );
     }
+
+    // Close the thead and open the tbody that holds all sections.
+    parts.push('</td></tr></thead>', '<tbody><tr><td style="padding:0;vertical-align:top;">');
 
     // Sections — same visibility/empty-value rules as the on-screen preview.
     if (!(meta.requiresStatement && !extraCtx.statementData)) {
@@ -1719,12 +1746,141 @@ export function DocumentPreview({
           section,
         );
 
+        // Special case: line_items section — all its fields are per-item
+        // fields so `fields` is always empty. Render statement items in HTML
+        // here instead of falling through to the early-exit below.
+        if (section.id === "line_items" && extraCtx.statementData?.items?.length) {
+          const lineItems = extraCtx.statementData.items.filter(
+            (it) => it.status === "active" || it.status === "paid_individually",
+          );
+          if (lineItems.length > 0) {
+            const liGap = emailGap[sectionSpacing];
+            const liTitlePx = emailTitlePxFor(section);
+            const tableCols = visibleFlds.filter((f) => isPerItemField(f.key));
+            const descField = tableCols.find((f) => f.key === "itemDescriptions");
+            const amountField = tableCols.find((f) => f.key === "itemAmounts");
+            const itemPairs = buildStatementItemPairs(tableCols);
+            const itemGroups = groupStatementItems(lineItems);
+            const showAgent = viewAudience !== "client";
+
+            parts.push(
+              `<div style="margin:${liGap.titleMt}px 0 ${liGap.titleMb}px 0;page-break-after:avoid;break-after:avoid;">`,
+              `<div style="font-size:${liTitlePx}px;font-weight:bold;color:#525252;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #d4d4d4;padding-bottom:2px;">${escape(section.title)}</div>`,
+              "</div>",
+            );
+
+            for (const group of itemGroups) {
+              const groupTitle = getStatementGroupTitle(group, detail.policyNumber);
+              const groupParts: string[] = [];
+
+              if (group.items.length > 1) {
+                groupParts.push(
+                  `<div style="margin-bottom:6px;font-size:${bodyPx}px;font-weight:600;color:#171717;">${escape(groupTitle)}</div>`,
+                );
+              }
+
+              for (const item of group.items) {
+                const title = formatValue(
+                  getItemFieldValue(item, descField?.key ?? "itemDescriptions"),
+                  descField?.format,
+                  descField?.currencyCode,
+                );
+                const visiblePairs = itemPairs.filter((pair) => {
+                  const agentRaw = pair.agentField ? getItemFieldValue(item, pair.agentField.key) : null;
+                  const clientRaw = pair.clientField ? getItemFieldValue(item, pair.clientField.key) : null;
+                  if (viewAudience === "client") return hasRenderableItemValue(clientRaw);
+                  return hasRenderableItemValue(agentRaw) || hasRenderableItemValue(clientRaw);
+                });
+
+                const itemParts: string[] = [];
+                // Title + payment badge row
+                itemParts.push(
+                  '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:6px;"><tr>',
+                  `<td style="font-size:${bodyPx}px;font-weight:600;color:#171717;">${escape(title || "Premium")}</td>`,
+                );
+                if (item.paymentBadge) {
+                  itemParts.push(
+                    `<td style="text-align:right;white-space:nowrap;"><span style="font-size:10px;color:#15803d;background:#f0fdf4;border:1px solid #bbf7d0;padding:1px 6px;border-radius:3px;">${escape(item.paymentBadge)}</span></td>`,
+                  );
+                }
+                itemParts.push("</tr></table>");
+
+                if (visiblePairs.length === 0) {
+                  const amountText = amountField
+                    ? formatValue(getItemFieldValue(item, amountField.key), amountField.format, amountField.currencyCode)
+                    : "";
+                  if (amountText) {
+                    itemParts.push(
+                      '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr>',
+                      `<td style="font-size:${bodyPx}px;color:${labelColorStyle};">Amount</td>`,
+                      `<td style="font-size:${bodyPx}px;font-weight:600;color:${valueColorStyle};text-align:right;">${escape(amountText)}</td>`,
+                      "</tr></table>",
+                    );
+                  }
+                } else {
+                  for (const pair of visiblePairs) {
+                    const agentRaw = pair.agentField ? getItemFieldValue(item, pair.agentField.key) : null;
+                    const clientRaw = pair.clientField ? getItemFieldValue(item, pair.clientField.key) : null;
+                    const clientText = pair.clientField
+                      ? formatValue(clientRaw, pair.clientField.format, pair.clientField.currencyCode)
+                      : "—";
+                    const agentText = pair.agentField
+                      ? formatValue(agentRaw, pair.agentField.format, pair.agentField.currencyCode)
+                      : "—";
+
+                    itemParts.push(`<div style="margin-bottom:4px;border:1px solid #e5e5e5;border-radius:4px;padding:5px 8px;">`);
+                    if (pair.groupLabel) {
+                      itemParts.push(
+                        `<div style="font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#737373;margin-bottom:4px;">${escape(pair.groupLabel)}</div>`,
+                      );
+                    }
+                    if (showAgent) {
+                      itemParts.push(
+                        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr>',
+                        '<td style="width:50%;padding-right:6px;vertical-align:top;">',
+                        `<div style="font-size:9px;color:#0284c7;margin-bottom:2px;">Client Premium</div>`,
+                        `<div style="font-size:${bodyPx}px;font-weight:600;color:#0369a1;">${escape(clientText)}</div>`,
+                        "</td>",
+                        '<td style="width:50%;vertical-align:top;">',
+                        `<div style="font-size:9px;color:#737373;margin-bottom:2px;">Agent Settlement</div>`,
+                        `<div style="font-size:${bodyPx}px;font-weight:600;color:${valueColorStyle};">${escape(agentText)}</div>`,
+                        "</td></tr></table>",
+                      );
+                    } else {
+                      itemParts.push(
+                        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr>',
+                        `<td style="font-size:9px;color:#737373;">Client Premium</td>`,
+                        `<td style="font-size:${bodyPx}px;font-weight:600;color:${valueColorStyle};text-align:right;">${escape(clientText)}</td>`,
+                        "</tr></table>",
+                      );
+                    }
+                    itemParts.push("</div>");
+                  }
+                }
+
+                groupParts.push(
+                  `<div style="margin-bottom:6px;border:1px solid #d4d4d4;border-radius:6px;padding:8px 10px;background:#fafafa;page-break-inside:avoid;break-inside:avoid;">`,
+                  ...itemParts,
+                  "</div>",
+                );
+              }
+
+              parts.push(
+                `<div style="margin-bottom:8px;border:1px solid #e5e5e5;border-radius:8px;padding:8px 10px;background:#f5f5f5;page-break-inside:avoid;break-inside:avoid;">`,
+                ...groupParts,
+                "</div>",
+              );
+            }
+            continue;
+          }
+        }
+
         if (fields.length === 0) continue;
 
         const gap = emailGap[sectionSpacing];
         const titlePx = emailTitlePxFor(section);
         parts.push(
-          `<div style="margin:${gap.titleMt}px 0 ${gap.titleMb}px 0;">`,
+          `<div style="margin:${gap.titleMt}px 0 ${gap.titleMb}px 0;page-break-after:avoid;break-after:avoid;">`,
           `<div style="font-size:${titlePx}px;font-weight:bold;color:#525252;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #d4d4d4;padding-bottom:2px;">${escape(section.title)}</div>`,
           "</div>",
           `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin-bottom:${gap.tableMb}px;">`,
@@ -1918,6 +2074,11 @@ export function DocumentPreview({
       }
     }
 
+    // Close the tbody + outer table. The footer is rendered outside the
+    // table so it stays in the flex column and margin-top:auto still
+    // bottom-anchors it to the last page.
+    parts.push('</td></tr></tbody></table>');
+
     // Match the on-screen render rule: when this template requires a
     // statement (e.g. monthly statement) but no statement data is loaded,
     // suppress the footer block entirely. Otherwise the recipient gets a
@@ -2005,15 +2166,10 @@ export function DocumentPreview({
           '</table>',
         );
       }
-      // Page-number indicator — print-only flag we still emit in the
-      // email HTML as a static "Page 1" placeholder so the WYSIWYG of
-      // the live preview holds. Print CSS in `printPageStyles` adds the
-      // real X/Y via @page rules when the user prints to PDF.
-      if (meta.footer?.showPageNumbers) {
-        parts.push(
-          '<div style="margin-top:8px;text-align:center;font-size:10px;color:#a3a3a3;">Page 1</div>',
-        );
-      }
+      // Page numbers are rendered by the @page @bottom-center CSS rule
+      // injected at the top of this HTML (see above). Nothing to emit
+      // here — the CSS counter handles real X/Y automatically in both
+      // window.print() and Puppeteer's page.pdf().
       parts.push("</div>");
     }
 
@@ -4554,7 +4710,7 @@ export function DocumentsTab({
         </Dialog>
 
         {/* Send Email dialog for HTML documents (uses Brevo) */}
-        <Dialog open={htmlEmailOpen} onOpenChange={setHtmlEmailOpen}>
+        <Dialog open={htmlEmailOpen} onOpenChange={(open) => { setHtmlEmailOpen(open); if (!open) setHtmlEmailRequestSignature(false); }}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
@@ -4616,30 +4772,29 @@ export function DocumentsTab({
                   Attachment: <strong>{(htmlEmailSubject || "document").replace(/[^\p{L}\p{N}._\- ]+/gu, "_").trim() || "document"}.pdf</strong>
                 </span>
               </div>
-              {/* Online-signing toggle. When ON we additionally
-                  generate a unique signing URL and embed a CTA
-                  button in the email body so the recipient can
-                  draw / type / accept their signature in their
-                  browser. Off by default — only invoices,
-                  quotations awaiting acceptance, etc. need this. */}
-              <label className="flex items-start gap-2 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
-                <input
-                  type="checkbox"
-                  checked={htmlEmailRequestSignature}
-                  onChange={(e) => setHtmlEmailRequestSignature(e.target.checked)}
-                  className="mt-0.5"
-                />
-                <span>
-                  <strong className="block text-neutral-900 dark:text-neutral-100">
-                    Request online signature
-                  </strong>
-                  <span className="text-neutral-600 dark:text-neutral-400">
-                    Adds a &quot;Sign Online&quot; button to the email so the recipient
-                    can sign in their browser. The signed PDF is stored automatically
-                    and the document is marked as confirmed.
+              {/* Online-signing toggle — only shown when the template has the
+                  Client signature block enabled, since that is the block
+                  the recipient is expected to fill in online. */}
+              {resolveSignatureFlags(selected?.meta?.footer).showClient && (
+                <label className="flex items-start gap-2 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                  <input
+                    type="checkbox"
+                    checked={htmlEmailRequestSignature}
+                    onChange={(e) => setHtmlEmailRequestSignature(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <strong className="block text-neutral-900 dark:text-neutral-100">
+                      Request online signature
+                    </strong>
+                    <span className="text-neutral-600 dark:text-neutral-400">
+                      Adds a &quot;Sign Online&quot; button to the email so the recipient
+                      can sign in their browser. The signed PDF is stored automatically
+                      and the document is marked as confirmed.
+                    </span>
                   </span>
-                </span>
-              </label>
+                </label>
+              )}
             </div>
             <DialogFooter>
               <Button variant="outline" size="sm" onClick={() => setHtmlEmailOpen(false)} disabled={htmlEmailSending}>
