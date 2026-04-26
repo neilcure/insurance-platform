@@ -50,11 +50,39 @@ export type PdfFieldMapping = {
   fieldKey: string;
   staticValue?: string;
 
-  format?: "text" | "currency" | "date" | "boolean" | "number";
+  format?: "text" | "currency" | "date" | "boolean" | "number" | "match";
   currencyCode?: string;
   dateFormat?: string;
   prefix?: string;
   suffix?: string;
+  /**
+   * For `format = "boolean"`: text shown when the resolved value is truthy.
+   * Defaults to "Yes". Set to "✓" (and `falseValue` to "") to draw a tick
+   * inside a checkbox on a proposal form.
+   *
+   * For `format = "match"`: text shown when the resolved value equals
+   * `matchValue`. Defaults to "✓".
+   */
+  trueValue?: string;
+  /**
+   * For `format = "boolean"`: text shown when the resolved value is falsy.
+   * Defaults to "No".
+   *
+   * For `format = "match"`: text shown when the resolved value does NOT
+   * equal `matchValue`. Defaults to "" (empty / blank).
+   */
+  falseValue?: string;
+  /**
+   * For `format = "match"` only: the value to compare the resolved snapshot
+   * value against (case-insensitive). When the field's resolved value
+   * equals this string, render `trueValue` (default "✓"); otherwise render
+   * `falseValue` (default "").
+   *
+   * Useful for single-select / multi-choice answers on proposal forms,
+   * e.g. an `occupation` snapshot field with `matchValue = "Transportation"`
+   * placed inside the "Transportation" checkbox.
+   */
+  matchValue?: string;
   /** Which audience sees this field: "all" (default), "client", or "agent" */
   audience?: "all" | "client" | "agent";
 };
@@ -216,6 +244,7 @@ export const FORMAT_OPTIONS: { value: NonNullable<PdfFieldMapping["format"]>; la
   { value: "text", label: "Text" },
   { value: "currency", label: "Currency" },
   { value: "date", label: "Date" },
-  { value: "boolean", label: "Yes / No" },
+  { value: "boolean", label: "Yes / No (or ✓ tick)" },
+  { value: "match", label: "Match (✓ if equals)" },
   { value: "number", label: "Number" },
 ];

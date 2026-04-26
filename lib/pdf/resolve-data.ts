@@ -1,6 +1,7 @@
 import type { PdfFieldMapping } from "@/lib/types/pdf-template";
 import {
-  resolveAndFormat,
+  formatResolvedValue,
+  resolveRawValue,
   type SnapshotData,
   type AccountingLineCtx,
   type InvoiceCtx,
@@ -53,7 +54,8 @@ export function resolveFieldValue(
   field: PdfFieldMapping,
   ctx: MergeContext,
 ): string {
-  return resolveAndFormat(
+  const resolveCtx = toResolveContext(ctx);
+  const raw = resolveRawValue(
     {
       source: field.source,
       fieldKey: field.fieldKey,
@@ -61,12 +63,17 @@ export function resolveFieldValue(
       lineKey: field.lineKey,
       staticValue: field.staticValue,
     },
-    toResolveContext(ctx),
-    {
-      format: field.format,
-      currencyCode: field.currencyCode,
-      prefix: field.prefix,
-      suffix: field.suffix,
-    },
+    resolveCtx,
   );
+
+  const rawIsBoolean = typeof raw === "boolean" || raw === "true" || raw === "false";
+  const formatWasMissingOrText = !field.format || field.format === "text";
+  const effectiveFormat = rawIsBoolean && formatWasMissingOrText ? "boolean" : field.format;
+  const formatted = formatResolvedValue(raw, effectiveFormat, field.currencyCode, {
+    trueValue: rawIsBoolean && formatWasMissingOrText ? (field.trueValue ?? "✓") : field.trueValue,
+    falseValue: rawIsBoolean && formatWasMissingOrText ? (field.falseValue ?? "") : field.falseValue,
+    matchValue: field.matchValue,
+  });
+
+  return `${field.prefix ?? ""}${formatted}${field.suffix ?? ""}`;
 }

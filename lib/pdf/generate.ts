@@ -10,6 +10,63 @@ function hexToRgb(hex: string) {
   return rgb(r, g, b);
 }
 
+function drawVectorGlyph(
+  page: ReturnType<PDFDocument["getPages"]>[number],
+  glyph: string,
+  x: number,
+  y: number,
+  size: number,
+  color: ReturnType<typeof rgb>,
+) {
+  const strokeWidth = Math.max(0.8, size * 0.12);
+  if (glyph === "✓" || glyph === "✔") {
+    page.drawLine({
+      start: { x: x + size * 0.12, y: y + size * 0.38 },
+      end: { x: x + size * 0.38, y: y + size * 0.12 },
+      thickness: strokeWidth,
+      color,
+    });
+    page.drawLine({
+      start: { x: x + size * 0.38, y: y + size * 0.12 },
+      end: { x: x + size * 0.88, y: y + size * 0.82 },
+      thickness: strokeWidth,
+      color,
+    });
+    return true;
+  }
+
+  if (glyph === "✗" || glyph === "✕" || glyph === "×") {
+    page.drawLine({
+      start: { x: x + size * 0.16, y: y + size * 0.16 },
+      end: { x: x + size * 0.84, y: y + size * 0.84 },
+      thickness: strokeWidth,
+      color,
+    });
+    page.drawLine({
+      start: { x: x + size * 0.84, y: y + size * 0.16 },
+      end: { x: x + size * 0.16, y: y + size * 0.84 },
+      thickness: strokeWidth,
+      color,
+    });
+    return true;
+  }
+
+  if (glyph === "●" || glyph === "○") {
+    page.drawEllipse({
+      x: x + size * 0.5,
+      y: y + size * 0.48,
+      xScale: size * 0.34,
+      yScale: size * 0.34,
+      borderColor: color,
+      borderWidth: strokeWidth,
+      color: glyph === "●" ? color : undefined,
+    });
+    return true;
+  }
+
+  return false;
+}
+
 export async function generateFilledPdf(
   templateBytes: Buffer | Uint8Array,
   fields: PdfFieldMapping[],
@@ -94,6 +151,16 @@ export async function generateFilledPdf(
       fontRegular;
 
     let x = field.x;
+    const vectorGlyphWidth = fontSize;
+    if (text.length <= 2 && ["✓", "✔", "✗", "✕", "×", "●", "○"].includes(text)) {
+      if (field.align === "center" && field.width) {
+        x = field.x + (field.width - vectorGlyphWidth) / 2;
+      } else if (field.align === "right" && field.width) {
+        x = field.x + field.width - vectorGlyphWidth;
+      }
+      if (drawVectorGlyph(page, text, x, field.y, fontSize, color)) continue;
+    }
+
     const textWidth = font.widthOfTextAtSize(text, fontSize);
     if (field.align === "center" && field.width) {
       x = field.x + (field.width - textWidth) / 2;

@@ -32,56 +32,138 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
 const DEFAULT_FONT_SIZE = 10;
 
-type SectionField = { label: string; fieldKey: string; format?: PdfFieldMapping["format"]; defaultOn?: boolean };
+type SectionField = {
+  label: string;
+  fieldKey: string;
+  format?: PdfFieldMapping["format"];
+  defaultOn?: boolean;
+  trueValue?: string;
+  falseValue?: string;
+  matchValue?: string;
+};
+type OptionRow = { label?: unknown; value?: unknown; valueType?: unknown };
+type DynamicAdminField = { label: string; value: string; valueType?: string };
+type OrganisationRow = { id?: unknown; name?: unknown };
 
-const SECTION_TEMPLATES: {
+type SectionTemplate = {
   name: string;
   source: PdfFieldMapping["source"];
+  /** For source = "package", the package key (e.g. "vehicleinfo"). */
+  packageName?: string;
   color: string;
   fields: SectionField[];
   lineKey?: string;
-}[] = [
-  {
-    name: "Insured",
-    source: "insured",
-    color: "#3b82f6",
-    fields: [
-      { label: "Insured Type", fieldKey: "insuredType", defaultOn: true },
-      { label: "Display Name", fieldKey: "displayName", defaultOn: true },
-      { label: "ID Number", fieldKey: "idNumber", defaultOn: true },
-      { label: "Company Name", fieldKey: "companyName", defaultOn: true },
-      { label: "BR Number", fieldKey: "brNumber", defaultOn: true },
-      { label: "Full Name", fieldKey: "fullName" },
-      { label: "Last Name", fieldKey: "lastName" },
-      { label: "First Name", fieldKey: "firstName" },
-      { label: "Primary ID", fieldKey: "primaryId" },
-      { label: "Organisation Name", fieldKey: "organisationName" },
-      { label: "Has Driving License", fieldKey: "hasDrivingLicense" },
-    ],
-  },
-  {
-    name: "Contact Information",
-    source: "contactinfo",
-    color: "#10b981",
-    fields: [
-      { label: "Personal Title", fieldKey: "personalTitle", defaultOn: true },
-      { label: "Name", fieldKey: "name", defaultOn: true },
-      { label: "Tel", fieldKey: "tel", defaultOn: true },
-      { label: "Mobile", fieldKey: "mobile", defaultOn: true },
-      { label: "Fax", fieldKey: "fax" },
-      { label: "Email", fieldKey: "email", defaultOn: true },
-      { label: "Full Address", fieldKey: "fullAddress", defaultOn: true },
-      { label: "Flat Number", fieldKey: "flatNumber" },
-      { label: "Floor Number", fieldKey: "floorNumber" },
-      { label: "Block Number", fieldKey: "blockNumber" },
-      { label: "Block Name", fieldKey: "blockName" },
-      { label: "Street Number", fieldKey: "streetNumber" },
-      { label: "Street Name", fieldKey: "streetName" },
-      { label: "Property Name", fieldKey: "propertyName" },
-      { label: "District Name", fieldKey: "districtName" },
-      { label: "Area", fieldKey: "area" },
-    ],
-  },
+};
+
+/**
+ * Synthetic / computed fields per source — these are produced by the
+ * field-resolver and do NOT live in form_options. They are merged into
+ * the dynamic field list so admins can pick them in the Add Section
+ * dialog without configuring them.
+ *
+ * Keep in sync with `lib/field-resolver.ts`:
+ *  - resolveInsured: `displayName`, `primaryId`
+ *  - resolveContact: `fullAddress`
+ *  - resolveOrganisation: `fullAddress`
+ */
+const SYNTHETIC_FIELDS_BY_SOURCE: Record<string, SectionField[]> = {
+  insured: [
+    { label: "Display Name", fieldKey: "displayName", defaultOn: true },
+    { label: "Primary ID", fieldKey: "primaryId", defaultOn: true },
+  ],
+  contactinfo: [
+    { label: "Full Address", fieldKey: "fullAddress", defaultOn: true },
+  ],
+  organisation: [
+    { label: "Full Address", fieldKey: "fullAddress", defaultOn: true },
+  ],
+};
+
+/**
+ * Admin field keys whose value is already covered by a synthetic field
+ * for the same source. Matching is fuzzy (lowercase + alphanumerics
+ * only) so admins can name keys `last_name`, `lastName`, `LastName`,
+ * etc. and we still recognise them.
+ *
+ * Fields recognised here are kept in the picker (so templates needing
+ * separate boxes — e.g. proposal forms with split last/first name —
+ * still work), but are tucked under the "More fields" divider so the
+ * smarter synthetic field is the obvious default.
+ *
+ * Keep in sync with the synthetic computed fields above.
+ */
+const HANDLED_FIELD_KEYS_BY_SOURCE: Record<string, Set<string>> = {
+  insured: new Set([
+    // Handled by `displayName` (resolves to person OR company name)
+    "lastname", "firstname", "fullname", "name",
+    "companyname", "fullcompanyname",
+    // Handled by `primaryId` (resolves to ID OR BR number)
+    "idnumber", "id", "hkid", "hkidnumber",
+    "brnumber", "br", "businessregistration", "businessregistrationnumber",
+    "cinumber", "ci",
+  ]),
+  contactinfo: new Set([
+    // Handled by `fullAddress`
+    "address", "fulladdress",
+    "flatnumber", "floornumber", "blocknumber", "blockname",
+    "streetnumber", "streetname",
+    "propertyname", "districtname", "area",
+  ]),
+  organisation: new Set([
+    "address", "fulladdress",
+    "flatnumber", "floornumber", "blocknumber", "blockname",
+    "streetnumber", "streetname",
+    "propertyname", "districtname", "area",
+  ]),
+};
+
+function normalizeFieldKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function formatForValueType(valueType?: string): PdfFieldMapping["format"] | undefined {
+  const t = valueType?.toLowerCase().trim();
+  if (!t) return undefined;
+  if (["boolean", "bool", "checkbox", "switch", "yesno", "yes_no"].includes(t)) return "boolean";
+  if (["date", "datetime"].includes(t)) return "date";
+  if (["number", "integer", "decimal"].includes(t)) return "number";
+  if (["currency", "money", "amount"].includes(t)) return "currency";
+  return undefined;
+}
+
+/**
+ * Stable color mapping for well-known packages. Other packages get a
+ * deterministic fallback color from PACKAGE_FALLBACK_COLORS.
+ */
+const PACKAGE_COLOR_MAP: Record<string, string> = {
+  insured: "#3b82f6",
+  contactinfo: "#10b981",
+  vehicleinfo: "#f97316",
+  policyinfo: "#a855f7",
+  endorsement: "#0891b2",
+};
+
+const PACKAGE_FALLBACK_COLORS = [
+  "#3b82f6", "#10b981", "#f97316", "#a855f7", "#0891b2", "#84cc16",
+  "#eab308", "#14b8a6", "#6366f1", "#d946ef",
+];
+
+function colorForPackage(pkgKey: string): string {
+  if (PACKAGE_COLOR_MAP[pkgKey]) return PACKAGE_COLOR_MAP[pkgKey];
+  let hash = 0;
+  for (let i = 0; i < pkgKey.length; i++) {
+    hash = ((hash << 5) - hash + pkgKey.charCodeAt(i)) | 0;
+  }
+  return PACKAGE_FALLBACK_COLORS[Math.abs(hash) % PACKAGE_FALLBACK_COLORS.length];
+}
+
+/**
+ * Built-in section templates for sources that are NOT loaded from
+ * form_options (policy / accounting / agent / client / organisation).
+ * Package-based templates (insured, contactinfo, vehicleinfo, …) are
+ * built dynamically from `/api/form-options?groupKey=packages`.
+ */
+const BUILT_IN_SECTION_TEMPLATES: SectionTemplate[] = [
   {
     name: "Policy",
     source: "policy",
@@ -164,18 +246,54 @@ const SECTION_TEMPLATES: {
       { label: "Contact Email", fieldKey: "contactEmail", defaultOn: true },
       { label: "Contact Phone", fieldKey: "contactPhone", defaultOn: true },
       { label: "Full Address", fieldKey: "fullAddress", defaultOn: true },
-      { label: "Flat Number", fieldKey: "flatNumber" },
-      { label: "Floor Number", fieldKey: "floorNumber" },
-      { label: "Block Number", fieldKey: "blockNumber" },
-      { label: "Block Name", fieldKey: "blockName" },
-      { label: "Street Number", fieldKey: "streetNumber" },
-      { label: "Street Name", fieldKey: "streetName" },
-      { label: "Property Name", fieldKey: "propertyName" },
-      { label: "District Name", fieldKey: "districtName" },
-      { label: "Area", fieldKey: "area" },
     ],
   },
 ];
+
+/**
+ * Build a dynamic section template for an admin-configured package. The
+ * resulting template merges synthetic computed fields (e.g. displayName)
+ * with the admin-configured fields from `${pkg}_fields`. If the package
+ * has no admin fields configured, only synthetic fields are returned.
+ */
+function buildPackageSectionTemplate(
+  pkg: { label: string; value: string },
+  adminFields: DynamicAdminField[],
+): SectionTemplate {
+  const synthetic = SYNTHETIC_FIELDS_BY_SOURCE[pkg.value] ?? [];
+  const syntheticKeys = new Set(synthetic.map((f) => f.fieldKey.toLowerCase()));
+  const handledKeys = HANDLED_FIELD_KEYS_BY_SOURCE[pkg.value] ?? new Set<string>();
+
+  const fields: SectionField[] = [
+    ...synthetic,
+    ...adminFields
+      .filter((f) => f.value && !syntheticKeys.has(f.value.toLowerCase()))
+      .map<SectionField>((f) => ({
+        label: f.label || f.value,
+        fieldKey: f.value,
+        format: formatForValueType(f.valueType),
+        trueValue: formatForValueType(f.valueType) === "boolean" ? "✓" : undefined,
+        falseValue: formatForValueType(f.valueType) === "boolean" ? "" : undefined,
+        // Admin fields whose value is already covered by a synthetic
+        // field are tucked under "More fields"; everything else stays
+        // promoted as a default-on suggestion.
+        defaultOn: !handledKeys.has(normalizeFieldKey(f.value)),
+      })),
+  ];
+
+  const source: PdfFieldMapping["source"] =
+    pkg.value === "insured" ? "insured"
+      : pkg.value === "contactinfo" ? "contactinfo"
+        : "package";
+
+  return {
+    name: pkg.label || pkg.value,
+    source,
+    packageName: source === "package" ? pkg.value : undefined,
+    color: colorForPackage(pkg.value),
+    fields,
+  };
+}
 
 function FieldListItem({
   field,
@@ -227,6 +345,48 @@ function FieldListItem({
   );
 }
 
+const PDF_LOADING_VIEW = (
+  <div className="flex items-center justify-center h-full text-sm text-neutral-500">Loading PDF...</div>
+);
+const PDF_ERROR_VIEW = (
+  <div className="flex items-center justify-center h-full text-sm text-red-500 dark:text-red-400">Failed to load PDF</div>
+);
+
+type PdfPageBackgroundProps = {
+  pdfUrl: string;
+  isBlankPage: boolean;
+  currentPage: number;
+  displayWidth: number;
+};
+
+const PdfPageBackground = React.memo(
+  function PdfPageBackground({ pdfUrl, isBlankPage, currentPage, displayWidth }: PdfPageBackgroundProps) {
+    if (isBlankPage) {
+      return (
+        <div className="w-full h-full bg-white flex items-center justify-center">
+          <span className="text-neutral-300 text-sm select-none pointer-events-none">Blank Page</span>
+        </div>
+      );
+    }
+
+    return (
+      <Document file={pdfUrl} loading={PDF_LOADING_VIEW} error={PDF_ERROR_VIEW}>
+        <Page
+          pageNumber={currentPage + 1}
+          width={displayWidth}
+          renderTextLayer={false}
+          renderAnnotationLayer={false}
+        />
+      </Document>
+    );
+  },
+  (prev, next) =>
+    prev.pdfUrl === next.pdfUrl
+    && prev.isBlankPage === next.isBlankPage
+    && prev.currentPage === next.currentPage
+    && Math.round(prev.displayWidth) === Math.round(next.displayWidth),
+);
+
 type Props = {
   template: PdfTemplateRow;
   onClose: () => void;
@@ -234,7 +394,10 @@ type Props = {
 
 export default function PdfTemplateEditor({ template, onClose }: Props) {
   const meta = template.meta as unknown as PdfTemplateMeta;
-  const pdfUrl = `/api/pdf-templates/${template.id}/preview`;
+  const pdfUrl = React.useMemo(
+    () => `/api/pdf-templates/${template.id}/preview`,
+    [template.id],
+  );
 
   const [fields, setFields] = React.useState<PdfFieldMapping[]>(meta.fields ?? []);
   const [sections, setSections] = React.useState<PdfTemplateSection[]>(meta.sections ?? []);
@@ -250,12 +413,12 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     optionalCount: number;
     results: { id: string; source: string; fieldKey: string; resolved: unknown; status: "ok" | "optional" }[];
   } | null>(null);
-  const [numPages, setNumPages] = React.useState(meta.pages?.length ?? 1);
   const [collapsedSections, setCollapsedSections] = React.useState<Set<string>>(new Set());
   const [renamingSectionId, setRenamingSectionId] = React.useState<string | null>(null);
   const [renameValue, setRenameValue] = React.useState("");
   const [showSectionPicker, setShowSectionPicker] = React.useState(false);
-  const [sectionPickerTemplate, setSectionPickerTemplate] = React.useState<typeof SECTION_TEMPLATES[number] | null>(null);
+  const [sectionPickerTemplate, setSectionPickerTemplate] = React.useState<SectionTemplate | null>(null);
+  const [packageSectionTemplates, setPackageSectionTemplates] = React.useState<SectionTemplate[]>([]);
   const [fieldSelections, setFieldSelections] = React.useState<Record<string, { checked: boolean; showLabel: boolean }>>({});
   const [sectionLabelColor, setSectionLabelColor] = React.useState("#6b7280");
   const [sectionDataColor, setSectionDataColor] = React.useState("#000000");
@@ -302,6 +465,109 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const [availableStatuses, setAvailableStatuses] = React.useState<{ label: string; value: string }[]>([]);
   const [availableOrgs, setAvailableOrgs] = React.useState<{ id: number; name: string }[]>([]);
 
+  // Load package section templates dynamically from form_options. Each
+  // package configured under `/admin/policy-settings/<pkg>/fields` becomes
+  // an entry in the "Add Section" picker, with its admin-configured fields
+  // plus any synthetic computed fields (Display Name, Primary ID, …).
+  React.useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pkgRes = await fetch("/api/form-options?groupKey=packages", { cache: "no-store" });
+        if (!pkgRes.ok) return;
+        const pkgData = (await pkgRes.json()) as OptionRow[];
+        const packages = (Array.isArray(pkgData) ? pkgData : [])
+          .map((p) => ({ label: String(p.label ?? ""), value: String(p.value ?? "") }))
+          .filter((p) => p.value);
+        if (packages.length === 0) {
+          if (!cancelled) setPackageSectionTemplates([]);
+          return;
+        }
+        const fieldsByPkg = await Promise.all(
+          packages.map(async (p) => {
+            try {
+              const fr = await fetch(
+                `/api/form-options?groupKey=${encodeURIComponent(`${p.value}_fields`)}`,
+                { cache: "no-store" },
+              );
+              if (!fr.ok) return [];
+              const fd = (await fr.json()) as OptionRow[];
+              return (Array.isArray(fd) ? fd : []).map((f) => ({
+                label: String(f.label ?? ""),
+                value: String(f.value ?? ""),
+                valueType: typeof f.valueType === "string" ? f.valueType : undefined,
+              }));
+            } catch {
+              return [];
+            }
+          }),
+        );
+        if (cancelled) return;
+        const templates = packages.map((p, i) => buildPackageSectionTemplate(p, fieldsByPkg[i]));
+        setPackageSectionTemplates(templates);
+      } catch {
+        if (!cancelled) setPackageSectionTemplates([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Combined templates shown in the Add Section picker. Packages first
+  // (admin-configured), then built-in entity sources.
+  const sectionTemplates = React.useMemo<SectionTemplate[]>(
+    () => [...packageSectionTemplates, ...BUILT_IN_SECTION_TEMPLATES],
+    [packageSectionTemplates],
+  );
+
+  // Repair fields added before dynamic admin field types were passed
+  // through. Without this, boolean package fields were saved as plain
+  // text and rendered raw values like "true" instead of a tick.
+  React.useEffect(() => {
+    if (sectionTemplates.length === 0) return;
+    const templateFields = new Map<string, SectionField>();
+    const keyFor = (
+      source: PdfFieldMapping["source"],
+      packageName: string | undefined,
+      lineKey: string | undefined,
+      fieldKey: string,
+    ) => `${source}:${packageName ?? ""}:${lineKey ?? ""}:${fieldKey.toLowerCase()}`;
+
+    sectionTemplates.forEach((tpl) => {
+      tpl.fields.forEach((field) => {
+        templateFields.set(
+          keyFor(tpl.source, tpl.packageName, tpl.lineKey, field.fieldKey),
+          field,
+        );
+      });
+    });
+
+    setFields((prev) => {
+      let changed = false;
+      const next = prev.map((field) => {
+        if (field.source === "static") return field;
+        const templateField = templateFields.get(
+          keyFor(field.source, field.packageName, field.lineKey, field.fieldKey),
+        );
+        if (!templateField?.format) return field;
+        const shouldApplyFormat = !field.format || field.format === "text";
+        const shouldApplyBooleanDefaults =
+          templateField.format === "boolean"
+          && field.trueValue === undefined
+          && field.falseValue === undefined;
+        if (!shouldApplyFormat && !shouldApplyBooleanDefaults) return field;
+        changed = true;
+        return {
+          ...field,
+          format: shouldApplyFormat ? templateField.format : field.format,
+          trueValue: shouldApplyBooleanDefaults ? templateField.trueValue : field.trueValue,
+          falseValue: shouldApplyBooleanDefaults ? templateField.falseValue : field.falseValue,
+          matchValue: field.matchValue ?? templateField.matchValue,
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [sectionTemplates]);
+
   React.useEffect(() => {
     if (!showSettings) return;
     Promise.all([
@@ -309,9 +575,9 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
       fetch("/api/form-options?groupKey=policy_statuses", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).catch(() => []),
       fetch("/api/admin/organisations", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).catch(() => []),
     ]).then(([flowsData, statusData, orgData]) => {
-      setAvailableFlows(Array.isArray(flowsData) ? flowsData.map((f: any) => ({ label: f.label, value: f.value })) : []);
-      setAvailableStatuses(Array.isArray(statusData) ? statusData.map((s: any) => ({ label: s.label, value: s.value })) : []);
-      setAvailableOrgs(Array.isArray(orgData) ? orgData : []);
+      setAvailableFlows(Array.isArray(flowsData) ? flowsData.map((f: OptionRow) => ({ label: String(f.label ?? ""), value: String(f.value ?? "") })) : []);
+      setAvailableStatuses(Array.isArray(statusData) ? statusData.map((s: OptionRow) => ({ label: String(s.label ?? ""), value: String(s.value ?? "") })) : []);
+      setAvailableOrgs(Array.isArray(orgData) ? orgData.map((org: OrganisationRow) => ({ id: Number(org.id), name: String(org.name ?? "") })) : []);
     });
   }, [showSettings]);
 
@@ -345,7 +611,6 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     || JSON.stringify(drawings) !== JSON.stringify(savedRef.current.drawings)
     || JSON.stringify(pages) !== JSON.stringify(savedRef.current.pages);
 
-  const pdfPageCount = (meta.pages ?? []).filter((p) => p.type !== "blank").length;
   const totalPageCount = pages.length;
 
   const pageContainerRef = React.useRef<HTMLDivElement>(null);
@@ -354,13 +619,25 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   React.useEffect(() => {
     const el = pageContainerRef.current;
     if (!el) return;
+    let frame = 0;
     const obs = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setContainerWidth(entry.contentRect.width);
-      }
+      const raw = entries[0]?.contentRect.width ?? 0;
+      if (raw <= 0) return;
+      const nextWidth = Math.round(raw);
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        setContainerWidth((prev) => {
+          if (prev === nextWidth) return prev;
+          if (Math.abs(prev - nextWidth) <= 1) return prev;
+          return nextWidth;
+        });
+      });
     });
     obs.observe(el);
-    return () => obs.disconnect();
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      obs.disconnect();
+    };
   }, []);
 
   const pageDims = pages?.[currentPage];
@@ -460,7 +737,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     });
   }
 
-  function openSectionConfig(tpl: typeof SECTION_TEMPLATES[number]) {
+  function openSectionConfig(tpl: SectionTemplate) {
     setEditingSectionId(null);
     setSectionPickerTemplate(tpl);
     const selections: Record<string, { checked: boolean; showLabel: boolean }> = {};
@@ -478,21 +755,54 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     if (!section) return;
 
     const sectionFields = fields.filter((f) => f.sectionId === sectionId && f.source !== "static");
-    const source = sectionFields[0]?.source;
-    const tpl = SECTION_TEMPLATES.find((t) => t.source === source) ?? SECTION_TEMPLATES.find((t) => t.name === section.name);
+    const sample = sectionFields[0];
+    const source = sample?.source;
+    const samplePkg = sample?.packageName;
+    const sampleLine = sample?.lineKey;
+
+    // Match by (source, packageName, lineKey) so package sections and
+    // per-line accounting sections are picked up correctly. Fall back to
+    // matching by name (for empty / custom sections).
+    let tpl = sectionTemplates.find((t) =>
+      t.source === source
+      && (t.packageName ?? undefined) === (samplePkg ?? undefined)
+      && (t.lineKey ?? undefined) === (sampleLine ?? undefined),
+    );
+    if (!tpl) {
+      tpl = sectionTemplates.find((t) => t.name === section.name);
+    }
     if (!tpl) return;
 
-    const existingKeys = new Set(sectionFields.map((f) => f.fieldKey));
+    // Merge in any existing field keys that are NOT in the template — this
+    // keeps backward compatibility if admin removed a field key after the
+    // template was created, so the user can still see / uncheck it.
+    const tplKeys = new Set(tpl.fields.map((f) => f.fieldKey));
     const sectionStaticFields = fields.filter((f) => f.sectionId === sectionId && f.source === "static");
+    const extraFields: SectionField[] = [];
+    sectionFields.forEach((sf) => {
+      if (!tplKeys.has(sf.fieldKey)) {
+        extraFields.push({
+          label: sf.label || sf.fieldKey,
+          fieldKey: sf.fieldKey,
+          format: sf.format,
+        });
+        tplKeys.add(sf.fieldKey);
+      }
+    });
+    const mergedTpl: SectionTemplate = extraFields.length > 0
+      ? { ...tpl, fields: [...tpl.fields, ...extraFields] }
+      : tpl;
+
+    const existingKeys = new Set(sectionFields.map((f) => f.fieldKey));
     const labelledKeys = new Set(
       sectionStaticFields.map((f) => {
-        const match = tpl.fields.find((tf) => `${tf.label}:` === f.staticValue);
+        const match = mergedTpl.fields.find((tf) => `${tf.label}:` === f.staticValue);
         return match?.fieldKey;
       }).filter(Boolean) as string[],
     );
 
     const selections: Record<string, { checked: boolean; showLabel: boolean }> = {};
-    tpl.fields.forEach((f) => {
+    mergedTpl.fields.forEach((f) => {
       selections[f.fieldKey] = {
         checked: existingKeys.has(f.fieldKey),
         showLabel: labelledKeys.has(f.fieldKey),
@@ -505,7 +815,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     setSectionDataColor(dataField?.fontColor ?? "#000000");
 
     setEditingSectionId(sectionId);
-    setSectionPickerTemplate(tpl);
+    setSectionPickerTemplate(mergedTpl);
     setFieldSelections(selections);
   }
 
@@ -517,7 +827,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   }
 
   function buildSectionFields(
-    tpl: typeof SECTION_TEMPLATES[number],
+    tpl: SectionTemplate,
     sectionId: string,
     startY: number,
   ): { fields: PdfFieldMapping[]; drawings: PdfDrawing[] } {
@@ -576,10 +886,14 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           fontSize: structuredLayout ? 9 : DEFAULT_FONT_SIZE,
           fontColor: sectionDataColor !== "#000000" ? sectionDataColor : undefined,
           source: tpl.source,
+          packageName: tpl.packageName,
           fieldKey: f.fieldKey,
           lineKey: tpl.lineKey,
           sectionId,
           format: f.format ?? "text",
+          trueValue: f.trueValue,
+          falseValue: f.falseValue,
+          matchValue: f.matchValue,
         });
       } else {
         result.push({
@@ -591,10 +905,14 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           fontSize: DEFAULT_FONT_SIZE,
           fontColor: sectionDataColor !== "#000000" ? sectionDataColor : undefined,
           source: tpl.source,
+          packageName: tpl.packageName,
           fieldKey: f.fieldKey,
           lineKey: tpl.lineKey,
           sectionId,
           format: f.format ?? "text",
+          trueValue: f.trueValue,
+          falseValue: f.falseValue,
+          matchValue: f.matchValue,
         });
       }
     });
@@ -690,9 +1008,14 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
               fontSize: DEFAULT_FONT_SIZE,
               fontColor: sectionDataColor !== "#000000" ? sectionDataColor : undefined,
               source: tpl.source,
+              packageName: tpl.packageName,
+              lineKey: tpl.lineKey,
               fieldKey: f.fieldKey,
               sectionId: sid,
               format: f.format ?? "text",
+              trueValue: f.trueValue,
+              falseValue: f.falseValue,
+              matchValue: f.matchValue,
             });
           } else {
             result.push({
@@ -704,9 +1027,14 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
               fontSize: DEFAULT_FONT_SIZE,
               fontColor: sectionDataColor !== "#000000" ? sectionDataColor : undefined,
               source: tpl.source,
+              packageName: tpl.packageName,
+              lineKey: tpl.lineKey,
               fieldKey: f.fieldKey,
               sectionId: sid,
               format: f.format ?? "text",
+              trueValue: f.trueValue,
+              falseValue: f.falseValue,
+              matchValue: f.matchValue,
             });
           }
           return result;
@@ -1130,8 +1458,6 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   }
 
   const selectedImage = images.find((img) => img.id === selectedImageId) ?? null;
-  const selectedDrawing = drawings.find((d) => d.id === selectedDrawingId) ?? null;
-
   function updateDrawing(id: string, patch: Partial<PdfDrawing>) {
     setDrawings((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
   }
@@ -1369,7 +1695,8 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
       const msg = data.okCount === data.totalFields
         ? `All ${data.totalFields} fields resolved against ${data.policyNumber}`
         : `${data.okCount}/${data.totalFields} fields resolved against ${data.policyNumber}`;
-      data.okCount === data.totalFields ? toast.success(msg) : toast.info(msg);
+      if (data.okCount === data.totalFields) toast.success(msg);
+      else toast.info(msg);
     } catch (err: unknown) {
       toast.error((err as { message?: string })?.message ?? "Validation failed");
     } finally {
@@ -1382,8 +1709,14 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     return new Map(validationResult.results.map((r) => [r.id, r.status]));
   }, [validationResult]);
 
-  const pageFields = fields.filter((f) => f.page === currentPage);
-  const pageImages = images.filter((img) => img.page === currentPage);
+  const pageFields = React.useMemo(
+    () => fields.filter((f) => f.page === currentPage),
+    [fields, currentPage],
+  );
+  const pageImages = React.useMemo(
+    () => images.filter((img) => img.page === currentPage),
+    [images, currentPage],
+  );
 
   return (
     <div className="space-y-3">
@@ -1526,38 +1859,12 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           }`}
           style={{ width: displayWidth, height: displayHeight }}
         >
-          {isBlankPage ? (
-            <div
-              className="w-full h-full bg-white flex items-center justify-center"
-              onClick={handlePageClick}
-            >
-              <span className="text-neutral-300 text-sm select-none pointer-events-none">Blank Page</span>
-            </div>
-          ) : (
-            <Document
-              file={pdfUrl}
-              onLoadSuccess={({ numPages: n }) => {
-                setNumPages(n);
-                const origCount = pages.filter((p) => p.type !== "blank").length;
-                if (origCount === 0 && n > 0) {
-                  setPages((prev) => {
-                    const pdfPages = prev.filter((p) => p.type !== "blank");
-                    if (pdfPages.length === n) return prev;
-                    return prev;
-                  });
-                }
-              }}
-              loading={<div className="flex items-center justify-center h-full text-sm text-neutral-500">Loading PDF...</div>}
-              error={<div className="flex items-center justify-center h-full text-sm text-red-500 dark:text-red-400">Failed to load PDF</div>}
-            >
-              <Page
-                pageNumber={currentPage + 1}
-                width={displayWidth}
-                renderTextLayer={false}
-                renderAnnotationLayer={false}
-              />
-            </Document>
-          )}
+          <PdfPageBackground
+            pdfUrl={pdfUrl}
+            isBlankPage={isBlankPage}
+            currentPage={currentPage}
+            displayWidth={displayWidth}
+          />
 
           {/* Transparent overlay to capture clicks in placing mode */}
           {placingMode && (
@@ -1752,19 +2059,49 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
               {showSectionPicker && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowSectionPicker(false)} />
-                  <div className="absolute right-0 top-full mt-1 z-50 w-60 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg py-1">
-                    {SECTION_TEMPLATES.map((tpl) => {
+                  <div className="absolute right-0 top-full mt-1 z-50 w-64 max-h-96 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg py-1">
+                    {packageSectionTemplates.length > 0 && (
+                      <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
+                        From snapshot (admin-configured)
+                      </div>
+                    )}
+                    {packageSectionTemplates.map((tpl) => {
                       const defaultCount = tpl.fields.filter((f) => f.defaultOn).length;
+                      const key = `${tpl.source}:${tpl.packageName ?? ""}:${tpl.lineKey ?? ""}:${tpl.name}`;
                       return (
                         <button
-                          key={tpl.name}
+                          key={key}
                           type="button"
                           onClick={() => openSectionConfig(tpl)}
                           className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-xs hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300"
                         >
                           <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tpl.color }} />
                           <div className="flex-1 min-w-0">
-                            <div className="font-medium">{tpl.name}</div>
+                            <div className="font-medium truncate">{tpl.name}</div>
+                            <div className="text-[10px] text-neutral-400 dark:text-neutral-500">{tpl.fields.length} fields ({defaultCount} default)</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                    {packageSectionTemplates.length > 0 && (
+                      <div className="border-t border-neutral-200 dark:border-neutral-800 my-1" />
+                    )}
+                    <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
+                      Built-in
+                    </div>
+                    {BUILT_IN_SECTION_TEMPLATES.map((tpl) => {
+                      const defaultCount = tpl.fields.filter((f) => f.defaultOn).length;
+                      const key = `${tpl.source}:${tpl.lineKey ?? ""}:${tpl.name}`;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => openSectionConfig(tpl)}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-xs hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300"
+                        >
+                          <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tpl.color }} />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium truncate">{tpl.name}</div>
                             <div className="text-[10px] text-neutral-400 dark:text-neutral-500">{tpl.fields.length} fields ({defaultCount} default)</div>
                           </div>
                         </button>
@@ -2565,6 +2902,142 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                     className="h-7 text-xs"
                     placeholder="HKD"
                   />
+                </div>
+              )}
+
+              {selectedField.format === "boolean" && (
+                <div className="mt-2 space-y-2 rounded-md border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 p-2">
+                  <div className="text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                    Render text
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
+                      onClick={() => updateField(selectedField.id, { trueValue: "Yes", falseValue: "No" })}
+                      title="Default — show 'Yes' or 'No'"
+                    >
+                      Yes / No
+                    </button>
+                    <button
+                      type="button"
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
+                      onClick={() => updateField(selectedField.id, { trueValue: "✓", falseValue: "" })}
+                      title="Show ✓ when true, blank when false (use inside the Yes box)"
+                    >
+                      ✓ / blank
+                    </button>
+                    <button
+                      type="button"
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
+                      onClick={() => updateField(selectedField.id, { trueValue: "", falseValue: "✓" })}
+                      title="Show ✓ when false, blank when true (use inside the No box)"
+                    >
+                      blank / ✓
+                    </button>
+                    <button
+                      type="button"
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
+                      onClick={() => updateField(selectedField.id, { trueValue: "✓", falseValue: "✗" })}
+                      title="Show ✓ when true, ✗ when false"
+                    >
+                      ✓ / ✗
+                    </button>
+                    <button
+                      type="button"
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
+                      onClick={() => updateField(selectedField.id, { trueValue: "是", falseValue: "否" })}
+                      title="Show 是 / 否"
+                    >
+                      是 / 否
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-xs">When true</Label>
+                      <Input
+                        value={selectedField.trueValue ?? ""}
+                        onChange={(e) => updateField(selectedField.id, { trueValue: e.target.value })}
+                        className="h-7 text-xs"
+                        placeholder="Yes"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs">When false</Label>
+                      <Input
+                        value={selectedField.falseValue ?? ""}
+                        onChange={(e) => updateField(selectedField.id, { falseValue: e.target.value })}
+                        className="h-7 text-xs"
+                        placeholder="No"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500 leading-snug">
+                    Tip: place two fields with the same data source — one with <span className="font-mono">✓ / blank</span> inside the Yes box and one with <span className="font-mono">blank / ✓</span> inside the No box.
+                  </p>
+                </div>
+              )}
+
+              {selectedField.format === "match" && (
+                <div className="mt-2 space-y-2 rounded-md border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 p-2">
+                  <div className="text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                    Match value (case-insensitive)
+                  </div>
+                  <Input
+                    value={selectedField.matchValue ?? ""}
+                    onChange={(e) => updateField(selectedField.id, { matchValue: e.target.value })}
+                    className="h-7 text-xs"
+                    placeholder="e.g. Transportation"
+                  />
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
+                      onClick={() => updateField(selectedField.id, { trueValue: "✓", falseValue: "" })}
+                      title="Show ✓ when value matches, blank otherwise"
+                    >
+                      ✓ / blank
+                    </button>
+                    <button
+                      type="button"
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
+                      onClick={() => updateField(selectedField.id, { trueValue: "✓", falseValue: "✗" })}
+                      title="Show ✓ when matches, ✗ otherwise"
+                    >
+                      ✓ / ✗
+                    </button>
+                    <button
+                      type="button"
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
+                      onClick={() => updateField(selectedField.id, { trueValue: "●", falseValue: "○" })}
+                      title="Show ● when matches, ○ otherwise"
+                    >
+                      ● / ○
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-xs">When matches</Label>
+                      <Input
+                        value={selectedField.trueValue ?? ""}
+                        onChange={(e) => updateField(selectedField.id, { trueValue: e.target.value })}
+                        className="h-7 text-xs"
+                        placeholder="✓"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Otherwise</Label>
+                      <Input
+                        value={selectedField.falseValue ?? ""}
+                        onChange={(e) => updateField(selectedField.id, { falseValue: e.target.value })}
+                        className="h-7 text-xs"
+                        placeholder="(blank)"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500 leading-snug">
+                    Place one field per option (e.g. Transportation, Seafood, Vegetables). Each compares the same snapshot value to a different match string and ticks its own box.
+                  </p>
                 </div>
               )}
 

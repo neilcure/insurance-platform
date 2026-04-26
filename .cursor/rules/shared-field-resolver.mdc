@@ -63,7 +63,7 @@ Form field names use the pattern `${pkg}__${fieldKey}` (double underscore), but 
 |------|-----|
 | Resolve a field value from snapshot by source + key | `resolveRawValue(ref, ctx)` |
 | Resolve + format in one call (PDF/HTML templates) | `resolveAndFormat(ref, ctx, opts)` |
-| Format raw value as currency/date/boolean/number | `formatResolvedValue(raw, format, currencyCode)` |
+| Format raw value as currency/date/boolean/number/match | `formatResolvedValue(raw, format, currencyCode, extras?)` (extras: `{ trueValue?, falseValue?, matchValue? }` for boolean/match) |
 | Get display name from insured snapshot | `getInsuredDisplayName(insured)` |
 | Get insured type (personal/company) | `getInsuredType(insured)` |
 | Get name from insured + packages fallback | `getDisplayNameFromSnapshot(snapshot)` |

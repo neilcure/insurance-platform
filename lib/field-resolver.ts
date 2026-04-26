@@ -122,6 +122,19 @@ export type FormatOptions = {
   currencyCode?: string;
   prefix?: string;
   suffix?: string;
+  /** Boolean / match: rendered string when condition is true. */
+  trueValue?: string;
+  /** Boolean / match: rendered string when condition is false. */
+  falseValue?: string;
+  /** Match format only: target string compared against the resolved value. */
+  matchValue?: string;
+};
+
+/** Extra options passed to {@link formatResolvedValue}. */
+export type FormatExtras = {
+  trueValue?: string;
+  falseValue?: string;
+  matchValue?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -518,12 +531,6 @@ function resolveStatement(stmt: StatementCtx | null | undefined, fieldKey: strin
   const paidItems = stmt.items.filter((it) => it.status === "paid_individually");
   const billableStatuses = new Set(["active", "paid_individually"]);
   const statementBillableItems = stmt.items.filter((it) => billableStatuses.has(it.status));
-  const hasPremiumBreakdown = (it: StatementCtx["items"][number]) => {
-    const p = it.premiums ?? {};
-    return Number(p.agentPremium ?? 0) !== 0
-      || Number(p.clientPremium ?? 0) !== 0
-      || Number(p.netPremium ?? 0) !== 0;
-  };
   const isCommissionItem = (it: StatementCtx["items"][number]) => {
     return String(it.description ?? "").trim().toLowerCase().includes("commission:");
   };
@@ -676,7 +683,31 @@ export function formatResolvedValue(
   raw: unknown,
   format?: string,
   currencyCode?: string,
+  extras?: FormatExtras,
 ): string {
+  // `boolean` and `match` formats need to render their `falseValue`
+  // (e.g. an empty string for an unticked checkbox) even when the raw
+  // value is empty / undefined, so handle them BEFORE the empty-check
+  // fast path used by the other formats.
+  if (format === "boolean") {
+    const normalized = typeof raw === "string" ? raw.trim().toLowerCase() : raw;
+    const isTrue = normalized === true
+      || normalized === "true"
+      || normalized === 1
+      || normalized === "1"
+      || normalized === "yes"
+      || normalized === "y";
+    return isTrue ? (extras?.trueValue ?? "Yes") : (extras?.falseValue ?? "No");
+  }
+
+  if (format === "match") {
+    const target = (extras?.matchValue ?? "").trim();
+    const valStr = raw === null || raw === undefined ? "" : String(raw).trim();
+    const matched = target.length > 0
+      && (valStr === target || valStr.toLowerCase() === target.toLowerCase());
+    return matched ? (extras?.trueValue ?? "✓") : (extras?.falseValue ?? "");
+  }
+
   if (raw === null || raw === undefined) return "";
   const s = String(raw).trim();
   if (!s) return "";
@@ -706,10 +737,6 @@ export function formatResolvedValue(
     return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
   }
 
-  if (format === "boolean") {
-    return raw === true || raw === "true" ? "Yes" : "No";
-  }
-
   if (format === "number") {
     const n = Number(raw);
     return Number.isFinite(n) ? n.toLocaleString() : s;
@@ -728,7 +755,11 @@ export function resolveAndFormat(
   opts?: FormatOptions,
 ): string {
   const raw = resolveRawValue(ref, ctx);
-  const formatted = formatResolvedValue(raw, opts?.format, opts?.currencyCode);
+  const formatted = formatResolvedValue(raw, opts?.format, opts?.currencyCode, {
+    trueValue: opts?.trueValue,
+    falseValue: opts?.falseValue,
+    matchValue: opts?.matchValue,
+  });
   const prefix = opts?.prefix ?? "";
   const suffix = opts?.suffix ?? "";
   return `${prefix}${formatted}${suffix}`;

@@ -10,8 +10,9 @@ import {
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import { confirmDialog } from "@/components/ui/global-dialogs";
 import { toast } from "sonner";
-import { Plus, Trash2, Pencil, FileText, UploadCloud, FilePlus2 } from "lucide-react";
+import { Trash2, Pencil, FileText, UploadCloud, FilePlus2 } from "lucide-react";
 import type { PdfTemplateRow } from "@/lib/types/pdf-template";
 import dynamic from "next/dynamic";
 
@@ -46,6 +47,13 @@ export default function PdfTemplateManager() {
 
   React.useEffect(() => { load(); }, [load]);
 
+  React.useEffect(() => {
+    if (editingId === null || loading) return;
+    if (!templates.some((tpl) => tpl.id === editingId)) {
+      setEditingId(null);
+    }
+  }, [editingId, loading, templates]);
+
   async function handleUpload() {
     if (!uploadFile || !uploadLabel.trim()) return;
     setUploading(true);
@@ -72,7 +80,13 @@ export default function PdfTemplateManager() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("Delete this template?")) return;
+    const ok = await confirmDialog({
+      title: "Delete this template?",
+      description: "This removes the PDF mail merge template and its configured fields.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await fetch(`/api/pdf-templates/${id}`, { method: "DELETE" });
       toast.success("Deleted");
@@ -111,8 +125,11 @@ export default function PdfTemplateManager() {
   if (editingId !== null) {
     const tpl = templates.find((t) => t.id === editingId);
     if (!tpl) {
-      setEditingId(null);
-      return null;
+      return (
+        <div className="py-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+          Loading editor...
+        </div>
+      );
     }
     return (
       <PdfTemplateEditor
