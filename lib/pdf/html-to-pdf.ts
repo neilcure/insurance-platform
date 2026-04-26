@@ -53,6 +53,7 @@ async function getBrowser(): Promise<Browser> {
   browserPromise = puppeteer
     .launch({
       headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       // `--no-sandbox` is required when running as root inside a
       // Docker container or some VPS images that don't ship a
       // user-namespace-enabled kernel. It's a known small attack-
