@@ -23,6 +23,17 @@ export async function POST(request: Request) {
   const subject = String(body.subject ?? "").trim();
   const message = String(body.message ?? "").trim();
   const audience: string | undefined = body.audience;
+  // Optional per-template overrides: { [templateId]: { checkboxOverrides, radioOverrides } }.
+  // Supplied by the inline preview-send form so the recipient receives
+  // the version the user just ticked/selected, not a fresh default.
+  type TemplateOverride = {
+    checkboxOverrides?: Record<string, boolean>;
+    radioOverrides?: Record<string, string>;
+  };
+  const templateOverrides: Record<string, TemplateOverride> =
+    body.templateOverrides && typeof body.templateOverrides === "object"
+      ? (body.templateOverrides as Record<string, TemplateOverride>)
+      : {};
 
   if (!policyId) {
     return NextResponse.json({ error: "policyId is required" }, { status: 400 });
@@ -79,10 +90,15 @@ export async function POST(request: Request) {
       const filteredFields = audience
         ? meta.fields.filter((f) => !f.audience || f.audience === "all" || f.audience === audience)
         : meta.fields;
+      const ov = templateOverrides[String(tplRow.id)] ?? {};
       const filledPdf = await generateFilledPdf(templateBytes, filteredFields, mergeCtx, {
         pages: meta.pages,
         images: templateImages,
         drawings: meta.drawings,
+        checkboxes: meta.checkboxes,
+        radioGroups: meta.radioGroups,
+        checkboxOverrides: ov.checkboxOverrides,
+        radioOverrides: ov.radioOverrides,
         loadImage: (storedName: string) => readPdfTemplate(storedName),
       });
       const base64 = Buffer.from(filledPdf).toString("base64");

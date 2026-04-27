@@ -48,6 +48,23 @@ export type InvoiceCtx = {
   parentInvoiceNumber?: string | null;
 };
 
+/**
+ * Admin-configured package field metadata, used by `resolvePackage` to
+ * fall back to a same-label variant when the placed key resolves empty.
+ *
+ * Lets a single PDF placement (e.g. one "Make" field) auto-resolve to the
+ * right snapshot value across vehicle categories — analogous to how the
+ * synthetic `displayName` field auto-resolves personal vs company name.
+ */
+export type PackageFieldVariant = {
+  /** The field's `value` column in `form_options` — the snapshot key. */
+  key: string;
+  /** Human-readable label shared across category-scoped variants. */
+  label: string;
+  /** `meta.categories` from `form_options` (empty = applies to all). */
+  categories?: string[];
+};
+
 export type StatementCtx = {
   statementNumber: string;
   statementDate: string | null;
@@ -115,6 +132,13 @@ export type ResolveContext = {
     latestClientPaidDate?: string | null;
     latestClientPaymentRef?: string | null;
   } | null;
+  /**
+   * Per-package admin-configured field variants, keyed by `packageName`.
+   * Populated by `buildMergeContext` from `form_options`. Used for the
+   * "by-label" auto-resolution path in `resolvePackage`. Optional — when
+   * absent, only direct key resolution is performed (existing behavior).
+   */
+  packageFieldVariants?: Record<string, PackageFieldVariant[]>;
 };
 
 export type FormatOptions = {
@@ -136,6 +160,48 @@ export type FormatExtras = {
   falseValue?: string;
   matchValue?: string;
 };
+
+// ---------------------------------------------------------------------------
+// By-label synthetic key (auto-resolution by category)
+// ---------------------------------------------------------------------------
+
+/**
+ * Prefix used to mark a synthetic `package` field that should auto-resolve
+ * by matching the admin-configured field's label to the policy's selected
+ * category. Mirrors how the resolver special-cases `displayName` for
+ * insured personal vs company.
+ *
+ * Example: an admin-configured "Make" field exists three times in
+ * `vehicleinfo_fields` with different keys (`make`, `motorcycle_make`,
+ * `truck_make`) scoped to different vehicle categories. The PDF dialog
+ * collapses them into one entry whose mapping has
+ * `fieldKey = "__byLabel__make"`. At render time the resolver picks the
+ * variant whose `categories` include the policy's `vehicleinfo` category.
+ */
+export const BY_LABEL_KEY_PREFIX = "__byLabel__";
+
+/**
+ * Normalises a human label to a stable slug used for grouping same-label
+ * variants and matching the `__byLabel__<slug>` synthetic key. Strips
+ * case and non-alphanumeric characters so `Body Type`, `Body type` and
+ * `body-type` all map to `bodytype`.
+ */
+export function slugifyLabel(label: string): string {
+  return String(label ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+export function buildByLabelKey(label: string): string {
+  return `${BY_LABEL_KEY_PREFIX}${slugifyLabel(label)}`;
+}
+
+export function isByLabelKey(key: string): boolean {
+  return typeof key === "string" && key.startsWith(BY_LABEL_KEY_PREFIX);
+}
+
+function parseByLabelKey(key: string): string | null {
+  if (!isByLabelKey(key)) return null;
+  return key.slice(BY_LABEL_KEY_PREFIX.length);
+}
 
 // ---------------------------------------------------------------------------
 // Key matching utilities
@@ -266,20 +332,35 @@ function resolveInsuredDisplayName(insured: Record<string, unknown>): string {
   return [last, first].filter(Boolean).join(" ");
 }
 
+/**
+ * Common admin-configured field keys that carry the insured's primary
+ * legal identifier, by category. Tenants vary — Hong Kong setups use
+ * `brNumber` (Business Registration) or `ciNumber` (Certificate of
+ * Incorporation) for companies, and `idNumber` / `hkid` for individuals.
+ * We try each in order so a single PDF placement works across tenants
+ * regardless of which field the admin happened to configure.
+ *
+ * Adding more aliases here is safe: `insuredGet` returns "" for missing
+ * keys, so the chain just falls through.
+ */
+const PERSONAL_ID_KEYS = ["idNumber", "hkid", "idCard", "id_card", "identityNumber"] as const;
+const COMPANY_ID_KEYS = ["brNumber", "ciNumber", "crNumber", "businessNumber", "companyId"] as const;
+
 function resolveInsuredPrimaryId(insured: Record<string, unknown>): string {
   const insuredType = String(
     insuredGet(insured, "insuredType") || insuredGet(insured, "category") || ""
   ).trim().toLowerCase();
+  const get = (k: string) => insuredGet(insured, k);
 
   if (insuredType === "personal") {
-    return String(insuredGet(insured, "idNumber") ?? "").trim();
+    return firstNonEmpty(get, ...PERSONAL_ID_KEYS);
   }
   if (insuredType === "company") {
-    return String(insuredGet(insured, "brNumber") ?? "").trim();
+    return firstNonEmpty(get, ...COMPANY_ID_KEYS);
   }
-  const id = String(insuredGet(insured, "idNumber") ?? "").trim();
-  if (id) return id;
-  return String(insuredGet(insured, "brNumber") ?? "").trim();
+  // Unknown / missing type: try personal IDs first (more common), then
+  // company IDs as a fallback.
+  return firstNonEmpty(get, ...PERSONAL_ID_KEYS, ...COMPANY_ID_KEYS);
 }
 
 function resolveInsured(snapshot: SnapshotData, key: string): unknown {
@@ -299,6 +380,75 @@ function resolveContact(snapshot: SnapshotData, key: string): unknown {
   return contactGet(insured, key);
 }
 
+/**
+ * Read the package's selected category. The wizard saves it on the outer
+ * package object (`packagesSnapshot[pkg].category`); some legacy snapshots
+ * keep it inside `values`, so we check both.
+ */
+function getPackageCategory(
+  pkgObj: Record<string, unknown>,
+  vals: Record<string, unknown>,
+): string {
+  const direct = pkgObj.category;
+  if (typeof direct === "string" || typeof direct === "number") {
+    const s = String(direct).trim();
+    if (s) return s.toLowerCase();
+  }
+  const inner = fuzzyGet(vals, "category");
+  if (typeof inner === "string" || typeof inner === "number") {
+    return String(inner).trim().toLowerCase();
+  }
+  return "";
+}
+
+/**
+ * By-label resolution for synthetic `__byLabel__<slug>` keys.
+ *
+ * Walks `ctx.packageFieldVariants[packageName]`, picks variants whose
+ * label slugifies to the requested slug, and returns the first non-empty
+ * snapshot value, preferring (1) variants whose categories include the
+ * policy's selected category, then (2) variants with no category
+ * restriction, then (3) anything else as a last-resort.
+ */
+function resolveByLabelVariant(
+  packageName: string,
+  labelSlug: string,
+  pkgObj: Record<string, unknown>,
+  vals: Record<string, unknown>,
+  ctx?: ResolveContext,
+): unknown {
+  const variants = ctx?.packageFieldVariants?.[packageName] ?? [];
+  if (variants.length === 0) return "";
+  const matches = variants.filter((v) => slugifyLabel(v.label) === labelSlug);
+  if (matches.length === 0) return "";
+
+  const pkgCategory = getPackageCategory(pkgObj, vals);
+
+  const ranked: PackageFieldVariant[] = [];
+  if (pkgCategory) {
+    for (const v of matches) {
+      const cats = (v.categories ?? []).map((c) => String(c ?? "").trim().toLowerCase());
+      if (cats.includes(pkgCategory)) ranked.push(v);
+    }
+  }
+  for (const v of matches) {
+    if (ranked.includes(v)) continue;
+    if ((v.categories ?? []).length === 0) ranked.push(v);
+  }
+  for (const v of matches) {
+    if (!ranked.includes(v)) ranked.push(v);
+  }
+
+  for (const v of ranked) {
+    const direct =
+      fuzzyGet(vals, v.key)
+      ?? fuzzyGet(vals, `${packageName}__${v.key}`)
+      ?? fuzzyGet(vals, `${packageName}_${v.key}`);
+    if (direct !== undefined && direct !== null && direct !== "") return direct;
+  }
+  return "";
+}
+
 function resolvePackage(
   snapshot: SnapshotData,
   packageName: string,
@@ -311,6 +461,15 @@ function resolvePackage(
   const obj = pkg as Record<string, unknown>;
   const vals =
     "values" in obj ? ((obj.values as Record<string, unknown>) ?? {}) : obj;
+
+  // Synthetic "__byLabel__<slug>" key — auto-resolve by matching admin
+  // field label to the policy's category. Lets one PDF placement render
+  // the right value regardless of which category-scoped variant the user
+  // filled in (e.g. one "Make" field works for car, motorcycle, truck …).
+  const labelSlug = parseByLabelKey(key);
+  if (labelSlug !== null) {
+    return resolveByLabelVariant(packageName, labelSlug, obj, vals, ctx);
+  }
 
   // For multi-cover motor policies, a single snapshot key like policyinfo__coverType
   // may only hold one option ("tpo") while accounting lines contain the full set ("tpo"+"pd").
@@ -342,6 +501,31 @@ function resolvePackage(
     fuzzyGet(vals, `${packageName}_${key}`)
   );
   if (direct !== undefined && direct !== null && direct !== "") return direct;
+
+  // Same-label sibling fallback. When the placed key matches a known
+  // admin-configured variant whose categories don't match this policy
+  // (e.g. an old PDF placed `motorcycle_model` rendering against a CAR
+  // policy where only `model` has data), look for a sibling with the
+  // same label whose categories do match. Lets templates created before
+  // the by-label feature auto-fix without re-placing every field.
+  const variants = ctx?.packageFieldVariants?.[packageName];
+  if (variants && variants.length > 0) {
+    const requested = variants.find(
+      (v) => v.key === key || v.key.toLowerCase() === key.toLowerCase(),
+    );
+    if (requested?.label) {
+      const fallback = resolveByLabelVariant(
+        packageName,
+        slugifyLabel(requested.label),
+        obj,
+        vals,
+        ctx,
+      );
+      if (fallback !== undefined && fallback !== null && fallback !== "") {
+        return fallback;
+      }
+    }
+  }
 
   // Backward-compatible receipt fallback:
   // Some existing templates use package.policyinfo.premium while paid amount is stored in accounting payments.

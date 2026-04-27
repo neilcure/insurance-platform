@@ -21,6 +21,13 @@ export async function POST(
   const body = await request.json();
   const policyId = Number(body.policyId);
   const audience: string | undefined = body.audience;
+  // Optional runtime overrides for checkboxes / radio groups, supplied
+  // by the preview dialog when the user has ticked boxes / picked
+  // Yes/No before downloading or generating.
+  const checkboxOverrides: Record<string, boolean> | undefined =
+    body.checkboxOverrides && typeof body.checkboxOverrides === "object" ? body.checkboxOverrides : undefined;
+  const radioOverrides: Record<string, string> | undefined =
+    body.radioOverrides && typeof body.radioOverrides === "object" ? body.radioOverrides : undefined;
 
   if (!policyId) {
     return NextResponse.json({ error: "policyId is required" }, { status: 400 });
@@ -69,6 +76,10 @@ export async function POST(
       pages: meta.pages,
       images: templateImages,
       drawings: meta.drawings,
+      checkboxes: meta.checkboxes,
+      radioGroups: meta.radioGroups,
+      checkboxOverrides,
+      radioOverrides,
       loadImage: (storedName: string) => readPdfTemplate(storedName),
     });
 

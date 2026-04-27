@@ -11,7 +11,7 @@ import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 import {
   FileText, Printer, ChevronLeft, Stamp, Download, Loader2,
   Mail, MessageCircle, CheckCircle2, Send, XCircle, X, Paperclip, Upload, ShieldCheck,
-  PenLine,
+  PenLine, Eye, Pencil, Check as CheckIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DocumentStatusMap, DocumentStatusEntry } from "@/lib/types/accounting";
@@ -3195,23 +3195,31 @@ const STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> 
 function PdfMergeButton({
   tpl,
   policyId,
+  policyNumber,
+  defaultEmail,
   trackingKey,
   entry,
   updating,
+  isAdmin,
   onEmailClick,
   onWhatsAppClick,
   onTrackingAction,
   onConfirmWithProof,
+  onTemplateUpdated,
 }: {
   tpl: PdfTemplateRow;
   policyId: number;
+  policyNumber: string;
+  defaultEmail?: string;
   trackingKey: string;
   entry?: DocumentStatusEntry;
   updating: boolean;
+  isAdmin: boolean;
   onEmailClick: (tpl: PdfTemplateRow) => void;
   onWhatsAppClick: (tpl: PdfTemplateRow) => void;
   onTrackingAction: (key: string, action: "send" | "confirm" | "reject" | "reset" | "prepare", extra?: string, documentPrefix?: string, documentSuffix?: string, documentSetGroup?: string, templateType?: string) => void;
   onConfirmWithProof: (key: string, method: "admin" | "upload", note?: string, file?: File, templateType?: string) => Promise<void>;
+  onTemplateUpdated: (meta: PdfTemplateMeta) => void;
 }) {
   const [generating, setGenerating] = React.useState(false);
   const [actionsOpen, setActionsOpen] = React.useState(false);
@@ -3220,10 +3228,21 @@ function PdfMergeButton({
   const [confirmNote, setConfirmNote] = React.useState("");
   const [confirmFile, setConfirmFile] = React.useState<File | null>(null);
   const [confirmSubmitting, setConfirmSubmitting] = React.useState(false);
+  const [previewOpen, setPreviewOpen] = React.useState(false);
+  const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
+  const [previewSendOpen, setPreviewSendOpen] = React.useState(false);
+  // Live edits the user makes in the preview side panel — keyed by
+  // PdfCheckbox.id and PdfRadioGroup.id. These flow back into every
+  // (re)generation, the direct download, AND the email payload so the
+  // recipient receives the same PDF the user sees.
+  const [checkboxOverrides, setCheckboxOverrides] = React.useState<Record<string, boolean>>({});
+  const [radioOverrides, setRadioOverrides] = React.useState<Record<string, string>>({});
+  const [previewRefreshing, setPreviewRefreshing] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const meta = tpl.meta as unknown as PdfTemplateMeta | null;
   const status = entry?.status;
   const badge = status ? STATUS_BADGE[status] : null;
+  const hasInteractive = !!(meta?.checkboxes?.length || meta?.radioGroups?.length);
 
   React.useEffect(() => {
     if (!actionsOpen) return;
@@ -3236,28 +3255,115 @@ function PdfMergeButton({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [actionsOpen]);
 
+  // Internal: generate the PDF blob once. Used by preview, download,
+  // and the live preview-refresh path. Accepts explicit override
+  // arguments so callers don't depend on React state being flushed.
+  async function generatePdfBlob(
+    cbOv: Record<string, boolean> = checkboxOverrides,
+    rdOv: Record<string, string> = radioOverrides,
+  ): Promise<Blob | null> {
+    const generateBody: Record<string, unknown> = { policyId };
+    if (meta?.isAgentTemplate) generateBody.audience = "agent";
+    if (Object.keys(cbOv).length) generateBody.checkboxOverrides = cbOv;
+    if (Object.keys(rdOv).length) generateBody.radioOverrides = rdOv;
+    const res = await fetch(`/api/pdf-templates/${tpl.id}/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(generateBody),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || "Generation failed");
+    }
+    return res.blob();
+  }
+
   async function handleGenerate() {
     setGenerating(true);
     try {
-      const generateBody: Record<string, unknown> = { policyId };
-      if (meta?.isAgentTemplate) generateBody.audience = "agent";
-      const res = await fetch(`/api/pdf-templates/${tpl.id}/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(generateBody),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Generation failed");
-      }
-      const blob = await res.blob();
+      // Reset any prior preview edits so the user starts from the
+      // template defaults each time they open the lightbox.
+      setCheckboxOverrides({});
+      setRadioOverrides({});
+      const blob = await generatePdfBlob({}, {});
+      if (!blob) return;
       const url = URL.createObjectURL(blob);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
+      setPreviewOpen(true);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to generate PDF");
     }
     setGenerating(false);
+  }
+
+  // Re-generate the PDF in the iframe to reflect a changed override.
+  // Called whenever the user toggles a checkbox / picks Yes-No in the
+  // side panel. Falls back to the previously-rendered URL on failure
+  // so the user never sees a blank iframe mid-edit.
+  async function refreshPreview(
+    nextCb: Record<string, boolean>,
+    nextRd: Record<string, string>,
+  ) {
+    setPreviewRefreshing(true);
+    try {
+      const blob = await generatePdfBlob(nextCb, nextRd);
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to refresh preview");
+    } finally {
+      setPreviewRefreshing(false);
+    }
+  }
+
+  function toggleCheckboxOverride(cbId: string, defaultChecked: boolean) {
+    const current = checkboxOverrides[cbId];
+    const wasChecked = typeof current === "boolean" ? current : defaultChecked;
+    const next = { ...checkboxOverrides, [cbId]: !wasChecked };
+    setCheckboxOverrides(next);
+    void refreshPreview(next, radioOverrides);
+  }
+
+  function setRadioOverride(rgId: string, value: string) {
+    const next = { ...radioOverrides, [rgId]: value };
+    setRadioOverrides(next);
+    void refreshPreview(checkboxOverrides, next);
+  }
+
+  function clearRadioOverride(rgId: string) {
+    const next = { ...radioOverrides, [rgId]: "" };
+    setRadioOverrides(next);
+    void refreshPreview(checkboxOverrides, next);
+  }
+
+  // Direct download — no preview, just save the file. If a preview is
+  // open we keep its overrides, so "Download" mirrors what's on screen.
+  async function handleDownload() {
+    setGenerating(true);
+    try {
+      const blob = await generatePdfBlob();
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${tpl.label} - ${policyNumber}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5_000);
+      toast.success("PDF downloaded");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to download PDF");
+    }
+    setGenerating(false);
+  }
+
+  function handleClosePreview() {
+    setPreviewOpen(false);
+    setTimeout(() => {
+      setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+    }, 2000);
   }
 
   const isDone = status === "confirmed";
@@ -3372,11 +3478,20 @@ function PdfMergeButton({
             {generating ? (
               <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
             ) : (
-              <Download className="h-4 w-4 text-neutral-400" />
+              <Eye className="h-4 w-4 text-neutral-400" />
             )}
           </div>
         </button>
         <div className="flex shrink-0 items-center gap-1 border-l border-neutral-200 pl-2 dark:border-neutral-700">
+          <button
+            type="button"
+            title="Download PDF"
+            onClick={handleDownload}
+            disabled={generating || (!meta?.fields?.length && !meta?.pages?.length)}
+            className="rounded p-1.5 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200 disabled:opacity-50"
+          >
+            <Download className="h-4 w-4" />
+          </button>
           {/* Prominent download button for the signed PDF. We surface
               it here (top of the row, next to the send icons) instead
               of buried in the tracking-detail footer because for
@@ -3550,6 +3665,113 @@ function PdfMergeButton({
         </div>
       )}
 
+      {/* PDF Preview Dialog — full-size interactive view with email controls */}
+      <Dialog open={previewOpen} onOpenChange={(o) => { if (!o) handleClosePreview(); }}>
+        <DialogContent className="max-w-[96vw]! w-[96vw] h-[95vh] max-h-[95vh]! flex flex-col p-0! gap-0 overflow-hidden sm:p-0!">
+          <DialogHeader className="flex-none px-4 pt-4 pb-2 border-b border-neutral-200 dark:border-neutral-800">
+            <div className="flex items-center justify-between gap-3">
+              <DialogTitle className="text-base truncate">{tpl.label}</DialogTitle>
+              <div className="flex items-center gap-2 shrink-0">
+                {/* Download */}
+                {previewUrl && (
+                  <a
+                    href={previewUrl}
+                    download={`${tpl.label}.pdf`}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Download
+                  </a>
+                )}
+                {/* Quick send email */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-xs"
+                  onClick={() => setPreviewSendOpen((v) => !v)}
+                >
+                  <Mail className="h-3.5 w-3.5" />
+                  Send Email
+                </Button>
+              </div>
+            </div>
+
+            {/* Collapsible inline send form */}
+            {previewSendOpen && (
+              <PreviewSendForm
+                policyId={policyId}
+                policyNumber={policyNumber}
+                tpl={tpl}
+                defaultEmail={defaultEmail ?? ""}
+                checkboxOverrides={checkboxOverrides}
+                radioOverrides={radioOverrides}
+                onSent={(sentEmail) => {
+                  setPreviewSendOpen(false);
+                  onTrackingAction(trackingKey, "send", sentEmail, meta?.documentPrefix || undefined, undefined, meta?.documentSetGroup || undefined, meta?.type);
+                  toast.success(`Email sent to ${sentEmail}`);
+                }}
+              />
+            )}
+          </DialogHeader>
+
+          {/* Body — control panel (left) + iframe (right) */}
+          <div className="flex-1 min-h-0 flex flex-col sm:flex-row">
+            {hasInteractive && (
+              <PreviewControlPanel
+                tplId={tpl.id}
+                meta={meta}
+                isAdmin={isAdmin}
+                checkboxOverrides={checkboxOverrides}
+                radioOverrides={radioOverrides}
+                onToggleCheckbox={toggleCheckboxOverride}
+                onSetRadio={setRadioOverride}
+                onClearRadio={clearRadioOverride}
+                onResetAll={() => {
+                  setCheckboxOverrides({});
+                  setRadioOverrides({});
+                  void refreshPreview({}, {});
+                }}
+                refreshing={previewRefreshing}
+                onTemplateUpdated={(newMeta) => {
+                  onTemplateUpdated(newMeta);
+                  // Re-render the iframe so any "borderless" / structural
+                  // changes (very rare from a label rename, but cheap)
+                  // are picked up.
+                  void refreshPreview(checkboxOverrides, radioOverrides);
+                }}
+              />
+            )}
+
+            {/* Iframe — server renders the user's selections as STATIC,
+                semi-transparent ✓ / ● marks (see lib/pdf/generate.ts).
+                The side panel is the source of truth; toggling there
+                regenerates the PDF and the iframe reloads with the
+                updated marks. The PDF in the iframe is read-only —
+                clicks on the page itself do nothing intentionally. */}
+            <div className="flex-1 relative bg-neutral-100 dark:bg-neutral-900 min-h-[40vh] sm:min-h-0">
+              {previewUrl ? (
+                <iframe
+                  src={previewUrl}
+                  className="absolute inset-0 w-full h-full border-0"
+                  title={tpl.label}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center text-sm text-neutral-500">
+                  <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                  Loading preview…
+                </div>
+              )}
+              {previewRefreshing && previewUrl && (
+                <div className="pointer-events-none absolute top-2 right-2 inline-flex items-center gap-1.5 rounded-md bg-black/60 px-2 py-1 text-[11px] font-medium text-white shadow-md">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Updating…
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Confirm Document Dialog */}
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="max-w-md">
@@ -3649,6 +3871,461 @@ function PdfMergeButton({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/** Compact inline send-email form shown inside the PDF preview dialog. */
+/**
+ * Side panel rendered next to the PDF iframe in the preview lightbox.
+ *
+ * Lists every checkbox and Yes/No radio group defined on the template,
+ * with controls for each. Edits flow back to the parent which:
+ *   1. Updates React state (so download / email use the same values).
+ *   2. Re-generates the PDF blob and swaps the iframe URL so the user
+ *      can see their selections rendered in the actual document.
+ *
+ * We need this because browsers don't expose AcroForm state from a
+ * native PDF viewer, so user clicks inside the iframe can't be
+ * captured. The panel becomes the source of truth.
+ */
+function PreviewControlPanel({
+  tplId,
+  meta,
+  isAdmin,
+  checkboxOverrides,
+  radioOverrides,
+  onToggleCheckbox,
+  onSetRadio,
+  onClearRadio,
+  onResetAll,
+  refreshing,
+  onTemplateUpdated,
+}: {
+  tplId: number;
+  meta: PdfTemplateMeta | null;
+  isAdmin: boolean;
+  checkboxOverrides: Record<string, boolean>;
+  radioOverrides: Record<string, string>;
+  onToggleCheckbox: (cbId: string, defaultChecked: boolean) => void;
+  onSetRadio: (rgId: string, value: string) => void;
+  onClearRadio: (rgId: string) => void;
+  onResetAll: () => void;
+  refreshing: boolean;
+  onTemplateUpdated: (newMeta: PdfTemplateMeta) => void;
+}) {
+  const checkboxes = meta?.checkboxes ?? [];
+  const radioGroups = meta?.radioGroups ?? [];
+  const dirty = Object.keys(checkboxOverrides).length > 0 || Object.keys(radioOverrides).length > 0;
+
+  // Inline-edit state for admin label renaming. We track which item id
+  // is currently being edited (and whether it's a checkbox or radio
+  // group) plus the in-progress text. Saving PATCHes the whole array
+  // for that kind, since the API replaces arrays as a unit.
+  const [editing, setEditing] = React.useState<
+    | { kind: "cb"; id: string }
+    | { kind: "rg"; id: string }
+    | null
+  >(null);
+  const [editText, setEditText] = React.useState("");
+  const [savingId, setSavingId] = React.useState<string | null>(null);
+  const editInputRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    if (editing) editInputRef.current?.focus();
+  }, [editing]);
+
+  function startEdit(kind: "cb" | "rg", id: string, currentLabel: string) {
+    setEditing({ kind, id } as { kind: "cb" | "rg"; id: string });
+    setEditText(currentLabel);
+  }
+
+  function cancelEdit() {
+    setEditing(null);
+    setEditText("");
+  }
+
+  async function saveEdit() {
+    if (!editing || !meta) return;
+    const trimmed = editText.trim();
+    setSavingId(editing.id);
+    try {
+      const body: Record<string, unknown> = {};
+      if (editing.kind === "cb") {
+        body.checkboxes = checkboxes.map((c) =>
+          c.id === editing.id ? { ...c, label: trimmed } : c,
+        );
+      } else {
+        body.radioGroups = radioGroups.map((g) =>
+          g.id === editing.id ? { ...g, label: trimmed } : g,
+        );
+      }
+      const res = await fetch(`/api/pdf-templates/${tplId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to save label");
+      }
+      // Build the updated meta locally so the panel re-renders
+      // immediately even before the server response is parsed.
+      const newMeta: PdfTemplateMeta = {
+        ...meta,
+        ...(editing.kind === "cb"
+          ? { checkboxes: body.checkboxes as PdfTemplateMeta["checkboxes"] }
+          : { radioGroups: body.radioGroups as PdfTemplateMeta["radioGroups"] }),
+      };
+      onTemplateUpdated(newMeta);
+      toast.success("Label saved");
+      setEditing(null);
+      setEditText("");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save label");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  return (
+    <aside className="w-full sm:w-72 sm:max-w-xs shrink-0 border-b sm:border-b-0 sm:border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 flex flex-col max-h-[40vh] sm:max-h-none">
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-neutral-200 dark:border-neutral-800 shrink-0">
+        <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">
+          Form selections
+        </div>
+        <div className="flex items-center gap-1">
+          {refreshing && <Loader2 className="h-3.5 w-3.5 animate-spin text-neutral-400" />}
+          {dirty && (
+            <button
+              type="button"
+              onClick={onResetAll}
+              className="text-[11px] font-medium text-blue-600 hover:underline dark:text-blue-400"
+              title="Clear your edits and revert to template defaults"
+            >
+              Reset
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-3 py-2 space-y-3 text-xs">
+        {radioGroups.length === 0 && checkboxes.length === 0 && (
+          <div className="text-neutral-500 italic">No form fields on this template.</div>
+        )}
+
+        {radioGroups.length > 0 && (
+          <section>
+            <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+              Yes / No questions
+            </h4>
+            <ul className="space-y-2">
+              {radioGroups.map((rg, idx) => {
+                const override = radioOverrides[rg.id];
+                const current = override !== undefined ? override : (rg.defaultValue ?? "");
+                // Numbered fallback so the user can tell unnamed groups
+                // apart instead of seeing "Yes/No selection" four times.
+                const fallback = `Question ${idx + 1}`;
+                const label = rg.label?.trim() || rg.name?.trim() || fallback;
+                const isEditing = editing?.kind === "rg" && editing.id === rg.id;
+                const isSaving = savingId === rg.id;
+                return (
+                  <li
+                    key={rg.id}
+                    className="rounded-md border border-neutral-200 dark:border-neutral-800 p-2 bg-neutral-50 dark:bg-neutral-900/50"
+                  >
+                    <div className="flex items-start gap-1 mb-1.5">
+                      {isEditing ? (
+                        <div className="flex-1 flex items-center gap-1">
+                          <Input
+                            ref={editInputRef}
+                            value={editText}
+                            onChange={(e) => setEditText(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void saveEdit();
+                              else if (e.key === "Escape") cancelEdit();
+                            }}
+                            placeholder={fallback}
+                            disabled={isSaving}
+                            className="h-6 text-[11px] px-1.5"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void saveEdit()}
+                            disabled={isSaving}
+                            title="Save label"
+                            className="p-0.5 rounded hover:bg-green-100 text-green-600 dark:hover:bg-green-900/40 dark:text-green-400 disabled:opacity-50"
+                          >
+                            {isSaving ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <CheckIcon className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelEdit}
+                            disabled={isSaving}
+                            title="Cancel"
+                            className="p-0.5 rounded hover:bg-neutral-200 text-neutral-500 dark:hover:bg-neutral-800 disabled:opacity-50"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex-1 font-medium text-neutral-700 dark:text-neutral-200 leading-snug">
+                            {label}
+                          </div>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => startEdit("rg", rg.id, rg.label?.trim() ?? "")}
+                              title="Rename label"
+                              className="p-0.5 rounded hover:bg-neutral-200 text-neutral-400 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200 shrink-0"
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {rg.options.map((opt) => {
+                        const active = current === opt.value;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => onSetRadio(rg.id, opt.value)}
+                            className={cn(
+                              "rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors",
+                              active
+                                ? "border-blue-500 bg-blue-500 text-white"
+                                : "border-neutral-300 bg-white hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-800 dark:hover:bg-neutral-700",
+                            )}
+                          >
+                            {opt.label?.trim() || opt.value}
+                          </button>
+                        );
+                      })}
+                      {current !== "" && (
+                        <button
+                          type="button"
+                          onClick={() => onClearRadio(rg.id)}
+                          className="rounded-md border border-neutral-200 px-2 py-0.5 text-[11px] text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                          title="Clear selection"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+
+        {checkboxes.length > 0 && (
+          <section>
+            <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+              Checkboxes
+            </h4>
+            <ul className="space-y-1">
+              {checkboxes.map((cb, idx) => {
+                const override = checkboxOverrides[cb.id];
+                const checked = typeof override === "boolean" ? override : !!cb.defaultChecked;
+                const fallback = `Box ${idx + 1}`;
+                const label = cb.label?.trim() || fallback;
+                const isEditing = editing?.kind === "cb" && editing.id === cb.id;
+                const isSaving = savingId === cb.id;
+                return (
+                  <li
+                    key={cb.id}
+                    className="rounded-md p-1 hover:bg-neutral-100 dark:hover:bg-neutral-800/60"
+                  >
+                    <div className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => onToggleCheckbox(cb.id, !!cb.defaultChecked)}
+                        className="mt-0.5 h-3.5 w-3.5 cursor-pointer accent-blue-600"
+                        disabled={isEditing}
+                      />
+                      {isEditing ? (
+                        <div className="flex-1 flex items-center gap-1">
+                          <Input
+                            ref={editInputRef}
+                            value={editText}
+                            onChange={(e) => setEditText(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void saveEdit();
+                              else if (e.key === "Escape") cancelEdit();
+                            }}
+                            placeholder={fallback}
+                            disabled={isSaving}
+                            className="h-6 text-[11px] px-1.5"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void saveEdit()}
+                            disabled={isSaving}
+                            title="Save label"
+                            className="p-0.5 rounded hover:bg-green-100 text-green-600 dark:hover:bg-green-900/40 dark:text-green-400 disabled:opacity-50"
+                          >
+                            {isSaving ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <CheckIcon className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelEdit}
+                            disabled={isSaving}
+                            title="Cancel"
+                            className="p-0.5 rounded hover:bg-neutral-200 text-neutral-500 dark:hover:bg-neutral-800 disabled:opacity-50"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <span className="flex-1 leading-snug text-neutral-700 dark:text-neutral-200 cursor-pointer" onClick={() => onToggleCheckbox(cb.id, !!cb.defaultChecked)}>
+                            {label}
+                            <span className="ml-1 text-[10px] text-neutral-400">p.{cb.page + 1}</span>
+                          </span>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => startEdit("cb", cb.id, cb.label?.trim() ?? "")}
+                              title="Rename label"
+                              className="p-0.5 rounded hover:bg-neutral-200 text-neutral-400 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200 shrink-0"
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function PreviewSendForm({
+  policyId,
+  policyNumber,
+  tpl,
+  defaultEmail,
+  checkboxOverrides,
+  radioOverrides,
+  onSent,
+}: {
+  policyId: number;
+  policyNumber: string;
+  tpl: PdfTemplateRow;
+  defaultEmail: string;
+  /** Live overrides from the preview side panel; sent so the recipient
+   *  receives the same PDF state the user is currently looking at. */
+  checkboxOverrides: Record<string, boolean>;
+  radioOverrides: Record<string, string>;
+  onSent: (email: string) => void;
+}) {
+  const [email, setEmail] = React.useState(defaultEmail);
+  const [subject, setSubject] = React.useState(`Policy ${policyNumber} - ${tpl.label}`);
+  const [message, setMessage] = React.useState("");
+  const [sending, setSending] = React.useState(false);
+
+  async function handleSend() {
+    const trimmed = email.trim();
+    if (!trimmed.includes("@")) {
+      toast.error("Please enter a valid email address");
+      return;
+    }
+    setSending(true);
+    try {
+      // Forward the user's preview edits as a per-template override map.
+      // Only attach when there's actually something to override, so
+      // bulk-send (no preview) calls remain unchanged.
+      const templateOverrides =
+        Object.keys(checkboxOverrides).length || Object.keys(radioOverrides).length
+          ? {
+              [String(tpl.id)]: {
+                ...(Object.keys(checkboxOverrides).length ? { checkboxOverrides } : {}),
+                ...(Object.keys(radioOverrides).length ? { radioOverrides } : {}),
+              },
+            }
+          : undefined;
+
+      const res = await fetch("/api/pdf-templates/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          policyId,
+          templateIds: [tpl.id],
+          email: trimmed,
+          subject: subject.trim(),
+          message: message.trim(),
+          ...(templateOverrides ? { templateOverrides } : {}),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to send");
+      }
+      onSent(trimmed);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to send email");
+    }
+    setSending(false);
+  }
+
+  return (
+    <div className="mt-2 rounded-md border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 p-3 space-y-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div>
+          <Label className="text-xs">To</Label>
+          <Input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="client@example.com"
+            className="mt-0.5 h-7 text-xs"
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Subject</Label>
+          <Input
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            className="mt-0.5 h-7 text-xs"
+          />
+        </div>
+      </div>
+      <div>
+        <Label className="text-xs">Message (optional)</Label>
+        <textarea
+          rows={2}
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          placeholder="Add a personal note…"
+          className="mt-0.5 w-full rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-2 py-1 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
+      </div>
+      <div className="flex justify-end">
+        <Button size="sm" onClick={handleSend} disabled={sending} className="gap-1.5 text-xs">
+          {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+          {sending ? "Sending…" : "Send"}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -3882,6 +4559,12 @@ export function DocumentsTab({
     (session.data?.user?.name as string | undefined) ||
     (session.data?.user?.email as string | undefined) ||
     "";
+  // Admin-only inline label editing in the preview side-panel uses the
+  // /api/pdf-templates/:id PATCH endpoint which itself enforces admin.
+  // Hide the pencil for non-admins so they don't see a button that 403s.
+  const isAdmin =
+    ((session.data?.user as { userType?: string } | undefined)?.userType ?? "") ===
+    "admin";
 
   const snapshot = (detail.extraAttributes ?? {}) as SnapshotData;
   const statusClient = currentStatusClient ?? currentStatus ?? "quotation_prepared";
@@ -5044,13 +5727,33 @@ export function DocumentsTab({
                 key={tpl.id}
                 tpl={tpl}
                 policyId={detail.policyId}
+                policyNumber={detail.policyNumber}
+                defaultEmail={(() => {
+                  const m = tpl.meta as unknown as { isAgentTemplate?: boolean } | null;
+                  if (m?.isAgentTemplate && detail.agent?.email) return detail.agent.email;
+                  const ins = (detail.extraAttributes as Record<string, unknown> | undefined)?.insuredSnapshot as Record<string, unknown> | undefined;
+                  return String(ins?.email ?? ins?.contactinfo__email ?? "");
+                })()}
                 trackingKey={key}
                 entry={tracking[key]}
                 updating={trackingUpdating}
+                isAdmin={isAdmin}
                 onEmailClick={handleEmailClick}
                 onWhatsAppClick={handleWhatsAppClick}
                 onTrackingAction={handleTrackingAction}
                 onConfirmWithProof={handleConfirmWithProof}
+                onTemplateUpdated={(updatedMeta) => {
+                  // Live-merge the PATCH response into the local list so
+                  // the next preview reads the renamed labels without
+                  // requiring a tab refetch.
+                  setPdfTemplates((prev) =>
+                    prev.map((p) =>
+                      p.id === tpl.id
+                        ? { ...p, meta: updatedMeta as unknown as PdfTemplateRow["meta"] }
+                        : p,
+                    ),
+                  );
+                }}
               />
             );
           })}

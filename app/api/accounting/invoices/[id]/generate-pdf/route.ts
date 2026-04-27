@@ -182,6 +182,8 @@ export async function POST(
         pages: meta.pages,
         images: templateImages,
         drawings: meta.drawings,
+        checkboxes: meta.checkboxes,
+        radioGroups: meta.radioGroups,
         loadImage: (storedName: string) => readPdfTemplate(storedName),
       });
 

@@ -119,6 +119,69 @@ export type PdfDrawing = {
   sectionId?: string;
 };
 
+/**
+ * Interactive AcroForm checkbox the client can tick after the PDF is
+ * generated. Rendered by `pdf-lib`'s `form.createCheckBox()` so any
+ * standard PDF viewer (Adobe, Edge, Chrome, in-app preview) can toggle
+ * it. Position/size in PDF user-space points (same coordinate system
+ * as `PdfDrawing`).
+ */
+export type PdfCheckbox = {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Optional human-readable label shown in the editor only */
+  label?: string;
+  /** Tick the box by default in the generated PDF */
+  defaultChecked?: boolean;
+  /**
+   * When true, the AcroForm widget is rendered without its own border
+   * or background — useful when the underlying PDF already has a
+   * printed box outline that the checkbox should sit inside.
+   */
+  borderless?: boolean;
+  sectionId?: string;
+};
+
+/**
+ * One option (clickable spot) inside a PdfRadioGroup. Position/size
+ * in PDF user-space points.
+ */
+export type PdfRadioOption = {
+  id: string;
+  /** The value stored in the PDF when this option is selected */
+  value: string;
+  /** Editor-only display label (e.g. "Yes" / "No") */
+  label?: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+/**
+ * Interactive AcroForm radio group — the client picks exactly one
+ * option. Maps to `pdf-lib`'s `form.createRadioGroup(name)` plus
+ * `radioGroup.addOptionToPage(value, page, ...)` per option.
+ */
+export type PdfRadioGroup = {
+  id: string;
+  /** Form field name used inside the PDF (must be unique per template) */
+  name: string;
+  /** Editor-only display label for the whole question */
+  label?: string;
+  /** Pre-select an option by its `value` */
+  defaultValue?: string;
+  /** Render each option as a borderless widget */
+  borderless?: boolean;
+  options: PdfRadioOption[];
+  sectionId?: string;
+};
+
 export type PdfTemplateMeta = {
   filePath: string;
   pages: PdfPageInfo[];
@@ -126,6 +189,8 @@ export type PdfTemplateMeta = {
   sections?: PdfTemplateSection[];
   images?: PdfImageMapping[];
   drawings?: PdfDrawing[];
+  checkboxes?: PdfCheckbox[];
+  radioGroups?: PdfRadioGroup[];
   /** Semantic document type for business logic (invoice creation, status advancement) */
   type?: "quotation" | "invoice" | "receipt" | "certificate" | "letter" | "credit_note" | "debit_note" | "endorsement" | "custom";
   flows?: string[];

@@ -1,0 +1,37 @@
+---
+description: Tripwire for same-label field variants and cascading (2+ level) admin fields — must read the multi-variant-fields skill first
+alwaysApply: true
+---
+
+# Multi-Variant & Cascading Admin Fields
+
+This codebase has a non-obvious admin → snapshot → resolver pipeline for:
+
+1. **Same-label variants** — one logical field (e.g. "Make") with multiple admin
+   rows scoped to different categories (`pcar`, `solo`, `commvehicle`).
+2. **Cascading 2+ level fields** — a parent option (e.g. `Make = Hyundai`)
+   that exposes nested children (e.g. `Model`).
+
+If your task touches **any** of the following, STOP and read
+[`.cursor/skills/multi-variant-fields/SKILL.md`](mdc:.cursor/skills/multi-variant-fields/SKILL.md)
+**before** writing code:
+
+- Adding/editing fields with the same label across vehicle / insured / package categories
+- Adding cascading children under a `form_options.meta.options[].children` entry
+- Editing `lib/pdf/build-context.ts` `loadPackageFieldVariants`
+- Editing `lib/field-resolver.ts` `resolveByLabelVariant` / `resolvePackage` / `resolveInsuredPrimaryId`
+- Editing `components/admin/pdf-templates/PdfTemplateEditor.tsx` `buildPackageSectionTemplate` / `SYNTHETIC_FIELDS_BY_SOURCE`
+- Working with snapshot keys matching `__opt_*__c[0-9]` or `__byLabel__*`
+- Touching the wizard form-name template at `app/(dashboard)/policies/new/page.tsx` (~line 121)
+
+## The 30-second cheatsheet
+
+| Concern | Pattern | Don't do |
+|---|---|---|
+| Same-label admin fields | Resolver auto-routes via `__byLabel__<slug>` and category match | Don't place a category-locked key (e.g. `commake`) directly on a PDF |
+| Cascading child snapshot key | `${parentKey}__opt_${optionValue}__c${childIndex}` (single `c`) | NOT `__sc${idx}` — that's a dead path |
+| Synthetic UI field (Display Name, Primary ID, Make, Model) | `synthetic: true` shows the green **Auto** badge | Don't drop the flag or admins can't tell it auto-routes |
+| Tenant-specific ID fields | Add to `PERSONAL_ID_KEYS` / `COMPANY_ID_KEYS` fallback chain in `field-resolver.ts` | Don't hard-code one tenant's choice (e.g. `brNumber` only) |
+
+If anything above is unclear, the skill has the full contract, examples, and
+a verification recipe you can run against the live DB.

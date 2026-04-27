@@ -8,6 +8,7 @@ import {
   type StatementCtx,
   type ResolveContext,
   type DocTrackingEntry,
+  type PackageFieldVariant,
 } from "@/lib/field-resolver";
 
 export type { SnapshotData };
@@ -29,6 +30,13 @@ export type MergeContext = {
   isTpoWithOd?: boolean;
   documentTracking?: Record<string, DocTrackingEntry> | null;
   currentDocTrackingKey?: string;
+  /**
+   * Admin-configured field variants per package (label + categories +
+   * snapshot key). Used by the resolver's by-label fallback path so a
+   * single PDF placement can auto-resolve across category-scoped variants
+   * (e.g. one "Make" field works for car / motorcycle / truck policies).
+   */
+  packageFieldVariants?: Record<string, PackageFieldVariant[]>;
 };
 
 function toResolveContext(ctx: MergeContext): ResolveContext {
@@ -47,6 +55,7 @@ function toResolveContext(ctx: MergeContext): ResolveContext {
     isTpoWithOd: ctx.isTpoWithOd,
     documentTracking: ctx.documentTracking,
     currentDocTrackingKey: ctx.currentDocTrackingKey,
+    packageFieldVariants: ctx.packageFieldVariants,
   };
 }
 

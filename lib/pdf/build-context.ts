@@ -3,10 +3,96 @@ import { policies, cars } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
 import { users, clients, organisations } from "@/db/schema/core";
 import { accountingPaymentSchedules, accountingInvoices } from "@/db/schema/accounting";
+import { formOptions } from "@/db/schema/form_options";
 import { eq, sql, inArray, and, or } from "drizzle-orm";
 import type { MergeContext, AccountingLineContext, StatementContext } from "./resolve-data";
 import { loadAccountingFields, buildColumnFieldMap, getColumnType } from "@/lib/accounting-fields";
-import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
+import { getDisplayNameFromSnapshot, type PackageFieldVariant } from "@/lib/field-resolver";
+
+/**
+ * Load admin-configured field variants for the given packages from
+ * `form_options`. Used to power the resolver's by-label fallback so a
+ * single PDF placement (e.g. one "Make" field) auto-resolves across
+ * category-scoped variants. Best-effort — failures fall back to no
+ * variants (which preserves existing direct-key resolution behavior).
+ */
+async function loadPackageFieldVariants(
+  packageNames: string[],
+): Promise<Record<string, PackageFieldVariant[]>> {
+  const out: Record<string, PackageFieldVariant[]> = {};
+  if (packageNames.length === 0) return out;
+  try {
+    const groupKeys = packageNames.map((p) => `${p}_fields`);
+    const rows = await db
+      .select({
+        groupKey: formOptions.groupKey,
+        value: formOptions.value,
+        label: formOptions.label,
+        meta: formOptions.meta,
+      })
+      .from(formOptions)
+      .where(
+        and(
+          inArray(formOptions.groupKey, groupKeys),
+          eq(formOptions.isActive, true),
+        ),
+      );
+
+    for (const r of rows) {
+      const pkg = r.groupKey.replace(/_fields$/, "");
+      const meta = (r.meta ?? null) as {
+        categories?: unknown;
+        options?: unknown;
+      } | null;
+      const rawCats = Array.isArray(meta?.categories) ? meta!.categories : [];
+      const categories = rawCats
+        .map((c) => (typeof c === "string" ? c : ""))
+        .filter((c): c is string => c.length > 0);
+      if (!out[pkg]) out[pkg] = [];
+      const parentKey = String(r.value ?? "");
+      out[pkg].push({
+        key: parentKey,
+        label: String(r.label ?? r.value ?? ""),
+        categories,
+      });
+
+      // Cascading second-level fields: when an option of this parent
+      // (e.g. each Make option) declares `children`, the wizard saves
+      // values under the deterministic name
+      // `${parentKey}__opt_${optionValue}__c${childIndex}` — see
+      // `app/(dashboard)/policies/new/page.tsx` line ~121 for the
+      // canonical form-name template. Emit one variant per
+      // (option, child) pair so the by-label resolver can pick
+      // whichever key has a value for this policy.
+      const options = Array.isArray(meta?.options) ? meta!.options : [];
+      for (const optRaw of options) {
+        const opt = (optRaw ?? {}) as {
+          value?: unknown;
+          children?: unknown;
+        };
+        const optValue = String(opt.value ?? "").trim();
+        if (!optValue) continue;
+        const children = Array.isArray(opt.children) ? opt.children : [];
+        children.forEach((childRaw, childIdx) => {
+          const child = (childRaw ?? {}) as { label?: unknown };
+          const childLabel = String(child.label ?? "").trim();
+          if (!childLabel) return;
+          out[pkg].push({
+            key: `${parentKey}__opt_${optValue}__c${childIdx}`,
+            label: childLabel,
+            // Children inherit the parent's category restriction —
+            // they're only reachable when the parent (and therefore
+            // its category) is in scope.
+            categories,
+          });
+        });
+      }
+    }
+  } catch {
+    // best-effort: leave `out` empty
+  }
+  return out;
+}
 
 const DB_COLUMN_OPTIONS = [
   { value: "grossPremiumCents", label: "Gross Premium", type: "cents" },
@@ -78,6 +164,14 @@ export async function buildMergeContext(policyId: number): Promise<{
 
   const resolvedClientId = policy.clientId ?? (extra.clientId as number | undefined);
 
+  // Collect package names referenced by the snapshot so we can preload
+  // admin-configured field variants for the resolver's by-label fallback.
+  const snapshotPackages = (() => {
+    const ps = (extra.packagesSnapshot ?? null) as Record<string, unknown> | null;
+    if (!ps || typeof ps !== "object") return [] as string[];
+    return Object.keys(ps).filter((k) => Boolean(k));
+  })();
+
   // Step 2: agent / client / org lookups are independent — fan out in parallel.
   const agentPromise = policy.agentId
     ? db
@@ -117,7 +211,14 @@ export async function buildMergeContext(policyId: number): Promise<{
         .catch(() => null)
     : Promise.resolve(null);
 
-  const [agentRow, clientRow, orgRow] = await Promise.all([agentPromise, clientPromise, orgPromise]);
+  const variantsPromise = loadPackageFieldVariants(snapshotPackages);
+
+  const [agentRow, clientRow, orgRow, packageFieldVariants] = await Promise.all([
+    agentPromise,
+    clientPromise,
+    orgPromise,
+    variantsPromise,
+  ]);
 
   const agentData: Record<string, unknown> | null = agentRow
     ? (agentRow as unknown as Record<string, unknown>)
@@ -516,6 +617,7 @@ export async function buildMergeContext(policyId: number): Promise<{
     statementData,
     isTpoWithOd,
     documentTracking: policy.documentTracking as Record<string, { documentNumber?: string; status?: string; [key: string]: unknown }> | null,
+    packageFieldVariants: Object.keys(packageFieldVariants).length > 0 ? packageFieldVariants : undefined,
   };
 
   return { ctx, policyNumber: policy.policyNumber };

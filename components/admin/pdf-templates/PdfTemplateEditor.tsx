@@ -11,22 +11,27 @@ import { SlideDrawer } from "@/components/ui/slide-drawer";
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import {
   ChevronLeft, ChevronDown, ChevronRight,
   Plus, Trash2, Save, Crosshair, Copy,
   FolderPlus, Pencil, Check, X,
   FileText, ImagePlus, Eye, EyeOff, Search, Loader2,
-  Type, Square, Settings2, FlaskConical, CheckCircle2,
+  Type, Square, CheckSquare, Settings2, FlaskConical, CheckCircle2,
+  CircleDot,
 } from "lucide-react";
 import type {
   PdfTemplateRow, PdfTemplateMeta, PdfFieldMapping, PdfTemplateSection,
-  PdfImageMapping, PdfDrawing,
+  PdfImageMapping, PdfDrawing, PdfCheckbox, PdfRadioGroup, PdfRadioOption,
 } from "@/lib/types/pdf-template";
 import {
   DATA_SOURCE_OPTIONS, FIELD_KEY_HINTS, FORMAT_OPTIONS,
   SECTION_COLORS,
 } from "@/lib/types/pdf-template";
+import { buildByLabelKey, slugifyLabel } from "@/lib/field-resolver";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
@@ -40,9 +45,37 @@ type SectionField = {
   trueValue?: string;
   falseValue?: string;
   matchValue?: string;
+  /**
+   * Admin-configured category restrictions for this field (e.g. ["car"]).
+   * Display-only — shown as badges in the section picker so admins can
+   * pick a category-specific variant when needed. Does not affect how
+   * the resolver fetches values.
+   */
+  categories?: string[];
+  /**
+   * Marks this entry as a synthetic by-label aggregator. The resolver
+   * recognises the `__byLabel__<slug>` field key and auto-picks the
+   * right snapshot value based on the policy's selected category, so
+   * one PDF placement (e.g. "Make") works across vehicle types.
+   */
+  synthetic?: boolean;
 };
-type OptionRow = { label?: unknown; value?: unknown; valueType?: unknown };
-type DynamicAdminField = { label: string; value: string; valueType?: string };
+type OptionRow = { label?: unknown; value?: unknown; valueType?: unknown; meta?: unknown };
+type DynamicAdminField = {
+  label: string;
+  value: string;
+  valueType?: string;
+  categories?: string[];
+  /**
+   * True when this entry was synthesised from a cascading second-level
+   * field nested inside a parent's `meta.options[].children` (e.g. the
+   * "Model" dropdown that appears under each Make option). Such entries
+   * are only useful as part of an Auto by-label group — admins can't
+   * meaningfully place a single per-option variant — so we skip them
+   * from the "More fields" list when the group has no other variants.
+   */
+  isChildOption?: boolean;
+};
 type OrganisationRow = { id?: unknown; name?: unknown };
 
 type SectionTemplate = {
@@ -68,14 +101,18 @@ type SectionTemplate = {
  */
 const SYNTHETIC_FIELDS_BY_SOURCE: Record<string, SectionField[]> = {
   insured: [
-    { label: "Display Name", fieldKey: "displayName", defaultOn: true },
-    { label: "Primary ID", fieldKey: "primaryId", defaultOn: true },
+    // `synthetic: true` shows the green "Auto" badge in the picker —
+    // these computed fields auto-pick the right value based on the
+    // policy's insured type (personal vs company), exactly like the
+    // by-label aggregators built for admin-configured packages.
+    { label: "Display Name", fieldKey: "displayName", defaultOn: true, synthetic: true },
+    { label: "Primary ID", fieldKey: "primaryId", defaultOn: true, synthetic: true },
   ],
   contactinfo: [
-    { label: "Full Address", fieldKey: "fullAddress", defaultOn: true },
+    { label: "Full Address", fieldKey: "fullAddress", defaultOn: true, synthetic: true },
   ],
   organisation: [
-    { label: "Full Address", fieldKey: "fullAddress", defaultOn: true },
+    { label: "Full Address", fieldKey: "fullAddress", defaultOn: true, synthetic: true },
   ],
 };
 
@@ -230,8 +267,8 @@ const BUILT_IN_SECTION_TEMPLATES: SectionTemplate[] = [
     color: "#ec4899",
     fields: [
       { label: "Client Number", fieldKey: "clientNumber", defaultOn: true },
-      { label: "Display Name", fieldKey: "displayName", defaultOn: true },
-      { label: "Primary ID", fieldKey: "primaryId", defaultOn: true },
+      { label: "Display Name", fieldKey: "displayName", defaultOn: true, synthetic: true },
+      { label: "Primary ID", fieldKey: "primaryId", defaultOn: true, synthetic: true },
       { label: "Category", fieldKey: "category" },
       { label: "Contact Phone", fieldKey: "contactPhone", defaultOn: true },
     ],
@@ -245,7 +282,7 @@ const BUILT_IN_SECTION_TEMPLATES: SectionTemplate[] = [
       { label: "Contact Name", fieldKey: "contactName", defaultOn: true },
       { label: "Contact Email", fieldKey: "contactEmail", defaultOn: true },
       { label: "Contact Phone", fieldKey: "contactPhone", defaultOn: true },
-      { label: "Full Address", fieldKey: "fullAddress", defaultOn: true },
+      { label: "Full Address", fieldKey: "fullAddress", defaultOn: true, synthetic: true },
     ],
   },
 ];
@@ -255,6 +292,15 @@ const BUILT_IN_SECTION_TEMPLATES: SectionTemplate[] = [
  * resulting template merges synthetic computed fields (e.g. displayName)
  * with the admin-configured fields from `${pkg}_fields`. If the package
  * has no admin fields configured, only synthetic fields are returned.
+ *
+ * Same-label variants (e.g. "Make" defined three times scoped to `car`,
+ * `motorcycle`, `truck`) are collapsed into ONE synthetic by-label
+ * entry — analogous to how `displayName` resolves personal vs company
+ * insured. The placed mapping uses a `__byLabel__<slug>` key that the
+ * field-resolver auto-routes to the right variant based on the policy's
+ * category, while the raw category-specific variants are kept under
+ * "More fields" so admins can still pick a single category if they want
+ * a category-locked placement.
  */
 function buildPackageSectionTemplate(
   pkg: { label: string; value: string },
@@ -264,22 +310,109 @@ function buildPackageSectionTemplate(
   const syntheticKeys = new Set(synthetic.map((f) => f.fieldKey.toLowerCase()));
   const handledKeys = HANDLED_FIELD_KEYS_BY_SOURCE[pkg.value] ?? new Set<string>();
 
-  const fields: SectionField[] = [
-    ...synthetic,
-    ...adminFields
-      .filter((f) => f.value && !syntheticKeys.has(f.value.toLowerCase()))
-      .map<SectionField>((f) => ({
+  const filteredAdminFields = adminFields.filter(
+    (f) => f.value && !syntheticKeys.has(f.value.toLowerCase()),
+  );
+
+  // Group admin fields by a slugified label so case / spacing / punctuation
+  // differences (e.g. "Body Type" vs "Body type") still collapse into one
+  // by-label entry. Same-label fields with different category restrictions
+  // become a single auto-resolving entry.
+  const groupsBySlug = new Map<string, DynamicAdminField[]>();
+  const groupDisplayLabel = new Map<string, string>();
+  const slugOrder: string[] = [];
+  for (const f of filteredAdminFields) {
+    const lbl = f.label || f.value;
+    const slug = slugifyLabel(lbl);
+    if (!groupsBySlug.has(slug)) {
+      groupsBySlug.set(slug, []);
+      groupDisplayLabel.set(slug, lbl);
+      slugOrder.push(slug);
+    }
+    groupsBySlug.get(slug)!.push(f);
+  }
+
+  const adminSectionFields: SectionField[] = [];
+  for (const slug of slugOrder) {
+    const lbl = groupDisplayLabel.get(slug) ?? "";
+    const variants = groupsBySlug.get(slug) ?? [];
+    const directVariants = variants.filter((v) => !v.isChildOption);
+    const hasChildVariant = variants.some((v) => v.isChildOption);
+    const hasCategoryRestriction = variants.some(
+      (v) => Array.isArray(v.categories) && v.categories.length > 0,
+    );
+
+    // Promote ONE smart "by-label" entry when:
+    //  • the group includes a cascading second-level child (e.g. the
+    //    "Model" dropdown nested under each Make option) — its real
+    //    snapshot key depends on which parent option was picked, so the
+    //    by-label path is the only way to render it; OR
+    //  • there are 2+ direct variants and at least one is category-
+    //    scoped (e.g. "Make" defined for car / motorcycle / truck).
+    // Plain duplicates with no category scope fall through to the
+    // regular behavior so a misconfiguration stays visible.
+    const needsAuto =
+      hasChildVariant
+      || (directVariants.length >= 2 && hasCategoryRestriction);
+
+    if (needsAuto) {
+      // Prefer a direct (top-level) variant's valueType for the Auto
+      // entry's format — child cascading inputs are usually `select`
+      // (which formats as raw text) so they would mask a sensible
+      // number/date format inherited from a same-label top-level field.
+      const formatSeed = directVariants[0] ?? variants[0];
+      const fmt = formatForValueType(formatSeed?.valueType);
+      adminSectionFields.push({
+        label: lbl,
+        fieldKey: buildByLabelKey(lbl),
+        format: fmt,
+        trueValue: fmt === "boolean" ? "✓" : undefined,
+        falseValue: fmt === "boolean" ? "" : undefined,
+        defaultOn: true,
+        synthetic: true,
+      });
+      // Only DIRECT (top-level) variants are listed under "More fields"
+      // — child-option variants have synthetic placeholder keys that
+      // can't resolve on their own, so they would be dead placements.
+      for (const f of directVariants) {
+        const vfmt = formatForValueType(f.valueType);
+        adminSectionFields.push({
+          label: f.label || f.value,
+          fieldKey: f.value,
+          format: vfmt,
+          trueValue: vfmt === "boolean" ? "✓" : undefined,
+          falseValue: vfmt === "boolean" ? "" : undefined,
+          categories: f.categories,
+          // Tucked under "More fields"; admins reach for a specific
+          // variant only when they want a category-locked placement.
+          defaultOn: false,
+        });
+      }
+      continue;
+    }
+
+    // No Auto entry for this group — emit each direct variant as-is.
+    // Child-only groups can't reach this branch (`needsAuto` is true
+    // whenever any child variant exists), so every variant here has a
+    // real snapshot key.
+    for (const f of directVariants) {
+      const fmt = formatForValueType(f.valueType);
+      adminSectionFields.push({
         label: f.label || f.value,
         fieldKey: f.value,
-        format: formatForValueType(f.valueType),
-        trueValue: formatForValueType(f.valueType) === "boolean" ? "✓" : undefined,
-        falseValue: formatForValueType(f.valueType) === "boolean" ? "" : undefined,
+        format: fmt,
+        trueValue: fmt === "boolean" ? "✓" : undefined,
+        falseValue: fmt === "boolean" ? "" : undefined,
+        categories: f.categories,
         // Admin fields whose value is already covered by a synthetic
-        // field are tucked under "More fields"; everything else stays
-        // promoted as a default-on suggestion.
+        // entity-level field are tucked under "More fields"; everything
+        // else stays promoted as a default-on suggestion.
         defaultOn: !handledKeys.has(normalizeFieldKey(f.value)),
-      })),
-  ];
+      });
+    }
+  }
+
+  const fields: SectionField[] = [...synthetic, ...adminSectionFields];
 
   const source: PdfFieldMapping["source"] =
     pkg.value === "insured" ? "insured"
@@ -293,6 +426,70 @@ function buildPackageSectionTemplate(
     color: colorForPackage(pkg.value),
     fields,
   };
+}
+
+/**
+ * Single row in the "Add Section" / "Edit Section" picker. Shows the
+ * field label, an "Auto" hint for synthetic by-label aggregators, and
+ * category badges for category-scoped variants. Both the default and
+ * "More fields" lists share this row so the visual treatment stays
+ * consistent.
+ */
+function SectionFieldRow({
+  field,
+  selection,
+  onToggle,
+}: {
+  field: SectionField;
+  selection: { checked: boolean; showLabel: boolean } | undefined;
+  onToggle: (fieldKey: string, prop: "checked" | "showLabel") => void;
+}) {
+  const checked = selection?.checked ?? false;
+  const showLabel = selection?.showLabel ?? false;
+  const cats = (field.categories ?? []).filter((c) => c && c.trim());
+  return (
+    <div className="flex items-center gap-3 px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-900">
+      <input
+        type="checkbox"
+        id={`sec-chk-${field.fieldKey}`}
+        checked={checked}
+        onChange={() => onToggle(field.fieldKey, "checked")}
+        className="rounded border-neutral-300 dark:border-neutral-600 h-3.5 w-3.5 cursor-pointer"
+      />
+      <label
+        htmlFor={`sec-chk-${field.fieldKey}`}
+        className="flex-1 flex flex-wrap items-center gap-1.5 text-sm text-neutral-800 dark:text-neutral-200 cursor-pointer select-none"
+      >
+        <span>{field.label}</span>
+        {field.synthetic && (
+          <span
+            title="Auto-picks the right value based on this policy's category — like Display Name picks personal vs company name."
+            className="rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-[9px] font-medium uppercase tracking-wide px-1.5 py-0.5"
+          >
+            Auto
+          </span>
+        )}
+        {cats.map((c) => (
+          <span
+            key={c}
+            title={`This variant is restricted to category: ${c}`}
+            className="rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 text-[9px] font-medium px-1.5 py-0.5"
+          >
+            {c}
+          </span>
+        ))}
+      </label>
+      <label className="flex items-center gap-1 text-[10px] text-neutral-400 dark:text-neutral-500 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={showLabel}
+          onChange={() => onToggle(field.fieldKey, "showLabel")}
+          className="rounded border-neutral-300 dark:border-neutral-600 h-3 w-3"
+        />
+        Label
+      </label>
+    </div>
+  );
 }
 
 function FieldListItem({
@@ -352,6 +549,19 @@ const PDF_ERROR_VIEW = (
   <div className="flex items-center justify-center h-full text-sm text-red-500 dark:text-red-400">Failed to load PDF</div>
 );
 
+/**
+ * The PDF.js canvas is rasterised once at this width and then CSS-scaled
+ * to the actual `displayWidth`. Any layout shift (modal scroll-lock,
+ * sidebar collapse, browser resize) becomes a free transform update
+ * instead of a full PDF.js re-render — which is what produced the
+ * visible flash whenever the dialog scroll-lock changed body padding.
+ *
+ * Kept in sync with the `Math.min(containerWidth, NATURAL_PDF_WIDTH)`
+ * clamp used to compute `displayWidth`, so we always downscale (sharp
+ * on retina) and never upscale (which would blur the canvas).
+ */
+const NATURAL_PDF_WIDTH = 800;
+
 type PdfPageBackgroundProps = {
   pdfUrl: string;
   isBlankPage: boolean;
@@ -359,33 +569,58 @@ type PdfPageBackgroundProps = {
   displayWidth: number;
 };
 
-const PdfPageBackground = React.memo(
-  function PdfPageBackground({ pdfUrl, isBlankPage, currentPage, displayWidth }: PdfPageBackgroundProps) {
-    if (isBlankPage) {
-      return (
-        <div className="w-full h-full bg-white flex items-center justify-center">
-          <span className="text-neutral-300 text-sm select-none pointer-events-none">Blank Page</span>
-        </div>
-      );
-    }
-
+/**
+ * Inner PDF.js renderer — kept as a separate `React.memo` so the
+ * expensive Document/Page subtree is only reconciled when the actual
+ * content (file or page index) changes. The width prop is a constant
+ * (`NATURAL_PDF_WIDTH`), so once rasterised, the canvas is never
+ * redrawn for layout reasons.
+ */
+const PdfPageInner = React.memo(
+  function PdfPageInner({ pdfUrl, currentPage }: { pdfUrl: string; currentPage: number }) {
     return (
       <Document file={pdfUrl} loading={PDF_LOADING_VIEW} error={PDF_ERROR_VIEW}>
         <Page
           pageNumber={currentPage + 1}
-          width={displayWidth}
+          width={NATURAL_PDF_WIDTH}
           renderTextLayer={false}
           renderAnnotationLayer={false}
         />
       </Document>
     );
   },
-  (prev, next) =>
-    prev.pdfUrl === next.pdfUrl
-    && prev.isBlankPage === next.isBlankPage
-    && prev.currentPage === next.currentPage
-    && Math.round(prev.displayWidth) === Math.round(next.displayWidth),
 );
+
+/**
+ * Outer scaling wrapper — re-renders freely whenever `displayWidth`
+ * changes (so the CSS transform stays accurate), but the memoised
+ * `<PdfPageInner>` skips reconciliation because its props are
+ * unchanged. Result: width changes are a pure CSS transform update,
+ * never a PDF.js redraw, never a canvas blank.
+ */
+function PdfPageBackground({ pdfUrl, isBlankPage, currentPage, displayWidth }: PdfPageBackgroundProps) {
+  if (isBlankPage) {
+    return (
+      <div className="w-full h-full bg-white flex items-center justify-center">
+        <span className="text-neutral-300 text-sm select-none pointer-events-none">Blank Page</span>
+      </div>
+    );
+  }
+
+  const scaleRatio = displayWidth / NATURAL_PDF_WIDTH;
+
+  return (
+    <div
+      style={{
+        width: NATURAL_PDF_WIDTH,
+        transform: scaleRatio === 1 ? undefined : `scale(${scaleRatio})`,
+        transformOrigin: "top left",
+      }}
+    >
+      <PdfPageInner pdfUrl={pdfUrl} currentPage={currentPage} />
+    </div>
+  );
+}
 
 type Props = {
   template: PdfTemplateRow;
@@ -436,6 +671,30 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const [draggingDrawingId, setDraggingDrawingId] = React.useState<string | null>(null);
   const [resizingDrawingId, setResizingDrawingId] = React.useState<string | null>(null);
   const [editingDrawingId, setEditingDrawingId] = React.useState<string | null>(null);
+
+  const [checkboxes, setCheckboxes] = React.useState<PdfCheckbox[]>(meta.checkboxes ?? []);
+  const [selectedCheckboxId, setSelectedCheckboxId] = React.useState<string | null>(null);
+  const [draggingCheckboxId, setDraggingCheckboxId] = React.useState<string | null>(null);
+  const [resizingCheckboxId, setResizingCheckboxId] = React.useState<string | null>(null);
+  const [editingCheckboxId, setEditingCheckboxId] = React.useState<string | null>(null);
+  // Multi-select for checkboxes & radio options (separate from field
+  // multi-select). Stored as `${kind}:${id}` strings so we can mix
+  // kinds in one selection (cb:UUID, ro:GROUP_ID/OPTION_ID).
+  const [multiSelectedShapeIds, setMultiSelectedShapeIds] = React.useState<Set<string>>(new Set());
+
+  const [radioGroups, setRadioGroups] = React.useState<PdfRadioGroup[]>(meta.radioGroups ?? []);
+  const [selectedRadioOption, setSelectedRadioOption] = React.useState<{ groupId: string; optionId: string } | null>(null);
+  const [draggingRadioOption, setDraggingRadioOption] = React.useState<{ groupId: string; optionId: string } | null>(null);
+  const [resizingRadioOption, setResizingRadioOption] = React.useState<{ groupId: string; optionId: string } | null>(null);
+  const [editingRadioGroupId, setEditingRadioGroupId] = React.useState<string | null>(null);
+
+  type CtxMenu =
+    | { kind: "checkbox"; id: string; screenX: number; screenY: number }
+    | { kind: "radioOption"; groupId: string; optionId: string; screenX: number; screenY: number };
+  const [ctxMenu, setCtxMenu] = React.useState<CtxMenu | null>(null);
+
+  // Rubber-band (marquee) selection — drawn in canvas-local coords.
+  const [dragSel, setDragSel] = React.useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
 
   const [previewPolicyId, setPreviewPolicyId] = React.useState<number | null>(null);
   const [previewPolicyNumber, setPreviewPolicyNumber] = React.useState("");
@@ -492,11 +751,62 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
               );
               if (!fr.ok) return [];
               const fd = (await fr.json()) as OptionRow[];
-              return (Array.isArray(fd) ? fd : []).map((f) => ({
-                label: String(f.label ?? ""),
-                value: String(f.value ?? ""),
-                valueType: typeof f.valueType === "string" ? f.valueType : undefined,
-              }));
+              return (Array.isArray(fd) ? fd : []).flatMap((f): DynamicAdminField[] => {
+                const meta = (f.meta ?? null) as {
+                  categories?: unknown;
+                  options?: unknown;
+                } | null;
+                const rawCats = Array.isArray(meta?.categories) ? meta!.categories : [];
+                const categories = rawCats
+                  .map((c) => (typeof c === "string" ? c : ""))
+                  .filter((c): c is string => c.length > 0);
+                const parentValue = String(f.value ?? "");
+                const out: DynamicAdminField[] = [{
+                  label: String(f.label ?? ""),
+                  value: parentValue,
+                  valueType: typeof f.valueType === "string" ? f.valueType : undefined,
+                  categories,
+                }];
+
+                // Cascading children: collect each unique child label
+                // (e.g. "Model" appearing under every Make option) as a
+                // virtual variant so it can be grouped into an Auto
+                // entry alongside any same-label siblings from other
+                // category-scoped parents.
+                const options = Array.isArray(meta?.options) ? meta!.options : [];
+                const seenChildSlugs = new Set<string>();
+                for (const optRaw of options) {
+                  const opt = (optRaw ?? {}) as {
+                    children?: unknown;
+                  };
+                  const children = Array.isArray(opt.children) ? opt.children : [];
+                  for (const childRaw of children) {
+                    const child = (childRaw ?? {}) as {
+                      label?: unknown;
+                      inputType?: unknown;
+                    };
+                    const childLabel = String(child.label ?? "").trim();
+                    if (!childLabel) continue;
+                    const slug = slugifyLabel(childLabel);
+                    if (seenChildSlugs.has(slug)) continue;
+                    seenChildSlugs.add(slug);
+                    out.push({
+                      label: childLabel,
+                      // Synthetic value — never used as a direct snapshot
+                      // key. The editor only needs it to keep entries
+                      // distinct in `Map`s; the resolver uses the by-label
+                      // path which finds the real per-option keys.
+                      value: `__child__${parentValue}__${slug}`,
+                      valueType: typeof child.inputType === "string"
+                        ? child.inputType
+                        : undefined,
+                      categories,
+                      isChildOption: true,
+                    });
+                  }
+                }
+                return out;
+              });
             } catch {
               return [];
             }
@@ -604,11 +914,13 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     setSettingsSaving(false);
   }
 
-  const savedRef = React.useRef({ fields: meta.fields ?? [], sections: meta.sections ?? [], images: meta.images ?? [], drawings: meta.drawings ?? [], pages: meta.pages ?? [] });
+  const savedRef = React.useRef({ fields: meta.fields ?? [], sections: meta.sections ?? [], images: meta.images ?? [], drawings: meta.drawings ?? [], checkboxes: meta.checkboxes ?? [], radioGroups: meta.radioGroups ?? [], pages: meta.pages ?? [] });
   const isDirty = JSON.stringify(fields) !== JSON.stringify(savedRef.current.fields)
     || JSON.stringify(sections) !== JSON.stringify(savedRef.current.sections)
     || JSON.stringify(images) !== JSON.stringify(savedRef.current.images)
     || JSON.stringify(drawings) !== JSON.stringify(savedRef.current.drawings)
+    || JSON.stringify(checkboxes) !== JSON.stringify(savedRef.current.checkboxes)
+    || JSON.stringify(radioGroups) !== JSON.stringify(savedRef.current.radioGroups)
     || JSON.stringify(pages) !== JSON.stringify(savedRef.current.pages);
 
   const totalPageCount = pages.length;
@@ -660,7 +972,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
         .catch(() => {});
     }
   }, [images, imageUrls]);
-  const displayWidth = containerWidth > 0 ? Math.min(containerWidth, 800) : 800;
+  const displayWidth = containerWidth > 0 ? Math.min(containerWidth, NATURAL_PDF_WIDTH) : NATURAL_PDF_WIDTH;
   const scale = displayWidth / pdfWidth;
   const displayHeight = pdfHeight * scale;
 
@@ -696,10 +1008,107 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
         setEditingDrawingId(null);
         return;
       }
+      if (selectedCheckboxId) {
+        e.preventDefault();
+        setCheckboxes((prev) => prev.filter((c) => c.id !== selectedCheckboxId));
+        setSelectedCheckboxId(null);
+        setEditingCheckboxId(null);
+        return;
+      }
+      if (selectedRadioOption) {
+        e.preventDefault();
+        const { groupId, optionId } = selectedRadioOption;
+        setRadioGroups((prev) =>
+          prev
+            .map((g) =>
+              g.id === groupId
+                ? { ...g, options: g.options.filter((o) => o.id !== optionId) }
+                : g,
+            )
+            // Drop empty groups (no options left).
+            .filter((g) => g.options.length > 0),
+        );
+        setSelectedRadioOption(null);
+        return;
+      }
+      if (multiSelectedShapeIds.size > 0) {
+        e.preventDefault();
+        const cbIds = new Set<string>();
+        const roKeys = new Set<string>();
+        multiSelectedShapeIds.forEach((k) => {
+          const [kind, rest] = k.split(":");
+          if (kind === "cb") cbIds.add(rest);
+          else if (kind === "ro") roKeys.add(rest);
+        });
+        if (cbIds.size) setCheckboxes((prev) => prev.filter((c) => !cbIds.has(c.id)));
+        if (roKeys.size) {
+          setRadioGroups((prev) =>
+            prev
+              .map((g) => ({
+                ...g,
+                options: g.options.filter((o) => !roKeys.has(`${g.id}/${o.id}`)),
+              }))
+              .filter((g) => g.options.length > 0),
+          );
+        }
+        setMultiSelectedShapeIds(new Set());
+        return;
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId, selectedImageId, selectedDrawingId, multiSelectedIds]);
+  }, [selectedId, selectedImageId, selectedDrawingId, selectedCheckboxId, selectedRadioOption, multiSelectedIds, multiSelectedShapeIds]);
+
+  // Arrow-key nudging for single-selected checkboxes and radio options.
+  // 1 pt per press; 10 pt when Shift is held. Does nothing when focus is
+  // inside a text input so normal editing isn't interrupted.
+  React.useEffect(() => {
+    function onArrow(e: KeyboardEvent) {
+      const arrows = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+      if (!arrows.includes(e.key)) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      const delta = e.shiftKey ? 10 : 1;
+      let dx = 0, dy = 0;
+      if (e.key === "ArrowLeft")  dx = -delta;
+      if (e.key === "ArrowRight") dx = +delta;
+      if (e.key === "ArrowUp")    dy = +delta; // PDF y grows upward
+      if (e.key === "ArrowDown")  dy = -delta;
+
+      if (selectedCheckboxId) {
+        e.preventDefault();
+        setCheckboxes((prev) =>
+          prev.map((c) =>
+            c.id === selectedCheckboxId
+              ? { ...c, x: Math.max(0, Math.round((c.x + dx) * 100) / 100), y: Math.max(0, Math.round((c.y + dy) * 100) / 100) }
+              : c,
+          ),
+        );
+        return;
+      }
+      if (selectedRadioOption) {
+        e.preventDefault();
+        const { groupId, optionId } = selectedRadioOption;
+        setRadioGroups((prev) =>
+          prev.map((g) =>
+            g.id === groupId
+              ? {
+                  ...g,
+                  options: g.options.map((o) =>
+                    o.id === optionId
+                      ? { ...o, x: Math.max(0, Math.round((o.x + dx) * 100) / 100), y: Math.max(0, Math.round((o.y + dy) * 100) / 100) }
+                      : o,
+                  ),
+                }
+              : g,
+          ),
+        );
+      }
+    }
+    window.addEventListener("keydown", onArrow);
+    return () => window.removeEventListener("keydown", onArrow);
+  }, [selectedCheckboxId, selectedRadioOption]);
 
   const selectedField = fields.find((f) => f.id === selectedId) ?? null;
 
@@ -1332,6 +1741,13 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     setFields((prev) => prev.filter((f) => f.page !== pageIndex).map((f) => f.page > pageIndex ? { ...f, page: f.page - 1 } : f));
     setImages((prev) => prev.filter((img) => img.page !== pageIndex).map((img) => img.page > pageIndex ? { ...img, page: img.page - 1 } : img));
     setDrawings((prev) => prev.filter((d) => d.page !== pageIndex).map((d) => d.page > pageIndex ? { ...d, page: d.page - 1 } : d));
+    setCheckboxes((prev) => prev.filter((c) => c.page !== pageIndex).map((c) => c.page > pageIndex ? { ...c, page: c.page - 1 } : c));
+    setRadioGroups((prev) => prev.map((g) => ({
+      ...g,
+      options: g.options
+        .filter((o) => o.page !== pageIndex)
+        .map((o) => o.page > pageIndex ? { ...o, page: o.page - 1 } : o),
+    })).filter((g) => g.options.length > 0));
     setPages((prev) => prev.filter((_, i) => i !== pageIndex));
     if (currentPage >= pageIndex && currentPage > 0) setCurrentPage(currentPage - 1);
   }
@@ -1537,6 +1953,431 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     window.addEventListener("mouseup", onUp);
   }
 
+  function updateCheckbox(id: string, patch: Partial<PdfCheckbox>) {
+    setCheckboxes((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  }
+
+  function addCheckbox() {
+    const newCheckbox: PdfCheckbox = {
+      id: crypto.randomUUID(),
+      page: currentPage,
+      x: Math.round(pdfWidth * 0.1),
+      y: Math.round(pdfHeight * 0.5),
+      width: 12,
+      height: 12,
+      defaultChecked: false,
+      borderless: true,
+    };
+    setCheckboxes((prev) => [...prev, newCheckbox]);
+    setSelectedCheckboxId(newCheckbox.id);
+    setSelectedId(null);
+    setSelectedImageId(null);
+    setSelectedDrawingId(null);
+  }
+
+  function handleCheckboxMouseDown(checkboxId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+
+    const shapeKey = `cb:${checkboxId}`;
+
+    // Shift-click toggles the shape multi-select set; we don't start
+    // a drag in this case so the user can build up a selection.
+    if (e.shiftKey) {
+      toggleShapeMultiSelect(shapeKey, true);
+      setSelectedCheckboxId(checkboxId);
+      setSelectedId(null);
+      setSelectedImageId(null);
+      setSelectedDrawingId(null);
+      setSelectedRadioOption(null);
+      return;
+    }
+
+    setSelectedCheckboxId(checkboxId);
+    setSelectedId(null);
+    setSelectedImageId(null);
+    setSelectedDrawingId(null);
+    setSelectedRadioOption(null);
+
+    const c = checkboxes.find((cb) => cb.id === checkboxId);
+    if (!c) return;
+
+    // Group-drag when this checkbox is part of an existing multi-selection.
+    const isGroupDrag = multiSelectedShapeIds.has(shapeKey) && multiSelectedShapeIds.size > 1;
+    const dragKeys = isGroupDrag ? [...multiSelectedShapeIds] : [shapeKey];
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origPositions = collectShapePositions(dragKeys);
+
+    setDraggingCheckboxId(checkboxId);
+
+    function onMove(ev: MouseEvent) {
+      const dx = (ev.clientX - startX) / scale;
+      const dy = (ev.clientY - startY) / scale;
+      applyShapeTranslation(origPositions, dx, dy);
+    }
+
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setDraggingCheckboxId(null);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function handleCheckboxResize(checkboxId: string, edge: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const c = checkboxes.find((cb) => cb.id === checkboxId);
+    if (!c) return;
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origX = c.x;
+    const origY = c.y;
+    const origW = c.width;
+    const origH = c.height;
+    setResizingCheckboxId(checkboxId);
+
+    function onMove(ev: MouseEvent) {
+      const dx = (ev.clientX - startX) / scale;
+      const dy = -(ev.clientY - startY) / scale;
+      let nx = origX, ny = origY, nw = origW, nh = origH;
+
+      if (edge.includes("e")) { nw = Math.max(6, origW + dx); }
+      if (edge.includes("w")) { nw = Math.max(6, origW - dx); nx = origX + (origW - nw); }
+      if (edge.includes("s")) { nh = Math.max(6, origH - dy); ny = origY + (origH - nh); }
+      if (edge.includes("n")) { nh = Math.max(6, origH + dy); }
+
+      setCheckboxes((prev) =>
+        prev.map((cb) =>
+          cb.id === checkboxId
+            ? { ...cb, x: Math.round(nx * 100) / 100, y: Math.round(ny * 100) / 100, width: Math.round(nw * 100) / 100, height: Math.round(nh * 100) / 100 }
+            : cb,
+        ),
+      );
+    }
+
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setResizingCheckboxId(null);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  // ---------- Radio group (Yes/No selection) helpers ----------
+
+  function updateRadioGroup(groupId: string, patch: Partial<PdfRadioGroup>) {
+    setRadioGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, ...patch } : g)));
+  }
+
+  function updateRadioOption(groupId: string, optionId: string, patch: Partial<PdfRadioOption>) {
+    setRadioGroups((prev) =>
+      prev.map((g) =>
+        g.id === groupId
+          ? { ...g, options: g.options.map((o) => (o.id === optionId ? { ...o, ...patch } : o)) }
+          : g,
+      ),
+    );
+  }
+
+  // Generate a stable, sanitized field-name for a new radio group based
+  // on its label, falling back to a counter to keep the document unique.
+  function nextRadioGroupName(label: string): string {
+    const base = (label || "selection")
+      .toString()
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 32) || "selection";
+    const taken = new Set(radioGroups.map((g) => g.name));
+    if (!taken.has(base)) return base;
+    let n = 2;
+    while (taken.has(`${base}_${n}`)) n++;
+    return `${base}_${n}`;
+  }
+
+  function addYesNoSelection() {
+    const id = crypto.randomUUID();
+    const baseX = Math.round(pdfWidth * 0.1);
+    const baseY = Math.round(pdfHeight * 0.5);
+    const newGroup: PdfRadioGroup = {
+      id,
+      name: nextRadioGroupName("selection"),
+      label: "Yes/No selection",
+      defaultValue: "",
+      borderless: true,
+      options: [
+        {
+          id: crypto.randomUUID(),
+          value: "yes",
+          label: "Yes",
+          page: currentPage,
+          x: baseX,
+          y: baseY,
+          width: 12,
+          height: 12,
+        },
+        {
+          id: crypto.randomUUID(),
+          value: "no",
+          label: "No",
+          page: currentPage,
+          x: baseX + 60,
+          y: baseY,
+          width: 12,
+          height: 12,
+        },
+      ],
+    };
+    setRadioGroups((prev) => [...prev, newGroup]);
+    setSelectedRadioOption({ groupId: id, optionId: newGroup.options[0].id });
+    setSelectedId(null);
+    setSelectedImageId(null);
+    setSelectedDrawingId(null);
+    setSelectedCheckboxId(null);
+  }
+
+  function handleRadioOptionMouseDown(groupId: string, optionId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setSelectedRadioOption({ groupId, optionId });
+    setSelectedId(null);
+    setSelectedImageId(null);
+    setSelectedDrawingId(null);
+    setSelectedCheckboxId(null);
+
+    const group = radioGroups.find((g) => g.id === groupId);
+    const opt = group?.options.find((o) => o.id === optionId);
+    if (!opt) return;
+
+    // Group-drag: when this option is part of a multi-shape selection
+    // (with at least one other shape selected), drag the entire group.
+    const shapeKey = `ro:${groupId}/${optionId}`;
+    const isGroupDrag = multiSelectedShapeIds.has(shapeKey) && multiSelectedShapeIds.size > 1;
+    const dragKeys = isGroupDrag ? [...multiSelectedShapeIds] : [shapeKey];
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origPositions = collectShapePositions(dragKeys);
+
+    setDraggingRadioOption({ groupId, optionId });
+
+    function onMove(ev: MouseEvent) {
+      const dx = (ev.clientX - startX) / scale;
+      const dy = (ev.clientY - startY) / scale;
+      applyShapeTranslation(origPositions, dx, dy);
+    }
+
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setDraggingRadioOption(null);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function handleRadioOptionResize(groupId: string, optionId: string, edge: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const group = radioGroups.find((g) => g.id === groupId);
+    const opt = group?.options.find((o) => o.id === optionId);
+    if (!opt) return;
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origX = opt.x, origY = opt.y, origW = opt.width, origH = opt.height;
+    setResizingRadioOption({ groupId, optionId });
+
+    function onMove(ev: MouseEvent) {
+      const dx = (ev.clientX - startX) / scale;
+      const dy = -(ev.clientY - startY) / scale;
+      let nx = origX, ny = origY, nw = origW, nh = origH;
+      if (edge.includes("e")) { nw = Math.max(6, origW + dx); }
+      if (edge.includes("w")) { nw = Math.max(6, origW - dx); nx = origX + (origW - nw); }
+      if (edge.includes("s")) { nh = Math.max(6, origH - dy); ny = origY + (origH - nh); }
+      if (edge.includes("n")) { nh = Math.max(6, origH + dy); }
+      updateRadioOption(groupId, optionId, {
+        x: Math.round(nx * 100) / 100,
+        y: Math.round(ny * 100) / 100,
+        width: Math.round(nw * 100) / 100,
+        height: Math.round(nh * 100) / 100,
+      });
+    }
+
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setResizingRadioOption(null);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  // ---------- Shape multi-select & alignment ----------
+
+  // Snapshot positions for a list of shape keys (cb:ID or ro:GROUP/OPT)
+  // so we can translate them all together during a group drag.
+  function collectShapePositions(keys: string[]): Map<string, { x: number; y: number }> {
+    const out = new Map<string, { x: number; y: number }>();
+    for (const k of keys) {
+      const [kind, rest] = k.split(":");
+      if (kind === "cb") {
+        const cb = checkboxes.find((c) => c.id === rest);
+        if (cb) out.set(k, { x: cb.x, y: cb.y });
+      } else if (kind === "ro") {
+        const [gId, oId] = rest.split("/");
+        const opt = radioGroups.find((g) => g.id === gId)?.options.find((o) => o.id === oId);
+        if (opt) out.set(k, { x: opt.x, y: opt.y });
+      }
+    }
+    return out;
+  }
+
+  function applyShapeTranslation(orig: Map<string, { x: number; y: number }>, dx: number, dy: number) {
+    if (orig.size === 0) return;
+    setCheckboxes((prev) =>
+      prev.map((cb) => {
+        const o = orig.get(`cb:${cb.id}`);
+        if (!o) return cb;
+        return {
+          ...cb,
+          x: Math.max(0, Math.round((o.x + dx) * 100) / 100),
+          y: Math.max(0, Math.round((o.y - dy) * 100) / 100),
+        };
+      }),
+    );
+    setRadioGroups((prev) =>
+      prev.map((g) => ({
+        ...g,
+        options: g.options.map((opt) => {
+          const o = orig.get(`ro:${g.id}/${opt.id}`);
+          if (!o) return opt;
+          return {
+            ...opt,
+            x: Math.max(0, Math.round((o.x + dx) * 100) / 100),
+            y: Math.max(0, Math.round((o.y - dy) * 100) / 100),
+          };
+        }),
+      })),
+    );
+  }
+
+  // Toggle a shape into the multi-select on Shift-click (and also
+  // includes the original click target).
+  function toggleShapeMultiSelect(shapeKey: string, additive: boolean) {
+    setMultiSelectedShapeIds((prev) => {
+      const next = new Set(prev);
+      if (!additive) {
+        next.clear();
+        next.add(shapeKey);
+        return next;
+      }
+      if (next.has(shapeKey)) next.delete(shapeKey);
+      else next.add(shapeKey);
+      return next;
+    });
+  }
+
+  // Rect representation for a shape — used by alignment + bounds math.
+  type ShapeRect = { key: string; x: number; y: number; width: number; height: number };
+
+  function getShapeRect(key: string): ShapeRect | null {
+    const [kind, rest] = key.split(":");
+    if (kind === "cb") {
+      const cb = checkboxes.find((c) => c.id === rest);
+      return cb ? { key, x: cb.x, y: cb.y, width: cb.width, height: cb.height } : null;
+    }
+    if (kind === "ro") {
+      const [gId, oId] = rest.split("/");
+      const opt = radioGroups.find((g) => g.id === gId)?.options.find((o) => o.id === oId);
+      return opt ? { key, x: opt.x, y: opt.y, width: opt.width, height: opt.height } : null;
+    }
+    return null;
+  }
+
+  function setShapeXY(key: string, x?: number, y?: number) {
+    const [kind, rest] = key.split(":");
+    if (kind === "cb") {
+      setCheckboxes((prev) =>
+        prev.map((cb) =>
+          cb.id === rest
+            ? { ...cb, x: x !== undefined ? Math.round(x * 100) / 100 : cb.x, y: y !== undefined ? Math.round(y * 100) / 100 : cb.y }
+            : cb,
+        ),
+      );
+    } else if (kind === "ro") {
+      const [gId, oId] = rest.split("/");
+      setRadioGroups((prev) =>
+        prev.map((g) =>
+          g.id === gId
+            ? {
+                ...g,
+                options: g.options.map((o) =>
+                  o.id === oId
+                    ? { ...o, x: x !== undefined ? Math.round(x * 100) / 100 : o.x, y: y !== undefined ? Math.round(y * 100) / 100 : o.y }
+                    : o,
+                ),
+              }
+            : g,
+        ),
+      );
+    }
+  }
+
+  function alignShapes(dir: "left" | "right" | "top" | "bottom" | "dist-h" | "dist-v") {
+    const keys = [...multiSelectedShapeIds];
+    const rects = keys.map((k) => getShapeRect(k)).filter((r): r is ShapeRect => !!r);
+    if (rects.length < 2) return;
+
+    switch (dir) {
+      case "left": {
+        const minX = Math.min(...rects.map((r) => r.x));
+        rects.forEach((r) => setShapeXY(r.key, minX, undefined));
+        break;
+      }
+      case "right": {
+        // Align right edges (x + width).
+        const maxRight = Math.max(...rects.map((r) => r.x + r.width));
+        rects.forEach((r) => setShapeXY(r.key, maxRight - r.width, undefined));
+        break;
+      }
+      case "top": {
+        // PDF y grows upward, so "top" = highest y+height.
+        const maxTop = Math.max(...rects.map((r) => r.y + r.height));
+        rects.forEach((r) => setShapeXY(r.key, undefined, maxTop - r.height));
+        break;
+      }
+      case "bottom": {
+        const minY = Math.min(...rects.map((r) => r.y));
+        rects.forEach((r) => setShapeXY(r.key, undefined, minY));
+        break;
+      }
+      case "dist-h": {
+        const sorted = [...rects].sort((a, b) => a.x - b.x);
+        const left = sorted[0].x;
+        const right = sorted[sorted.length - 1].x;
+        const step = (right - left) / (sorted.length - 1);
+        sorted.forEach((r, i) => setShapeXY(r.key, left + i * step, undefined));
+        break;
+      }
+      case "dist-v": {
+        const sorted = [...rects].sort((a, b) => b.y - a.y);
+        const topY = sorted[0].y;
+        const bottomY = sorted[sorted.length - 1].y;
+        const step = (topY - bottomY) / (sorted.length - 1);
+        sorted.forEach((r, i) => setShapeXY(r.key, undefined, topY - i * step));
+        break;
+      }
+    }
+  }
+
   function handleDrawingResize(drawingId: string, edge: string, e: React.MouseEvent) {
     e.stopPropagation();
     e.preventDefault();
@@ -1649,10 +2490,10 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
       const res = await fetch(`/api/pdf-templates/${template.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fields, sections, images, drawings, pages }),
+        body: JSON.stringify({ fields, sections, images, drawings, checkboxes, radioGroups, pages }),
       });
       if (!res.ok) throw new Error("Save failed");
-      savedRef.current = { fields, sections, images, drawings, pages };
+      savedRef.current = { fields, sections, images, drawings, checkboxes, radioGroups, pages };
       toast.success("Fields saved");
     } catch {
       toast.error("Failed to save");
@@ -1808,6 +2649,14 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           <Square className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Add Border</span>
         </Button>
+        <Button size="sm" variant="outline" onClick={addCheckbox} className="gap-1.5" title="Add a fillable checkbox the recipient can tick">
+          <CheckSquare className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Add Checkbox</span>
+        </Button>
+        <Button size="sm" variant="outline" onClick={addYesNoSelection} className="gap-1.5" title="Add a Yes/No selection (radio group) — recipient picks one">
+          <CircleDot className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Add Yes/No</span>
+        </Button>
         <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-700 hidden sm:block" />
         <Button
           size="sm"
@@ -1858,6 +2707,93 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
             placingMode ? "cursor-crosshair" : ""
           }`}
           style={{ width: displayWidth, height: displayHeight }}
+          onMouseDown={(e) => {
+            // Only fire from the canvas background — child overlays call
+            // stopPropagation so clicks on them never reach here.
+            if (placingMode) return;
+            if (e.button !== 0) return; // left button only
+            setCtxMenu(null);
+
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x0 = e.clientX - rect.left;
+            const y0 = e.clientY - rect.top;
+            setDragSel({ x0, y0, x1: x0, y1: y0 });
+
+            function onMove(ev: MouseEvent) {
+              setDragSel({ x0, y0, x1: ev.clientX - rect.left, y1: ev.clientY - rect.top });
+            }
+
+            function onUp(ev: MouseEvent) {
+              window.removeEventListener("mousemove", onMove);
+              window.removeEventListener("mouseup", onUp);
+
+              const x1 = ev.clientX - rect.left;
+              const y1 = ev.clientY - rect.top;
+              setDragSel(null);
+
+              const wasDrag = Math.abs(x1 - x0) > 6 || Math.abs(y1 - y0) > 6;
+
+              if (!wasDrag) {
+                // Plain click on background — clear all selections.
+                setSelectedId(null);
+                setSelectedImageId(null);
+                setSelectedDrawingId(null);
+                setSelectedCheckboxId(null);
+                setSelectedRadioOption(null);
+                setMultiSelectedIds(new Set());
+                setMultiSelectedShapeIds(new Set());
+                return;
+              }
+
+              // Rubber-band: select every checkbox / radio option whose
+              // screen rect overlaps the drawn rectangle.
+              const selLeft   = Math.min(x0, x1);
+              const selRight  = Math.max(x0, x1);
+              const selTop    = Math.min(y0, y1);
+              const selBottom = Math.max(y0, y1);
+
+              const hits = new Set<string>();
+
+              checkboxes.filter((c) => c.page === currentPage).forEach((c) => {
+                const sx = c.x * scale;
+                const sy = (pdfHeight - c.y - c.height) * scale;
+                const sw = c.width * scale;
+                const sh = c.height * scale;
+                if (sx + sw >= selLeft && sx <= selRight && sy + sh >= selTop && sy <= selBottom) {
+                  hits.add(`cb:${c.id}`);
+                }
+              });
+
+              radioGroups.forEach((g) => {
+                g.options.filter((o) => o.page === currentPage).forEach((o) => {
+                  const sx = o.x * scale;
+                  const sy = (pdfHeight - o.y - o.height) * scale;
+                  const sw = o.width * scale;
+                  const sh = o.height * scale;
+                  if (sx + sw >= selLeft && sx <= selRight && sy + sh >= selTop && sy <= selBottom) {
+                    hits.add(`ro:${g.id}/${o.id}`);
+                  }
+                });
+              });
+
+              setMultiSelectedShapeIds(hits);
+
+              // If only one shape was caught, also set it as the primary
+              // selection so arrow-key nudge works immediately.
+              if (hits.size === 1) {
+                const [key] = hits;
+                const [kind, rest] = key.split(":");
+                if (kind === "cb") setSelectedCheckboxId(rest);
+                else if (kind === "ro") {
+                  const [gId, oId] = rest.split("/");
+                  setSelectedRadioOption({ groupId: gId, optionId: oId });
+                }
+              }
+            }
+
+            window.addEventListener("mousemove", onMove);
+            window.addEventListener("mouseup", onUp);
+          }}
         >
           <PdfPageBackground
             pdfUrl={pdfUrl}
@@ -1877,6 +2813,20 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
               </div>
             </div>
           )}
+
+          {/* Rubber-band selection rectangle */}
+          {dragSel && (() => {
+            const left   = Math.min(dragSel.x0, dragSel.x1);
+            const top    = Math.min(dragSel.y0, dragSel.y1);
+            const width  = Math.abs(dragSel.x1 - dragSel.x0);
+            const height = Math.abs(dragSel.y1 - dragSel.y0);
+            return (
+              <div
+                className="absolute pointer-events-none z-20 border-2 border-blue-500 bg-blue-400/10 rounded-sm"
+                style={{ left, top, width, height }}
+              />
+            );
+          })()}
 
           {/* Drawing overlays (borders/rectangles) */}
           {drawings.filter((d) => d.page === currentPage).map((d) => {
@@ -1941,6 +2891,184 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
               </div>
             );
           })}
+
+          {/* Checkbox overlays (interactive AcroForm fields) */}
+          {checkboxes.filter((c) => c.page === currentPage).map((c) => {
+            const screenX = c.x * scale;
+            const screenY = (pdfHeight - c.y - c.height) * scale;
+            const cW = c.width * scale;
+            const cH = c.height * scale;
+            const isSel = c.id === selectedCheckboxId;
+            const isDrag = c.id === draggingCheckboxId;
+            const isResize = c.id === resizingCheckboxId;
+            const isMultiSel = multiSelectedShapeIds.has(`cb:${c.id}`);
+            // Editor visual: borderless boxes show a faint dashed outline
+            // so the admin can still find them on the canvas — the
+            // generated PDF stays truly borderless.
+            const editorBorder = c.borderless
+              ? `${Math.max(1, scale)}px dashed rgba(5,150,105,0.55)`
+              : `${Math.max(1, scale)}px solid #059669`;
+            return (
+              <div
+                key={c.id}
+                className={`absolute z-9 select-none ${
+                  isMultiSel
+                    ? "ring-2 ring-emerald-600"
+                    : isSel || isDrag
+                    ? "ring-2 ring-emerald-500"
+                    : "hover:ring-1 hover:ring-emerald-400"
+                }`}
+                style={{
+                  left: screenX,
+                  top: screenY,
+                  width: cW,
+                  height: cH,
+                  border: editorBorder,
+                  borderRadius: 2,
+                  backgroundColor: c.defaultChecked ? "rgba(5,150,105,0.18)" : "rgba(5,150,105,0.04)",
+                  cursor: isDrag ? "grabbing" : "grab",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: Math.max(8, Math.min(cW, cH) * 0.85),
+                  color: "#059669",
+                  fontWeight: 700,
+                  lineHeight: 1,
+                }}
+                onMouseDown={(e) => handleCheckboxMouseDown(c.id, e)}
+                onDoubleClick={(e) => { e.stopPropagation(); setEditingCheckboxId(c.id); }}
+                onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ kind: "checkbox", id: c.id, screenX: e.clientX, screenY: e.clientY }); }}
+                title={c.label || (c.borderless ? "Fillable checkbox (no border in PDF)" : "Fillable checkbox (client-tickable in PDF)")}
+              >
+                {c.defaultChecked ? "✓" : ""}
+                {(isSel || isDrag || isResize) && (
+                  <>
+                    {(["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const).map((edge) => {
+                      const isVert = edge === "n" || edge === "s";
+                      const isHoriz = edge === "e" || edge === "w";
+                      const cursor = isVert ? "ns-resize" : isHoriz ? "ew-resize" : (edge === "ne" || edge === "sw") ? "nesw-resize" : "nwse-resize";
+                      const pos: React.CSSProperties = {};
+                      if (edge.includes("n")) pos.top = -4;
+                      if (edge.includes("s")) pos.bottom = -4;
+                      if (edge.includes("e")) pos.right = -4;
+                      if (edge.includes("w")) pos.left = -4;
+                      if (isVert) { pos.left = "50%"; pos.transform = "translateX(-50%)"; }
+                      if (isHoriz) { pos.top = "50%"; pos.transform = "translateY(-50%)"; }
+                      return (
+                        <div
+                          key={edge}
+                          className="absolute w-2 h-2 bg-emerald-500 border border-white rounded-sm z-10"
+                          style={{ ...pos, cursor }}
+                          onMouseDown={(ev) => handleCheckboxResize(c.id, edge, ev)}
+                        />
+                      );
+                    })}
+                    <div
+                      className="absolute left-0 px-1 rounded-b text-[9px] leading-none py-0.5 whitespace-nowrap text-white pointer-events-none"
+                      style={{ top: "100%", backgroundColor: "#059669" }}
+                    >
+                      {c.label || "Checkbox"}{c.borderless ? " (borderless)" : ""}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Radio group option overlays — each option of every group on this page */}
+          {radioGroups.flatMap((g) =>
+            g.options
+              .filter((o) => o.page === currentPage)
+              .map((o) => {
+                const screenX = o.x * scale;
+                const screenY = (pdfHeight - o.y - o.height) * scale;
+                const oW = o.width * scale;
+                const oH = o.height * scale;
+                const isSel = selectedRadioOption?.groupId === g.id && selectedRadioOption?.optionId === o.id;
+                const isDrag = draggingRadioOption?.groupId === g.id && draggingRadioOption?.optionId === o.id;
+                const isResize = resizingRadioOption?.groupId === g.id && resizingRadioOption?.optionId === o.id;
+                const isMultiSel = multiSelectedShapeIds.has(`ro:${g.id}/${o.id}`);
+                const isDefault = g.defaultValue === o.value;
+                const editorBorder = g.borderless
+                  ? `${Math.max(1, scale)}px dashed rgba(124,58,237,0.55)`
+                  : `${Math.max(1, scale)}px solid #7c3aed`;
+                return (
+                  <div
+                    key={`${g.id}/${o.id}`}
+                    className={`absolute z-9 select-none ${
+                      isMultiSel
+                        ? "ring-2 ring-violet-600"
+                        : isSel || isDrag
+                        ? "ring-2 ring-violet-500"
+                        : "hover:ring-1 hover:ring-violet-400"
+                    }`}
+                    style={{
+                      left: screenX,
+                      top: screenY,
+                      width: oW,
+                      height: oH,
+                      border: editorBorder,
+                      // Render as a circle in the editor so it visually
+                      // matches a radio button (vs. a checkbox square).
+                      borderRadius: "50%",
+                      backgroundColor: isDefault ? "rgba(124,58,237,0.18)" : "rgba(124,58,237,0.04)",
+                      cursor: isDrag ? "grabbing" : "grab",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "#7c3aed",
+                      fontWeight: 700,
+                      lineHeight: 1,
+                    }}
+                    onMouseDown={(e) => handleRadioOptionMouseDown(g.id, o.id, e)}
+                    onDoubleClick={(e) => { e.stopPropagation(); setEditingRadioGroupId(g.id); }}
+                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ kind: "radioOption", groupId: g.id, optionId: o.id, screenX: e.clientX, screenY: e.clientY }); }}
+                    title={`${g.label || "Selection"} → ${o.label || o.value}${isDefault ? " (default)" : ""}${g.borderless ? " — borderless" : ""}`}
+                  >
+                    {isDefault ? (
+                      <div
+                        style={{
+                          width: "55%",
+                          height: "55%",
+                          borderRadius: "50%",
+                          backgroundColor: "#7c3aed",
+                        }}
+                      />
+                    ) : null}
+                    {(isSel || isDrag || isResize) && (
+                      <>
+                        {(["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const).map((edge) => {
+                          const isVert = edge === "n" || edge === "s";
+                          const isHoriz = edge === "e" || edge === "w";
+                          const cursor = isVert ? "ns-resize" : isHoriz ? "ew-resize" : (edge === "ne" || edge === "sw") ? "nesw-resize" : "nwse-resize";
+                          const pos: React.CSSProperties = {};
+                          if (edge.includes("n")) pos.top = -4;
+                          if (edge.includes("s")) pos.bottom = -4;
+                          if (edge.includes("e")) pos.right = -4;
+                          if (edge.includes("w")) pos.left = -4;
+                          if (isVert) { pos.left = "50%"; pos.transform = "translateX(-50%)"; }
+                          if (isHoriz) { pos.top = "50%"; pos.transform = "translateY(-50%)"; }
+                          return (
+                            <div
+                              key={edge}
+                              className="absolute w-2 h-2 bg-violet-500 border border-white rounded-sm z-10"
+                              style={{ ...pos, cursor }}
+                              onMouseDown={(ev) => handleRadioOptionResize(g.id, o.id, edge, ev)}
+                            />
+                          );
+                        })}
+                        <div
+                          className="absolute left-0 px-1 rounded-b text-[9px] leading-none py-0.5 whitespace-nowrap text-white pointer-events-none"
+                          style={{ top: "100%", backgroundColor: "#7c3aed" }}
+                        >
+                          {(g.label || "Selection")}: {o.label || o.value}{isDefault ? " ●" : ""}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              }),
+          )}
 
           {/* Image overlays */}
           {pageImages.map((img) => {
@@ -2052,14 +3180,27 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                 {fields.length} total across all pages
               </span>
             )}
-            <div className="relative">
-              <Button size="xs" variant="outline" onClick={() => setShowSectionPicker(!showSectionPicker)} className="gap-1 text-xs">
-                <FolderPlus className="h-3 w-3" /> Add Section
-              </Button>
-              {showSectionPicker && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setShowSectionPicker(false)} />
-                  <div className="absolute right-0 top-full mt-1 z-50 w-64 max-h-96 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg py-1">
+            {/*
+              Radix DropdownMenu renders into a Portal at <body>, so the
+              picker cannot affect any ancestor's layout, scrollbar
+              visibility, or ResizeObserver. Click-outside, Escape, and
+              viewport-aware positioning come for free. The previous
+              hand-rolled popover lived inside the editor tree and made
+              the page flash continuously while it was open because its
+              backdrop / absolute positioning interacted with the global
+              hover-scrollbar styles in `app/globals.css`.
+            */}
+            <DropdownMenu open={showSectionPicker} onOpenChange={setShowSectionPicker}>
+              <DropdownMenuTrigger asChild>
+                <Button size="xs" variant="outline" className="gap-1 text-xs">
+                  <FolderPlus className="h-3 w-3" /> Add Section
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                sideOffset={4}
+                className="w-64 max-h-96 overflow-y-auto p-0 py-1"
+              >
                     {packageSectionTemplates.length > 0 && (
                       <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
                         From snapshot (admin-configured)
@@ -2116,10 +3257,8 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                       <Plus className="h-3 w-3" />
                       <span>Custom Section (empty)</span>
                     </button>
-                  </div>
-                </>
-              )}
-            </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
@@ -2136,6 +3275,22 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
               <Button size="xs" variant="outline" onClick={() => alignFields("dist-v")} className="text-[10px] h-6 px-1.5" title="Distribute vertically">↕ Space V</Button>
             </div>
             <Button size="xs" variant="ghost" onClick={() => setMultiSelectedIds(new Set())} className="text-[10px] h-6 px-1.5 ml-auto text-neutral-500">Clear</Button>
+          </div>
+        )}
+
+        {multiSelectedShapeIds.size >= 2 && (
+          <div className="flex items-center gap-1 flex-wrap rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 px-2 py-1.5">
+            <span className="text-xs font-medium text-emerald-700 dark:text-emerald-300 mr-1">{multiSelectedShapeIds.size} shapes selected</span>
+            <div className="flex items-center gap-0.5">
+              <Button size="xs" variant="outline" onClick={() => alignShapes("left")} className="text-[10px] h-6 px-1.5" title="Align left edges">⫷ Left</Button>
+              <Button size="xs" variant="outline" onClick={() => alignShapes("right")} className="text-[10px] h-6 px-1.5" title="Align right edges">Right ⫸</Button>
+              <Button size="xs" variant="outline" onClick={() => alignShapes("top")} className="text-[10px] h-6 px-1.5" title="Align top edges">⏶ Top</Button>
+              <Button size="xs" variant="outline" onClick={() => alignShapes("bottom")} className="text-[10px] h-6 px-1.5" title="Align bottom edges">⏷ Bot</Button>
+              <div className="w-px h-4 bg-neutral-200 dark:bg-neutral-700 mx-0.5" />
+              <Button size="xs" variant="outline" onClick={() => alignShapes("dist-h")} className="text-[10px] h-6 px-1.5" title="Distribute horizontally">↔ Space H</Button>
+              <Button size="xs" variant="outline" onClick={() => alignShapes("dist-v")} className="text-[10px] h-6 px-1.5" title="Distribute vertically">↕ Space V</Button>
+            </div>
+            <Button size="xs" variant="ghost" onClick={() => setMultiSelectedShapeIds(new Set())} className="text-[10px] h-6 px-1.5 ml-auto text-neutral-500">Clear</Button>
           </div>
         )}
 
@@ -2397,64 +3552,28 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                 </div>
 
                 <div className="max-h-72 overflow-y-auto border rounded-md border-neutral-200 dark:border-neutral-800 divide-y divide-neutral-100 dark:divide-neutral-800">
-                  {defaultFields.map((f) => {
-                    const sel = fieldSelections[f.fieldKey];
-                    return (
-                      <div key={f.fieldKey} className="flex items-center gap-3 px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-900">
-                        <input
-                          type="checkbox"
-                          id={`sec-chk-${f.fieldKey}`}
-                          checked={sel?.checked ?? false}
-                          onChange={() => toggleFieldSel(f.fieldKey, "checked")}
-                          className="rounded border-neutral-300 dark:border-neutral-600 h-3.5 w-3.5 cursor-pointer"
-                        />
-                        <label htmlFor={`sec-chk-${f.fieldKey}`} className="flex-1 text-sm text-neutral-800 dark:text-neutral-200 cursor-pointer select-none">
-                          {f.label}
-                        </label>
-                        <label className="flex items-center gap-1 text-[10px] text-neutral-400 dark:text-neutral-500 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            checked={sel?.showLabel ?? false}
-                            onChange={() => toggleFieldSel(f.fieldKey, "showLabel")}
-                            className="rounded border-neutral-300 dark:border-neutral-600 h-3 w-3"
-                          />
-                          Label
-                        </label>
-                      </div>
-                    );
-                  })}
+                  {defaultFields.map((f) => (
+                    <SectionFieldRow
+                      key={f.fieldKey}
+                      field={f}
+                      selection={fieldSelections[f.fieldKey]}
+                      onToggle={toggleFieldSel}
+                    />
+                  ))}
 
                   {extraFields.length > 0 && (
                     <>
                       <div className="px-3 py-1.5 bg-neutral-50 dark:bg-neutral-900 text-[10px] font-medium text-neutral-400 dark:text-neutral-500 uppercase tracking-wide">
                         More fields
                       </div>
-                      {extraFields.map((f) => {
-                        const sel = fieldSelections[f.fieldKey];
-                        return (
-                          <div key={f.fieldKey} className="flex items-center gap-3 px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-900">
-                            <input
-                              type="checkbox"
-                              id={`sec-chk-${f.fieldKey}`}
-                              checked={sel?.checked ?? false}
-                              onChange={() => toggleFieldSel(f.fieldKey, "checked")}
-                              className="rounded border-neutral-300 dark:border-neutral-600 h-3.5 w-3.5 cursor-pointer"
-                            />
-                            <label htmlFor={`sec-chk-${f.fieldKey}`} className="flex-1 text-sm text-neutral-800 dark:text-neutral-200 cursor-pointer select-none">
-                              {f.label}
-                            </label>
-                            <label className="flex items-center gap-1 text-[10px] text-neutral-400 dark:text-neutral-500 cursor-pointer select-none">
-                              <input
-                                type="checkbox"
-                                checked={sel?.showLabel ?? false}
-                                onChange={() => toggleFieldSel(f.fieldKey, "showLabel")}
-                                className="rounded border-neutral-300 dark:border-neutral-600 h-3 w-3"
-                              />
-                              Label
-                            </label>
-                          </div>
-                        );
-                      })}
+                      {extraFields.map((f) => (
+                        <SectionFieldRow
+                          key={f.fieldKey}
+                          field={f}
+                          selection={fieldSelections[f.fieldKey]}
+                          onToggle={toggleFieldSel}
+                        />
+                      ))}
                     </>
                   )}
                 </div>
@@ -3151,6 +4270,591 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
             </div>
           </div>
         </SlideDrawer>
+        );
+      })()}
+
+      {/* Checkbox editing drawer — opens on double-click */}
+      {(() => {
+        const ec = editingCheckboxId ? checkboxes.find((c) => c.id === editingCheckboxId) : null;
+        if (!ec || selectedImage) return null;
+        return (
+          <SlideDrawer
+            open
+            onClose={() => setEditingCheckboxId(null)}
+            title={`Checkbox: ${ec.label || "Untitled"}`}
+            side="right"
+            widthClass="w-[300px] sm:w-[340px]"
+          >
+            <div className="overflow-y-auto p-3 space-y-3 h-full overscroll-contain">
+              <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 px-2 py-1.5 text-[11px] text-emerald-700 dark:text-emerald-300 leading-snug">
+                Renders as a real fillable form field — the recipient can click it in any PDF viewer (Adobe, Edge, Chrome, in-app preview) to tick or untick.
+              </div>
+
+              <div className="flex gap-1">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="gap-1 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950"
+                  onClick={() => {
+                    setCheckboxes((prev) => prev.filter((cc) => cc.id !== ec.id));
+                    setSelectedCheckboxId(null);
+                    setEditingCheckboxId(null);
+                  }}
+                >
+                  <Trash2 className="h-3 w-3" /> Delete Checkbox
+                </Button>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <Label className="text-xs">Label (editor only)</Label>
+                <Input
+                  value={ec.label ?? ""}
+                  onChange={(e) => updateCheckbox(ec.id, { label: e.target.value })}
+                  placeholder="e.g. I agree to the terms"
+                  className="h-7 text-xs"
+                />
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  Shown beside the box while editing. Not printed in the generated PDF.
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!ec.defaultChecked}
+                    onChange={(e) => updateCheckbox(ec.id, { defaultChecked: e.target.checked })}
+                    className="h-3.5 w-3.5 accent-emerald-600"
+                  />
+                  <span>Pre-tick by default</span>
+                </label>
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  When on, the box is ticked when the PDF is generated. The recipient can still untick it.
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!ec.borderless}
+                    onChange={(e) => updateCheckbox(ec.id, { borderless: e.target.checked })}
+                    className="h-3.5 w-3.5 accent-emerald-600"
+                  />
+                  <span>No border in PDF</span>
+                </label>
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  Hides the box outline so it sits cleanly inside a checkbox already printed on the underlying PDF. The click area still works in any viewer.
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-2">Position</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">X (pts)</Label>
+                    <Input type="number" value={ec.x} onChange={(e) => updateCheckbox(ec.id, { x: Number(e.target.value) || 0 })} className="h-7 text-xs" step={0.5} />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Y (pts)</Label>
+                    <Input type="number" value={ec.y} onChange={(e) => updateCheckbox(ec.id, { y: Number(e.target.value) || 0 })} className="h-7 text-xs" step={0.5} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-2">Size</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">Width (pts)</Label>
+                    <Input type="number" value={ec.width} onChange={(e) => updateCheckbox(ec.id, { width: Math.max(6, Number(e.target.value) || 6) })} className="h-7 text-xs" min={6} step={0.5} />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Height (pts)</Label>
+                    <Input type="number" value={ec.height} onChange={(e) => updateCheckbox(ec.id, { height: Math.max(6, Number(e.target.value) || 6) })} className="h-7 text-xs" min={6} step={0.5} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3 pb-1">
+                <Button size="sm" className="w-full gap-1.5" onClick={handleSave} disabled={saving}>
+                  <Save className="h-3.5 w-3.5" />
+                  {saving ? "Saving..." : "Save All"}
+                </Button>
+              </div>
+            </div>
+          </SlideDrawer>
+        );
+      })()}
+
+      {/* Radio group editing drawer — opens on double-click of an option */}
+      {(() => {
+        const eg = editingRadioGroupId ? radioGroups.find((g) => g.id === editingRadioGroupId) : null;
+        if (!eg) return null;
+        const otherNames = radioGroups.filter((g) => g.id !== eg.id).map((g) => g.name);
+        return (
+          <SlideDrawer
+            open
+            onClose={() => setEditingRadioGroupId(null)}
+            title={`Selection: ${eg.label || eg.name || "Untitled"}`}
+            side="right"
+            widthClass="w-[320px] sm:w-[360px]"
+          >
+            <div className="overflow-y-auto p-3 space-y-3 h-full overscroll-contain">
+              <div className="rounded-md border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/30 px-2 py-1.5 text-[11px] text-violet-700 dark:text-violet-300 leading-snug">
+                Mutually-exclusive selection. The recipient can pick exactly one option in any standard PDF viewer.
+              </div>
+
+              <div className="flex gap-1">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="gap-1 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950"
+                  onClick={async () => {
+                    const ok = await import("@/components/ui/global-dialogs").then((m) => m.confirmDialog({
+                      title: `Delete selection "${eg.label || eg.name}"?`,
+                      description: "All options inside this group will be removed.",
+                      confirmLabel: "Delete",
+                      destructive: true,
+                    }));
+                    if (!ok) return;
+                    setRadioGroups((prev) => prev.filter((g) => g.id !== eg.id));
+                    setSelectedRadioOption(null);
+                    setEditingRadioGroupId(null);
+                  }}
+                >
+                  <Trash2 className="h-3 w-3" /> Delete Selection
+                </Button>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <Label className="text-xs">Label (editor only)</Label>
+                <Input
+                  value={eg.label ?? ""}
+                  onChange={(e) => updateRadioGroup(eg.id, { label: e.target.value })}
+                  placeholder="e.g. Vehicle modified?"
+                  className="h-7 text-xs"
+                />
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  Shown beside the options while editing. Not printed in the generated PDF.
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <Label className="text-xs">Field name in PDF</Label>
+                <Input
+                  value={eg.name}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
+                    updateRadioGroup(eg.id, { name: cleaned || "selection" });
+                  }}
+                  placeholder="e.g. modified"
+                  className="h-7 text-xs font-mono"
+                />
+                {otherNames.includes(eg.name) && (
+                  <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
+                    Another group already uses this name — the generator will append a suffix to keep it unique.
+                  </p>
+                )}
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  Used as the AcroForm field name. Lower-case letters, digits and underscores only.
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!eg.borderless}
+                    onChange={(e) => updateRadioGroup(eg.id, { borderless: e.target.checked })}
+                    className="h-3.5 w-3.5 accent-violet-600"
+                  />
+                  <span>No border in PDF</span>
+                </label>
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  Hides each option's outline so it sits inside a circle already printed on the underlying PDF.
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400">Options</div>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="gap-1 text-xs"
+                    onClick={() => {
+                      const last = eg.options[eg.options.length - 1];
+                      const newOpt: PdfRadioOption = {
+                        id: crypto.randomUUID(),
+                        value: `option${eg.options.length + 1}`,
+                        label: `Option ${eg.options.length + 1}`,
+                        page: last?.page ?? currentPage,
+                        x: (last?.x ?? Math.round(pdfWidth * 0.1)) + 60,
+                        y: last?.y ?? Math.round(pdfHeight * 0.5),
+                        width: last?.width ?? 12,
+                        height: last?.height ?? 12,
+                      };
+                      updateRadioGroup(eg.id, { options: [...eg.options, newOpt] });
+                    }}
+                  >
+                    <Plus className="h-3 w-3" /> Add Option
+                  </Button>
+                </div>
+
+                <p className="text-[10px] text-violet-500 dark:text-violet-400 leading-snug">
+                  Right-click any option on the PDF canvas to align / arrange the whole group.
+                </p>
+
+                <div className="space-y-2">
+                  {eg.options.map((opt, idx) => {
+                    const isDefault = eg.defaultValue === opt.value;
+                    return (
+                      <div
+                        key={opt.id}
+                        className="rounded-md border border-neutral-200 dark:border-neutral-800 p-2 space-y-2 bg-neutral-50 dark:bg-neutral-900"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Option {idx + 1}</span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => updateRadioGroup(eg.id, { defaultValue: isDefault ? "" : opt.value })}
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                                isDefault
+                                  ? "border-violet-600 bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+                                  : "border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                              }`}
+                              title="Pre-select this option in the generated PDF"
+                            >
+                              {isDefault ? "Default ●" : "Set default"}
+                            </button>
+                            {eg.options.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateRadioGroup(eg.id, {
+                                    options: eg.options.filter((o) => o.id !== opt.id),
+                                    defaultValue: eg.defaultValue === opt.value ? "" : eg.defaultValue,
+                                  });
+                                  if (selectedRadioOption?.optionId === opt.id) setSelectedRadioOption(null);
+                                }}
+                                className="p-1 text-red-500 hover:bg-red-50 dark:hover:bg-red-950 rounded"
+                                title="Remove this option"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <Label className="text-[10px]">Label</Label>
+                            <Input
+                              value={opt.label ?? ""}
+                              onChange={(e) => updateRadioOption(eg.id, opt.id, { label: e.target.value })}
+                              placeholder="Yes"
+                              className="h-7 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-[10px]">Stored value</Label>
+                            <Input
+                              value={opt.value}
+                              onChange={(e) => {
+                                const newVal = e.target.value;
+                                const wasDefault = eg.defaultValue === opt.value;
+                                updateRadioOption(eg.id, opt.id, { value: newVal });
+                                if (wasDefault) updateRadioGroup(eg.id, { defaultValue: newVal });
+                              }}
+                              placeholder="yes"
+                              className="h-7 text-xs font-mono"
+                            />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <Label className="text-[10px]">X (pts)</Label>
+                            <Input type="number" value={opt.x} onChange={(e) => updateRadioOption(eg.id, opt.id, { x: Number(e.target.value) || 0 })} className="h-7 text-xs" step={0.5} />
+                          </div>
+                          <div>
+                            <Label className="text-[10px]">Y (pts)</Label>
+                            <Input type="number" value={opt.y} onChange={(e) => updateRadioOption(eg.id, opt.id, { y: Number(e.target.value) || 0 })} className="h-7 text-xs" step={0.5} />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <Label className="text-[10px]">Width (pts)</Label>
+                            <Input type="number" value={opt.width} onChange={(e) => updateRadioOption(eg.id, opt.id, { width: Math.max(6, Number(e.target.value) || 6) })} className="h-7 text-xs" min={6} step={0.5} />
+                          </div>
+                          <div>
+                            <Label className="text-[10px]">Height (pts)</Label>
+                            <Input type="number" value={opt.height} onChange={(e) => updateRadioOption(eg.id, opt.id, { height: Math.max(6, Number(e.target.value) || 6) })} className="h-7 text-xs" min={6} step={0.5} />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 leading-snug">
+                  Tip: click an option on the canvas to select it, then nudge it with the arrow keys (Shift+arrow = 10 pt).
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3 pb-1">
+                <Button size="sm" className="w-full gap-1.5" onClick={handleSave} disabled={saving}>
+                  <Save className="h-3.5 w-3.5" />
+                  {saving ? "Saving..." : "Save All"}
+                </Button>
+              </div>
+            </div>
+          </SlideDrawer>
+        );
+      })()}
+
+      {/* Right-click context menu for checkboxes and radio options.
+          Rendered at the cursor position using a fixed-positioned div so it
+          sits above everything else. Clicking anywhere outside dismisses it. */}
+      {ctxMenu && (() => {
+        const closeMenu = () => setCtxMenu(null);
+
+        // Arrange helpers used by radio option menu items.
+        function arrangeGroup(groupId: string, dir: "align-h" | "align-v" | "space-h" | "space-v" | "same-size") {
+          setRadioGroups((prev) =>
+            prev.map((g) => {
+              if (g.id !== groupId) return g;
+              const opts = [...g.options];
+              switch (dir) {
+                case "align-h": {
+                  const refY = Math.min(...opts.map((o) => o.y));
+                  return { ...g, options: opts.map((o) => ({ ...o, y: refY })) };
+                }
+                case "align-v": {
+                  const refX = Math.min(...opts.map((o) => o.x));
+                  return { ...g, options: opts.map((o) => ({ ...o, x: refX })) };
+                }
+                case "space-h": {
+                  const sorted = [...opts].sort((a, b) => a.x - b.x);
+                  const step = (sorted[sorted.length - 1].x - sorted[0].x) / (sorted.length - 1);
+                  const moved = sorted.map((o, i) => ({ ...o, x: Math.round((sorted[0].x + i * step) * 100) / 100 }));
+                  return { ...g, options: moved };
+                }
+                case "space-v": {
+                  const sorted = [...opts].sort((a, b) => b.y - a.y);
+                  const step = (sorted[0].y - sorted[sorted.length - 1].y) / (sorted.length - 1);
+                  const moved = sorted.map((o, i) => ({ ...o, y: Math.round((sorted[0].y - i * step) * 100) / 100 }));
+                  return { ...g, options: moved };
+                }
+                case "same-size": {
+                  const w = opts[0].width, h = opts[0].height;
+                  return { ...g, options: opts.map((o) => ({ ...o, width: w, height: h })) };
+                }
+              }
+              return g;
+            }),
+          );
+          closeMenu();
+        }
+
+        // Position the menu near the cursor, keeping it on-screen.
+        const menuStyle: React.CSSProperties = {
+          position: "fixed",
+          zIndex: 9999,
+          top: Math.min(ctxMenu.screenY, window.innerHeight - 260),
+          left: Math.min(ctxMenu.screenX, window.innerWidth - 200),
+        };
+
+        const group = ctxMenu.kind === "radioOption"
+          ? radioGroups.find((g) => g.id === ctxMenu.groupId)
+          : null;
+
+        const itemCls = "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-neutral-100 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200";
+        const sepCls = "my-1 border-t border-neutral-200 dark:border-neutral-700";
+        const headerCls = "px-3 py-1 text-[10px] uppercase tracking-wide font-semibold text-neutral-400 dark:text-neutral-500 select-none";
+
+        return (
+          <>
+            {/* Invisible overlay to capture click-outside */}
+            <div className="fixed inset-0 z-9998" onClick={closeMenu} onContextMenu={(e) => { e.preventDefault(); closeMenu(); }} />
+            <div
+              style={menuStyle}
+              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-xl overflow-hidden min-w-[180px] py-1"
+            >
+              {ctxMenu.kind === "checkbox" && (() => {
+                const cb = checkboxes.find((c) => c.id === ctxMenu.id);
+                if (!cb) return null;
+
+                // Use shift-click selection if it contains 2+ checkboxes,
+                // otherwise offer "all on page" as a fallback.
+                const selectedCbIds = [...multiSelectedShapeIds]
+                  .filter((k) => k.startsWith("cb:"))
+                  .map((k) => k.slice(3));
+                const targetIds = selectedCbIds.length >= 2
+                  ? selectedCbIds
+                  : checkboxes.filter((c) => c.page === cb.page).map((c) => c.id);
+                const targetLabel = selectedCbIds.length >= 2
+                  ? `${selectedCbIds.length} selected`
+                  : `all ${targetIds.length} on page`;
+
+                function arrangeCheckboxes(dir: "align-h" | "align-v" | "space-h" | "space-v" | "same-size") {
+                  setCheckboxes((prev) => {
+                    const sel = prev.filter((c) => targetIds.includes(c.id));
+                    if (sel.length < 2) return prev;
+                    let updated: PdfCheckbox[] = sel;
+                    switch (dir) {
+                      case "align-h": {
+                        const refY = Math.min(...sel.map((c) => c.y));
+                        updated = sel.map((c) => ({ ...c, y: refY }));
+                        break;
+                      }
+                      case "align-v": {
+                        const refX = Math.min(...sel.map((c) => c.x));
+                        updated = sel.map((c) => ({ ...c, x: refX }));
+                        break;
+                      }
+                      case "space-h": {
+                        const sorted = [...sel].sort((a, b) => a.x - b.x);
+                        const step = (sorted[sorted.length - 1].x - sorted[0].x) / (sorted.length - 1);
+                        updated = sorted.map((c, i) => ({ ...c, x: Math.round((sorted[0].x + i * step) * 100) / 100 }));
+                        break;
+                      }
+                      case "space-v": {
+                        const sorted = [...sel].sort((a, b) => b.y - a.y);
+                        const step = (sorted[0].y - sorted[sorted.length - 1].y) / (sorted.length - 1);
+                        updated = sorted.map((c, i) => ({ ...c, y: Math.round((sorted[0].y - i * step) * 100) / 100 }));
+                        break;
+                      }
+                      case "same-size": {
+                        const w = sel[0].width, h = sel[0].height;
+                        updated = sel.map((c) => ({ ...c, width: w, height: h }));
+                        break;
+                      }
+                    }
+                    const updatedMap = new Map(updated.map((c) => [c.id, c]));
+                    return prev.map((c) => updatedMap.get(c.id) ?? c);
+                  });
+                  closeMenu();
+                }
+
+                return (
+                  <>
+                    <div className={headerCls}>Checkbox</div>
+                    {targetIds.length >= 2 && (
+                      <>
+                        <div className={`${headerCls} pt-2`}>Align {targetLabel}</div>
+                        {selectedCbIds.length < 2 && (
+                          <div className="px-3 py-1 text-[10px] text-amber-600 dark:text-amber-400 leading-snug">
+                            Shift-click checkboxes first to align only specific ones
+                          </div>
+                        )}
+                        <button className={itemCls} onClick={() => arrangeCheckboxes("align-h")}>
+                          Line up in a row (same Y)
+                        </button>
+                        <button className={itemCls} onClick={() => arrangeCheckboxes("align-v")}>
+                          Stack in a column (same X)
+                        </button>
+                        <button className={itemCls} onClick={() => arrangeCheckboxes("space-h")}>
+                          Space evenly left → right
+                        </button>
+                        <button className={itemCls} onClick={() => arrangeCheckboxes("space-v")}>
+                          Space evenly top → bottom
+                        </button>
+                        <button className={itemCls} onClick={() => arrangeCheckboxes("same-size")}>
+                          Make all same size
+                        </button>
+                        <div className={sepCls} />
+                      </>
+                    )}
+                    <button className={itemCls} onClick={() => { updateCheckbox(cb.id, { borderless: !cb.borderless }); closeMenu(); }}>
+                      {cb.borderless ? "✓ " : ""}No border in PDF
+                    </button>
+                    <button className={itemCls} onClick={() => { updateCheckbox(cb.id, { defaultChecked: !cb.defaultChecked }); closeMenu(); }}>
+                      {cb.defaultChecked ? "✓ " : ""}Pre-ticked by default
+                    </button>
+                    <button className={itemCls} onClick={() => { setEditingCheckboxId(cb.id); closeMenu(); }}>
+                      Edit properties…
+                    </button>
+                    <div className={sepCls} />
+                    <button className={`${itemCls} text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950`}
+                      onClick={() => { setCheckboxes((prev) => prev.filter((c) => c.id !== cb.id)); setSelectedCheckboxId(null); closeMenu(); }}>
+                      Delete checkbox
+                    </button>
+                  </>
+                );
+              })()}
+
+              {ctxMenu.kind === "radioOption" && group && (() => {
+                const opt = group.options.find((o) => o.id === ctxMenu.optionId);
+                const isDefault = group.defaultValue === opt?.value;
+                return (
+                  <>
+                    <div className={headerCls}>{group.label || "Selection"}</div>
+                    {group.options.length >= 2 && (
+                      <>
+                        <div className={`${headerCls} pt-2`}>Arrange all options</div>
+                        <button className={itemCls} onClick={() => arrangeGroup(group.id, "align-h")}>
+                          Line up in a row (same Y)
+                        </button>
+                        <button className={itemCls} onClick={() => arrangeGroup(group.id, "align-v")}>
+                          Stack in a column (same X)
+                        </button>
+                        <button className={itemCls} onClick={() => arrangeGroup(group.id, "space-h")}>
+                          Space evenly left → right
+                        </button>
+                        <button className={itemCls} onClick={() => arrangeGroup(group.id, "space-v")}>
+                          Space evenly top → bottom
+                        </button>
+                        <button className={itemCls} onClick={() => arrangeGroup(group.id, "same-size")}>
+                          Make all same size
+                        </button>
+                        <div className={sepCls} />
+                      </>
+                    )}
+                    <button className={itemCls} onClick={() => { updateRadioGroup(group.id, { borderless: !group.borderless }); closeMenu(); }}>
+                      {group.borderless ? "✓ " : ""}No border in PDF
+                    </button>
+                    {opt && (
+                      <button className={itemCls} onClick={() => { updateRadioGroup(group.id, { defaultValue: isDefault ? "" : opt.value }); closeMenu(); }}>
+                        {isDefault ? "✓ " : ""}Pre-select "{opt.label || opt.value}"
+                      </button>
+                    )}
+                    <button className={itemCls} onClick={() => { setEditingRadioGroupId(group.id); closeMenu(); }}>
+                      Edit selection…
+                    </button>
+                    <div className={sepCls} />
+                    {opt && group.options.length > 1 && (
+                      <button className={`${itemCls} text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950`}
+                        onClick={() => {
+                          updateRadioGroup(group.id, {
+                            options: group.options.filter((o) => o.id !== opt.id),
+                            defaultValue: group.defaultValue === opt.value ? "" : group.defaultValue,
+                          });
+                          if (selectedRadioOption?.optionId === opt.id) setSelectedRadioOption(null);
+                          closeMenu();
+                        }}>
+                        Delete this option
+                      </button>
+                    )}
+                    <button className={`${itemCls} text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950`}
+                      onClick={async () => {
+                        closeMenu();
+                        const ok = await import("@/components/ui/global-dialogs").then((m) => m.confirmDialog({
+                          title: `Delete "${group.label || group.name}" selection?`,
+                          description: "All options inside this group will be removed.",
+                          confirmLabel: "Delete",
+                          destructive: true,
+                        }));
+                        if (!ok) return;
+                        setRadioGroups((prev) => prev.filter((g) => g.id !== group.id));
+                        setSelectedRadioOption(null);
+                      }}>
+                      Delete whole selection
+                    </button>
+                  </>
+                );
+              })()}
+            </div>
+          </>
         );
       })()}
 

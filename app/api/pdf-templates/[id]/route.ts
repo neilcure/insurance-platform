@@ -92,6 +92,12 @@ export async function PATCH(
   if (Array.isArray(body.drawings)) {
     newMeta.drawings = body.drawings;
   }
+  if (Array.isArray(body.checkboxes)) {
+    newMeta.checkboxes = body.checkboxes;
+  }
+  if (Array.isArray(body.radioGroups)) {
+    newMeta.radioGroups = body.radioGroups;
+  }
   if (Array.isArray(body.pages)) {
     newMeta.pages = body.pages;
   }

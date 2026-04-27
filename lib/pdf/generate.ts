@@ -1,5 +1,8 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import type { PdfFieldMapping, PdfPageInfo, PdfImageMapping, PdfDrawing } from "@/lib/types/pdf-template";
+import type {
+  PdfFieldMapping, PdfPageInfo, PdfImageMapping, PdfDrawing,
+  PdfCheckbox, PdfRadioGroup,
+} from "@/lib/types/pdf-template";
 import { resolveFieldValue, type MergeContext } from "./resolve-data";
 
 function hexToRgb(hex: string) {
@@ -17,20 +20,26 @@ function drawVectorGlyph(
   y: number,
   size: number,
   color: ReturnType<typeof rgb>,
+  opacity: number = 1,
 ) {
-  const strokeWidth = Math.max(0.8, size * 0.12);
+  // Stroke width = ~28% of glyph size with a 2.2pt floor. Anything
+  // thinner reads as a hairline and the color washes out at the
+  // typical 7-12pt checkbox sizes used in insurance forms.
+  const strokeWidth = Math.max(2.2, size * 0.28);
   if (glyph === "✓" || glyph === "✔") {
     page.drawLine({
       start: { x: x + size * 0.12, y: y + size * 0.38 },
       end: { x: x + size * 0.38, y: y + size * 0.12 },
       thickness: strokeWidth,
       color,
+      opacity,
     });
     page.drawLine({
       start: { x: x + size * 0.38, y: y + size * 0.12 },
       end: { x: x + size * 0.88, y: y + size * 0.82 },
       thickness: strokeWidth,
       color,
+      opacity,
     });
     return true;
   }
@@ -41,12 +50,14 @@ function drawVectorGlyph(
       end: { x: x + size * 0.84, y: y + size * 0.84 },
       thickness: strokeWidth,
       color,
+      opacity,
     });
     page.drawLine({
       start: { x: x + size * 0.84, y: y + size * 0.16 },
       end: { x: x + size * 0.16, y: y + size * 0.84 },
       thickness: strokeWidth,
       color,
+      opacity,
     });
     return true;
   }
@@ -60,12 +71,38 @@ function drawVectorGlyph(
       borderColor: color,
       borderWidth: strokeWidth,
       color: glyph === "●" ? color : undefined,
+      opacity: glyph === "●" ? opacity : undefined,
+      borderOpacity: opacity,
     });
     return true;
   }
 
   return false;
 }
+
+/**
+ * Opacity for the SELECTED mark (✓ tick or ● dot). This is the
+ * actual answer the user picked, so it should read clearly. 0.95
+ * is essentially solid with just a hint of softness.
+ */
+const MARK_OPACITY = 0.95;
+
+/**
+ * Opacity for the NON-SELECTED markup — the box outline drawn
+ * around every configured checkbox / radio option to show "this
+ * is a fillable spot" even when nothing is ticked. The user
+ * called this the "markup of the non-selected status" and wants
+ * it soft (50% transparent) so it doesn't compete with the
+ * printed form.
+ */
+const OUTLINE_OPACITY = 0.5;
+
+/**
+ * Ink color for ✓ checkmarks and ● radio dots. A deep blue reads
+ * unmistakably as "the user filled this in" — distinct from the
+ * black printed form text and far more visible than gray.
+ */
+const MARKUP_COLOR = rgb(0.05, 0.2, 0.7);
 
 export async function generateFilledPdf(
   templateBytes: Buffer | Uint8Array,
@@ -75,6 +112,22 @@ export async function generateFilledPdf(
     pages?: PdfPageInfo[];
     images?: PdfImageMapping[];
     drawings?: PdfDrawing[];
+    checkboxes?: PdfCheckbox[];
+    radioGroups?: PdfRadioGroup[];
+    /**
+     * Per-checkbox runtime override keyed by `PdfCheckbox.id`.
+     * When provided, takes precedence over `cb.defaultChecked`.
+     * Used by the preview dialog so users can tick boxes before
+     * downloading or emailing.
+     */
+    checkboxOverrides?: Record<string, boolean>;
+    /**
+     * Per-radio-group runtime override keyed by `PdfRadioGroup.id`.
+     * Value is the chosen `PdfRadioOption.value`. Takes precedence
+     * over `rg.defaultValue`. Pass an empty string to explicitly
+     * unset the group.
+     */
+    radioOverrides?: Record<string, string>;
     loadImage?: (storedName: string) => Promise<Buffer>;
   },
 ): Promise<Uint8Array> {
@@ -185,6 +238,92 @@ export async function generateFilledPdf(
         thickness: Math.max(fontSize * 0.06, 0.5),
         color,
       });
+    }
+  }
+
+  // Checkbox / radio rendering — split into two visual layers:
+  //
+  //  1. The OUTLINE (non-selected markup) — a soft, semi-transparent
+  //     gray rectangle that just says "a fillable box lives here".
+  //     Skipped when the admin marked the field `borderless` (because
+  //     the underlying printed PDF already shows the box).
+  //
+  //  2. The MARK (✓ / ●) — drawn ONLY when the option is selected.
+  //     Bold blue at near-full opacity so the user's answer reads
+  //     instantly.
+  //
+  // We don't create AcroForm widgets — the side-panel is the source
+  // of truth and the recipient receives a finalized, printed-style
+  // PDF rather than an editable form.
+  //
+  // Selected boxes get NO outline, NO tint, NO border — just the
+  // bold ✓ or ● mark itself. The user's chosen answer is the only
+  // thing in the printed form, exactly like a real signed paper
+  // form.
+
+  if (opts?.checkboxes?.length) {
+    for (const cb of opts.checkboxes) {
+      if (cb.page < 0 || cb.page >= pages.length) continue;
+      const page = pages[cb.page];
+
+      const cbOverride = opts.checkboxOverrides?.[cb.id];
+      const isChecked = typeof cbOverride === "boolean" ? cbOverride : !!cb.defaultChecked;
+
+      if (isChecked) {
+        const size = Math.min(cb.width, cb.height);
+        const cx = cb.x + (cb.width - size) / 2;
+        const cy = cb.y + (cb.height - size) / 2;
+        drawVectorGlyph(page, "✓", cx, cy, size, MARKUP_COLOR, MARK_OPACITY);
+      } else {
+        // Non-selected = the "markup". A soft blue tint FILL (no
+        // border at all) showing "this spot is fillable". The user
+        // does not want any rectangle outline — the colored fill
+        // alone is the visual cue.
+        page.drawRectangle({
+          x: cb.x,
+          y: cb.y,
+          width: cb.width,
+          height: cb.height,
+          color: MARKUP_COLOR,
+          opacity: OUTLINE_OPACITY,
+          borderWidth: 0,
+        });
+      }
+    }
+  }
+
+  if (opts?.radioGroups?.length) {
+    for (const rg of opts.radioGroups) {
+      if (!rg.options?.length) continue;
+
+      const rgOverride = opts.radioOverrides?.[rg.id];
+      const chosen = rgOverride !== undefined ? rgOverride : rg.defaultValue;
+
+      for (const opt of rg.options) {
+        if (opt.page < 0 || opt.page >= pages.length) continue;
+        const page = pages[opt.page];
+
+        const isChosen = !!chosen && opt.value === chosen;
+
+        if (isChosen) {
+          const size = Math.min(opt.width, opt.height);
+          const cx = opt.x + (opt.width - size) / 2;
+          const cy = opt.y + (opt.height - size) / 2;
+          drawVectorGlyph(page, "●", cx, cy, size, MARKUP_COLOR, MARK_OPACITY);
+        } else {
+          // Same rationale as checkboxes — soft blue tint fill, no
+          // border, so the user can see where they can choose.
+          page.drawRectangle({
+            x: opt.x,
+            y: opt.y,
+            width: opt.width,
+            height: opt.height,
+            color: MARKUP_COLOR,
+            opacity: OUTLINE_OPACITY,
+            borderWidth: 0,
+          });
+        }
+      }
     }
   }
 
