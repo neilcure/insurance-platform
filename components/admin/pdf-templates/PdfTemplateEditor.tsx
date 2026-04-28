@@ -29,7 +29,7 @@ import type {
 } from "@/lib/types/pdf-template";
 import {
   DATA_SOURCE_OPTIONS, FIELD_KEY_HINTS, FORMAT_OPTIONS,
-  SECTION_COLORS,
+  SECTION_COLORS, DEFAULT_REPEATABLE_SLOTS,
 } from "@/lib/types/pdf-template";
 import { buildByLabelKey, slugifyLabel } from "@/lib/field-resolver";
 
@@ -61,6 +61,11 @@ type SectionField = {
   synthetic?: boolean;
 };
 type OptionRow = { label?: unknown; value?: unknown; valueType?: unknown; meta?: unknown };
+type RepeatableChildSpec = {
+  label: string;
+  value: string;
+  inputType?: string;
+};
 type DynamicAdminField = {
   label: string;
   value: string;
@@ -75,6 +80,19 @@ type DynamicAdminField = {
    * from the "More fields" list when the group has no other variants.
    */
   isChildOption?: boolean;
+  /**
+   * Set when this admin field is `inputType: "repeatable"` (e.g. "Drivers",
+   * "Beneficiaries"). Carries the child sub-field schema so the editor can
+   * expand the parent into N indexed slots ("Driver 1 — First Name", etc.)
+   * with deterministic snapshot keys (`drivers__r0__firstName`).
+   */
+  repeatableChildren?: RepeatableChildSpec[];
+  /**
+   * Singular item label admins set on the repeatable parent (e.g. "Driver")
+   * — used to build the per-slot picker label "Driver 1 — First Name".
+   * Falls back to the parent's `label` when missing.
+   */
+  repeatableItemLabel?: string;
 };
 type OrganisationRow = { id?: unknown; name?: unknown };
 
@@ -305,12 +323,26 @@ const BUILT_IN_SECTION_TEMPLATES: SectionTemplate[] = [
 function buildPackageSectionTemplate(
   pkg: { label: string; value: string },
   adminFields: DynamicAdminField[],
+  slotCount: number = DEFAULT_REPEATABLE_SLOTS,
 ): SectionTemplate {
   const synthetic = SYNTHETIC_FIELDS_BY_SOURCE[pkg.value] ?? [];
   const syntheticKeys = new Set(synthetic.map((f) => f.fieldKey.toLowerCase()));
   const handledKeys = HANDLED_FIELD_KEYS_BY_SOURCE[pkg.value] ?? new Set<string>();
 
-  const filteredAdminFields = adminFields.filter(
+  // Pull repeatable parents out of the regular pipeline. They expand
+  // into one entry per (slot × child) so admins can place "Driver 2 —
+  // First Name" individually on the PDF.
+  const repeatableParents: DynamicAdminField[] = [];
+  const nonRepeatable: DynamicAdminField[] = [];
+  for (const f of adminFields) {
+    if (f.repeatableChildren && f.repeatableChildren.length > 0) {
+      repeatableParents.push(f);
+    } else {
+      nonRepeatable.push(f);
+    }
+  }
+
+  const filteredAdminFields = nonRepeatable.filter(
     (f) => f.value && !syntheticKeys.has(f.value.toLowerCase()),
   );
 
@@ -412,7 +444,43 @@ function buildPackageSectionTemplate(
     }
   }
 
-  const fields: SectionField[] = [...synthetic, ...adminSectionFields];
+  // Repeatable parents → one entry per (slot × child sub-field).
+  // Snapshot key contract: `${parentKey}__r${idx}__${childKey}` (resolved
+  // by `resolvePackage` in `lib/field-resolver.ts`, returns "" when the
+  // row is missing so unfilled slots render blank on the PDF).
+  const repeatableSectionFields: SectionField[] = [];
+  const safeSlotCount = Math.max(1, Math.min(20, Math.floor(slotCount) || DEFAULT_REPEATABLE_SLOTS));
+  for (const parent of repeatableParents) {
+    const parentValue = parent.value;
+    const itemLabel = parent.repeatableItemLabel?.trim() || parent.label?.trim() || parentValue;
+    const children = parent.repeatableChildren ?? [];
+    for (let i = 0; i < safeSlotCount; i++) {
+      for (const child of children) {
+        const childValue = child.value.trim();
+        if (!childValue) continue;
+        const childLabel = child.label?.trim() || childValue;
+        const fmt = formatForValueType(child.inputType);
+        repeatableSectionFields.push({
+          label: `${itemLabel} ${i + 1} — ${childLabel}`,
+          fieldKey: `${parentValue}__r${i}__${childValue}`,
+          format: fmt,
+          trueValue: fmt === "boolean" ? "✓" : undefined,
+          falseValue: fmt === "boolean" ? "" : undefined,
+          categories: parent.categories,
+          // Tuck repeatable-row entries under "More fields" by default
+          // — most templates only need one or two of the slots, so we
+          // don't want to pre-tick all 4 × N entries on every section.
+          defaultOn: false,
+        });
+      }
+    }
+  }
+
+  const fields: SectionField[] = [
+    ...synthetic,
+    ...adminSectionFields,
+    ...repeatableSectionFields,
+  ];
 
   const source: PdfFieldMapping["source"] =
     pkg.value === "insured" ? "insured"
@@ -718,7 +786,18 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const [settingsInsurerIds, setSettingsInsurerIds] = React.useState<number[]>(meta.insurerPolicyIds ?? []);
   const [settingsLineKey, setSettingsLineKey] = React.useState(meta.accountingLineKey ?? "");
   const [settingsDesc, setSettingsDesc] = React.useState(meta.description ?? "");
+  const [settingsRepeatableSlots, setSettingsRepeatableSlots] = React.useState<string>(
+    meta.repeatableSlots ? String(meta.repeatableSlots) : String(DEFAULT_REPEATABLE_SLOTS),
+  );
   const [settingsSaving, setSettingsSaving] = React.useState(false);
+
+  // Parsed + clamped slot count used by the picker. Empty/invalid input
+  // falls back to the default so the editor never shows zero slots.
+  const effectiveRepeatableSlots = React.useMemo(() => {
+    const parsed = Number(settingsRepeatableSlots);
+    if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_REPEATABLE_SLOTS;
+    return Math.max(1, Math.min(20, Math.floor(parsed)));
+  }, [settingsRepeatableSlots]);
 
   const [availableFlows, setAvailableFlows] = React.useState<{ label: string; value: string }[]>([]);
   const [availableStatuses, setAvailableStatuses] = React.useState<{ label: string; value: string }[]>([]);
@@ -755,18 +834,136 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                 const meta = (f.meta ?? null) as {
                   categories?: unknown;
                   options?: unknown;
+                  repeatable?: unknown;
+                  booleanChildren?: unknown;
                 } | null;
                 const rawCats = Array.isArray(meta?.categories) ? meta!.categories : [];
                 const categories = rawCats
                   .map((c) => (typeof c === "string" ? c : ""))
                   .filter((c): c is string => c.length > 0);
                 const parentValue = String(f.value ?? "");
+                const parentLabel = String(f.label ?? "");
+                const parentValueType =
+                  typeof f.valueType === "string" ? f.valueType : undefined;
+
+                // Read a repeatable config block (top-level or nested)
+                // into the editor's child schema. Returns undefined when
+                // no usable child fields are present.
+                const readRepeatable = (repRaw: unknown): {
+                  itemLabel?: string;
+                  children: RepeatableChildSpec[];
+                } | undefined => {
+                  if (!repRaw) return undefined;
+                  const repObj =
+                    Array.isArray(repRaw)
+                      ? (repRaw[0] as Record<string, unknown> | undefined)
+                      : (repRaw as Record<string, unknown> | undefined);
+                  if (!repObj) return undefined;
+                  const itemLabelRaw = repObj.itemLabel;
+                  const itemLabel =
+                    typeof itemLabelRaw === "string" && itemLabelRaw.trim()
+                      ? itemLabelRaw.trim()
+                      : undefined;
+                  const childArr = Array.isArray(repObj.fields) ? repObj.fields : [];
+                  const children: RepeatableChildSpec[] = [];
+                  for (const cRaw of childArr as unknown[]) {
+                    const c = (cRaw ?? {}) as Record<string, unknown>;
+                    const cv = String(c.value ?? "").trim();
+                    if (!cv) continue;
+                    const cl = String(c.label ?? "").trim() || cv;
+                    const ct = typeof c.inputType === "string" ? c.inputType : undefined;
+                    children.push({ label: cl, value: cv, inputType: ct });
+                  }
+                  if (children.length === 0) return undefined;
+                  return { itemLabel, children };
+                };
+
+                // Top-level repeatable on the admin field itself.
+                let repeatableChildren: RepeatableChildSpec[] | undefined;
+                let repeatableItemLabel: string | undefined;
+                const isRepeatable =
+                  parentValueType?.toLowerCase() === "repeatable"
+                  || (meta?.repeatable !== undefined && meta?.repeatable !== null);
+                if (isRepeatable) {
+                  const rep = readRepeatable(meta?.repeatable);
+                  if (rep) {
+                    repeatableChildren = rep.children;
+                    repeatableItemLabel = rep.itemLabel;
+                  }
+                }
+
                 const out: DynamicAdminField[] = [{
-                  label: String(f.label ?? ""),
+                  label: parentLabel,
                   value: parentValue,
-                  valueType: typeof f.valueType === "string" ? f.valueType : undefined,
+                  valueType: parentValueType,
                   categories,
+                  repeatableChildren,
+                  repeatableItemLabel,
                 }];
+
+                // Nested repeatables inside `meta.booleanChildren.{true,false}[*]`.
+                // The wizard names each branch child `${pkg}__${parent}__{branch}__c{idx}`.
+                // When that child's `inputType` is repeatable, the snapshot
+                // stores `vals["${parent}__{branch}__c{idx}"]` as an array
+                // of row objects. We expose each one as a synthetic admin
+                // field so the picker can expand it into indexed slot
+                // entries ("Driver 1 — Last Name" → fieldKey
+                // `${parent}__{branch}__c{idx}__r0__lastName`).
+                const bc = (meta?.booleanChildren ?? null) as {
+                  true?: unknown;
+                  false?: unknown;
+                } | null;
+                const branches: Array<{ key: "true" | "false"; arr: unknown[] }> = [];
+                if (bc) {
+                  if (Array.isArray(bc.true)) branches.push({ key: "true", arr: bc.true });
+                  if (Array.isArray(bc.false)) branches.push({ key: "false", arr: bc.false });
+                }
+                for (const branch of branches) {
+                  for (let cIdx = 0; cIdx < branch.arr.length; cIdx++) {
+                    const childRaw = branch.arr[cIdx] as Record<string, unknown> | undefined;
+                    if (!childRaw) continue;
+                    const cInputType =
+                      typeof childRaw.inputType === "string"
+                        ? String(childRaw.inputType).toLowerCase()
+                        : "";
+                    const isChildRepeatable =
+                      cInputType === "repeatable"
+                      || cInputType.includes("repeat")
+                      || childRaw.repeatable !== undefined;
+                    if (!isChildRepeatable) continue;
+                    const rep = readRepeatable(childRaw.repeatable);
+                    if (!rep) continue;
+                    // Snapshot key = wizard form-name minus the `${pkg}__`
+                    // prefix (which is stripped by the policy submit
+                    // aggregator). Keep this in sync with the wizard:
+                    // `${nameBase}__{branch}__c{cIdx}` where
+                    // `nameBase = ${pkg}__${parentValue}`.
+                    const nestedValue = `${parentValue}__${branch.key}__c${cIdx}`;
+                    const childLabel = String(childRaw.label ?? "").trim();
+                    // Prefix the picker label with the parent field's
+                    // label so admins can tell which boolean branch this
+                    // nested repeatable lives under (e.g. "Add More
+                    // Drivers? — Driver 1 — Last Name").
+                    const nestedDisplayLabel =
+                      childLabel || rep.itemLabel || `Item ${cIdx + 1}`;
+                    // Use the repeatable's own `itemLabel` (e.g. "Driver")
+                    // as the per-slot picker prefix. We deliberately do
+                    // NOT include the parent boolean's question text
+                    // here — admins find the long form unreadable in
+                    // the picker — so collisions are only possible if
+                    // two repeatables in the same package share the
+                    // exact same itemLabel, which admins can rename.
+                    const slotItemLabel = rep.itemLabel || nestedDisplayLabel;
+                    out.push({
+                      label: nestedDisplayLabel,
+                      value: nestedValue,
+                      valueType: "repeatable",
+                      categories,
+                      repeatableChildren: rep.children,
+                      repeatableItemLabel: slotItemLabel,
+                    });
+                  }
+                }
 
                 // Cascading children: collect each unique child label
                 // (e.g. "Model" appearing under every Make option) as a
@@ -813,14 +1010,19 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           }),
         );
         if (cancelled) return;
-        const templates = packages.map((p, i) => buildPackageSectionTemplate(p, fieldsByPkg[i]));
+        const templates = packages.map((p, i) =>
+          buildPackageSectionTemplate(p, fieldsByPkg[i], effectiveRepeatableSlots),
+        );
         setPackageSectionTemplates(templates);
       } catch {
         if (!cancelled) setPackageSectionTemplates([]);
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+    // Re-runs when the admin changes "Repeatable slots" in template
+    // settings so the picker immediately reflects the new slot count.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveRepeatableSlots]);
 
   // Combined templates shown in the Add Section picker. Packages first
   // (admin-configured), then built-in entity sources.
@@ -903,6 +1105,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           insurerPolicyIds: settingsInsurerIds,
           accountingLineKey: settingsLineKey || undefined,
           description: settingsDesc,
+          repeatableSlots: effectiveRepeatableSlots,
         }),
       });
       if (!res.ok) throw new Error("Save failed");
@@ -4948,6 +5151,29 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
               onChange={(e) => setSettingsDesc(e.target.value)}
               className="mt-1 h-8 text-xs"
               placeholder="Brief description of this template"
+            />
+          </div>
+
+          {/* Repeatable slots — controls how many indexed rows
+              ("Driver 1 …", "Driver 2 …", …) appear in the field
+              picker for repeatable package fields. Empty rows render
+              blank on the generated PDF, so a 4-driver form just
+              shows whichever drivers actually have data. */}
+          <div>
+            <Label className="text-xs">Repeatable slots</Label>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5 mb-1.5">
+              Number of indexed rows (Driver 1 / 2 / 3 …) the picker
+              exposes for repeatable fields. Default: {DEFAULT_REPEATABLE_SLOTS}.
+              Slots without data render blank on the PDF.
+            </p>
+            <Input
+              type="number"
+              min={1}
+              max={20}
+              value={settingsRepeatableSlots}
+              onChange={(e) => setSettingsRepeatableSlots(e.target.value)}
+              className="mt-1 h-8 text-xs w-24"
+              placeholder={String(DEFAULT_REPEATABLE_SLOTS)}
             />
           </div>
 

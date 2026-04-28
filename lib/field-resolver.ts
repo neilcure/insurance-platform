@@ -63,6 +63,13 @@ export type PackageFieldVariant = {
   label: string;
   /** `meta.categories` from `form_options` (empty = applies to all). */
   categories?: string[];
+  /**
+   * Select / multi-select option list (`meta.options[]`) when present.
+   * Used to translate stored option values (e.g. `"hkonly"`) into their
+   * human-readable labels (e.g. `"Hong Kong Only"`) at PDF render time.
+   * Match is case-insensitive on the option `value`.
+   */
+  options?: { value: string; label: string }[];
 };
 
 export type StatementCtx = {
@@ -444,9 +451,71 @@ function resolveByLabelVariant(
       fuzzyGet(vals, v.key)
       ?? fuzzyGet(vals, `${packageName}__${v.key}`)
       ?? fuzzyGet(vals, `${packageName}_${v.key}`);
-    if (direct !== undefined && direct !== null && direct !== "") return direct;
+    if (direct !== undefined && direct !== null && direct !== "") {
+      // Translate select option value → human-readable label using
+      // the matched variant's option list. No-op when the variant has
+      // no `options` (free-form field).
+      return translateOptionValue(direct, v);
+    }
   }
   return "";
+}
+
+/**
+ * Translate a stored option value (e.g. `"hkonly"`) into its human-
+ * readable label (e.g. `"Hong Kong Only"`) using the variant's option
+ * list. Handles single values, comma-separated multi-select strings,
+ * and arrays. Returns the original value when no matching option is
+ * found, so non-select fields and free-form values pass through
+ * unchanged.
+ */
+function translateOptionValue(
+  raw: unknown,
+  variant: PackageFieldVariant | undefined,
+): unknown {
+  if (raw === null || raw === undefined || raw === "") return raw;
+  const opts = variant?.options;
+  if (!opts || opts.length === 0) return raw;
+
+  const lookup = (val: unknown): string => {
+    const s = String(val ?? "").trim();
+    if (!s) return s;
+    const match = opts.find(
+      (o) => String(o.value ?? "").toLowerCase() === s.toLowerCase(),
+    );
+    return match ? (match.label || s) : s;
+  };
+
+  if (Array.isArray(raw)) {
+    const labels = raw.map(lookup).filter((s) => s.length > 0);
+    return labels.join(", ");
+  }
+  if (typeof raw === "string" && raw.includes(",")) {
+    const labels = raw
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => lookup(p));
+    return labels.join(", ");
+  }
+  return lookup(raw);
+}
+
+/**
+ * Find the variant matching the requested key in the package's variant
+ * list. Tries exact key match first, then case-insensitive, then a
+ * by-label match (for synthetic `__byLabel__` requests where the
+ * caller already resolved the label slug).
+ */
+function findVariantForKey(
+  variants: PackageFieldVariant[] | undefined,
+  key: string,
+): PackageFieldVariant | undefined {
+  if (!variants || variants.length === 0) return undefined;
+  return (
+    variants.find((v) => v.key === key)
+    ?? variants.find((v) => v.key.toLowerCase() === key.toLowerCase())
+  );
 }
 
 function resolvePackage(
@@ -469,6 +538,30 @@ function resolvePackage(
   const labelSlug = parseByLabelKey(key);
   if (labelSlug !== null) {
     return resolveByLabelVariant(packageName, labelSlug, obj, vals, ctx);
+  }
+
+  // Repeatable row addressing: `${parent}__r${index}__${child}` looks
+  // up the Nth row of an array stored at `vals[parent]` (e.g. multiple
+  // drivers, beneficiaries). The wizard saves repeatable groups as
+  // arrays of objects under the parent key, and the PDF template
+  // editor exposes one indexed entry per slot. Returns "" when the
+  // row is missing so unfilled slots render blank.
+  const repMatch = key.match(/^(.+?)__r(\d+)__(.+)$/);
+  if (repMatch) {
+    const [, parentKey, idxStr, childKey] = repMatch;
+    const arr =
+      fuzzyGet(vals, parentKey)
+      ?? fuzzyGet(vals, `${packageName}__${parentKey}`)
+      ?? fuzzyGet(vals, `${packageName}_${parentKey}`);
+    if (Array.isArray(arr)) {
+      const idx = Number(idxStr);
+      const row = arr[idx];
+      if (row && typeof row === "object") {
+        const v = fuzzyGet(row as Record<string, unknown>, childKey);
+        return v ?? "";
+      }
+    }
+    return "";
   }
 
   // For multi-cover motor policies, a single snapshot key like policyinfo__coverType
@@ -500,7 +593,48 @@ function resolvePackage(
     fuzzyGet(vals, `${packageName}__${key}`) ??
     fuzzyGet(vals, `${packageName}_${key}`)
   );
-  if (direct !== undefined && direct !== null && direct !== "") return direct;
+  if (direct !== undefined && direct !== null && direct !== "") {
+    // SMART BOOLEAN ROUTING: when the resolved value is a boolean
+    // (literal or "true"/"false" string) AND the admin configured a
+    // nested branch child whose own value is set, prefer that
+    // translated value instead. Maps the admin's
+    // `meta.booleanChildren.{true,false}[idx]` config exactly: the
+    // wizard names branch children `${key}__${branch}__c${idx}`.
+    //
+    // Lets a single PDF placement of e.g. "No Claims Bonus
+    // (Discount)" render the chosen child option label ("Fleet"
+    // / "10" / "20" / "New Purchase") instead of "true" / "false".
+    //
+    // Covers the common case of one branch child at index 0;
+    // multi-child cases (c1, c2, ...) require explicit per-child
+    // placements from the picker.
+    const directIsBool =
+      direct === "true" || direct === "false"
+      || direct === true || direct === false;
+    if (directIsBool) {
+      const branch = String(direct);
+      const childKey = `${key}__${branch}__c0`;
+      const childRaw = (
+        fuzzyGet(vals, childKey)
+        ?? fuzzyGet(vals, `${packageName}__${childKey}`)
+        ?? fuzzyGet(vals, `${packageName}_${childKey}`)
+      );
+      if (childRaw !== undefined && childRaw !== null && childRaw !== "") {
+        const childVariant = findVariantForKey(
+          ctx?.packageFieldVariants?.[packageName],
+          childKey,
+        );
+        return translateOptionValue(childRaw, childVariant);
+      }
+    }
+
+    // For select / multi-select fields, translate the stored option
+    // value (e.g. "hkonly") into the human-readable label (e.g.
+    // "Hong Kong Only"). Pass-through for free-form fields whose
+    // variant has no `options` configured.
+    const variant = findVariantForKey(ctx?.packageFieldVariants?.[packageName], key);
+    return translateOptionValue(direct, variant);
+  }
 
   // Same-label sibling fallback. When the placed key matches a known
   // admin-configured variant whose categories don't match this policy

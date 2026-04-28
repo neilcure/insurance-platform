@@ -2,12 +2,18 @@ import { NextResponse } from "next/server";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/db/client";
 import { policyDocuments } from "@/db/schema/documents";
+import { formOptions } from "@/db/schema/form_options";
 import { policies } from "@/db/schema/insurance";
 import { requireUser } from "@/lib/auth/require-user";
 import { canAccessPolicy } from "@/lib/policy-access";
 import { readFile } from "@/lib/storage";
+import { readPdfTemplate } from "@/lib/storage-pdf-templates";
 import { sendEmail } from "@/lib/email";
 import { appendPolicyAudit } from "@/lib/audit";
+import { buildMergeContext } from "@/lib/pdf/build-context";
+import { generateFilledPdf } from "@/lib/pdf/generate";
+import { PDF_TEMPLATE_GROUP_KEY } from "@/lib/types/pdf-template";
+import type { PdfTemplateMeta, PdfImageMapping } from "@/lib/types/pdf-template";
 
 export const dynamic = "force-dynamic";
 
@@ -74,6 +80,12 @@ export async function POST(
     const documentIds = documentIdsRaw
       .map((v: unknown) => Number(v))
       .filter((n: number) => Number.isFinite(n) && n > 0);
+    const pdfTemplateIdsRaw = Array.isArray(body?.pdfTemplateIds) ? body.pdfTemplateIds : [];
+    const pdfTemplateIds = pdfTemplateIdsRaw
+      .map((v: unknown) => Number(v))
+      .filter((n: number) => Number.isFinite(n) && n > 0);
+    // Default true: email recipients get a tamper-proof flat copy.
+    const flattenPdfs = body?.flattenPdfs !== false;
     const email = String(body?.email ?? "").trim();
     const subject = String(body?.subject ?? "").trim();
     const message = String(body?.message ?? "").trim();
@@ -84,9 +96,9 @@ export async function POST(
         { status: 400 },
       );
     }
-    if (documentIds.length === 0) {
+    if (documentIds.length === 0 && pdfTemplateIds.length === 0) {
       return NextResponse.json(
-        { error: "Select at least one file to email" },
+        { error: "Select at least one file or document to email" },
         { status: 400 },
       );
     }
@@ -101,33 +113,6 @@ export async function POST(
     }
     const policyNumber = policyRow.policyNumber;
 
-    // Scope the document fetch to THIS policy so a hostile caller
-    // can't use the route to exfiltrate files from another policy
-    // even if they somehow guess the IDs.
-    const docs = await db
-      .select({
-        id: policyDocuments.id,
-        documentTypeKey: policyDocuments.documentTypeKey,
-        fileName: policyDocuments.fileName,
-        storedPath: policyDocuments.storedPath,
-        mimeType: policyDocuments.mimeType,
-        status: policyDocuments.status,
-      })
-      .from(policyDocuments)
-      .where(
-        and(
-          eq(policyDocuments.policyId, policyId),
-          inArray(policyDocuments.id, documentIds),
-        ),
-      );
-
-    if (docs.length === 0) {
-      return NextResponse.json(
-        { error: "No matching files were found for this policy" },
-        { status: 404 },
-      );
-    }
-
     // Read all files first so we can pre-flight the size limit and
     // fail fast WITHOUT sending a partial email (Brevo would happily
     // accept a partial set if we streamed them in).
@@ -136,24 +121,26 @@ export async function POST(
     let totalBytes = 0;
     const seenNames = new Set<string>();
 
-    for (const doc of docs) {
-      let buffer: Buffer;
-      try {
-        buffer = await readFile(doc.storedPath);
-      } catch (err) {
-        console.error(
-          `[documents/email] read failed for doc ${doc.id} (${doc.storedPath}):`,
-          err,
-        );
-        return NextResponse.json(
-          {
-            error: `Could not read file "${doc.fileName}". It may have been removed from storage.`,
-          },
-          { status: 500 },
-        );
+    // Helper: de-duplicate filenames in the SAME envelope. Mail clients
+    // happily accept duplicates but most show "file (1)", "file
+    // (2)" which looks unprofessional. Append a numeric suffix
+    // before the extension so the recipient sees clean, distinct names.
+    function deduplicateName(base: string): string {
+      let safeName = sanitizeFilename(base);
+      if (seenNames.has(safeName)) {
+        const dot = safeName.lastIndexOf(".");
+        const stem = dot > 0 ? safeName.slice(0, dot) : safeName;
+        const ext = dot > 0 ? safeName.slice(dot) : "";
+        let counter = 2;
+        while (seenNames.has(`${stem}-${counter}${ext}`)) counter++;
+        safeName = `${stem}-${counter}${ext}`;
       }
+      seenNames.add(safeName);
+      return safeName;
+    }
 
-      totalBytes += buffer.length;
+    function checkSizeLimit(newBytes: number): NextResponse | null {
+      totalBytes += newBytes;
       if (totalBytes > MAX_TOTAL_BYTES) {
         return NextResponse.json(
           {
@@ -164,28 +151,127 @@ export async function POST(
           { status: 413 },
         );
       }
+      return null;
+    }
 
-      // De-duplicate filenames in the SAME envelope. Mail clients
-      // happily accept duplicates but most show "file (1)", "file
-      // (2)" which looks unprofessional. Append a numeric suffix
-      // before the extension so the recipient sees clean,
-      // distinct names.
-      let safeName = sanitizeFilename(doc.fileName);
-      if (seenNames.has(safeName)) {
-        const dot = safeName.lastIndexOf(".");
-        const stem = dot > 0 ? safeName.slice(0, dot) : safeName;
-        const ext = dot > 0 ? safeName.slice(dot) : "";
-        let counter = 2;
-        while (seenNames.has(`${stem}-${counter}${ext}`)) counter++;
-        safeName = `${stem}-${counter}${ext}`;
+    // --- Uploaded files ---
+    if (documentIds.length > 0) {
+      // Scope the document fetch to THIS policy so a hostile caller
+      // can't use the route to exfiltrate files from another policy
+      // even if they somehow guess the IDs.
+      const docs = await db
+        .select({
+          id: policyDocuments.id,
+          documentTypeKey: policyDocuments.documentTypeKey,
+          fileName: policyDocuments.fileName,
+          storedPath: policyDocuments.storedPath,
+          mimeType: policyDocuments.mimeType,
+          status: policyDocuments.status,
+        })
+        .from(policyDocuments)
+        .where(
+          and(
+            eq(policyDocuments.policyId, policyId),
+            inArray(policyDocuments.id, documentIds),
+          ),
+        );
+
+      for (const doc of docs) {
+        let buffer: Buffer;
+        try {
+          buffer = await readFile(doc.storedPath);
+        } catch (err) {
+          console.error(
+            `[documents/email] read failed for doc ${doc.id} (${doc.storedPath}):`,
+            err,
+          );
+          return NextResponse.json(
+            { error: `Could not read file "${doc.fileName}". It may have been removed from storage.` },
+            { status: 500 },
+          );
+        }
+
+        const sizeError = checkSizeLimit(buffer.length);
+        if (sizeError) return sizeError;
+
+        loaded.push({
+          name: deduplicateName(doc.fileName),
+          buffer,
+          documentTypeKey: doc.documentTypeKey,
+        });
       }
-      seenNames.add(safeName);
+    }
 
-      loaded.push({
-        name: safeName,
-        buffer,
-        documentTypeKey: doc.documentTypeKey,
-      });
+    // --- PDF merge templates (generated on the fly) ---
+    if (pdfTemplateIds.length > 0) {
+      const tplRows = await db
+        .select()
+        .from(formOptions)
+        .where(
+          and(
+            eq(formOptions.groupKey, PDF_TEMPLATE_GROUP_KEY),
+            inArray(formOptions.id, pdfTemplateIds),
+          ),
+        );
+
+      // Build merge context once; reuse across all templates for this policy
+      const ctxResult = await buildMergeContext(policyId);
+      if (ctxResult) {
+        const { ctx: mergeCtx } = ctxResult;
+
+        for (const tplRow of tplRows) {
+          const meta = tplRow.meta as unknown as PdfTemplateMeta | null;
+          if (!meta?.filePath) continue; // skip blank templates with no PDF
+
+          const docTrackingKey = tplRow.label
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "_")
+            .replace(/^_|_$/g, "");
+          mergeCtx.currentDocTrackingKey = meta.isAgentTemplate
+            ? `${docTrackingKey}_agent`
+            : docTrackingKey;
+
+          try {
+            const templateBytes = await readPdfTemplate(meta.filePath);
+            const images: PdfImageMapping[] = meta.images ?? [];
+            const filledPdf = await generateFilledPdf(templateBytes, meta.fields, mergeCtx, {
+              pages: meta.pages,
+              images,
+              drawings: meta.drawings,
+              checkboxes: meta.checkboxes,
+              radioGroups: meta.radioGroups,
+              loadImage: (storedName: string) => readPdfTemplate(storedName),
+              flatten: flattenPdfs,
+            });
+
+            const buffer = Buffer.from(filledPdf as Uint8Array);
+            const sizeError = checkSizeLimit(buffer.length);
+            if (sizeError) return sizeError;
+
+            loaded.push({
+              name: deduplicateName(`${tplRow.label} - ${policyNumber}.pdf`),
+              buffer,
+              documentTypeKey: "_pdf_template",
+            });
+          } catch (err) {
+            console.error(
+              `[documents/email] PDF generation failed for template ${tplRow.id}:`,
+              err,
+            );
+            return NextResponse.json(
+              { error: `Failed to generate PDF for "${tplRow.label}". Please try again.` },
+              { status: 500 },
+            );
+          }
+        }
+      }
+    }
+
+    if (loaded.length === 0) {
+      return NextResponse.json(
+        { error: "No files could be prepared for this policy" },
+        { status: 404 },
+      );
     }
 
     const senderName =

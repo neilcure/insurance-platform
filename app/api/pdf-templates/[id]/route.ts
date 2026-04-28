@@ -116,6 +116,16 @@ export async function PATCH(
   if ("accountingLineKey" in body) {
     newMeta.accountingLineKey = typeof body.accountingLineKey === "string" ? body.accountingLineKey : undefined;
   }
+  if ("repeatableSlots" in body) {
+    const raw = Number(body.repeatableSlots);
+    if (Number.isFinite(raw) && raw > 0) {
+      // Cap to a sensible upper bound so a typo can't spawn thousands
+      // of synthetic field-picker entries and freeze the editor.
+      newMeta.repeatableSlots = Math.min(Math.floor(raw), 20);
+    } else {
+      newMeta.repeatableSlots = undefined;
+    }
+  }
 
   updates.meta = newMeta as unknown as Record<string, unknown>;
 

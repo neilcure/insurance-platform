@@ -10,10 +10,17 @@ import {
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { confirmDialog } from "@/components/ui/global-dialogs";
 import { toast } from "sonner";
-import { Trash2, Pencil, FileText, UploadCloud, FilePlus2 } from "lucide-react";
-import type { PdfTemplateRow } from "@/lib/types/pdf-template";
+import { Trash2, Pencil, FileText, UploadCloud, FilePlus2, MoreHorizontal, Download, FolderInput } from "lucide-react";
+import type { PdfTemplateRow, PdfTemplateMeta } from "@/lib/types/pdf-template";
 import dynamic from "next/dynamic";
 
 const PdfTemplateEditor = dynamic(
@@ -35,6 +42,10 @@ export default function PdfTemplateManager() {
   const [createLabel, setCreateLabel] = React.useState("");
   const [createDesc, setCreateDesc] = React.useState("");
   const [creating, setCreating] = React.useState(false);
+
+  // Import settings: hidden file input shared across all rows
+  const importFileRef = React.useRef<HTMLInputElement>(null);
+  const [importingId, setImportingId] = React.useState<number | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -122,6 +133,98 @@ export default function PdfTemplateManager() {
     setCreating(false);
   }
 
+  function handleExport(tpl: PdfTemplateRow) {
+    const meta = tpl.meta as unknown as PdfTemplateMeta | null;
+    // Export everything except filePath — the PDF file stays on the server
+    const exportData = {
+      exportedFrom: "Ginsurance PDF Template",
+      exportedAt: new Date().toISOString(),
+      label: tpl.label,
+      meta: {
+        fields: meta?.fields ?? [],
+        pages: meta?.pages ?? [],
+        sections: meta?.sections,
+        images: meta?.images,
+        drawings: meta?.drawings,
+        checkboxes: meta?.checkboxes,
+        radioGroups: meta?.radioGroups,
+        type: meta?.type,
+        flows: meta?.flows,
+        showWhenStatus: meta?.showWhenStatus,
+        insurerPolicyIds: meta?.insurerPolicyIds,
+        requiresConfirmation: meta?.requiresConfirmation,
+        documentPrefix: meta?.documentPrefix,
+        documentSetGroup: meta?.documentSetGroup,
+        isAgentTemplate: meta?.isAgentTemplate,
+        showOn: meta?.showOn,
+        accountingLineKey: meta?.accountingLineKey,
+        repeatableSlots: meta?.repeatableSlots,
+        description: meta?.description,
+      },
+    };
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${tpl.label.replace(/[^a-z0-9]/gi, "-").toLowerCase()}-settings.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleImportClick(id: number) {
+    setImportingId(id);
+    importFileRef.current?.click();
+  }
+
+  async function handleImportFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    const id = importingId;
+    // Reset input so the same file can be re-imported if needed
+    e.target.value = "";
+    setImportingId(null);
+    if (!file || id === null) return;
+
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      // Support both wrapped format ({label, meta}) and raw meta object
+      const meta = (parsed.meta ?? parsed) as Record<string, unknown>;
+
+      const patchBody: Record<string, unknown> = {};
+      if (Array.isArray(meta.fields)) patchBody.fields = meta.fields;
+      if (Array.isArray(meta.pages)) patchBody.pages = meta.pages;
+      if (Array.isArray(meta.sections)) patchBody.sections = meta.sections;
+      if (Array.isArray(meta.images)) patchBody.images = meta.images;
+      if (Array.isArray(meta.drawings)) patchBody.drawings = meta.drawings;
+      if (Array.isArray(meta.checkboxes)) patchBody.checkboxes = meta.checkboxes;
+      if (Array.isArray(meta.radioGroups)) patchBody.radioGroups = meta.radioGroups;
+      if (Array.isArray(meta.flows)) patchBody.flows = meta.flows;
+      if (Array.isArray(meta.showWhenStatus)) patchBody.showWhenStatus = meta.showWhenStatus;
+      if (Array.isArray(meta.insurerPolicyIds)) patchBody.insurerPolicyIds = meta.insurerPolicyIds;
+      if (typeof meta.description === "string") patchBody.description = meta.description;
+      if ("accountingLineKey" in meta) patchBody.accountingLineKey = meta.accountingLineKey;
+      if (typeof meta.repeatableSlots === "number") patchBody.repeatableSlots = meta.repeatableSlots;
+
+      const res = await fetch(`/api/pdf-templates/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patchBody),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(err.error ?? "Import failed");
+      }
+      toast.success("Settings imported — reloading template");
+      load();
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : "Import failed — make sure the file is a valid template export",
+      );
+    }
+  }
+
   if (editingId !== null) {
     const tpl = templates.find((t) => t.id === editingId);
     if (!tpl) {
@@ -191,12 +294,34 @@ export default function PdfTemplateManager() {
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-1">
-                        <Button size="icon-xs" variant="ghost" onClick={() => setEditingId(tpl.id)}>
+                        <Button size="icon-xs" variant="ghost" title="Edit" onClick={() => setEditingId(tpl.id)}>
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
-                        <Button size="icon-xs" variant="ghost" className="text-red-600 dark:text-red-400" onClick={() => handleDelete(tpl.id)}>
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button size="icon-xs" variant="ghost" title="More actions">
+                              <MoreHorizontal className="h-3.5 w-3.5" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => handleExport(tpl)}>
+                              <Download className="mr-2 h-3.5 w-3.5" />
+                              Export settings
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleImportClick(tpl.id)}>
+                              <FolderInput className="mr-2 h-3.5 w-3.5" />
+                              Import settings
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400"
+                              onClick={() => handleDelete(tpl.id)}
+                            >
+                              <Trash2 className="mr-2 h-3.5 w-3.5" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -206,6 +331,15 @@ export default function PdfTemplateManager() {
           </Table>
         </div>
       )}
+
+      {/* Hidden file input for importing template settings */}
+      <input
+        ref={importFileRef}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={handleImportFileChange}
+      />
 
       <Dialog open={showUpload} onOpenChange={setShowUpload}>
         <DialogContent>

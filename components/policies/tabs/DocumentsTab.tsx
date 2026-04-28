@@ -3667,7 +3667,7 @@ function PdfMergeButton({
 
       {/* PDF Preview Dialog — full-size interactive view with email controls */}
       <Dialog open={previewOpen} onOpenChange={(o) => { if (!o) handleClosePreview(); }}>
-        <DialogContent className="max-w-[96vw]! w-[96vw] h-[95vh] max-h-[95vh]! flex flex-col p-0! gap-0 overflow-hidden sm:p-0!">
+        <DialogContent hideCloseButton className="max-w-[96vw]! w-[96vw] h-[95vh] max-h-[95vh]! flex flex-col p-0! gap-0 overflow-hidden sm:p-0!">
           <DialogHeader className="flex-none px-4 pt-4 pb-2 border-b border-neutral-200 dark:border-neutral-800">
             <div className="flex items-center justify-between gap-3">
               <DialogTitle className="text-base truncate">{tpl.label}</DialogTitle>
@@ -3692,6 +3692,16 @@ function PdfMergeButton({
                 >
                   <Mail className="h-3.5 w-3.5" />
                   Send Email
+                </Button>
+                {/* Close */}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="px-2"
+                  onClick={handleClosePreview}
+                  aria-label="Close"
+                >
+                  <X className="h-4 w-4" />
                 </Button>
               </div>
             </div>

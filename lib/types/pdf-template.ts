@@ -210,8 +210,20 @@ export type PdfTemplateMeta = {
   showOn?: ("policy" | "agent")[];
   /** Restrict to a specific accounting line key (e.g. "tpo", "od"). Only shows when the policy has a premium line with this key. Empty = all. */
   accountingLineKey?: string;
+  /**
+   * For repeatable package fields (drivers, beneficiaries, etc.) — how
+   * many indexed slots ("Driver 1", "Driver 2", …) to expose in the
+   * field picker for this template. Defaults to 4. Each slot becomes
+   * pickable child fields with snapshot keys like
+   * `drivers__r0__firstName`. Slots without data resolve to empty
+   * strings, so unfilled rows render blank on the generated PDF.
+   */
+  repeatableSlots?: number;
   description?: string;
 };
+
+/** Default number of indexed slots for repeatable package fields. */
+export const DEFAULT_REPEATABLE_SLOTS = 4;
 
 export function resolvePdfTemplateShowOn(
   meta: PdfTemplateMeta | null | undefined,

@@ -43,6 +43,7 @@ async function loadPackageFieldVariants(
       const meta = (r.meta ?? null) as {
         categories?: unknown;
         options?: unknown;
+        booleanChildren?: unknown;
       } | null;
       const rawCats = Array.isArray(meta?.categories) ? meta!.categories : [];
       const categories = rawCats
@@ -50,10 +51,28 @@ async function loadPackageFieldVariants(
         .filter((c): c is string => c.length > 0);
       if (!out[pkg]) out[pkg] = [];
       const parentKey = String(r.value ?? "");
+
+      // Capture the parent field's `meta.options` (label/value pairs)
+      // so the resolver can translate stored option slugs (e.g.
+      // "hkonly") into their human-readable labels (e.g. "Hong Kong
+      // Only") at PDF render time. Only collected for top-level
+      // option arrays — cascading children's option lists are still
+      // looked up via the by-label / `__opt_<value>__cN` paths.
+      const optionsRaw = Array.isArray(meta?.options) ? meta!.options : [];
+      const parentOptionPairs: { value: string; label: string }[] = [];
+      for (const optRaw of optionsRaw) {
+        const opt = (optRaw ?? {}) as { value?: unknown; label?: unknown };
+        const ov = String(opt.value ?? "").trim();
+        if (!ov) continue;
+        const ol = String(opt.label ?? "").trim() || ov;
+        parentOptionPairs.push({ value: ov, label: ol });
+      }
+
       out[pkg].push({
         key: parentKey,
         label: String(r.label ?? r.value ?? ""),
         categories,
+        options: parentOptionPairs.length > 0 ? parentOptionPairs : undefined,
       });
 
       // Cascading second-level fields: when an option of this parent
@@ -64,8 +83,7 @@ async function loadPackageFieldVariants(
       // canonical form-name template. Emit one variant per
       // (option, child) pair so the by-label resolver can pick
       // whichever key has a value for this policy.
-      const options = Array.isArray(meta?.options) ? meta!.options : [];
-      for (const optRaw of options) {
+      for (const optRaw of optionsRaw) {
         const opt = (optRaw ?? {}) as {
           value?: unknown;
           children?: unknown;
@@ -74,9 +92,24 @@ async function loadPackageFieldVariants(
         if (!optValue) continue;
         const children = Array.isArray(opt.children) ? opt.children : [];
         children.forEach((childRaw, childIdx) => {
-          const child = (childRaw ?? {}) as { label?: unknown };
+          const child = (childRaw ?? {}) as {
+            label?: unknown;
+            options?: unknown;
+          };
           const childLabel = String(child.label ?? "").trim();
           if (!childLabel) return;
+          // Cascading children may also be selects — capture their
+          // own option list so their resolved values get translated
+          // to labels too.
+          const childOptionsRaw = Array.isArray(child.options) ? child.options : [];
+          const childOptionPairs: { value: string; label: string }[] = [];
+          for (const cOptRaw of childOptionsRaw) {
+            const cOpt = (cOptRaw ?? {}) as { value?: unknown; label?: unknown };
+            const cv = String(cOpt.value ?? "").trim();
+            if (!cv) continue;
+            const cl = String(cOpt.label ?? "").trim() || cv;
+            childOptionPairs.push({ value: cv, label: cl });
+          }
           out[pkg].push({
             key: `${parentKey}__opt_${optValue}__c${childIdx}`,
             label: childLabel,
@@ -84,8 +117,57 @@ async function loadPackageFieldVariants(
             // they're only reachable when the parent (and therefore
             // its category) is in scope.
             categories,
+            options: childOptionPairs.length > 0 ? childOptionPairs : undefined,
           });
         });
+      }
+
+      // Boolean-branch children: when this admin field is a boolean
+      // (`inputType: "boolean"`) with `meta.booleanChildren.{true,false}`,
+      // the wizard names each branch child `${parent}__${branch}__c${idx}`
+      // and stores its value at that exact key in the snapshot. Emit
+      // one variant per nested child so the resolver can:
+      //   1. Translate select-typed branch children's stored values to
+      //      labels (e.g. "fleet" → "Fleet" for No Claims Bonus).
+      //   2. Smart-route a placement of the parent boolean to the
+      //      chosen child's label via the `__r0` / `__c0` lookup
+      //      already wired into `resolvePackage`.
+      const booleanChildren = (meta?.booleanChildren ?? null) as {
+        true?: unknown;
+        false?: unknown;
+      } | null;
+      if (booleanChildren) {
+        for (const branch of ["true", "false"] as const) {
+          const branchArr = Array.isArray(booleanChildren[branch])
+            ? (booleanChildren[branch] as unknown[])
+            : [];
+          branchArr.forEach((childRaw, childIdx) => {
+            const child = (childRaw ?? {}) as {
+              label?: unknown;
+              options?: unknown;
+            };
+            const branchOptionsRaw = Array.isArray(child.options) ? child.options : [];
+            const branchOptionPairs: { value: string; label: string }[] = [];
+            for (const cOptRaw of branchOptionsRaw) {
+              const cOpt = (cOptRaw ?? {}) as { value?: unknown; label?: unknown };
+              const cv = String(cOpt.value ?? "").trim();
+              if (!cv) continue;
+              const cl = String(cOpt.label ?? "").trim() || cv;
+              branchOptionPairs.push({ value: cv, label: cl });
+            }
+            const childLabel = String(child.label ?? "").trim();
+            // Use parent's label as a meaningful fallback so the
+            // by-label fallback can still find these via the parent's
+            // slug if needed.
+            const variantLabel = childLabel || String(r.label ?? r.value ?? "");
+            out[pkg].push({
+              key: `${parentKey}__${branch}__c${childIdx}`,
+              label: variantLabel,
+              categories,
+              options: branchOptionPairs.length > 0 ? branchOptionPairs : undefined,
+            });
+          });
+        }
       }
     }
   } catch {

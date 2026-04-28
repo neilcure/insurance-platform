@@ -98,7 +98,8 @@ const MARK_OPACITY = 0.95;
 const OUTLINE_OPACITY = 0.5;
 
 /**
- * Ink color for ✓ checkmarks and ● radio dots. A deep blue reads
+ * Ink color for ✓ checkmarks (used for both checkboxes and radio
+ * selections). A deep blue reads
  * unmistakably as "the user filled this in" — distinct from the
  * black printed form text and far more visible than gray.
  */
@@ -129,6 +130,14 @@ export async function generateFilledPdf(
      */
     radioOverrides?: Record<string, string>;
     loadImage?: (storedName: string) => Promise<Buffer>;
+    /**
+     * When true, all AcroForm widgets (checkboxes, radio buttons) are
+     * flattened into static page content before saving. The visual result
+     * is identical but the fields are no longer editable in any PDF viewer.
+     * Use this when attaching to outgoing emails so recipients receive a
+     * clean, tamper-proof record.
+     */
+    flatten?: boolean;
   },
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(templateBytes);
@@ -248,18 +257,18 @@ export async function generateFilledPdf(
   //     Skipped when the admin marked the field `borderless` (because
   //     the underlying printed PDF already shows the box).
   //
-  //  2. The MARK (✓ / ●) — drawn ONLY when the option is selected.
+  //  2. The MARK (✓) — drawn ONLY when the option is selected.
   //     Bold blue at near-full opacity so the user's answer reads
-  //     instantly.
+  //     instantly. Used for both checkboxes and radio selections so
+  //     the visual language is consistent across the form.
   //
   // We don't create AcroForm widgets — the side-panel is the source
   // of truth and the recipient receives a finalized, printed-style
   // PDF rather than an editable form.
   //
   // Selected boxes get NO outline, NO tint, NO border — just the
-  // bold ✓ or ● mark itself. The user's chosen answer is the only
-  // thing in the printed form, exactly like a real signed paper
-  // form.
+  // bold ✓ mark itself. The user's chosen answer is the only thing
+  // in the printed form, exactly like a real signed paper form.
 
   if (opts?.checkboxes?.length) {
     for (const cb of opts.checkboxes) {
@@ -274,11 +283,11 @@ export async function generateFilledPdf(
         const cx = cb.x + (cb.width - size) / 2;
         const cy = cb.y + (cb.height - size) / 2;
         drawVectorGlyph(page, "✓", cx, cy, size, MARKUP_COLOR, MARK_OPACITY);
-      } else {
+      } else if (!opts?.flatten) {
         // Non-selected = the "markup". A soft blue tint FILL (no
-        // border at all) showing "this spot is fillable". The user
-        // does not want any rectangle outline — the colored fill
-        // alone is the visual cue.
+        // border at all) showing "this spot is fillable". Skipped
+        // in flat/email mode — the client copy should look like a
+        // clean signed form with no editor helper tints.
         page.drawRectangle({
           x: cb.x,
           y: cb.y,
@@ -309,10 +318,10 @@ export async function generateFilledPdf(
           const size = Math.min(opt.width, opt.height);
           const cx = opt.x + (opt.width - size) / 2;
           const cy = opt.y + (opt.height - size) / 2;
-          drawVectorGlyph(page, "●", cx, cy, size, MARKUP_COLOR, MARK_OPACITY);
-        } else {
+          drawVectorGlyph(page, "✓", cx, cy, size, MARKUP_COLOR, MARK_OPACITY);
+        } else if (!opts?.flatten) {
           // Same rationale as checkboxes — soft blue tint fill, no
-          // border, so the user can see where they can choose.
+          // border. Skipped in flat/email mode for the same reason.
           page.drawRectangle({
             x: opt.x,
             y: opt.y,
@@ -325,6 +334,10 @@ export async function generateFilledPdf(
         }
       }
     }
+  }
+
+  if (opts?.flatten) {
+    pdfDoc.getForm().flatten();
   }
 
   return pdfDoc.save();

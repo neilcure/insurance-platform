@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, Mail, Send } from "lucide-react";
+import { FileText, Loader2, Mail, Send } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { PolicyDocumentRow } from "@/lib/types/upload-document";
+import type { PdfTemplateMeta } from "@/lib/types/pdf-template";
+
+type PdfTplItem = { id: number; label: string };
 
 /**
  * Maximum aggregate attachment size we let the user pick. Mirrors
@@ -78,6 +81,14 @@ export function EmailUploadedFilesDialog({
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
   const [sending, setSending] = React.useState(false);
 
+  // PDF merge template selection
+  const [pdfTemplates, setPdfTemplates] = React.useState<PdfTplItem[]>([]);
+  const [selectedTplIds, setSelectedTplIds] = React.useState<Set<number>>(new Set());
+  const [loadingTpls, setLoadingTpls] = React.useState(false);
+  // Flatten AcroForm fields before attaching — on by default so recipients
+  // get a tamper-proof copy instead of an editable form.
+  const [flattenPdfs, setFlattenPdfs] = React.useState(true);
+
   // Re-seed local state every time the dialog opens. Without this
   // the user would see stale values after closing & re-opening
   // the dialog with different prefill props.
@@ -93,6 +104,28 @@ export function EmailUploadedFilesDialog({
       : allDocIds;
     setSelectedIds(new Set(seed));
   }, [open, defaultEmail, policyNumber, initialSelectedIds, allDocIds]);
+
+  // Load available PDF merge templates when the dialog opens
+  React.useEffect(() => {
+    if (!open) return;
+    setSelectedTplIds(new Set());
+    setLoadingTpls(true);
+    fetch("/api/pdf-templates")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: Array<{ id: number; label: string; isActive: boolean; meta: PdfTemplateMeta | null }>) => {
+        const visible = rows.filter((r) => {
+          if (!r.isActive) return false;
+          // Skip agent-only templates in the policy email context
+          if (r.meta?.isAgentTemplate) return false;
+          const showOn = r.meta?.showOn;
+          if (showOn && showOn.length > 0 && !showOn.includes("policy")) return false;
+          return true;
+        });
+        setPdfTemplates(visible.map((r) => ({ id: r.id, label: r.label })));
+      })
+      .catch(() => setPdfTemplates([]))
+      .finally(() => setLoadingTpls(false));
+  }, [open]);
 
   const totalSelectedBytes = React.useMemo(() => {
     let bytes = 0;
@@ -123,13 +156,22 @@ export function EmailUploadedFilesDialog({
     setSelectedIds(new Set());
   }
 
+  function toggleTplId(id: number) {
+    setSelectedTplIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   async function handleSend() {
     if (!email.includes("@")) {
       toast.error("Please enter a valid email address");
       return;
     }
-    if (selectedIds.size === 0) {
-      toast.error("Please select at least one file");
+    if (selectedIds.size === 0 && selectedTplIds.size === 0) {
+      toast.error("Please select at least one file or document");
       return;
     }
     if (overSizeLimit) {
@@ -143,6 +185,8 @@ export function EmailUploadedFilesDialog({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           documentIds: Array.from(selectedIds),
+          pdfTemplateIds: Array.from(selectedTplIds),
+          flattenPdfs,
           email: email.trim(),
           subject: subject.trim(),
           message: message.trim(),
@@ -153,9 +197,9 @@ export function EmailUploadedFilesDialog({
         throw new Error(err.error || "Failed to send email");
       }
       const data = (await res.json()) as { sent?: number };
-      const count = data.sent ?? selectedIds.size;
+      const count = data.sent ?? (selectedIds.size + selectedTplIds.size);
       toast.success(
-        `Sent ${count} file${count === 1 ? "" : "s"} to ${email.trim()}`,
+        `Sent ${count} attachment${count === 1 ? "" : "s"} to ${email.trim()}`,
       );
       onSent?.(count, email.trim());
       onOpenChange(false);
@@ -168,6 +212,7 @@ export function EmailUploadedFilesDialog({
 
   const totalFiles = allDocIds.length;
   const allSelected = totalFiles > 0 && selectedIds.size === totalFiles;
+  const totalAttachments = selectedIds.size + selectedTplIds.size;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -216,16 +261,20 @@ export function EmailUploadedFilesDialog({
 
           <div>
             <div className="mb-1 flex items-center justify-between">
-              <Label>Files to attach</Label>
+              <Label>Attachments</Label>
               <div className="flex items-center gap-2 text-[11px]">
-                <button
-                  type="button"
-                  onClick={allSelected ? selectNone : selectAll}
-                  className="text-blue-600 hover:underline dark:text-blue-400"
-                >
-                  {allSelected ? "Select none" : "Select all"}
-                </button>
-                <span className="text-neutral-400">·</span>
+                {totalFiles > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={allSelected ? selectNone : selectAll}
+                      className="text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      {allSelected ? "Deselect files" : "Select all files"}
+                    </button>
+                    <span className="text-neutral-400">·</span>
+                  </>
+                )}
                 <span
                   className={
                     overSizeLimit
@@ -233,15 +282,17 @@ export function EmailUploadedFilesDialog({
                       : "text-neutral-500 dark:text-neutral-400"
                   }
                 >
-                  {selectedIds.size}/{totalFiles} · {formatBytes(totalSelectedBytes) || "0 B"}
+                  {totalAttachments} selected
+                  {totalSelectedBytes > 0 && ` · ${formatBytes(totalSelectedBytes)}`}
                 </span>
               </div>
             </div>
 
-            <div className="max-h-64 space-y-3 overflow-y-auto rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
+            <div className="max-h-72 space-y-3 overflow-y-auto rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
+              {/* Uploaded files section */}
               {groups.length === 0 ? (
-                <div className="py-4 text-center text-xs text-neutral-500 dark:text-neutral-400">
-                  No uploaded files available to email.
+                <div className="py-2 text-center text-xs text-neutral-500 dark:text-neutral-400">
+                  No uploaded files available.
                 </div>
               ) : (
                 groups.map((g) => (
@@ -283,7 +334,54 @@ export function EmailUploadedFilesDialog({
                   </div>
                 ))
               )}
+
+              {/* PDF merge templates section */}
+              {loadingTpls ? (
+                <div className="flex items-center gap-1.5 py-2 text-[11px] text-neutral-400 dark:text-neutral-500">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading documents…
+                </div>
+              ) : pdfTemplates.length > 0 ? (
+                <div>
+                  <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-blue-600 dark:text-blue-400">
+                    <FileText className="h-3 w-3" />
+                    Proposal Forms / Merge Documents
+                  </div>
+                  <div className="space-y-1">
+                    {pdfTemplates.map((tpl) => (
+                      <label
+                        key={tpl.id}
+                        className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+                      >
+                        <Checkbox
+                          checked={selectedTplIds.has(tpl.id)}
+                          onChange={() => toggleTplId(tpl.id)}
+                        />
+                        <span className="flex-1 truncate text-[12px]">{tpl.label}</span>
+                        <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                          PDF
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[10px] text-neutral-400 dark:text-neutral-500">
+                    Generated from current policy data when sent.
+                  </p>
+                </div>
+              ) : null}
             </div>
+
+            {/* Flatten toggle — only relevant when PDF templates are selected */}
+            {selectedTplIds.size > 0 && (
+              <label className="mt-2 flex cursor-pointer items-center gap-2 text-[11px] text-neutral-600 dark:text-neutral-400">
+                <Checkbox
+                  checked={flattenPdfs}
+                  onChange={() => setFlattenPdfs((v) => !v)}
+                />
+                Send as non-editable (flat) copy
+                <span className="text-neutral-400 dark:text-neutral-500">— recommended</span>
+              </label>
+            )}
 
             {overSizeLimit && (
               <div className="mt-1 text-[11px] text-red-600 dark:text-red-400">
@@ -309,20 +407,20 @@ export function EmailUploadedFilesDialog({
             disabled={
               sending ||
               !email.trim() ||
-              selectedIds.size === 0 ||
+              totalAttachments === 0 ||
               overSizeLimit
             }
           >
             {sending ? (
               <>
                 <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                Sending...
+                Sending…
               </>
             ) : (
               <>
                 <Send className="mr-1.5 h-3.5 w-3.5" />
-                Send {selectedIds.size > 0 ? `${selectedIds.size} ` : ""}
-                file{selectedIds.size === 1 ? "" : "s"}
+                Send {totalAttachments > 0 ? `${totalAttachments} ` : ""}
+                {totalAttachments === 1 ? "attachment" : "attachments"}
               </>
             )}
           </Button>
