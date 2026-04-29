@@ -55,7 +55,15 @@ function registerChildLabels(
     const childLabelRaw = toKey(child?.label);
     const childLabel = childLabelRaw && childLabelRaw.toLowerCase() !== "details" ? childLabelRaw : "Details";
     const isRepeatable = childInputType === "repeatable";
-    const displayLabel = isRepeatable ? parentLabel : `${parentLabel} — ${childLabel}`;
+    // For nested repeatables (e.g. "Name Driver's Information" inside the
+    // "Add More Drivers?" boolean), prefer the repeatable's OWN label so the
+    // sub-field rows render as "Name Driver's Information — Last Name"
+    // instead of inheriting the boolean parent's label and producing
+    // "Add More Drivers? — Last Name". Fall back to parentLabel only when the
+    // repeatable was given no label (or a placeholder like "Details").
+    const displayLabel = isRepeatable
+      ? (childLabelRaw && childLabelRaw.toLowerCase() !== "details" ? childLabelRaw : parentLabel)
+      : `${parentLabel} — ${childLabel}`;
     meta.labels[childKey] = displayLabel;
     meta.groupOrders[childKey] = groupOrder;
     meta.groupNames[childKey] = groupName;
@@ -71,6 +79,23 @@ function registerChildLabels(
         if (ov) optMap[ov] = ol || ov;
       }
       if (Object.keys(optMap).length > 0) meta.optionLabels[childKey] = optMap;
+    }
+    // Repeatable sub-field definitions for nested repeatables (e.g. inside a
+    // boolean branch). Without this the renderer falls back to
+    // Object.keys(items[0]) which has insertion order, not admin sort order
+    // — producing the random column order seen in the policy details panel.
+    if (isRepeatable) {
+      const rawRep = Array.isArray(child?.repeatable) ? child.repeatable[0] : child?.repeatable;
+      const repFields = (rawRep as any)?.fields;
+      if (Array.isArray(repFields)) {
+        const subFields: RepeatableSubField[] = [];
+        for (const rf of repFields) {
+          const sv = toKey(rf?.value);
+          const sl = toKey(rf?.label) || sv;
+          if (sv) subFields.push({ label: sl, value: sv, inputType: rf?.inputType, options: Array.isArray(rf?.options) ? rf.options : undefined });
+        }
+        if (subFields.length > 0) meta.repeatableFields[childKey] = subFields;
+      }
     }
     // Nested boolean branch children
     const bc = child?.booleanChildren as { true?: any[]; false?: any[] } | undefined;

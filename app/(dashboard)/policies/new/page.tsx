@@ -28,6 +28,7 @@ import { buildInsuredDynamicSchema } from "@/lib/validation/insured";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { SlideDrawer } from "@/components/ui/slide-drawer";
 import { X, UserPlus, UserSearch, ArrowRight, Check, Loader2, Save } from "lucide-react";
+import { extractDisplayName } from "@/lib/import/entity-display-name";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { BooleanBranchFields } from "@/components/policies/InlineSelectWithChildren";
 
@@ -46,6 +47,65 @@ function getRepeatable(raw: unknown): RepeatableConfig {
     return (typeof first === "object" && first !== null ? (first as RepeatableConfig) : {}) as RepeatableConfig;
   }
   return (typeof raw === "object" && raw !== null ? (raw as RepeatableConfig) : {}) as RepeatableConfig;
+}
+
+/**
+ * Boolean Yes/No radio pair bound to RHF.
+ *
+ * RHF's auto-`checked` matching for radios uses `radio.value === stateValue`
+ * with strict equality. Because `setValueAs` coerces clicks into a boolean
+ * (and pre-filled values from `extraAttributes` are also booleans),
+ * `"true" === true` is `false` and the radios would render unselected on
+ * re-load even when the value was actually saved correctly. Driving
+ * `checked` explicitly from form state via `String(curr) === "true"`
+ * works for both string and boolean state shapes.
+ */
+function BooleanRadioPair({
+  form,
+  name,
+  yesLabel = "Yes",
+  noLabel = "No",
+  required,
+}: {
+  form: UseFormReturn<Record<string, unknown>>;
+  name: string;
+  yesLabel?: string;
+  noLabel?: string;
+  required?: boolean;
+}) {
+  const curr = useWatch({ control: form.control, name: name as string });
+  const isYes = String(curr ?? "") === "true";
+  const isNo = String(curr ?? "") === "false";
+  return (
+    <div className="flex items-center gap-6">
+      <label className="inline-flex items-center gap-2 text-sm">
+        <input
+          type="radio"
+          className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0"
+          value="true"
+          checked={isYes}
+          {...form.register(name as never, {
+            required: Boolean(required),
+            setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v),
+          })}
+        />
+        {yesLabel}
+      </label>
+      <label className="inline-flex items-center gap-2 text-sm">
+        <input
+          type="radio"
+          className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0"
+          value="false"
+          checked={isNo}
+          {...form.register(name as never, {
+            required: Boolean(required),
+            setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v),
+          })}
+        />
+        {noLabel}
+      </label>
+    </div>
+  );
 }
 
 function applyLabelCase(text: string, mode?: "original" | "upper" | "lower" | "title"): string {
@@ -842,16 +902,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                 return (
                                   <div key={name} className="space-y-1">
                                     <Label>{child?.label ?? "Details"}</Label>
-                                    <div className="flex items-center gap-6">
-                                      <label className="inline-flex items-center gap-2 text-sm">
-                                        <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="true" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                        {yesL}
-                                      </label>
-                                      <label className="inline-flex items-center gap-2 text-sm">
-                                        <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="false" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                        {noL}
-                                      </label>
-                                    </div>
+                                    <BooleanRadioPair form={form} name={name} yesLabel={yesL} noLabel={noL} />
                                     <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                   </div>
                                 );
@@ -1063,16 +1114,7 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                 return (
                                   <div key={name} className="space-y-1">
                                     <Label>{child?.label ?? "Details"}</Label>
-                                    <div className="flex items-center gap-6">
-                                      <label className="inline-flex items-center gap-2 text-sm">
-                                        <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="true" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                        {yesL}
-                                      </label>
-                                      <label className="inline-flex items-center gap-2 text-sm">
-                                        <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="false" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                        {noL}
-                                      </label>
-                                    </div>
+                                    <BooleanRadioPair form={form} name={name} yesLabel={yesL} noLabel={noL} />
                                     <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                                   </div>
                                 );
@@ -1649,7 +1691,6 @@ export default function NewPolicyStep1Page() {
         const res = await fetch(`/api/policies?flow=${encodeURIComponent(clientFlowKey)}&_t=${Date.now()}`, { cache: "no-store" });
         const json = (res.ok ? ((await res.json()) as unknown[]) : []) as Array<Record<string, unknown>>;
         if (!cancelled) {
-          const norm = (k: string) => k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
           setClientRows(
             json
               .map((r: Record<string, unknown>) => {
@@ -1659,31 +1700,14 @@ export default function NewPolicyStep1Page() {
                 const insured = (extra?.insuredSnapshot ?? {}) as Record<string, unknown>;
                 const rawType = String(insured?.insuredType ?? insured?.insured__category ?? "").trim().toLowerCase();
                 const category = rawType === "company" || rawType === "personal" ? rawType : "";
-                let displayName = "";
-                if (category === "personal") {
-                  let first = "", last = "";
-                  for (const [k, v] of Object.entries(insured)) {
-                    const n = norm(k), s = String(v ?? "").trim();
-                    if (!s) continue;
-                    if (!last && /lastname|surname/.test(n)) last = s;
-                    if (!first && /firstname/.test(n)) first = s;
-                  }
-                  displayName = [last, first].filter(Boolean).join(" ");
-                }
-                if (!displayName) {
-                  for (const [k, v] of Object.entries(insured)) {
-                    const n = norm(k), s = String(v ?? "").trim();
-                    if (!s) continue;
-                    if (/companyname|organisationname|orgname/.test(n)) { displayName = s; break; }
-                  }
-                }
-                if (!displayName) {
-                  for (const [k, v] of Object.entries(insured)) {
-                    const n = norm(k), s = String(v ?? "").trim();
-                    if (!s) continue;
-                    if (/fullname|^name$/.test(n)) { displayName = s; break; }
-                  }
-                }
+                // Use the shared canonical extractor so:
+                //  - keys like `insured__companyName`, `insured_companyName`,
+                //    or bare `companyName` all resolve through `insuredGet`
+                //    (handles legacy snapshots where multiple key variants
+                //    coexist and the wrong one would otherwise win).
+                //  - the picker label matches what the rest of the app shows
+                //    for the same client (header chips, PDF templates, etc.).
+                const displayName = extractDisplayName(extra ?? undefined);
                 return { id: policyId, clientNumber: policyNumber, category, displayName };
               })
               .filter((r) => Number.isFinite(r.id) && r.id > 0),
@@ -1723,6 +1747,14 @@ export default function NewPolicyStep1Page() {
         category?: string;
         displayName?: string;
         extraAttributes?: Record<string, unknown> | null;
+        // CRITICAL: this picker fetches policies/cars (entries from the `clientSet` flow),
+        // so `policyId` is the cars table id — NOT a real client id. The GET endpoint
+        // resolves and returns the actual `clientId` from the linked clients row,
+        // which we MUST use for any client PATCH / link-back operations. Without it,
+        // PATCH /api/clients/{policyId} 404s and dirty edits (DOB, occupation, etc.)
+        // silently fail to persist.
+        clientId?: number | null;
+        client?: { id?: number | null } | null;
       };
       const rawExtra = (detail?.extraAttributes ?? {}) as Record<string, unknown>;
       const insured = (rawExtra.insuredSnapshot ?? {}) as Record<string, unknown>;
@@ -1731,6 +1763,15 @@ export default function NewPolicyStep1Page() {
       if (!detail.category) (detail as any).category = derivedCategory || undefined;
       if (!detail.id) (detail as any).id = detail.policyId;
       if (!detail.clientNumber) (detail as any).clientNumber = detail.policyNumber;
+      // Resolve the real clients-table id. Fall back to the car id only when the
+      // policy has no linked client (legacy data / unsupported flow).
+      const realClientId = (() => {
+        const a = Number(detail.clientId);
+        if (Number.isFinite(a) && a > 0) return a;
+        const b = Number(detail.client?.id);
+        if (Number.isFinite(b) && b > 0) return b;
+        return Number(detail.id);
+      })();
       // Baseline for delete detection should come from the stored client data (extraAttributes),
       // not RHF dirty tracking, since cleared number inputs often become undefined/omitted.
       try {
@@ -1742,7 +1783,7 @@ export default function NewPolicyStep1Page() {
           baseline[ck] = v;
         }
         existingClientBaselineRef.current = baseline;
-        existingClientBaselineIdRef.current = Number(detail.id);
+        existingClientBaselineIdRef.current = realClientId;
         const cat = String(detail.category ?? "").trim().toLowerCase();
         existingClientBaselineCategoryRef.current =
           cat === "company" || cat === "personal" ? (cat as "company" | "personal") : null;
@@ -1751,7 +1792,7 @@ export default function NewPolicyStep1Page() {
         existingClientBaselineIdRef.current = null;
         existingClientBaselineCategoryRef.current = null;
       }
-      setSelectedExistingClientForInsuredFill({ id: Number(detail.id), category: detail.category, extra });
+      setSelectedExistingClientForInsuredFill({ id: realClientId, category: detail.category, extra });
       const isEmpty = (v: unknown) =>
         typeof v === "undefined" ||
         v === null ||
@@ -1935,7 +1976,10 @@ export default function NewPolicyStep1Page() {
       setClientWasCreatedByButton(false);
       setWizard((w) => ({
         ...w,
-        policy: { ...(w.policy ?? {}), clientId: Number(detail.id) },
+        // Use the resolved real clients-table id, NOT the policyId. Otherwise
+        // PATCH /api/clients/{id} 404s and the new policy row links to the
+        // wrong record (or no record at all).
+        policy: { ...(w.policy ?? {}), clientId: realClientId },
       }));
       // After the step advances, dynamic insured fields may mount/register on the next render.
       // Run the same fill again in the next frame so insured fields never stay blank.
@@ -2954,32 +2998,7 @@ export default function NewPolicyStep1Page() {
                       <Label>
                         {f.label} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                       </Label>
-                      <div className="flex items-center gap-6">
-                        <label className="inline-flex items-center gap-2 text-sm">
-                          <input
-                            type="radio"
-                            className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black"
-                            value="true"
-                            {...form.register(nameBase as never, {
-                              required: Boolean(meta.required),
-                              setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
-                            })}
-                          />
-                          Yes
-                        </label>
-                        <label className="inline-flex items-center gap-2 text-sm">
-                          <input
-                            type="radio"
-                            className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black"
-                            value="false"
-                            {...form.register(nameBase as never, {
-                              required: Boolean(meta.required),
-                              setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
-                            })}
-                          />
-                          No
-                        </label>
-                      </div>
+                      <BooleanRadioPair form={form} name={nameBase} required={Boolean(meta.required)} />
                     </div>
                     {yesChildren.length > 0 ? (
                       <div className="grid grid-cols-2 gap-4" style={{ display: isYes ? "grid" : "none" }}>
@@ -3007,16 +3026,7 @@ export default function NewPolicyStep1Page() {
                             return (
                               <div key={name} className="space-y-1">
                                 <Label>{child?.label ?? "Details"}</Label>
-                                <div className="flex items-center gap-6">
-                                  <label className="inline-flex items-center gap-2 text-sm">
-                                    <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="true" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                    {yesL}
-                                  </label>
-                                  <label className="inline-flex items-center gap-2 text-sm">
-                                    <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="false" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                    {noL}
-                                  </label>
-                                </div>
+                                <BooleanRadioPair form={form} name={name} yesLabel={yesL} noLabel={noL} />
                                 <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                               </div>
                             );
@@ -3220,16 +3230,7 @@ export default function NewPolicyStep1Page() {
                             return (
                               <div key={name} className="space-y-1">
                                 <Label>{child?.label ?? "Details"}</Label>
-                                <div className="flex items-center gap-6">
-                                  <label className="inline-flex items-center gap-2 text-sm">
-                                    <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="true" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                    {yesL}
-                                  </label>
-                                  <label className="inline-flex items-center gap-2 text-sm">
-                                    <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="false" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                    {noL}
-                                  </label>
-                                </div>
+                                <BooleanRadioPair form={form} name={name} yesLabel={yesL} noLabel={noL} />
                                 <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
                               </div>
                             );

@@ -13,6 +13,65 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import type { BooleanBranchChild, ShowWhenRule, SelectChild } from "@/lib/types/form";
 
+/**
+ * Boolean Yes/No radio group bound to RHF.
+ *
+ * IMPORTANT: This must drive the radio's `checked` attribute explicitly
+ * (controlled-style) rather than relying on RHF's auto-`checked` matching.
+ * RHF compares `radio.value === stateValue` with strict equality. Since
+ * `setValueAs` coerces the radio's string value into a boolean (and saved
+ * values come back from the DB as booleans too), `"true" === true` is
+ * `false` and neither radio would visually check on re-load — making
+ * users think their selection was never saved.
+ */
+function BooleanRadioPair({
+  form,
+  name,
+  yesLabel,
+  noLabel,
+  required,
+}: {
+  form: UseFormReturn<Record<string, unknown>>;
+  name: string;
+  yesLabel: string;
+  noLabel: string;
+  required?: boolean;
+}) {
+  const curr = useWatch({ control: form.control, name: name as string });
+  const isYes = String(curr ?? "") === "true";
+  const isNo = String(curr ?? "") === "false";
+  return (
+    <div className="flex items-center gap-6">
+      <label className="inline-flex items-center gap-2 text-sm">
+        <input
+          type="radio"
+          className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0"
+          value="true"
+          checked={isYes}
+          {...form.register(name as never, {
+            required: Boolean(required),
+            setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v),
+          })}
+        />
+        {yesLabel}
+      </label>
+      <label className="inline-flex items-center gap-2 text-sm">
+        <input
+          type="radio"
+          className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0"
+          value="false"
+          checked={isNo}
+          {...form.register(name as never, {
+            required: Boolean(required),
+            setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v),
+          })}
+        />
+        {noLabel}
+      </label>
+    </div>
+  );
+}
+
 function evaluateChildShowWhen(
   showWhen: ShowWhenRule[] | undefined,
   formValues: Record<string, unknown>,
@@ -503,30 +562,7 @@ export const InlineSelectWithChildren = React.memo(function InlineSelectWithChil
           nodes.push(
             <div key={name} className="space-y-1">
               <Label>{child?.label ?? "Details"}</Label>
-              <div className="flex items-center gap-6">
-                <label className="inline-flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0"
-                    value="true"
-                    {...form.register(name as never, {
-                      setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v),
-                    })}
-                  />
-                  {yesLabel}
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0"
-                    value="false"
-                    {...form.register(name as never, {
-                      setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v),
-                    })}
-                  />
-                  {noLabel}
-                </label>
-              </div>
+              <BooleanRadioPair form={form} name={name} yesLabel={yesLabel} noLabel={noLabel} />
               {hasBranchChildren ? <BooleanBranchFields form={form} name={name} booleanChildren={child.booleanChildren} /> : null}
             </div>
           );

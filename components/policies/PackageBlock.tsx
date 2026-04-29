@@ -63,6 +63,55 @@ function evaluateRowFormula(
   return evaluateFormula(formula, rowValues);
 }
 
+/**
+ * Renders a formula cell inside a repeatable row AND persists the computed
+ * value back into RHF state at `${childName}` so it ends up in the policy
+ * snapshot at `vals[parent][rIdx][cfKey]`.
+ *
+ * Without the persistence step, PDF placements like
+ * `${parent}__r${N}__${cfKey}` resolve to "" because the resolver only does
+ * snapshot lookups (it does NOT re-evaluate formulas at PDF render time).
+ *
+ * Mirrors the "non-clobbering" contract of the top-level FormulaField:
+ * only writes when computed is non-empty AND has changed since the last
+ * write — never clears a previously stored value when refs go missing.
+ */
+function RepeatableFormulaCell({
+  form,
+  childName,
+  formula,
+  rowVals,
+  label,
+}: {
+  form: UseFormReturn<Record<string, unknown>>;
+  childName: string;
+  formula: string;
+  rowVals: Record<string, unknown>;
+  label: string;
+}) {
+  const computed = evaluateRowFormula(formula, rowVals);
+  const lastWritten = React.useRef<string>("");
+
+  React.useEffect(() => {
+    if (!computed) return;
+    if (computed === lastWritten.current) return;
+    const current = String(form.getValues(childName as never) ?? "");
+    if (computed === current) {
+      lastWritten.current = computed;
+      return;
+    }
+    lastWritten.current = computed;
+    form.setValue(childName as never, computed as never, { shouldDirty: true });
+  }, [form, childName, computed]);
+
+  return (
+    <div className="space-y-1">
+      <Label>{label}</Label>
+      <Input type="text" readOnly value={computed} className="bg-neutral-50 dark:bg-neutral-800 cursor-default" />
+    </div>
+  );
+}
+
 type OptionChild = { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; currencyCode?: string; decimals?: number };
 type OptionWithChildren = { label?: string; value?: string; children?: OptionChild[]; showWhen?: unknown };
 
@@ -236,12 +285,15 @@ function SubFieldRepeatable({
                 }
                 if (ccType === "formula") {
                   const rowVals = (items[rIdx] ?? {}) as Record<string, unknown>;
-                  const fComputed = evaluateRowFormula(String((cf as any)?.formula ?? ""), rowVals);
                   return (
-                    <div key={childName} className="space-y-1">
-                      <Label>{cf?.label ?? "Value"}</Label>
-                      <Input type="text" readOnly value={fComputed} className="bg-neutral-50 dark:bg-neutral-800 cursor-default" />
-                    </div>
+                    <RepeatableFormulaCell
+                      key={childName}
+                      form={form}
+                      childName={childName}
+                      formula={String((cf as any)?.formula ?? "")}
+                      rowVals={rowVals}
+                      label={cf?.label ?? "Value"}
+                    />
                   );
                 }
                 const isNum = ccType === "number";
@@ -360,20 +412,15 @@ function SelectWithOptionChildren({
               const yesL = String((oc as any)?.booleanLabels?.true ?? "").trim() || "Yes";
               const noL = String((oc as any)?.booleanLabels?.false ?? "").trim() || "No";
               return (
-                <div key={ocName} className="space-y-1">
-                  <Label>{oc?.label ?? "Details"}</Label>
-                  <div className="flex items-center gap-6">
-                    <label className="inline-flex items-center gap-2 text-sm">
-                      <input type="radio" className="accent-neutral-900 dark:accent-white" value="true" {...form.register(ocName as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                      {yesL}
-                    </label>
-                    <label className="inline-flex items-center gap-2 text-sm">
-                      <input type="radio" className="accent-neutral-900 dark:accent-white" value="false" {...form.register(ocName as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                      {noL}
-                    </label>
-                  </div>
-                  <BooleanBranchFields form={form} name={ocName} booleanChildren={(oc as any)?.booleanChildren} />
-                </div>
+                <BooleanRadioGroup
+                  key={ocName}
+                  form={form}
+                  name={ocName}
+                  label={oc?.label ?? "Details"}
+                  yesLabel={yesL}
+                  noLabel={noL}
+                  booleanChildren={(oc as any)?.booleanChildren}
+                />
               );
             }
             if (ocType === "formula") {
@@ -442,6 +489,86 @@ function DefaultValueSetter({ form, name, defaultValue }: { form: UseFormReturn<
     }
   }, [form, name, defaultValue]);
   return null;
+}
+
+/**
+ * Boolean Yes/No radio group bound to RHF.
+ *
+ * Why this exists (subtle bug): RHF's auto-`checked` matching for radios
+ * compares `radio.value === stateValue` with strict equality. The radios
+ * here use string `value="true"` / `value="false"`, but `setValueAs`
+ * coerces user clicks into a boolean (`true`/`false`) — and re-loaded
+ * values from the DB / `extraAttributes` also arrive as booleans.
+ *
+ * Strict equality between the string `"true"` and boolean `true` is
+ * `false`, so RHF would NOT mark the right radio as checked when state
+ * was already populated (e.g. selecting an existing client). The radios
+ * looked unselected even though the form value was correct, which made
+ * users think the value never saved.
+ *
+ * This helper drives `checked` explicitly from the form value, using
+ * `String(curr)` so it works for both the string and boolean shapes.
+ */
+function BooleanRadioGroup({
+  form,
+  name,
+  label,
+  yesLabel,
+  noLabel,
+  required,
+  booleanChildren,
+}: {
+  form: UseFormReturn<Record<string, unknown>>;
+  name: string;
+  label?: string;
+  yesLabel: string;
+  noLabel: string;
+  required?: boolean;
+  booleanChildren?: { true?: unknown[]; false?: unknown[] };
+}) {
+  const curr = form.watch(name as never) as unknown;
+  const isYes = String(curr ?? "") === "true";
+  const isNo = String(curr ?? "") === "false";
+  return (
+    <div className="space-y-1">
+      <Label>{label ?? "Details"}</Label>
+      <div className="flex items-center gap-6">
+        <label className="inline-flex items-center gap-2 text-sm">
+          <input
+            type="radio"
+            className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0"
+            value="true"
+            checked={isYes}
+            {...form.register(name as never, {
+              required: Boolean(required),
+              setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v),
+            })}
+          />
+          {yesLabel}
+        </label>
+        <label className="inline-flex items-center gap-2 text-sm">
+          <input
+            type="radio"
+            className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0"
+            value="false"
+            checked={isNo}
+            {...form.register(name as never, {
+              required: Boolean(required),
+              setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v),
+            })}
+          />
+          {noLabel}
+        </label>
+      </div>
+      {booleanChildren ? (
+        <BooleanBranchFields
+          form={form}
+          name={name}
+          booleanChildren={booleanChildren as Parameters<typeof BooleanBranchFields>[0]["booleanChildren"]}
+        />
+      ) : null}
+    </div>
+  );
 }
 
 function FormulaField({
@@ -1073,8 +1200,29 @@ export function PackageBlock({
     };
   }, [pkg]);
 
-  // Auto-fill: when a boolean field with autoFill config changes to the trigger value,
-  // copy values from source package fields into this package's fields.
+  // Auto-fill: when a boolean field with autoFill config matches the trigger
+  // value, copy values from source package fields into this package's fields.
+  //
+  // Two non-obvious behaviours, both intentional:
+  //
+  //   1. Source key lookup is tolerant of `_` ↔ `__` mismatch between the
+  //      package prefix and the field key. The wizard stores some snapshot
+  //      keys under `insured__dateOfBirth` (package-style double underscore)
+  //      and others under `insured_dateOfBirth` (legacy single underscore)
+  //      depending on field origin (admin-defined vs. seeded). Trying both
+  //      shapes means admins don't have to know which separator applies.
+  //
+  //   2. The "already handled" marker (`autoFillPrevRef`) is committed only
+  //      once EVERY mapping has either copied successfully or been skipped
+  //      because its target was already filled. If a mapping's source isn't
+  //      in form state yet (e.g. Select Existing Client populates fields in
+  //      batches, or the user toggled Yes before the source field rendered),
+  //      we leave prevVal uncommitted so the effect retries on the next
+  //      form-value change once the source appears. Without this, a slow-
+  //      arriving source value would never be picked up.
+  //
+  //   Targets that are non-empty are NEVER overwritten — we don't clobber a
+  //   value the user typed manually or one we already auto-filled.
   const autoFillPrevRef = React.useRef<Record<string, string>>({});
   React.useEffect(() => {
     if (pkgFields.length === 0) return;
@@ -1085,17 +1233,42 @@ export function PackageBlock({
       const currentVal = String(allFormValues[key] ?? "");
       const prevVal = autoFillPrevRef.current[key];
       if (currentVal === prevVal) continue;
-      autoFillPrevRef.current[key] = currentVal;
-      if (currentVal !== meta.autoFill.when) continue;
+
+      if (currentVal !== meta.autoFill.when) {
+        // Boolean isn't at trigger value — commit prevVal so toggling back to
+        // the trigger value later will re-attempt the copy.
+        autoFillPrevRef.current[key] = currentVal;
+        continue;
+      }
+
+      let allResolved = true;
       for (const mapping of meta.autoFill.mappings) {
         if (!mapping.sourcePackage || !mapping.sourceField || !mapping.targetField) continue;
-        const sourceKey = `${mapping.sourcePackage}__${mapping.sourceField}`;
+
+        // Try both `pkg__field` and `pkg_field` source key shapes (see comment above).
+        const skDouble = `${mapping.sourcePackage}__${mapping.sourceField}`;
+        const skSingle = `${mapping.sourcePackage}_${mapping.sourceField}`;
+        const sourceVal = allFormValues[skDouble] ?? allFormValues[skSingle];
+
         const tPkg = mapping.targetPackage || pkg;
         const targetKey = `${tPkg}__${mapping.targetField}`;
-        const sourceVal = allFormValues[sourceKey];
+        const currentTarget = allFormValues[targetKey];
+        const targetIsEmpty = currentTarget === undefined || currentTarget === null || currentTarget === "";
+
         if (sourceVal !== undefined && sourceVal !== null && sourceVal !== "") {
-          form.setValue(targetKey as never, sourceVal as never, { shouldDirty: true });
+          if (targetIsEmpty) {
+            form.setValue(targetKey as never, sourceVal as never, { shouldDirty: true });
+          }
+          // Either copied or target already had a value — this mapping is done.
+        } else if (targetIsEmpty) {
+          // Source missing AND target empty → defer; retry when source appears.
+          allResolved = false;
         }
+        // Source missing but target non-empty → nothing to do, don't block prevVal.
+      }
+
+      if (allResolved) {
+        autoFillPrevRef.current[key] = currentVal;
       }
     }
   }, [allFormValues, pkgFields, pkg, form]);
@@ -1774,6 +1947,7 @@ export function PackageBlock({
                                   type="radio"
                                   className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0"
                                   value="true"
+                                  checked={isYes}
                                   {...form.register(nameBase as never, {
                                     required: Boolean(meta.required),
                                     setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
@@ -1786,6 +1960,7 @@ export function PackageBlock({
                                   type="radio"
                                   className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0"
                                   value="false"
+                                  checked={isNo}
                                   {...form.register(nameBase as never, {
                                     required: Boolean(meta.required),
                                     setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
@@ -1857,20 +2032,15 @@ export function PackageBlock({
                                   );
                                 }
                                 return (
-                                  <div key={name} className="space-y-1">
-                                    <Label>{child?.label ?? "Details"}</Label>
-                                    <div className="flex items-center gap-6">
-                                      <label className="inline-flex items-center gap-2 text-sm">
-                                        <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="true" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                        {yesL}
-                                      </label>
-                                      <label className="inline-flex items-center gap-2 text-sm">
-                                        <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="false" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                        {noL}
-                                      </label>
-                                    </div>
-                                    <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
-                                  </div>
+                                  <BooleanRadioGroup
+                                    key={name}
+                                    form={form}
+                                    name={name}
+                                    label={child?.label ?? "Details"}
+                                    yesLabel={yesL}
+                                    noLabel={noL}
+                                    booleanChildren={boolCh as { true?: unknown[]; false?: unknown[] } | undefined}
+                                  />
                                 );
                               }
                               const isRepeatableChild =
@@ -2045,20 +2215,15 @@ export function PackageBlock({
                                   );
                                 }
                                 return (
-                                  <div key={name} className="space-y-1">
-                                    <Label>{child?.label ?? "Details"}</Label>
-                                    <div className="flex items-center gap-6">
-                                      <label className="inline-flex items-center gap-2 text-sm">
-                                        <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="true" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                        {yesL}
-                                      </label>
-                                      <label className="inline-flex items-center gap-2 text-sm">
-                                        <input type="radio" className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black focus-visible:ring-0" value="false" {...form.register(name as never, { setValueAs: (v: string) => (v === "true" ? true : v === "false" ? false : v) })} />
-                                        {noL}
-                                      </label>
-                                    </div>
-                                    <BooleanBranchFields form={form} name={name} booleanChildren={boolCh} />
-                                  </div>
+                                  <BooleanRadioGroup
+                                    key={name}
+                                    form={form}
+                                    name={name}
+                                    label={child?.label ?? "Details"}
+                                    yesLabel={yesL}
+                                    noLabel={noL}
+                                    booleanChildren={boolCh as { true?: unknown[]; false?: unknown[] } | undefined}
+                                  />
                                 );
                               }
                               const isRepeatableChild =

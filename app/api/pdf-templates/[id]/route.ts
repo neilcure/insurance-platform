@@ -98,6 +98,9 @@ export async function PATCH(
   if (Array.isArray(body.radioGroups)) {
     newMeta.radioGroups = body.radioGroups;
   }
+  if (Array.isArray(body.textInputs)) {
+    newMeta.textInputs = body.textInputs;
+  }
   if (Array.isArray(body.pages)) {
     newMeta.pages = body.pages;
   }

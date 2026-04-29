@@ -182,6 +182,35 @@ export type PdfRadioGroup = {
   sectionId?: string;
 };
 
+/**
+ * Interactive AcroForm text input the recipient can type into after the
+ * PDF is generated. Rendered by `pdf-lib`'s `form.createTextField()` so
+ * any standard PDF viewer can fill it in. Position/size in PDF user-
+ * space points (same coordinate system as `PdfDrawing` / `PdfCheckbox`).
+ *
+ * Use this for blanks the policy data can't fill — driver rows the
+ * recipient must enter by hand, additional remarks, signature dates
+ * the client writes in themselves, etc.
+ */
+export type PdfTextInput = {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Pre-fill text in the generated PDF (recipient can overwrite) */
+  defaultValue?: string;
+  /** Editor-only display label so admins remember what each blank is for */
+  label?: string;
+  /** Placeholder shown when the field is empty (PDF viewer support varies) */
+  placeholder?: string;
+  fontSize?: number;
+  /** Allow line breaks inside the field */
+  multiline?: boolean;
+  sectionId?: string;
+};
+
 export type PdfTemplateMeta = {
   filePath: string;
   pages: PdfPageInfo[];
@@ -191,6 +220,7 @@ export type PdfTemplateMeta = {
   drawings?: PdfDrawing[];
   checkboxes?: PdfCheckbox[];
   radioGroups?: PdfRadioGroup[];
+  textInputs?: PdfTextInput[];
   /** Semantic document type for business logic (invoice creation, status advancement) */
   type?: "quotation" | "invoice" | "receipt" | "certificate" | "letter" | "credit_note" | "debit_note" | "endorsement" | "custom";
   flows?: string[];

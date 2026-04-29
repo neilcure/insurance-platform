@@ -1,7 +1,7 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import type {
   PdfFieldMapping, PdfPageInfo, PdfImageMapping, PdfDrawing,
-  PdfCheckbox, PdfRadioGroup,
+  PdfCheckbox, PdfRadioGroup, PdfTextInput,
 } from "@/lib/types/pdf-template";
 import { resolveFieldValue, type MergeContext } from "./resolve-data";
 
@@ -115,6 +115,20 @@ export async function generateFilledPdf(
     drawings?: PdfDrawing[];
     checkboxes?: PdfCheckbox[];
     radioGroups?: PdfRadioGroup[];
+    /**
+     * Fillable AcroForm text inputs the recipient can type into. Each
+     * becomes a real `pdf-lib` TextField widget so any standard PDF
+     * viewer (Adobe, Edge, Chrome, in-app preview) can fill them in.
+     * Flattened along with checkboxes / radios when `opts.flatten` is true.
+     */
+    textInputs?: PdfTextInput[];
+    /**
+     * Per-text-input runtime override keyed by `PdfTextInput.id`.
+     * When provided, takes precedence over `ti.defaultValue`.
+     * Used by the preview dialog so users can pre-fill values before
+     * downloading or emailing.
+     */
+    textInputOverrides?: Record<string, string>;
     /**
      * Per-checkbox runtime override keyed by `PdfCheckbox.id`.
      * When provided, takes precedence over `cb.defaultChecked`.
@@ -332,6 +346,55 @@ export async function generateFilledPdf(
             borderWidth: 0,
           });
         }
+      }
+    }
+  }
+
+  // Fillable AcroForm text inputs — for blanks the policy data can't
+  // fill (e.g. driver rows the recipient must enter manually for a
+  // company-insured policy, additional remarks, hand-written sign-off
+  // dates). Each becomes a real PDF TextField widget readable by any
+  // standard viewer.
+  //
+  // Field name format: `ti_${input.id}` — uses the input's UUID so it
+  // stays unique per template across renders. Pre-filled with
+  // `defaultValue` (or runtime `textInputOverrides[id]`); recipient can
+  // overwrite. Flattened along with other widgets when `opts.flatten`
+  // is true so the email copy can't be tampered with.
+  if (opts?.textInputs?.length) {
+    const form = pdfDoc.getForm();
+    const usedNames = new Set<string>();
+    for (const ti of opts.textInputs) {
+      if (ti.page < 0 || ti.page >= pages.length) continue;
+      const page = pages[ti.page];
+
+      // Auto-disambiguate field names — pdf-lib throws if two TextFields
+      // share a name. UUIDs are unique already; the suffix is a safety net.
+      let fieldName = `ti_${ti.id}`;
+      let suffix = 1;
+      while (usedNames.has(fieldName)) {
+        fieldName = `ti_${ti.id}_${suffix++}`;
+      }
+      usedNames.add(fieldName);
+
+      const tf = form.createTextField(fieldName);
+      const override = opts.textInputOverrides?.[ti.id];
+      const initialValue =
+        override !== undefined ? override : (ti.defaultValue ?? "");
+      if (initialValue) tf.setText(initialValue);
+      if (ti.multiline) tf.enableMultiline();
+
+      tf.addToPage(page, {
+        x: ti.x,
+        y: ti.y,
+        width: ti.width,
+        height: ti.height,
+        borderWidth: 0,
+        backgroundColor: opts?.flatten ? undefined : rgb(0.9, 0.95, 1),
+      });
+
+      if (typeof ti.fontSize === "number" && ti.fontSize > 0) {
+        try { tf.setFontSize(ti.fontSize); } catch { /* pdf-lib may reject zero */ }
       }
     }
   }

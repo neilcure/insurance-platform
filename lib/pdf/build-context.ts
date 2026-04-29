@@ -10,6 +10,39 @@ import { loadAccountingFields, buildColumnFieldMap, getColumnType } from "@/lib/
 import { getDisplayNameFromSnapshot, type PackageFieldVariant } from "@/lib/field-resolver";
 
 /**
+ * Extract the row-child schema of a `meta.repeatable` block (top-level
+ * or nested inside a boolean branch). Returns `[]` when the block is
+ * missing or has no usable child fields.
+ *
+ * The shape lines up with `PackageFieldVariant.repeatableChildren` so
+ * the resolver can evaluate formula children at PDF render time when
+ * the row's stored value is empty (e.g. when the formula was added in
+ * admin AFTER the policy was last saved). Any non-formula children are
+ * still captured so future per-row logic (e.g. server-side validation)
+ * has the full schema to work with.
+ */
+function readRepeatableChildSchemas(
+  repRaw: unknown,
+): { value: string; inputType?: string; formula?: string }[] {
+  if (!repRaw) return [];
+  const repObj = Array.isArray(repRaw)
+    ? (repRaw[0] as Record<string, unknown> | undefined)
+    : (repRaw as Record<string, unknown> | undefined);
+  if (!repObj) return [];
+  const childArr = Array.isArray(repObj.fields) ? repObj.fields : [];
+  const out: { value: string; inputType?: string; formula?: string }[] = [];
+  for (const cRaw of childArr as unknown[]) {
+    const c = (cRaw ?? {}) as Record<string, unknown>;
+    const cv = String(c.value ?? "").trim();
+    if (!cv) continue;
+    const inputType = typeof c.inputType === "string" ? c.inputType : undefined;
+    const formula = typeof c.formula === "string" ? c.formula : undefined;
+    out.push({ value: cv, inputType, formula });
+  }
+  return out;
+}
+
+/**
  * Load admin-configured field variants for the given packages from
  * `form_options`. Used to power the resolver's by-label fallback so a
  * single PDF placement (e.g. one "Make" field) auto-resolves across
@@ -44,6 +77,8 @@ async function loadPackageFieldVariants(
         categories?: unknown;
         options?: unknown;
         booleanChildren?: unknown;
+        repeatable?: unknown;
+        inputType?: unknown;
       } | null;
       const rawCats = Array.isArray(meta?.categories) ? meta!.categories : [];
       const categories = rawCats
@@ -68,11 +103,23 @@ async function loadPackageFieldVariants(
         parentOptionPairs.push({ value: ov, label: ol });
       }
 
+      // Capture top-level repeatable children's schema (including any
+      // formula expressions) so the resolver can evaluate formula
+      // children at PDF render time when the row has no stored value.
+      // See `lib/field-resolver.ts` `__r<N>__` block.
+      const topLevelRepeatableChildren = readRepeatableChildSchemas(
+        meta?.repeatable,
+      );
+
       out[pkg].push({
         key: parentKey,
         label: String(r.label ?? r.value ?? ""),
         categories,
         options: parentOptionPairs.length > 0 ? parentOptionPairs : undefined,
+        repeatableChildren:
+          topLevelRepeatableChildren.length > 0
+            ? topLevelRepeatableChildren
+            : undefined,
       });
 
       // Cascading second-level fields: when an option of this parent
@@ -145,6 +192,7 @@ async function loadPackageFieldVariants(
             const child = (childRaw ?? {}) as {
               label?: unknown;
               options?: unknown;
+              repeatable?: unknown;
             };
             const branchOptionsRaw = Array.isArray(child.options) ? child.options : [];
             const branchOptionPairs: { value: string; label: string }[] = [];
@@ -160,11 +208,23 @@ async function loadPackageFieldVariants(
             // by-label fallback can still find these via the parent's
             // slug if needed.
             const variantLabel = childLabel || String(r.label ?? r.value ?? "");
+            // If this branch child is itself a repeatable (e.g.
+            // "Add More Drivers? — Yes" → repeatable list of drivers),
+            // capture its row schema so the resolver can evaluate any
+            // formula children at PDF render time. The snapshot key
+            // for the array matches this variant's `key`.
+            const branchRepeatableChildren = readRepeatableChildSchemas(
+              child.repeatable,
+            );
             out[pkg].push({
               key: `${parentKey}__${branch}__c${childIdx}`,
               label: variantLabel,
               categories,
               options: branchOptionPairs.length > 0 ? branchOptionPairs : undefined,
+              repeatableChildren:
+                branchRepeatableChildren.length > 0
+                  ? branchRepeatableChildren
+                  : undefined,
             });
           });
         }

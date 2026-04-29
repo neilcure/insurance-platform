@@ -21,11 +21,12 @@ import {
   FolderPlus, Pencil, Check, X,
   FileText, ImagePlus, Eye, EyeOff, Search, Loader2,
   Type, Square, CheckSquare, Settings2, FlaskConical, CheckCircle2,
-  CircleDot,
+  CircleDot, TextCursorInput,
 } from "lucide-react";
 import type {
   PdfTemplateRow, PdfTemplateMeta, PdfFieldMapping, PdfTemplateSection,
   PdfImageMapping, PdfDrawing, PdfCheckbox, PdfRadioGroup, PdfRadioOption,
+  PdfTextInput,
 } from "@/lib/types/pdf-template";
 import {
   DATA_SOURCE_OPTIONS, FIELD_KEY_HINTS, FORMAT_OPTIONS,
@@ -756,6 +757,16 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const [resizingRadioOption, setResizingRadioOption] = React.useState<{ groupId: string; optionId: string } | null>(null);
   const [editingRadioGroupId, setEditingRadioGroupId] = React.useState<string | null>(null);
 
+  // Fillable AcroForm text inputs — recipient can type into these in
+  // the generated PDF. Editor renders a soft-blue rectangle with a
+  // small "Input" tag so admins can find them on the canvas; the
+  // generated PDF replaces it with a real `pdf-lib` TextField widget.
+  const [textInputs, setTextInputs] = React.useState<PdfTextInput[]>(meta.textInputs ?? []);
+  const [selectedTextInputId, setSelectedTextInputId] = React.useState<string | null>(null);
+  const [draggingTextInputId, setDraggingTextInputId] = React.useState<string | null>(null);
+  const [resizingTextInputId, setResizingTextInputId] = React.useState<string | null>(null);
+  const [editingTextInputId, setEditingTextInputId] = React.useState<string | null>(null);
+
   type CtxMenu =
     | { kind: "checkbox"; id: string; screenX: number; screenY: number }
     | { kind: "radioOption"; groupId: string; optionId: string; screenX: number; screenY: number };
@@ -1117,13 +1128,14 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     setSettingsSaving(false);
   }
 
-  const savedRef = React.useRef({ fields: meta.fields ?? [], sections: meta.sections ?? [], images: meta.images ?? [], drawings: meta.drawings ?? [], checkboxes: meta.checkboxes ?? [], radioGroups: meta.radioGroups ?? [], pages: meta.pages ?? [] });
+  const savedRef = React.useRef({ fields: meta.fields ?? [], sections: meta.sections ?? [], images: meta.images ?? [], drawings: meta.drawings ?? [], checkboxes: meta.checkboxes ?? [], radioGroups: meta.radioGroups ?? [], textInputs: meta.textInputs ?? [], pages: meta.pages ?? [] });
   const isDirty = JSON.stringify(fields) !== JSON.stringify(savedRef.current.fields)
     || JSON.stringify(sections) !== JSON.stringify(savedRef.current.sections)
     || JSON.stringify(images) !== JSON.stringify(savedRef.current.images)
     || JSON.stringify(drawings) !== JSON.stringify(savedRef.current.drawings)
     || JSON.stringify(checkboxes) !== JSON.stringify(savedRef.current.checkboxes)
     || JSON.stringify(radioGroups) !== JSON.stringify(savedRef.current.radioGroups)
+    || JSON.stringify(textInputs) !== JSON.stringify(savedRef.current.textInputs)
     || JSON.stringify(pages) !== JSON.stringify(savedRef.current.pages);
 
   const totalPageCount = pages.length;
@@ -1216,6 +1228,13 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
         setCheckboxes((prev) => prev.filter((c) => c.id !== selectedCheckboxId));
         setSelectedCheckboxId(null);
         setEditingCheckboxId(null);
+        return;
+      }
+      if (selectedTextInputId) {
+        e.preventDefault();
+        setTextInputs((prev) => prev.filter((t) => t.id !== selectedTextInputId));
+        setSelectedTextInputId(null);
+        setEditingTextInputId(null);
         return;
       }
       if (selectedRadioOption) {
@@ -2229,6 +2248,107 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     window.addEventListener("mouseup", onUp);
   }
 
+  // ---------- Fillable text input helpers ----------
+
+  function addTextInput() {
+    const newInput: PdfTextInput = {
+      id: crypto.randomUUID(),
+      page: currentPage,
+      x: Math.round(pdfWidth * 0.1),
+      y: Math.round(pdfHeight * 0.5),
+      width: 120,
+      height: 18,
+      defaultValue: "",
+      label: `Input ${textInputs.length + 1}`,
+      fontSize: 10,
+      multiline: false,
+    };
+    setTextInputs((prev) => [...prev, newInput]);
+    setSelectedTextInputId(newInput.id);
+    setSelectedId(null);
+    setSelectedImageId(null);
+    setSelectedDrawingId(null);
+    setSelectedCheckboxId(null);
+    setSelectedRadioOption(null);
+  }
+
+  function updateTextInput(id: string, patch: Partial<PdfTextInput>) {
+    setTextInputs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }
+
+  function handleTextInputMouseDown(inputId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setSelectedTextInputId(inputId);
+    setSelectedId(null);
+    setSelectedImageId(null);
+    setSelectedDrawingId(null);
+    setSelectedCheckboxId(null);
+    setSelectedRadioOption(null);
+
+    const t = textInputs.find((ti) => ti.id === inputId);
+    if (!t) return;
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origX = t.x;
+    const origY = t.y;
+    setDraggingTextInputId(inputId);
+
+    function onMove(ev: MouseEvent) {
+      const dx = (ev.clientX - startX) / scale;
+      const dy = -(ev.clientY - startY) / scale;
+      setTextInputs((prev) =>
+        prev.map((ti) =>
+          ti.id === inputId
+            ? { ...ti, x: Math.round((origX + dx) * 100) / 100, y: Math.round((origY + dy) * 100) / 100 }
+            : ti,
+        ),
+      );
+    }
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setDraggingTextInputId(null);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function handleTextInputResize(inputId: string, edge: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    const t = textInputs.find((ti) => ti.id === inputId);
+    if (!t) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origX = t.x, origY = t.y, origW = t.width, origH = t.height;
+    setResizingTextInputId(inputId);
+
+    function onMove(ev: MouseEvent) {
+      const dx = (ev.clientX - startX) / scale;
+      const dy = -(ev.clientY - startY) / scale;
+      let nx = origX, ny = origY, nw = origW, nh = origH;
+      if (edge.includes("e")) nw = Math.max(20, origW + dx);
+      if (edge.includes("w")) { nw = Math.max(20, origW - dx); nx = origX + (origW - nw); }
+      if (edge.includes("s")) { nh = Math.max(10, origH - dy); ny = origY + (origH - nh); }
+      if (edge.includes("n")) nh = Math.max(10, origH + dy);
+      setTextInputs((prev) =>
+        prev.map((ti) =>
+          ti.id === inputId
+            ? { ...ti, x: Math.round(nx * 100) / 100, y: Math.round(ny * 100) / 100, width: Math.round(nw * 100) / 100, height: Math.round(nh * 100) / 100 }
+            : ti,
+        ),
+      );
+    }
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setResizingTextInputId(null);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   function handleCheckboxResize(checkboxId: string, edge: string, e: React.MouseEvent) {
     e.stopPropagation();
     e.preventDefault();
@@ -2693,10 +2813,10 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
       const res = await fetch(`/api/pdf-templates/${template.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fields, sections, images, drawings, checkboxes, radioGroups, pages }),
+        body: JSON.stringify({ fields, sections, images, drawings, checkboxes, radioGroups, textInputs, pages }),
       });
       if (!res.ok) throw new Error("Save failed");
-      savedRef.current = { fields, sections, images, drawings, checkboxes, radioGroups, pages };
+      savedRef.current = { fields, sections, images, drawings, checkboxes, radioGroups, textInputs, pages };
       toast.success("Fields saved");
     } catch {
       toast.error("Failed to save");
@@ -2859,6 +2979,10 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
         <Button size="sm" variant="outline" onClick={addYesNoSelection} className="gap-1.5" title="Add a Yes/No selection (radio group) — recipient picks one">
           <CircleDot className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Add Yes/No</span>
+        </Button>
+        <Button size="sm" variant="outline" onClick={addTextInput} className="gap-1.5" title="Add a fillable text input the recipient can type into">
+          <TextCursorInput className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Add Input</span>
         </Button>
         <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-700 hidden sm:block" />
         <Button
@@ -3171,6 +3295,83 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                       style={{ top: "100%", backgroundColor: "#059669" }}
                     >
                       {c.label || "Checkbox"}{c.borderless ? " (borderless)" : ""}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Fillable text input overlays — soft-blue rectangles that
+              become real AcroForm TextField widgets in the generated PDF. */}
+          {textInputs.filter((t) => t.page === currentPage).map((t) => {
+            const screenX = t.x * scale;
+            const screenY = (pdfHeight - t.y - t.height) * scale;
+            const cW = t.width * scale;
+            const cH = t.height * scale;
+            const isSel = t.id === selectedTextInputId;
+            const isDrag = t.id === draggingTextInputId;
+            const isResize = t.id === resizingTextInputId;
+            return (
+              <div
+                key={t.id}
+                className={`absolute z-9 select-none ${
+                  isSel || isDrag
+                    ? "ring-2 ring-sky-500"
+                    : "hover:ring-1 hover:ring-sky-400"
+                }`}
+                style={{
+                  left: screenX,
+                  top: screenY,
+                  width: cW,
+                  height: cH,
+                  border: `${Math.max(1, scale)}px dashed rgba(14,165,233,0.6)`,
+                  borderRadius: 2,
+                  backgroundColor: "rgba(14,165,233,0.08)",
+                  cursor: isDrag ? "grabbing" : "grab",
+                  display: "flex",
+                  alignItems: "center",
+                  paddingLeft: Math.max(2, 4 * scale),
+                  fontSize: Math.max(8, (t.fontSize ?? 10) * scale),
+                  color: "#0369a1",
+                  fontStyle: t.defaultValue ? "normal" : "italic",
+                  fontWeight: 500,
+                  lineHeight: 1,
+                  overflow: "hidden",
+                  whiteSpace: t.multiline ? "pre-wrap" : "nowrap",
+                }}
+                onMouseDown={(e) => handleTextInputMouseDown(t.id, e)}
+                onDoubleClick={(e) => { e.stopPropagation(); setEditingTextInputId(t.id); }}
+                title={t.label || "Fillable text input — recipient can type into this in the PDF"}
+              >
+                {t.defaultValue || (t.placeholder ? t.placeholder : "(fillable input)")}
+                {(isSel || isDrag || isResize) && (
+                  <>
+                    {(["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const).map((edge) => {
+                      const isVert = edge === "n" || edge === "s";
+                      const isHoriz = edge === "e" || edge === "w";
+                      const cursor = isVert ? "ns-resize" : isHoriz ? "ew-resize" : (edge === "ne" || edge === "sw") ? "nesw-resize" : "nwse-resize";
+                      const pos: React.CSSProperties = {};
+                      if (edge.includes("n")) pos.top = -4;
+                      if (edge.includes("s")) pos.bottom = -4;
+                      if (edge.includes("e")) pos.right = -4;
+                      if (edge.includes("w")) pos.left = -4;
+                      if (isVert) { pos.left = "50%"; pos.transform = "translateX(-50%)"; }
+                      if (isHoriz) { pos.top = "50%"; pos.transform = "translateY(-50%)"; }
+                      return (
+                        <div
+                          key={edge}
+                          className="absolute w-2 h-2 bg-sky-500 border border-white rounded-sm z-10"
+                          style={{ ...pos, cursor }}
+                          onMouseDown={(ev) => handleTextInputResize(t.id, edge, ev)}
+                        />
+                      );
+                    })}
+                    <div
+                      className="absolute left-0 px-1 rounded-b text-[9px] leading-none py-0.5 whitespace-nowrap text-white pointer-events-none"
+                      style={{ top: "100%", backgroundColor: "#0ea5e9" }}
+                    >
+                      {t.label || "Input"}
                     </div>
                   </>
                 )}
@@ -4575,6 +4776,143 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                   <div>
                     <Label className="text-xs">Height (pts)</Label>
                     <Input type="number" value={ec.height} onChange={(e) => updateCheckbox(ec.id, { height: Math.max(6, Number(e.target.value) || 6) })} className="h-7 text-xs" min={6} step={0.5} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3 pb-1">
+                <Button size="sm" className="w-full gap-1.5" onClick={handleSave} disabled={saving}>
+                  <Save className="h-3.5 w-3.5" />
+                  {saving ? "Saving..." : "Save All"}
+                </Button>
+              </div>
+            </div>
+          </SlideDrawer>
+        );
+      })()}
+
+      {/* Text input editing drawer — opens on double-click */}
+      {(() => {
+        const et = editingTextInputId ? textInputs.find((t) => t.id === editingTextInputId) : null;
+        if (!et || selectedImage) return null;
+        return (
+          <SlideDrawer
+            open
+            onClose={() => setEditingTextInputId(null)}
+            title={`Input: ${et.label || "Untitled"}`}
+            side="right"
+            widthClass="w-[300px] sm:w-[340px]"
+          >
+            <div className="overflow-y-auto p-3 space-y-3 h-full overscroll-contain">
+              <div className="rounded-md border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/30 px-2 py-1.5 text-[11px] text-sky-700 dark:text-sky-300 leading-snug">
+                Renders as a real fillable text field — the recipient can click and type into it in any PDF viewer (Adobe, Edge, Chrome, in-app preview).
+              </div>
+
+              <div className="flex gap-1">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="gap-1 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950"
+                  onClick={() => {
+                    setTextInputs((prev) => prev.filter((tt) => tt.id !== et.id));
+                    setSelectedTextInputId(null);
+                    setEditingTextInputId(null);
+                  }}
+                >
+                  <Trash2 className="h-3 w-3" /> Delete Input
+                </Button>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <Label className="text-xs">Label (editor only)</Label>
+                <Input
+                  value={et.label ?? ""}
+                  onChange={(e) => updateTextInput(et.id, { label: e.target.value })}
+                  placeholder="e.g. Driver 2 Name"
+                  className="h-7 text-xs"
+                />
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  Shown beside the box while editing. Not printed in the generated PDF.
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <Label className="text-xs">Pre-filled value</Label>
+                <Input
+                  value={et.defaultValue ?? ""}
+                  onChange={(e) => updateTextInput(et.id, { defaultValue: e.target.value })}
+                  placeholder="(blank)"
+                  className="h-7 text-xs"
+                />
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  Initial text inside the field when the PDF is generated. The recipient can overwrite it.
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <Label className="text-xs">Placeholder (editor preview)</Label>
+                <Input
+                  value={et.placeholder ?? ""}
+                  onChange={(e) => updateTextInput(et.id, { placeholder: e.target.value })}
+                  placeholder="e.g. Enter driver name"
+                  className="h-7 text-xs"
+                />
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  Hint text shown in the editor preview when the field is empty. Most PDF viewers won't display this in the generated PDF.
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!et.multiline}
+                    onChange={(e) => updateTextInput(et.id, { multiline: e.target.checked })}
+                    className="h-3.5 w-3.5 accent-sky-600"
+                  />
+                  <span>Allow multi-line input</span>
+                </label>
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  Recipient can press Enter for a new line — useful for addresses, remarks, or longer notes.
+                </p>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <Label className="text-xs">Font size (pts)</Label>
+                <Input
+                  type="number"
+                  value={et.fontSize ?? 10}
+                  min={6}
+                  step={0.5}
+                  onChange={(e) => updateTextInput(et.id, { fontSize: Math.max(6, Number(e.target.value) || 10) })}
+                  className="h-7 text-xs"
+                />
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-2">Position</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">X (pts)</Label>
+                    <Input type="number" value={et.x} onChange={(e) => updateTextInput(et.id, { x: Number(e.target.value) || 0 })} className="h-7 text-xs" step={0.5} />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Y (pts)</Label>
+                    <Input type="number" value={et.y} onChange={(e) => updateTextInput(et.id, { y: Number(e.target.value) || 0 })} className="h-7 text-xs" step={0.5} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
+                <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-2">Size</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">Width (pts)</Label>
+                    <Input type="number" value={et.width} onChange={(e) => updateTextInput(et.id, { width: Math.max(20, Number(e.target.value) || 20) })} className="h-7 text-xs" min={20} step={0.5} />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Height (pts)</Label>
+                    <Input type="number" value={et.height} onChange={(e) => updateTextInput(et.id, { height: Math.max(10, Number(e.target.value) || 10) })} className="h-7 text-xs" min={10} step={0.5} />
                   </div>
                 </div>
               </div>

@@ -326,7 +326,10 @@ export function buildPolicyPayload(
   // Drivers?" repeatable but left the OWNER driver fields empty, treat the
   // first slot as the owner so the resulting snapshot matches a wizard-built
   // policy byte-for-byte. See `promoteSingleDriverToOwner` for full rules.
-  promoteSingleDriverToOwner(packages);
+  // Only runs when the insured is personal-with-DL — for company / no-DL
+  // insureds, the "owner-as-driver" concept doesn't apply and the data must
+  // stay in the slot so it renders as Driver 1, 2, … in the repeatable.
+  promoteSingleDriverToOwner(packages, insured);
 
   const payload: ImportPolicyPayload = {
     flowKey,
@@ -374,11 +377,20 @@ const DRIVER_SLOT_TO_OWNER_KEY: Record<string, string> = {
  *     under ugly nested labels.
  *
  * Safety guards (any failed guard short-circuits):
+ *   - Insured must be personal AND have ticked "with Driving Licence"
+ *     (otherwise the owner-as-driver concept doesn't apply — see below).
  *   - Package must be `driver` and use the standard `moreDriver` boolean key.
  *   - The slot array must have exactly ONE entry (multi-driver imports keep
  *     the original shape — those legitimately ARE multiple drivers).
  *   - Every owner field that has a slot counterpart must currently be empty
  *     (we never overwrite admin-supplied owner data).
+ *
+ * The personal-with-DL guard is critical: for company insureds (who can't
+ * drive) and personal insureds without a DL, the "Driver Details (Owner)"
+ * group is hidden in the wizard via groupShowWhenMap. Promoting slot data
+ * into owner fields for those policies would orphan the data — it would be
+ * stored on the snapshot but invisible in every UI surface. Keeping the
+ * data in the slot lets it render as Driver 1, 2, … in the repeatable.
  *
  * Slot-only sub-fields (e.g. `dExperience`, which has no owner counterpart)
  * are dropped silently — they're rare and were almost always entered by
@@ -387,10 +399,21 @@ const DRIVER_SLOT_TO_OWNER_KEY: Record<string, string> = {
  */
 function promoteSingleDriverToOwner(
   packages: Record<string, { category?: string; values: Record<string, unknown> }>,
+  insured: Record<string, unknown>,
 ): void {
   const driver = packages.driver;
   if (!driver) return;
   const v = driver.values;
+
+  const insuredCat = String(
+    insured.insured__category ?? insured.insured_category ?? insured.insuredType ?? "",
+  ).trim().toLowerCase();
+  const dlRaw =
+    insured.insured__theOqnwewithDL ??
+    insured.insured_theoqnwewithdl ??
+    insured.insured__theoqnwewithdl;
+  const hasDL = dlRaw === true || String(dlRaw).trim().toLowerCase() === "true";
+  if (insuredCat !== "personal" || !hasDL) return;
 
   const slotKey = "driver__moreDriver__true__c0";
   const slot = v[slotKey];

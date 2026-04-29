@@ -29,6 +29,7 @@ export async function POST(request: Request) {
   type TemplateOverride = {
     checkboxOverrides?: Record<string, boolean>;
     radioOverrides?: Record<string, string>;
+    textInputOverrides?: Record<string, string>;
   };
   const templateOverrides: Record<string, TemplateOverride> =
     body.templateOverrides && typeof body.templateOverrides === "object"
@@ -97,8 +98,10 @@ export async function POST(request: Request) {
         drawings: meta.drawings,
         checkboxes: meta.checkboxes,
         radioGroups: meta.radioGroups,
+        textInputs: meta.textInputs,
         checkboxOverrides: ov.checkboxOverrides,
         radioOverrides: ov.radioOverrides,
+        textInputOverrides: ov.textInputOverrides,
         loadImage: (storedName: string) => readPdfTemplate(storedName),
       });
       const base64 = Buffer.from(filledPdf).toString("base64");

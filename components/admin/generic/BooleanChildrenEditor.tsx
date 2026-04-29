@@ -403,7 +403,7 @@ type RepeatableConfig = {
   itemLabel?: string;
   min?: number;
   max?: number;
-  fields?: { label?: string; value?: string; inputType?: string; options?: OptionRow[] }[];
+  fields?: { label?: string; value?: string; inputType?: string; options?: OptionRow[]; formula?: string }[];
 };
 
 function RepeatableEditor({
@@ -463,53 +463,71 @@ function RepeatableEditor({
       </div>
       <div className="grid gap-2">
         {fields.map((rf, rfi) => (
-          <div key={rfi} className="grid grid-cols-12 items-center gap-2">
-            <div className="col-span-4">
-              <Input
-                placeholder="Label"
-                value={String(rf?.label ?? "")}
-                onChange={(e) => updateField(rfi, { label: e.target.value })}
-              />
+          <div key={rfi}>
+            <div className="grid grid-cols-12 items-center gap-2">
+              <div className="col-span-4">
+                <Input
+                  placeholder="Label"
+                  value={String(rf?.label ?? "")}
+                  onChange={(e) => updateField(rfi, { label: e.target.value })}
+                />
+              </div>
+              <div className="col-span-4">
+                <Input
+                  placeholder="Value (key)"
+                  value={String(rf?.value ?? "")}
+                  onChange={(e) => updateField(rfi, { value: e.target.value })}
+                />
+              </div>
+              <div className="col-span-3">
+                <select
+                  className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  value={String(rf?.inputType ?? "string")}
+                  onChange={(e) => {
+                    const t = e.target.value;
+                    updateField(rfi, {
+                      inputType: t,
+                      options: t === "select" || t === "multi_select" ? (rf?.options ?? []) : undefined,
+                    });
+                  }}
+                >
+                  <option value="string">String</option>
+                  <option value="number">Number</option>
+                  <option value="currency">Currency</option>
+                  <option value="date">Date</option>
+                  <option value="select">Select</option>
+                  <option value="multi_select">Multi Select</option>
+                  <option value="boolean">Boolean (Yes/No)</option>
+                  <option value="formula">Formula</option>
+                </select>
+              </div>
+              <div className="col-span-1 flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => onChange({ ...rep, fields: fields.filter((_, i) => i !== rfi) })}
+                >
+                  Remove
+                </Button>
+              </div>
             </div>
-            <div className="col-span-4">
-              <Input
-                placeholder="Value (key)"
-                value={String(rf?.value ?? "")}
-                onChange={(e) => updateField(rfi, { value: e.target.value })}
-              />
-            </div>
-            <div className="col-span-3">
-              <select
-                className="h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                value={String(rf?.inputType ?? "string")}
-                onChange={(e) => {
-                  const t = e.target.value;
-                  updateField(rfi, {
-                    inputType: t,
-                    options: t === "select" || t === "multi_select" ? (rf?.options ?? []) : undefined,
-                  });
-                }}
-              >
-                <option value="string">String</option>
-                <option value="number">Number</option>
-                <option value="currency">Currency</option>
-                <option value="date">Date</option>
-                <option value="select">Select</option>
-                <option value="multi_select">Multi Select</option>
-                <option value="boolean">Boolean (Yes/No)</option>
-                <option value="formula">Formula</option>
-              </select>
-            </div>
-            <div className="col-span-1 flex justify-end">
-              <Button
-                type="button"
-                size="sm"
-                variant="destructive"
-                onClick={() => onChange({ ...rep, fields: fields.filter((_, i) => i !== rfi) })}
-              >
-                Remove
-              </Button>
-            </div>
+            {rf?.inputType === "formula" && (
+              <div className="col-span-12 mt-1">
+                <Label>Formula Expression</Label>
+                <Input
+                  placeholder="e.g. YEARS_BETWEEN(TODAY, {dob})"
+                  value={String(rf?.formula ?? "")}
+                  onChange={(e) => updateField(rfi, { formula: e.target.value })}
+                />
+                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  Reference sibling fields in the same row using {"{field_key}"} syntax. Supports
+                  {" "}<strong>YEARS_BETWEEN</strong> / <strong>MONTHS_BETWEEN</strong> /
+                  {" "}<strong>DAYS_BETWEEN</strong>, <strong>TODAY</strong>, and
+                  {" "}<strong>FLOOR</strong> / <strong>CEIL</strong> / <strong>ROUND</strong>.
+                </p>
+              </div>
+            )}
           </div>
         ))}
       </div>

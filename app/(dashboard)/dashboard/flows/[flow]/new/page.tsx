@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/drawer";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { X, UserPlus, UserSearch, ArrowRight, ArrowLeft, Check, Loader2 } from "lucide-react";
+import { extractDisplayName } from "@/lib/import/entity-display-name";
 
 type FlowOption = {
   id: number;
@@ -605,32 +606,16 @@ export default function FlowNewPage() {
                 const insured = (extra?.insuredSnapshot ?? {}) as Record<string, unknown>;
                 const rawType = String(insured?.insuredType ?? insured?.insured__category ?? "").trim().toLowerCase();
                 const category = rawType === "company" || rawType === "personal" ? rawType : "";
-                let displayName = "";
-                const norm = (k: string) => k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
-                if (category === "personal") {
-                  let first = "", last = "";
-                  for (const [k, v] of Object.entries(insured)) {
-                    const n = norm(k), s = String(v ?? "").trim();
-                    if (!s) continue;
-                    if (!last && /lastname|surname/.test(n)) last = s;
-                    if (!first && /firstname/.test(n)) first = s;
-                  }
-                  displayName = [last, first].filter(Boolean).join(" ");
-                }
-                if (!displayName) {
-                  for (const [k, v] of Object.entries(insured)) {
-                    const n = norm(k), s = String(v ?? "").trim();
-                    if (!s) continue;
-                    if (/companyname|organisationname|orgname/.test(n)) { displayName = s; break; }
-                  }
-                }
-                if (!displayName) {
-                  for (const [k, v] of Object.entries(insured)) {
-                    const n = norm(k), s = String(v ?? "").trim();
-                    if (!s) continue;
-                    if (/fullname|^name$/.test(n)) { displayName = s; break; }
-                  }
-                }
+                // Use the shared canonical extractor so:
+                //  - keys like `insured__companyName`, `insured_companyName`,
+                //    or bare `companyName` all resolve through `insuredGet`
+                //    (handles legacy snapshots where multiple key variants
+                //    coexist and the wrong one would otherwise win).
+                //  - the picker label matches what the rest of the app shows
+                //    for the same client (header chips, PDF templates, etc.).
+                //  - personal-type insured falls back through `lastName +
+                //    firstName` → `fullName` correctly.
+                const displayName = extractDisplayName(extra ?? undefined);
                 return { id: policyId, clientNumber: policyNumber, category, displayName };
               })
               .filter((r) => Number.isFinite(r.id) && r.id > 0),
@@ -691,65 +676,20 @@ export default function FlowNewPage() {
         const res = await fetch(`/api/policies?flow=${encodeURIComponent(pickerFlow)}`, { cache: "no-store" });
         const json = (res.ok ? ((await res.json()) as RecordRow[]) : []);
         if (!cancelled) {
-          const norm = (k: string) => k.replace(/^[a-zA-Z0-9]+__?/, "").toLowerCase().replace(/[^a-z]/g, "");
-          const SKIP_KEYS = /district|area|region|street|block|floor|flat|room|address|city|state|zip|postal|country|phone|tel|fax|mobile|email|account|number|date|remark|note|memo/;
+          // Use the shared canonical extractor — same path the EntityPickerDrawer
+          // and "Select Existing Client" picker use. Tries `insuredSnapshot`
+          // (via `getInsuredDisplayName`) FIRST so a policy with a personal
+          // insured doesn't accidentally surface a driver's first/last name
+          // from the driver package; falls back to scanning packages with the
+          // `insured` package prioritised; finally falls back to broker /
+          // company / vendor heuristics for entity-type pickers.
           setRecordRows(
             (Array.isArray(json) ? json : [])
               .filter((r: RecordRow) => Number.isFinite(r.policyId) && r.policyId > 0)
               .map((r: RecordRow) => {
                 const extra = (r.carExtra ?? null) as Record<string, unknown> | null;
                 if (!extra) return r;
-                let displayName = "";
-                const pkgs = (extra.packagesSnapshot ?? {}) as Record<string, unknown>;
-                for (const [pkgKey, data] of Object.entries(pkgs)) {
-                  if (displayName || !data || typeof data !== "object") continue;
-                  const structured = data as { values?: Record<string, unknown> };
-                  const vals = structured.values ?? (data as Record<string, unknown>);
-                  if (!vals || typeof vals !== "object") continue;
-                  let first = "", last = "";
-                  for (const [k, v] of Object.entries(vals)) {
-                    const n = norm(k), s = String(v ?? "").trim();
-                    if (!s) continue;
-                    if (!last && /lastname|surname|lname/.test(n)) last = s;
-                    if (!first && /firstname|fname/.test(n)) first = s;
-                  }
-                  if (first || last) { displayName = [last, first].filter(Boolean).join(" "); continue; }
-                  for (const [k, v] of Object.entries(vals)) {
-                    const n = norm(k), s = String(v ?? "").trim();
-                    if (!s) continue;
-                    if (/companyname|organisationname|orgname|corporatename|firmname/.test(n)) { displayName = s; break; }
-                  }
-                  if (!displayName) {
-                    for (const [k, v] of Object.entries(vals)) {
-                      const n = norm(k), s = String(v ?? "").trim();
-                      if (!s) continue;
-                      if (/fullname|displayname|^name$|title|label/.test(n)) { displayName = s; break; }
-                    }
-                  }
-                  if (!displayName) {
-                    const pkgNorm = pkgKey.toLowerCase().replace(/[^a-z]/g, "");
-                    for (const [k, v] of Object.entries(vals)) {
-                      const n = norm(k), s = String(v ?? "").trim();
-                      if (!s || typeof v !== "string") continue;
-                      if (n === pkgNorm && s.length > 1 && !SKIP_KEYS.test(n)) { displayName = s; break; }
-                    }
-                  }
-                  if (!displayName) {
-                    for (const [k, v] of Object.entries(vals)) {
-                      const n = norm(k), s = String(v ?? "").trim();
-                      if (!s || typeof v !== "string") continue;
-                      if (/name|broker|agent|company|insurer|vendor|supplier|partner/.test(n) && !SKIP_KEYS.test(n)) { displayName = s; break; }
-                    }
-                  }
-                }
-                const insured = (extra.insuredSnapshot ?? null) as Record<string, unknown> | null;
-                if (!displayName && insured) {
-                  for (const [k, v] of Object.entries(insured)) {
-                    const n = norm(k), s = String(v ?? "").trim();
-                    if (!s) continue;
-                    if (/companyname|fullname|^name$|organisationname/.test(n)) { displayName = s; break; }
-                  }
-                }
+                const displayName = extractDisplayName(extra);
                 return { ...r, displayName };
               }),
           );

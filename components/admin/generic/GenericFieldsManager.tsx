@@ -8,9 +8,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Plus, Pencil, Eye, EyeOff, Save, X, Trash2, ChevronUp, ChevronDown } from "lucide-react";
+import Link from "next/link";
 import { Checkbox } from "@/components/ui/checkbox";
 import { GroupShowWhenConfig } from "@/components/admin/generic/GroupShowWhenConfig";
 import { EntityPickerConfigEditor, type EntityPickerConfig } from "@/components/admin/generic/EntityPickerConfig";
+import { AutoFillConfigEditor, type AutoFillConfig } from "@/components/admin/generic/AutoFillConfig";
 import type { InputType } from "@/lib/types/form";
 import { InputTypeSelect } from "@/components/admin/generic/InputTypeSelect";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
@@ -67,6 +69,9 @@ type FieldMeta = {
   // Display formatting
   labelCase?: "original" | "upper" | "lower" | "title";
   valueCase?: "original" | "upper" | "lower" | "title"; // for string inputs
+  // Auto-fill (boolean fields only): copy values from another package
+  // when this field's value matches the trigger.
+  autoFill?: AutoFillConfig;
   dateFormat?: "DD-MM-YYYY" | "YYYY-MM-DD"; // for date inputs
   numberFormat?: "plain" | "currency" | "percent"; // for number inputs
   currencyCode?: string; // when numberFormat === "currency"
@@ -794,25 +799,14 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
             <span className="hidden sm:inline">Copy from</span>
           </Button>
           <Button
+            asChild
             size="sm"
             className="inline-flex items-center gap-2 self-start sm:self-auto"
-            onClick={() => {
-              editSnapshot.current = null;
-              setEditing(null);
-              setForm({
-                label: "",
-                value: "",
-                valueType: "string",
-                sortOrder: 0,
-                isActive: true,
-                meta: { inputType: "string", required: false, categories: [] },
-              });
-              setApplyToAll(true);
-              setOpen(true);
-            }}
           >
-            <Plus className="h-4 w-4 sm:hidden lg:inline" />
-            <span className="hidden sm:inline">Add</span>
+            <Link href={`/admin/policy-settings/${pkg}/fields/new`}>
+              <Plus className="h-4 w-4 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Add</span>
+            </Link>
           </Button>
         </div>
       </div>
@@ -1043,8 +1037,10 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                   </span>
                 </div>
                 <div className="mt-2 flex gap-2 sm:hidden">
-                  <Button size="sm" variant="secondary" onClick={() => startEdit(r)} aria-label="Edit">
-                    <Pencil className="h-4 w-4" />
+                  <Button asChild size="sm" variant="secondary" aria-label="Edit">
+                    <Link href={`/admin/policy-settings/${pkg}/fields/${r.id}`}>
+                      <Pencil className="h-4 w-4" />
+                    </Link>
                   </Button>
                   <Button size="sm" variant={r.isActive ? "outline" : "default"} onClick={() => toggleActive(r)} aria-label={r.isActive ? "Disable" : "Enable"}>
                     {r.isActive ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -1089,9 +1085,11 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
               </TableCell>
               <TableCell className="hidden text-right sm:table-cell p-2 sm:p-4">
                 <div className="flex justify-end gap-2">
-                  <Button size="sm" variant="secondary" onClick={() => startEdit(r)} className="inline-flex items-center gap-2">
-                    <Pencil className="h-4 w-4 sm:hidden lg:inline" />
-                    <span className="hidden sm:inline">Edit</span>
+                  <Button asChild size="sm" variant="secondary" className="inline-flex items-center gap-2">
+                    <Link href={`/admin/policy-settings/${pkg}/fields/${r.id}`}>
+                      <Pencil className="h-4 w-4 sm:hidden lg:inline" />
+                      <span className="hidden sm:inline">Edit</span>
+                    </Link>
                   </Button>
                   <Button size="sm" variant={r.isActive ? "outline" : "default"} onClick={() => toggleActive(r)} className="inline-flex items-center gap-2">
                     {r.isActive ? <EyeOff className="h-4 w-4 sm:hidden lg:inline" /> : <Eye className="h-4 w-4 sm:hidden lg:inline" />}
@@ -1127,7 +1125,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit Field" : "Add Field"}</DialogTitle>
           </DialogHeader>
@@ -1159,7 +1157,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                     onChange={(e) => updateMeta("formula" as any, e.target.value as any)}
                   />
                   <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                    Reference other fields using {"{field_key}"} syntax. Supports numeric math (+, -, *, /), date arithmetic (e.g. {"{start_date}"} + 364), and <strong>TODAY</strong> for the current date (e.g. TODAY, TODAY + 30).
+                    Reference other fields using {"{field_key}"} syntax. Supports numeric math (+, -, *, /), date arithmetic (e.g. {"{start_date}"} + 364), <strong>TODAY</strong> for the current date, date diffs <strong>YEARS_BETWEEN</strong> / <strong>MONTHS_BETWEEN</strong> / <strong>DAYS_BETWEEN</strong> (e.g. YEARS_BETWEEN(TODAY, {"{date_of_birth}"}) for age), and rounding <strong>FLOOR</strong> / <strong>CEIL</strong> / <strong>ROUND</strong>.
                   </p>
                 </div>
               </div>
@@ -3313,6 +3311,13 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                     </div>
                   </div>
                 </div>
+                <AutoFillConfigEditor
+                  value={(form.meta as FieldMeta | undefined)?.autoFill}
+                  onChange={(next) => updateMeta("autoFill", next)}
+                  allPackages={allPackagesForGroups}
+                  currentPkg={pkg}
+                  currentFieldValue={form.value ?? ""}
+                />
               </div>
             ) : null}
 

@@ -28,6 +28,8 @@ export async function POST(
     body.checkboxOverrides && typeof body.checkboxOverrides === "object" ? body.checkboxOverrides : undefined;
   const radioOverrides: Record<string, string> | undefined =
     body.radioOverrides && typeof body.radioOverrides === "object" ? body.radioOverrides : undefined;
+  const textInputOverrides: Record<string, string> | undefined =
+    body.textInputOverrides && typeof body.textInputOverrides === "object" ? body.textInputOverrides : undefined;
 
   if (!policyId) {
     return NextResponse.json({ error: "policyId is required" }, { status: 400 });
@@ -78,8 +80,10 @@ export async function POST(
       drawings: meta.drawings,
       checkboxes: meta.checkboxes,
       radioGroups: meta.radioGroups,
+      textInputs: meta.textInputs,
       checkboxOverrides,
       radioOverrides,
+      textInputOverrides,
       loadImage: (storedName: string) => readPdfTemplate(storedName),
     });
 

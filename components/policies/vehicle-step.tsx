@@ -248,6 +248,61 @@ export function VehicleStep({
 
 // Field extracted to @/components/ui/form-field
 
+/**
+ * Boolean Yes/No radio pair bound to RHF.
+ *
+ * RHF's auto-`checked` matching for radios uses `radio.value === stateValue`
+ * with strict equality. Because `setValueAs` coerces clicks into a boolean
+ * (and saved values from the DB also arrive as booleans), `"true" === true`
+ * is `false` and the radios would render unselected on re-load even when the
+ * value was saved correctly. Drive `checked` explicitly via
+ * `String(curr ?? "") === "true"` so it works for both string and boolean
+ * shapes (and `null` / `undefined` / `""` correctly mean "no selection").
+ */
+function VehicleBooleanRadioPair({
+  control,
+  register,
+  name,
+  required,
+}: {
+  control: ReturnType<typeof useForm<VehicleFormValues>>["control"];
+  register: ReturnType<typeof useForm<VehicleFormValues>>["register"];
+  name: string;
+  required?: boolean;
+}) {
+  const curr = useWatch({ control, name: name as never }) as unknown;
+  const isYes = String(curr ?? "") === "true";
+  const isNo = String(curr ?? "") === "false";
+  return (
+    <div className="flex items-center gap-6">
+      <label className="inline-flex items-center gap-2 text-sm">
+        <input
+          type="radio"
+          value="true"
+          checked={isYes}
+          {...register(name as never, {
+            required: Boolean(required),
+            setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
+          })}
+        />
+        Yes
+      </label>
+      <label className="inline-flex items-center gap-2 text-sm">
+        <input
+          type="radio"
+          value="false"
+          checked={isNo}
+          {...register(name as never, {
+            required: Boolean(required),
+            setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
+          })}
+        />
+        No
+      </label>
+    </div>
+  );
+}
+
 function DynamicCommonFields({
   category,
   register,
@@ -531,30 +586,7 @@ function DynamicCommonFields({
                 <Label>
                   {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                 </Label>
-                <div className="flex items-center gap-6">
-                  <label className="inline-flex items-center gap-2 text-sm">
-                    <input
-                      type="radio"
-                      value="true"
-                      {...register(f.value, {
-                        required: Boolean(f.meta?.required),
-                        setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
-                      })}
-                    />
-                    Yes
-                  </label>
-                  <label className="inline-flex items-center gap-2 text-sm">
-                    <input
-                      type="radio"
-                      value="false"
-                      {...register(f.value, {
-                        required: Boolean(f.meta?.required),
-                        setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
-                      })}
-                    />
-                    No
-                  </label>
-                </div>
+                <VehicleBooleanRadioPair control={control} register={register} name={f.value} required={Boolean(f.meta?.required)} />
               </div>
               {/* Render child for selected branch */}
               {(() => {

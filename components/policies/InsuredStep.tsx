@@ -1,11 +1,70 @@
 "use client";
 
 import * as React from "react";
-import type { UseFormReturn } from "react-hook-form";
+import { useWatch, type UseFormReturn } from "react-hook-form";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { maskDDMMYYYY } from "@/lib/format/date";
 import { Field } from "@/components/ui/form-field";
+
+/**
+ * Boolean Yes/No radio pair bound to RHF.
+ *
+ * RHF's auto-`checked` matching for radios uses `radio.value === stateValue`
+ * with strict equality. Because `setValueAs` coerces clicks into a boolean
+ * (and saved values from the DB also arrive as booleans), `"true" === true`
+ * is `false` and the radios would render unselected on re-load even when the
+ * value was saved correctly. Driving `checked` explicitly via
+ * `String(curr ?? "") === "true"` works for boolean and string state shapes
+ * (and safely handles `null` / `undefined` / `""` as "no selection").
+ */
+function BooleanRadioPair({
+  form,
+  name,
+  yesLabel = "Yes",
+  noLabel = "No",
+  required,
+}: {
+  form: UseFormReturn<Record<string, unknown>>;
+  name: string;
+  yesLabel?: string;
+  noLabel?: string;
+  required?: boolean;
+}) {
+  const curr = useWatch({ control: form.control, name: name as string });
+  const isYes = String(curr ?? "") === "true";
+  const isNo = String(curr ?? "") === "false";
+  return (
+    <div className="flex items-center gap-6">
+      <label className="inline-flex items-center gap-2 text-sm">
+        <input
+          type="radio"
+          className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black"
+          value="true"
+          checked={isYes}
+          {...form.register(name as never, {
+            required: Boolean(required),
+            setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
+          })}
+        />
+        {yesLabel}
+      </label>
+      <label className="inline-flex items-center gap-2 text-sm">
+        <input
+          type="radio"
+          className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black"
+          value="false"
+          checked={isNo}
+          {...form.register(name as never, {
+            required: Boolean(required),
+            setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
+          })}
+        />
+        {noLabel}
+      </label>
+    </div>
+  );
+}
 
 type DynamicField = {
   label: string;
@@ -259,32 +318,7 @@ export function InsuredStep({
                         <Label>
                           {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                         </Label>
-                        <div className="flex items-center gap-6">
-                          <label className="inline-flex items-center gap-2 text-sm">
-                            <input
-                              type="radio"
-                              className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black"
-                              value="true"
-                              {...form.register(nameBase as never, {
-                                required: Boolean(f.meta?.required),
-                                setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
-                              })}
-                            />
-                            Yes
-                          </label>
-                          <label className="inline-flex items-center gap-2 text-sm">
-                            <input
-                              type="radio"
-                              className="accent-neutral-900 dark:accent-white border border-neutral-400 dark:border-black"
-                              value="false"
-                              {...form.register(nameBase as never, {
-                                required: Boolean(f.meta?.required),
-                                setValueAs: (v) => (v === "true" ? true : v === "false" ? false : v),
-                              })}
-                            />
-                            No
-                          </label>
-                        </div>
+                        <BooleanRadioPair form={form} name={nameBase} required={Boolean(f.meta?.required)} />
                       </div>
                       {isYes && yesChildren.length > 0 ? (
                         <div className="grid grid-cols-2 gap-4">

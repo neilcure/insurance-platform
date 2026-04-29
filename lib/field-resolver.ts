@@ -5,6 +5,7 @@
  * and any future consumer that needs to pull a value from policy
  * snapshots, accounting, statements, or entity data.
  */
+import { evaluateFormula } from "@/lib/formula";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -70,6 +71,16 @@ export type PackageFieldVariant = {
    * Match is case-insensitive on the option `value`.
    */
   options?: { value: string; label: string }[];
+  /**
+   * Schema of each row's child fields when this variant represents a
+   * repeatable parent (top-level `inputType: "repeatable"` OR a boolean
+   * branch child with `inputType: "repeatable"`). Used by the resolver's
+   * `__r<N>__` path to evaluate **formula** children at PDF render time
+   * when the row's stored value is empty — covers the case where the
+   * formula was added to admin AFTER policies were saved (so the wizard
+   * never had a chance to compute and persist the value).
+   */
+  repeatableChildren?: { value: string; inputType?: string; formula?: string }[];
 };
 
 export type StatementCtx = {
@@ -353,6 +364,28 @@ function resolveInsuredDisplayName(insured: Record<string, unknown>): string {
 const PERSONAL_ID_KEYS = ["idNumber", "hkid", "idCard", "id_card", "identityNumber"] as const;
 const COMPANY_ID_KEYS = ["brNumber", "ciNumber", "crNumber", "businessNumber", "companyId"] as const;
 
+/**
+ * Driver-package OWNER field key → equivalent sub-field key inside one
+ * row of the `moreDriver = Yes` repeatable. Used by `resolvePackage` to
+ * fall back to `moreDriver[0]` when the owner field is empty (the case
+ * for company-insured and personal-without-license policies, where the
+ * primary driver is entered as the first extra-driver row instead of
+ * through the owner section).
+ *
+ * Lower-cased keys for case-insensitive lookup. Mirror of
+ * `DRIVER_SLOT_TO_OWNER_KEY` in `lib/import/payload.ts` — keep both in
+ * sync when admins rename driver fields.
+ */
+const OWNER_KEY_TO_DRIVER_SLOT_CHILD: Record<string, string> = {
+  lastname: "lastName",
+  firstname: "firstName",
+  ownerboa: "dob",
+  ownerdlicence: "dLicense",
+  relationshiptheowner: "relationship",
+  occuption: "occuption",
+  ownerpostion: "postion",
+};
+
 function resolveInsuredPrimaryId(insured: Record<string, unknown>): string {
   const insuredType = String(
     insuredGet(insured, "insuredType") || insuredGet(insured, "category") || ""
@@ -558,7 +591,36 @@ function resolvePackage(
       const row = arr[idx];
       if (row && typeof row === "object") {
         const v = fuzzyGet(row as Record<string, unknown>, childKey);
-        return v ?? "";
+        if (v !== undefined && v !== null && v !== "") return v;
+        // FORMULA-AT-RENDER FALLBACK: if the row has no stored value
+        // for this child, but the admin field is configured as a
+        // formula (e.g. "Age = YEARS_BETWEEN(TODAY, {dob})"), evaluate
+        // the formula now using the row's other values. Covers the
+        // case where the formula was added to admin AFTER policies
+        // were saved (so the wizard's `RepeatableFormulaCell` never
+        // had a chance to compute and persist it). The wizard still
+        // computes and persists for newly-saved policies — this just
+        // back-fills existing rows so admins don't have to re-open
+        // and save every policy after a formula change.
+        const variant = findVariantForKey(
+          ctx?.packageFieldVariants?.[packageName],
+          parentKey,
+        );
+        const childSchema = variant?.repeatableChildren?.find(
+          (c) => c.value.toLowerCase() === childKey.toLowerCase(),
+        );
+        if (
+          childSchema
+          && String(childSchema.inputType ?? "").toLowerCase() === "formula"
+          && childSchema.formula
+        ) {
+          const computed = evaluateFormula(
+            childSchema.formula,
+            row as Record<string, unknown>,
+          );
+          if (computed) return computed;
+        }
+        return "";
       }
     }
     return "";
@@ -593,6 +655,47 @@ function resolvePackage(
     fuzzyGet(vals, `${packageName}__${key}`) ??
     fuzzyGet(vals, `${packageName}_${key}`)
   );
+
+  // Driver-package owner → moreDriver[0] fallback.
+  //
+  // The wizard has TWO physical places where Driver 1's identity may live:
+  //   (a) `driver` package OWNER fields (driver__lastname, driver__ownerBoA, …)
+  //       — populated automatically from the insured when the personal
+  //       insured ticks "The insured with Driving License? = Yes" (via the
+  //       autoFill config on form_options.theOqnwewithDL), OR entered
+  //       manually for company / personal-no-license policies that still
+  //       want to use the owner section.
+  //   (b) The `moreDriver = Yes` boolean-child REPEATABLE
+  //       (`driver__moreDriver__true__c0[0]`) — used when the insured is a
+  //       company or personal-without-license, so the actual primary driver
+  //       is entered as the FIRST extra-driver row.
+  //
+  // To let a single PDF placement of "Driver Information" render the
+  // correct value across all three scenarios (personal+yes / personal+no /
+  // company), if the owner field is empty we transparently fall back to
+  // the equivalent sub-field of moreDriver row 0. The owner ↔ slot key
+  // mapping mirrors `DRIVER_SLOT_TO_OWNER_KEY` in lib/import/payload.ts.
+  const directIsEmpty = direct === undefined || direct === null || direct === "";
+  if (directIsEmpty && packageName.toLowerCase() === "driver") {
+    const slotChildKey = OWNER_KEY_TO_DRIVER_SLOT_CHILD[key.toLowerCase()];
+    if (slotChildKey) {
+      const slotArr =
+        fuzzyGet(vals, "moreDriver__true__c0")
+        ?? fuzzyGet(vals, "driver__moreDriver__true__c0")
+        ?? fuzzyGet(vals, "driver_moreDriver__true__c0");
+      if (Array.isArray(slotArr) && slotArr.length > 0) {
+        const row0 = slotArr[0] as Record<string, unknown> | null | undefined;
+        if (row0 && typeof row0 === "object") {
+          const v = fuzzyGet(row0, slotChildKey);
+          if (v !== undefined && v !== null && v !== "") {
+            const variant = findVariantForKey(ctx?.packageFieldVariants?.[packageName], key);
+            return translateOptionValue(v, variant);
+          }
+        }
+      }
+    }
+  }
+
   if (direct !== undefined && direct !== null && direct !== "") {
     // SMART BOOLEAN ROUTING: when the resolved value is a boolean
     // (literal or "true"/"false" string) AND the admin configured a

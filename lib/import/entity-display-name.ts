@@ -13,6 +13,7 @@
  * otherwise admins would search for "Acme" in the wizard but type "Acme Ltd"
  * in the spreadsheet (or vice versa) and the lookup would fail.
  */
+import { getInsuredDisplayName } from "@/lib/field-resolver";
 
 export type EntitySnapshot = {
   insuredSnapshot?: Record<string, unknown> | null;
@@ -28,21 +29,48 @@ const SKIP_KEYS = /district|area|region|street|block|floor|flat|room|address|cit
 
 /**
  * Walk the snapshot in priority order:
- *   1. Person — first/last name
- *   2. Company — companyName / orgName / corporateName
- *   3. Generic — fullName / displayName / name / title / label
- *   4. Package-key match (e.g. collaborator__collaborator)
- *   5. Any field whose normalised name contains name/broker/agent/company/insurer
- *   6. insured-snapshot fallback (companyName / fullName / name)
+ *   1. **insuredSnapshot** — the canonical place for the policyholder's name.
+ *      Tried FIRST so a policy with a personal insured (e.g. "Chan Tai Man")
+ *      doesn't accidentally surface a *driver's* name (e.g. "Hung Wai Yip")
+ *      from the driver package's top-level `firstName`/`lastName` fields.
+ *   2. The **insured** package's values (when no insuredSnapshot).
+ *   3. Any other package — first/last name, then company name, then full name.
+ *   4. Package-key match (e.g. collaborator__collaborator).
+ *   5. Any field whose normalised name contains name/broker/agent/company/insurer.
+ *   6. insured-snapshot company/full-name fallback.
  *
  * Returns the empty string when no candidate is found — the caller should
  * fall back to the policyNumber in that case.
  */
 export function extractDisplayName(snapshot: EntitySnapshot | null | undefined): string {
   if (!snapshot) return "";
+
+  // 1. CANONICAL INSURED FIRST. Reuses the shared resolver so the picker
+  //    label matches what the rest of the app shows for the insured
+  //    (header chips, PDF templates, audit logs). Critical for policies
+  //    that also have driver / contact / collaborator packages with
+  //    their own `firstName` / `lastName` fields — without this guard,
+  //    whichever package the JSON happens to enumerate first wins, and
+  //    the picker can show a driver's or broker's name instead of the
+  //    policyholder's.
+  const insured = (snapshot.insuredSnapshot ?? null) as Record<string, unknown> | null;
+  const insuredName = getInsuredDisplayName(insured);
+  if (insuredName) return insuredName;
+
   const pkgs = (snapshot.packagesSnapshot ?? {}) as Record<string, unknown>;
 
-  for (const [pkgKey, data] of Object.entries(pkgs)) {
+  // 2. Iterate packages with `insured` first so personal-insured policies
+  //    that only have the canonical name in the package snapshot (not in
+  //    `insuredSnapshot`) still resolve correctly before any driver /
+  //    collaborator package gets a chance.
+  const orderedPkgKeys = Object.keys(pkgs).sort((a, b) => {
+    const aIns = a.toLowerCase() === "insured" ? 0 : 1;
+    const bIns = b.toLowerCase() === "insured" ? 0 : 1;
+    return aIns - bIns;
+  });
+
+  for (const pkgKey of orderedPkgKeys) {
+    const data = pkgs[pkgKey];
     if (!data || typeof data !== "object") continue;
     const structured = data as { values?: Record<string, unknown> };
     const vals = structured.values ?? (data as Record<string, unknown>);
@@ -83,7 +111,6 @@ export function extractDisplayName(snapshot: EntitySnapshot | null | undefined):
     }
   }
 
-  const insured = (snapshot.insuredSnapshot ?? null) as Record<string, unknown> | null;
   if (insured) {
     for (const [k, v] of Object.entries(insured)) {
       const n = norm(k), s = String(v ?? "").trim();
