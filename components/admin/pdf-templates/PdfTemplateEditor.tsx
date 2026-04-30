@@ -114,7 +114,7 @@ type SectionTemplate = {
  * dialog without configuring them.
  *
  * Keep in sync with `lib/field-resolver.ts`:
- *  - resolveInsured: `displayName`, `primaryId`
+ *  - resolveInsured: `displayName`, `primaryId`, `age`
  *  - resolveContact: `fullAddress`
  *  - resolveOrganisation: `fullAddress`
  */
@@ -126,6 +126,13 @@ const SYNTHETIC_FIELDS_BY_SOURCE: Record<string, SectionField[]> = {
     // by-label aggregators built for admin-configured packages.
     { label: "Display Name", fieldKey: "displayName", defaultOn: true, synthetic: true },
     { label: "Primary ID", fieldKey: "primaryId", defaultOn: true, synthetic: true },
+    // "Age" auto-routes between insured-with-license (insured snapshot)
+    // and Driver 1 (`driver.moreDriver[0]`) — same conditional logic
+    // the user described for the driver table on motor proposal forms.
+    // Resolves a stored `age`, an admin-configured formula, or finally
+    // a hard-coded YEARS_BETWEEN(TODAY, {dob}) so it works out-of-the-
+    // box without any extra config.
+    { label: "Age", fieldKey: "age", format: "number", defaultOn: true, synthetic: true },
   ],
   contactinfo: [
     { label: "Full Address", fieldKey: "fullAddress", defaultOn: true, synthetic: true },
@@ -157,6 +164,8 @@ const HANDLED_FIELD_KEYS_BY_SOURCE: Record<string, Set<string>> = {
     "idnumber", "id", "hkid", "hkidnumber",
     "brnumber", "br", "businessregistration", "businessregistrationnumber",
     "cinumber", "ci",
+    // Handled by `age` (auto-routes insured-with-license OR Driver 1)
+    "age",
   ]),
   contactinfo: new Set([
     // Handled by `fullAddress`

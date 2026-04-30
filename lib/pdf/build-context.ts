@@ -79,6 +79,7 @@ async function loadPackageFieldVariants(
         booleanChildren?: unknown;
         repeatable?: unknown;
         inputType?: unknown;
+        formula?: unknown;
       } | null;
       const rawCats = Array.isArray(meta?.categories) ? meta!.categories : [];
       const categories = rawCats
@@ -111,11 +112,25 @@ async function loadPackageFieldVariants(
         meta?.repeatable,
       );
 
+      // Top-level field inputType + formula. Captured so the resolver's
+      // formula-at-render fallback (in `resolvePackage`) can evaluate
+      // computed fields like driver "Age = YEARS_BETWEEN(TODAY, {ownerBoA})"
+      // against the package's snapshot values when no value is stored.
+      // Mirrors the existing repeatable-child formula fallback.
+      const parentInputType = typeof meta?.inputType === "string"
+        ? meta.inputType
+        : undefined;
+      const parentFormula = typeof meta?.formula === "string"
+        ? meta.formula
+        : undefined;
+
       out[pkg].push({
         key: parentKey,
         label: String(r.label ?? r.value ?? ""),
         categories,
         options: parentOptionPairs.length > 0 ? parentOptionPairs : undefined,
+        inputType: parentInputType,
+        formula: parentFormula,
         repeatableChildren:
           topLevelRepeatableChildren.length > 0
             ? topLevelRepeatableChildren
@@ -353,7 +368,15 @@ export async function buildMergeContext(policyId: number): Promise<{
         .catch(() => null)
     : Promise.resolve(null);
 
-  const variantsPromise = loadPackageFieldVariants(snapshotPackages);
+  // Always include "insured" so the resolver's formula-at-render
+  // fallback can evaluate admin-configured formula fields placed via
+  // the Insured source (e.g. "Age" = YEARS_BETWEEN(TODAY, {dob})).
+  // De-duped so this doesn't double up when packages already include
+  // an "insured" entry from somewhere unusual.
+  const variantPackages = Array.from(
+    new Set([...snapshotPackages, "insured"]),
+  );
+  const variantsPromise = loadPackageFieldVariants(variantPackages);
 
   const [agentRow, clientRow, orgRow, packageFieldVariants] = await Promise.all([
     agentPromise,

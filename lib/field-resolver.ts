@@ -72,6 +72,24 @@ export type PackageFieldVariant = {
    */
   options?: { value: string; label: string }[];
   /**
+   * `meta.inputType` of the top-level field (e.g. `"formula"`, `"date"`,
+   * `"number"`). Used by the resolver's formula-at-render fallback so a
+   * top-level field configured as `inputType: "formula"` (e.g. driver
+   * "Age" = `YEARS_BETWEEN(TODAY, {ownerBoA})`) gets evaluated against
+   * the package's snapshot values when no stored value exists. Mirrors
+   * the same fallback that already runs for repeatable children.
+   */
+  inputType?: string;
+  /**
+   * Formula expression for `inputType: "formula"` top-level fields.
+   * Reference other fields with `{key}` syntax. Evaluated by
+   * {@link evaluateFormula} using the package's `vals` as the form
+   * values — exactly mirroring the wizard's `resolveFieldValue`
+   * contract, so any formula that works in the wizard also works at
+   * PDF render time.
+   */
+  formula?: string;
+  /**
    * Schema of each row's child fields when this variant represents a
    * repeatable parent (top-level `inputType: "repeatable"` OR a boolean
    * branch child with `inputType: "repeatable"`). Used by the resolver's
@@ -384,6 +402,13 @@ const OWNER_KEY_TO_DRIVER_SLOT_CHILD: Record<string, string> = {
   relationshiptheowner: "relationship",
   occuption: "occuption",
   ownerpostion: "postion",
+  // `age` is a computed field (formula = YEARS_BETWEEN(TODAY, {dob}/{ownerBoA}))
+  // — when the owner section has no DOB to compute from (company /
+  // personal-no-license), fall back to the moreDriver row's age. The
+  // row's stored value is preferred; if the row only stored DOB, the
+  // moreDriver formula-at-render fallback (see `resolvePackage`'s
+  // owner→moreDriver block below) computes age from the row's `dob`.
+  age: "age",
 };
 
 function resolveInsuredPrimaryId(insured: Record<string, unknown>): string {
@@ -403,12 +428,179 @@ function resolveInsuredPrimaryId(insured: Record<string, unknown>): string {
   return firstNonEmpty(get, ...PERSONAL_ID_KEYS, ...COMPANY_ID_KEYS);
 }
 
-function resolveInsured(snapshot: SnapshotData, key: string): unknown {
+/**
+ * Synthetic "Age" auto field for the `insured` source — mirrors how
+ * `displayName` auto-routes between personal and company name.
+ *
+ * Branches on whether the insured has a driving license:
+ *   • Personal insured WITH license  → age comes from the insured (their
+ *     own DOB / age, autoFilled into the driver-owner section too).
+ *   • Company OR personal-WITHOUT-license → age comes from Driver 1
+ *     (the first row of `driver__moreDriver__true__c0`), since the
+ *     primary driver is entered as the first additional-driver row.
+ *
+ * In both cases we prefer a stored `age`, fall back to evaluating the
+ * admin-configured formula, and finally fall back to a hard-coded
+ * `YEARS_BETWEEN(TODAY, {dob})` so admins don't have to configure a
+ * formula for the synthetic field to work.
+ *
+ * If `hasDrivingLicense` isn't stored (older policies / non-motor
+ * flows), we just try insured first and Driver 1 second — first
+ * non-empty wins.
+ */
+function resolveInsuredAge(
+  snapshot: SnapshotData,
+  ctx?: ResolveContext,
+): unknown {
+  const insured = snapshot.insuredSnapshot;
+  if (!insured || typeof insured !== "object") return "";
+
+  const hasLicenseRaw = insuredGet(insured, "hasDrivingLicense");
+  const hasLicenseStr = String(hasLicenseRaw ?? "").trim().toLowerCase();
+  // Treat as "license" only when explicitly truthy. Empty / unknown
+  // falls through to "try both, first one with data wins".
+  const personalWithLicense =
+    hasLicenseRaw === true
+    || hasLicenseStr === "true"
+    || hasLicenseStr === "yes"
+    || hasLicenseStr === "y"
+    || hasLicenseStr === "1";
+  const explicitlyNoLicense =
+    hasLicenseRaw === false
+    || hasLicenseStr === "false"
+    || hasLicenseStr === "no"
+    || hasLicenseStr === "n"
+    || hasLicenseStr === "0";
+
+  const fromInsured = (): unknown => {
+    const stored = insuredGet(insured, "age");
+    if (stored !== undefined && stored !== null && String(stored).trim() !== "") return stored;
+    const variant = findVariantForKey(ctx?.packageFieldVariants?.insured, "age");
+    if (
+      variant
+      && String(variant.inputType ?? "").toLowerCase() === "formula"
+      && variant.formula
+    ) {
+      const computed = evaluateFormula(
+        variant.formula,
+        insured as Record<string, unknown>,
+        "insured",
+      );
+      if (computed) return computed;
+    }
+    // Hard-coded last-resort: YEARS_BETWEEN(TODAY, {dob}).
+    // `evaluateFormula` does its own fuzzy lookup, so it picks up
+    // `dob`, `dateOfBirth`, `insured__dob`, etc. transparently.
+    const computed = evaluateFormula(
+      "YEARS_BETWEEN(TODAY, {dob})",
+      insured as Record<string, unknown>,
+      "insured",
+    );
+    return computed || "";
+  };
+
+  const fromDriverOne = (): unknown => {
+    const packagesSnap = snapshot.packagesSnapshot as Record<string, unknown> | null | undefined;
+    if (!packagesSnap || typeof packagesSnap !== "object") return "";
+    const driverPkg = (
+      fuzzyGet(packagesSnap as Record<string, unknown>, "driver")
+    ) as Record<string, unknown> | null | undefined;
+    if (!driverPkg || typeof driverPkg !== "object") return "";
+    const driverVals = (
+      ((driverPkg as { values?: unknown }).values as Record<string, unknown> | undefined)
+      ?? (driverPkg as Record<string, unknown>)
+    );
+    const slotArr = (
+      fuzzyGet(driverVals, "moreDriver__true__c0")
+      ?? fuzzyGet(driverVals, "driver__moreDriver__true__c0")
+      ?? fuzzyGet(driverVals, "driver_moreDriver__true__c0")
+    );
+    if (!Array.isArray(slotArr) || slotArr.length === 0) return "";
+    const row0 = slotArr[0] as Record<string, unknown> | null | undefined;
+    if (!row0 || typeof row0 !== "object") return "";
+
+    const stored = fuzzyGet(row0, "age");
+    if (stored !== undefined && stored !== null && String(stored).trim() !== "") return stored;
+
+    // Try the moreDriver row schema's `age` formula (admin-configured).
+    const moreDriverVariant = findVariantForKey(
+      ctx?.packageFieldVariants?.driver,
+      "moreDriver__true__c0",
+    );
+    const childSchema = moreDriverVariant?.repeatableChildren?.find(
+      (c) => c.value.toLowerCase() === "age",
+    );
+    if (
+      childSchema
+      && String(childSchema.inputType ?? "").toLowerCase() === "formula"
+      && childSchema.formula
+    ) {
+      const computed = evaluateFormula(childSchema.formula, row0 as Record<string, unknown>);
+      if (computed) return computed;
+    }
+
+    const computed = evaluateFormula(
+      "YEARS_BETWEEN(TODAY, {dob})",
+      row0 as Record<string, unknown>,
+    );
+    return computed || "";
+  };
+
+  const isEmpty = (v: unknown) =>
+    v === undefined || v === null || String(v).trim() === "";
+
+  if (personalWithLicense) {
+    const v = fromInsured();
+    if (!isEmpty(v)) return v;
+    // Defensive: if license is "Yes" but insured has no DOB (data
+    // entry slip), still try Driver 1 so the cell isn't blank.
+    return fromDriverOne();
+  }
+  if (explicitlyNoLicense) {
+    const v = fromDriverOne();
+    if (!isEmpty(v)) return v;
+    return fromInsured();
+  }
+  // Unknown license status: try insured first, fall back to Driver 1.
+  const v = fromInsured();
+  if (!isEmpty(v)) return v;
+  return fromDriverOne();
+}
+
+function resolveInsured(
+  snapshot: SnapshotData,
+  key: string,
+  ctx?: ResolveContext,
+): unknown {
   const insured = snapshot.insuredSnapshot;
   if (!insured || typeof insured !== "object") return "";
   if (key === "displayName") return resolveInsuredDisplayName(insured);
   if (key === "primaryId") return resolveInsuredPrimaryId(insured);
-  return insuredGet(insured, key);
+  if (key === "age") return resolveInsuredAge(snapshot, ctx);
+  const direct = insuredGet(insured, key);
+  if (direct !== undefined && direct !== null && direct !== "") return direct;
+
+  // Formula-at-render fallback for insured fields. Mirrors the
+  // package-level fallback in `resolvePackage`. Lets a placement of an
+  // admin-configured `insured_fields` formula (e.g. "Age" =
+  // `YEARS_BETWEEN(TODAY, {dob})`) compute its value at PDF render time
+  // when the wizard didn't persist a stored value — covers formulas
+  // added after policies were saved, or when the upstream input
+  // (DOB) changed without the snapshot being re-saved.
+  const variant = findVariantForKey(ctx?.packageFieldVariants?.insured, key);
+  if (
+    variant
+    && String(variant.inputType ?? "").toLowerCase() === "formula"
+    && variant.formula
+  ) {
+    const computed = evaluateFormula(
+      variant.formula,
+      insured as Record<string, unknown>,
+      "insured",
+    );
+    if (computed) return computed;
+  }
+  return "";
 }
 
 function resolveContact(snapshot: SnapshotData, key: string): unknown {
@@ -489,6 +681,25 @@ function resolveByLabelVariant(
       // the matched variant's option list. No-op when the variant has
       // no `options` (free-form field).
       return translateOptionValue(direct, v);
+    }
+  }
+  // None of the same-label variants had a stored value — try the
+  // formula fallback for any variant configured as `inputType:
+  // "formula"`. Mirrors the formula-at-render fallback in the direct
+  // resolution path of `resolvePackage` so a `__byLabel__age` placement
+  // computes from the matched variant's formula (e.g. against
+  // `ownerBoA` for the driver package).
+  for (const v of ranked) {
+    if (
+      String(v.inputType ?? "").toLowerCase() === "formula"
+      && v.formula
+    ) {
+      const computed = evaluateFormula(
+        v.formula,
+        vals as Record<string, unknown>,
+        packageName,
+      );
+      if (computed) return computed;
     }
   }
   return "";
@@ -691,8 +902,60 @@ function resolvePackage(
             const variant = findVariantForKey(ctx?.packageFieldVariants?.[packageName], key);
             return translateOptionValue(v, variant);
           }
+          // Row stored no value for this child — if the moreDriver
+          // child schema is a formula (e.g. `age` = YEARS_BETWEEN(
+          // TODAY, {dob})), evaluate it now using the row's other
+          // fields. Mirrors the formula-at-render fallback in the
+          // `__r<N>__` resolution path so a row that only has `dob`
+          // saved still renders an `age` value.
+          const moreDriverVariant = findVariantForKey(
+            ctx?.packageFieldVariants?.[packageName],
+            "moreDriver__true__c0",
+          );
+          const childSchema = moreDriverVariant?.repeatableChildren?.find(
+            (c) => c.value.toLowerCase() === slotChildKey.toLowerCase(),
+          );
+          if (
+            childSchema
+            && String(childSchema.inputType ?? "").toLowerCase() === "formula"
+            && childSchema.formula
+          ) {
+            const computed = evaluateFormula(
+              childSchema.formula,
+              row0 as Record<string, unknown>,
+            );
+            if (computed) return computed;
+          }
         }
       }
+    }
+  }
+
+  // Top-level formula fallback. When the placed field is configured in
+  // admin as `inputType: "formula"` (e.g. driver "Age" =
+  // `YEARS_BETWEEN(TODAY, {ownerBoA})`) and the wizard didn't persist a
+  // computed value, evaluate the formula now against the package's
+  // snapshot values. Covers:
+  //   • Formulas added to admin AFTER policies were saved (so the
+  //     wizard never had a chance to compute and persist).
+  //   • Cases where the upstream input changes but the snapshot wasn't
+  //     re-saved (e.g. DOB present, age not yet stored).
+  //   • Driver "Age" computed from autoFilled `ownerBoA` for the
+  //     personal-with-license case.
+  // Mirror of the existing repeatable-child formula fallback above.
+  if (directIsEmpty) {
+    const variant = findVariantForKey(ctx?.packageFieldVariants?.[packageName], key);
+    if (
+      variant
+      && String(variant.inputType ?? "").toLowerCase() === "formula"
+      && variant.formula
+    ) {
+      const computed = evaluateFormula(
+        variant.formula,
+        vals as Record<string, unknown>,
+        packageName,
+      );
+      if (computed) return computed;
     }
   }
 
@@ -1048,7 +1311,7 @@ export function resolveRawValue(ref: FieldRef, ctx: ResolveContext): unknown {
       return resolvePolicy(ctx, ref.fieldKey);
 
     case "insured":
-      return resolveInsured(ctx.snapshot, ref.fieldKey);
+      return resolveInsured(ctx.snapshot, ref.fieldKey, ctx);
 
     case "contactinfo":
       return resolveContact(ctx.snapshot, ref.fieldKey);
