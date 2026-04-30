@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DocumentStatusMap, DocumentStatusEntry } from "@/lib/types/accounting";
-import { resolvePdfTemplateShowOn, type PdfTemplateRow, type PdfTemplateMeta } from "@/lib/types/pdf-template";
+import { resolvePdfTemplateShowOn, type PdfTemplateRow, type PdfTemplateMeta, type PdfRadioGroup } from "@/lib/types/pdf-template";
 import type {
   DocumentTemplateMeta,
   DocumentTemplateRow,
@@ -3924,9 +3924,40 @@ function PreviewControlPanel({
   refreshing: boolean;
   onTemplateUpdated: (newMeta: PdfTemplateMeta) => void;
 }) {
-  const checkboxes = meta?.checkboxes ?? [];
-  const radioGroups = meta?.radioGroups ?? [];
+  const checkboxesRaw = meta?.checkboxes ?? [];
+  const radioGroupsRaw = meta?.radioGroups ?? [];
   const dirty = Object.keys(checkboxOverrides).length > 0 || Object.keys(radioOverrides).length > 0;
+
+  // Compute the page range for a radio group. A group's options can
+  // span pages (e.g. Yes on p.2, No on p.3); we show a range when
+  // that happens so the admin can find the right widget on the PDF.
+  // Returns the smallest page index across the group's options, plus
+  // a display string ("2" or "2–3").
+  function radioGroupPageInfo(rg: PdfRadioGroup): { sortKey: number; display: string } {
+    if (!rg.options || rg.options.length === 0) {
+      return { sortKey: Number.MAX_SAFE_INTEGER, display: "" };
+    }
+    const pages = rg.options.map((o) => o.page);
+    const min = Math.min(...pages);
+    const max = Math.max(...pages);
+    const display = min === max ? String(min + 1) : `${min + 1}–${max + 1}`;
+    return { sortKey: min, display };
+  }
+
+  // Sort both lists by page so the user can scan the panel in
+  // document order — page 1 widgets at the top, then page 2, etc.
+  // Falls back to the original (insertion) order within the same
+  // page so existing template ordering is preserved.
+  const checkboxes = [...checkboxesRaw].sort((a, b) => {
+    if (a.page !== b.page) return a.page - b.page;
+    return checkboxesRaw.indexOf(a) - checkboxesRaw.indexOf(b);
+  });
+  const radioGroups = [...radioGroupsRaw].sort((a, b) => {
+    const aKey = radioGroupPageInfo(a).sortKey;
+    const bKey = radioGroupPageInfo(b).sortKey;
+    if (aKey !== bKey) return aKey - bKey;
+    return radioGroupsRaw.indexOf(a) - radioGroupsRaw.indexOf(b);
+  });
 
   // Inline-edit state for admin label renaming. We track which item id
   // is currently being edited (and whether it's a checkbox or radio
@@ -4037,12 +4068,13 @@ function PreviewControlPanel({
                 // apart instead of seeing "Yes/No selection" four times.
                 const fallback = `Question ${idx + 1}`;
                 const label = rg.label?.trim() || rg.name?.trim() || fallback;
+                const pageInfo = radioGroupPageInfo(rg);
                 const isEditing = editing?.kind === "rg" && editing.id === rg.id;
                 const isSaving = savingId === rg.id;
                 return (
                   <li
                     key={rg.id}
-                    className="rounded-md border border-neutral-200 dark:border-neutral-800 p-2 bg-neutral-50 dark:bg-neutral-900/50"
+                    className="relative rounded-md border border-neutral-200 dark:border-neutral-800 p-2 pr-10 bg-neutral-50 dark:bg-neutral-900/50"
                   >
                     <div className="flex items-start gap-1 mb-1.5">
                       {isEditing ? (
@@ -4130,6 +4162,14 @@ function PreviewControlPanel({
                         </button>
                       )}
                     </div>
+                    {pageInfo.display && (
+                      <span
+                        className="absolute bottom-1.5 right-1.5 rounded bg-neutral-200 px-1.5 py-0.5 text-[11px] font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+                        title={`On page ${pageInfo.display}`}
+                      >
+                        p.{pageInfo.display}
+                      </span>
+                    )}
                   </li>
                 );
               })}
@@ -4153,7 +4193,7 @@ function PreviewControlPanel({
                 return (
                   <li
                     key={cb.id}
-                    className="rounded-md p-1 hover:bg-neutral-100 dark:hover:bg-neutral-800/60"
+                    className="relative rounded-md p-1 pr-10 hover:bg-neutral-100 dark:hover:bg-neutral-800/60"
                   >
                     <div className="flex items-start gap-2">
                       <input
@@ -4204,7 +4244,6 @@ function PreviewControlPanel({
                         <>
                           <span className="flex-1 leading-snug text-neutral-700 dark:text-neutral-200 cursor-pointer" onClick={() => onToggleCheckbox(cb.id, !!cb.defaultChecked)}>
                             {label}
-                            <span className="ml-1 text-[10px] text-neutral-400">p.{cb.page + 1}</span>
                           </span>
                           {isAdmin && (
                             <button
@@ -4219,6 +4258,12 @@ function PreviewControlPanel({
                         </>
                       )}
                     </div>
+                    <span
+                      className="absolute bottom-1 right-1.5 rounded bg-neutral-200 px-1.5 py-0.5 text-[11px] font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+                      title={`On page ${cb.page + 1}`}
+                    >
+                      p.{cb.page + 1}
+                    </span>
                   </li>
                 );
               })}
