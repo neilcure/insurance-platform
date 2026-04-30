@@ -368,8 +368,42 @@ export async function generateFilledPdf(
       if (ti.page < 0 || ti.page >= pages.length) continue;
       const page = pages[ti.page];
 
-      // Auto-disambiguate field names — pdf-lib throws if two TextFields
-      // share a name. UUIDs are unique already; the suffix is a safety net.
+      const override = opts.textInputOverrides?.[ti.id];
+      const initialValue =
+        override !== undefined ? override : (ti.defaultValue ?? "");
+
+      // Flat / email mode: skip the AcroForm widget entirely and
+      // draw the value (if any) as plain text on the page. Avoids
+      // pdf-lib's default 1pt border that gets baked into the
+      // appearance stream during `form.flatten()` even with
+      // `borderWidth: 0` — leaving an outlined box around every
+      // input on the recipient's PDF. With this, a flat input with
+      // no value is completely invisible (just a blank spot on the
+      // form), and an input with a value renders as plain text.
+      if (opts?.flatten) {
+        if (initialValue) {
+          const fontSize = ti.fontSize ?? 10;
+          // Vertically centre single-line text inside the box;
+          // multiline starts from the top so wrapped lines flow
+          // downward like a normal paragraph.
+          const textY = ti.multiline
+            ? ti.y + ti.height - fontSize - 2
+            : ti.y + Math.max(2, (ti.height - fontSize) / 2);
+          page.drawText(String(initialValue), {
+            x: ti.x + 2,
+            y: textY,
+            size: fontSize,
+            font: fontRegular,
+            color: rgb(0, 0, 0),
+            maxWidth: ti.multiline ? Math.max(0, ti.width - 4) : undefined,
+            lineHeight: ti.multiline ? fontSize * 1.2 : undefined,
+          });
+        }
+        continue;
+      }
+
+      // Interactive mode: create a real AcroForm TextField the
+      // recipient can type into.
       let fieldName = `ti_${ti.id}`;
       let suffix = 1;
       while (usedNames.has(fieldName)) {
@@ -378,9 +412,6 @@ export async function generateFilledPdf(
       usedNames.add(fieldName);
 
       const tf = form.createTextField(fieldName);
-      const override = opts.textInputOverrides?.[ti.id];
-      const initialValue =
-        override !== undefined ? override : (ti.defaultValue ?? "");
       if (initialValue) tf.setText(initialValue);
       if (ti.multiline) tf.enableMultiline();
 
@@ -390,7 +421,7 @@ export async function generateFilledPdf(
         width: ti.width,
         height: ti.height,
         borderWidth: 0,
-        backgroundColor: opts?.flatten ? undefined : rgb(0.9, 0.95, 1),
+        backgroundColor: rgb(0.9, 0.95, 1),
       });
 
       if (typeof ti.fontSize === "number" && ti.fontSize > 0) {
