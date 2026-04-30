@@ -240,6 +240,7 @@ export async function POST(
               drawings: meta.drawings,
               checkboxes: meta.checkboxes,
               radioGroups: meta.radioGroups,
+              textInputs: meta.textInputs,
               loadImage: (storedName: string) => readPdfTemplate(storedName),
               flatten: flattenPdfs,
             });

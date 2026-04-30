@@ -23,6 +23,13 @@ export async function POST(request: Request) {
   const subject = String(body.subject ?? "").trim();
   const message = String(body.message ?? "").trim();
   const audience: string | undefined = body.audience;
+  // Default true: email recipients get a tamper-proof flat copy with
+  // all AcroForm widgets (checkboxes, radio buttons, text inputs)
+  // baked into the page content. Stops the blue "fillable field"
+  // markup from appearing in the recipient's PDF viewer and prevents
+  // them from changing values after the fact. Pass `flattenPdfs:
+  // false` from the client to keep the form interactive.
+  const flattenPdfs = body?.flattenPdfs !== false;
   // Optional per-template overrides: { [templateId]: { checkboxOverrides, radioOverrides } }.
   // Supplied by the inline preview-send form so the recipient receives
   // the version the user just ticked/selected, not a fresh default.
@@ -103,6 +110,7 @@ export async function POST(request: Request) {
         radioOverrides: ov.radioOverrides,
         textInputOverrides: ov.textInputOverrides,
         loadImage: (storedName: string) => readPdfTemplate(storedName),
+        flatten: flattenPdfs,
       });
       const base64 = Buffer.from(filledPdf).toString("base64");
       attachments.push({
