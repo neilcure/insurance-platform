@@ -1008,8 +1008,22 @@ function resolvePackage(
   // policy where only `model` has data), look for a sibling with the
   // same label whose categories do match. Lets templates created before
   // the by-label feature auto-fix without re-placing every field.
+  //
+  // GUARD: this fallback ONLY makes sense for top-level direct keys.
+  // Skip nested-child key shapes — their snapshot key is unique and
+  // deterministic, so an empty value means "the user hasn't filled that
+  // sub-field" and we must NOT bleed in the value of a same-labelled
+  // top-level sibling (e.g. an unfilled "TAILGATE → Yes → Make" must
+  // render blank, NOT the policy's vehicle Make):
+  //   • `__true__c<n>` / `__false__c<n>`  → boolean-branch children
+  //   • `__opt_<v>__c<n>`                 → cascading 2nd-level children
+  //   • `__r<N>__`                        → repeatable per-row sub-fields
+  const isNestedKey =
+    /__(?:true|false)__c\d+/i.test(key)
+    || /__opt_[^_]+__c\d+/i.test(key)
+    || /__r\d+__/i.test(key);
   const variants = ctx?.packageFieldVariants?.[packageName];
-  if (variants && variants.length > 0) {
+  if (!isNestedKey && variants && variants.length > 0) {
     const requested = variants.find(
       (v) => v.key === key || v.key.toLowerCase() === key.toLowerCase(),
     );

@@ -111,6 +111,20 @@ export type DocumentStatusEntry = {
   // "Rejected: <reason>".
   rejectedBy?: string;
   rejectionNote?: string;
+  /**
+   * The user's answers to interactive checkboxes / radio groups on
+   * THIS template for THIS policy. Persisted so close→reopen and
+   * cross-device viewing show the same picks, and so Download /
+   * Send Email always bake them into the recipient's PDF.
+   *
+   * Keys are the `PdfCheckbox.id` / `PdfRadioGroup.id` from the
+   * template meta. Empty maps are equivalent to "fall back to the
+   * template's defaultChecked / defaultValue".
+   */
+  formSelections?: {
+    checkboxes?: Record<string, boolean>;
+    radioGroups?: Record<string, string>;
+  };
 };
 
 export type DocumentStatusMap = Record<string, DocumentStatusEntry | undefined>;

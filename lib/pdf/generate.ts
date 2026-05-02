@@ -4,6 +4,7 @@ import type {
   PdfCheckbox, PdfRadioGroup, PdfTextInput,
 } from "@/lib/types/pdf-template";
 import { resolveFieldValue, type MergeContext } from "./resolve-data";
+import { normalizePdfSelectionMarkScale } from "./normalize-pdf-selection-mark-scale";
 
 function hexToRgb(hex: string) {
   const h = hex.replace("#", "");
@@ -81,7 +82,7 @@ function drawVectorGlyph(
 }
 
 /**
- * Opacity for the SELECTED mark (✓ tick or ● dot). This is the
+ * Opacity for the SELECTED mark (✓ / ✗ tick or ● dot). This is the
  * actual answer the user picked, so it should read clearly. 0.95
  * is essentially solid with just a hint of softness.
  */
@@ -97,13 +98,73 @@ const MARK_OPACITY = 0.95;
  */
 const OUTLINE_OPACITY = 0.5;
 
-/**
- * Ink color for ✓ checkmarks (used for both checkboxes and radio
- * selections). A deep blue reads
- * unmistakably as "the user filled this in" — distinct from the
- * black printed form text and far more visible than gray.
- */
+/** Soft blue tint for non-selected preview helpers (fillable spots). */
 const MARKUP_COLOR = rgb(0.05, 0.2, 0.7);
+
+/** Ink for selected ✓ / ✗ marks — black to match typical signed paper forms. */
+const SELECTION_MARK_INK = rgb(0, 0, 0);
+
+/**
+ * Greedy word-wrap that respects explicit newlines (`\n`) in the source
+ * text. Each output line fits within `maxWidth` according to the given
+ * font + size. Whitespace is collapsed within a paragraph the same way
+ * a browser would render it, so admins don't have to hand-trim values.
+ *
+ * Falls back to a hard character-break for any single token that's too
+ * long to fit on its own line (e.g. a 40-char URL inside a narrow
+ * column) — without this guard a long unbreakable token would push past
+ * `maxWidth` and ruin the layout.
+ */
+function wrapTextIntoLines(
+  text: string,
+  font: Awaited<ReturnType<PDFDocument["embedFont"]>>,
+  fontSize: number,
+  maxWidth: number,
+): string[] {
+  if (!text) return [];
+  const out: string[] = [];
+  const paragraphs = text.split(/\r?\n/);
+
+  const measure = (s: string) => font.widthOfTextAtSize(s, fontSize);
+  const breakLongToken = (token: string): string[] => {
+    const chunks: string[] = [];
+    let current = "";
+    for (const ch of token) {
+      const candidate = current + ch;
+      if (measure(candidate) > maxWidth && current) {
+        chunks.push(current);
+        current = ch;
+      } else {
+        current = candidate;
+      }
+    }
+    if (current) chunks.push(current);
+    return chunks;
+  };
+
+  for (const para of paragraphs) {
+    if (para === "") {
+      out.push("");
+      continue;
+    }
+    const words = para.split(/\s+/).filter(Boolean);
+    let line = "";
+    for (const rawWord of words) {
+      const tokens = measure(rawWord) > maxWidth ? breakLongToken(rawWord) : [rawWord];
+      for (const word of tokens) {
+        const candidate = line ? `${line} ${word}` : word;
+        if (measure(candidate) > maxWidth && line) {
+          out.push(line);
+          line = word;
+        } else {
+          line = candidate;
+        }
+      }
+    }
+    out.push(line);
+  }
+  return out;
+}
 
 export async function generateFilledPdf(
   templateBytes: Buffer | Uint8Array,
@@ -143,6 +204,22 @@ export async function generateFilledPdf(
      * unset the group.
      */
     radioOverrides?: Record<string, string>;
+    /**
+     * Vector mark drawn on the PDF for a **selected** checkbox or radio
+     * option. Default `check` (✓). Some tenants prefer a cross (✗).
+     */
+    selectionMarkStyle?: "check" | "cross";
+    /** Scale for ✓/✗ inside each widget box (default 1, clamped 0.55–1.35). */
+    selectionMarkScale?: number;
+    /**
+     * When true, do NOT bake the selected ✓/✗ glyphs into the PDF.
+     * Every checkbox / radio cell still gets the soft blue tint so
+     * empty cells are visible. The client preview canvas overlays
+     * marks via DOM so toggling Yes/No / Tick/Cross / size is instant
+     * — no server roundtrip per click. Download / email always pass
+     * `false` so recipients receive a fully baked PDF.
+     */
+    skipSelectionMarks?: boolean;
     loadImage?: (storedName: string) => Promise<Buffer>;
     /**
      * When true, all AcroForm widgets (checkboxes, radio buttons) are
@@ -154,6 +231,10 @@ export async function generateFilledPdf(
     flatten?: boolean;
   },
 ): Promise<Uint8Array> {
+  const selectedMarkGlyph: "✓" | "✗" =
+    opts?.selectionMarkStyle === "cross" ? "✗" : "✓";
+  const selectionMarkScale = normalizePdfSelectionMarkScale(opts?.selectionMarkScale);
+
   const pdfDoc = await PDFDocument.load(templateBytes);
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -237,6 +318,61 @@ export async function generateFilledPdf(
       if (drawVectorGlyph(page, text, x, field.y, fontSize, color)) continue;
     }
 
+    // Effective wrap behaviour:
+    //  - explicit `field.wrap === true`  → wrap (requires width)
+    //  - explicit `field.wrap === false` → never wrap, even if width is set
+    //  - `field.wrap === undefined` and `width` is set → wrap (legacy default,
+    //     matches pre-toggle pdf-lib `maxWidth` auto-wrap so existing
+    //     templates render the same after this feature shipped)
+    //  - otherwise → single line, no maxWidth boundary
+    const shouldWrap =
+      field.wrap === true
+        ? !!field.width
+        : field.wrap === false
+        ? false
+        : !!field.width;
+
+    if (shouldWrap && field.width) {
+      const lines = wrapTextIntoLines(text, font, fontSize, field.width);
+      // Match pdf-lib's default `drawText({ lineHeight })` so existing
+      // templates that relied on the implicit auto-wrap render with the
+      // same line spacing they did before this toggle existed. Falls
+      // back to a 1.15× heuristic if the font doesn't expose a height
+      // (StandardFonts always do, but be defensive).
+      const lineHeight =
+        typeof font.heightAtSize === "function"
+          ? font.heightAtSize(fontSize)
+          : fontSize * 1.15;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) continue;
+        const lineWidth = font.widthOfTextAtSize(line, fontSize);
+        let lineX = field.x;
+        if (field.align === "center") {
+          lineX = field.x + (field.width - lineWidth) / 2;
+        } else if (field.align === "right") {
+          lineX = field.x + field.width - lineWidth;
+        }
+        const lineY = field.y - i * lineHeight;
+        page.drawText(line, {
+          x: lineX,
+          y: lineY,
+          size: fontSize,
+          font,
+          color,
+        });
+        if (field.underline) {
+          page.drawLine({
+            start: { x: lineX, y: lineY - 1.5 },
+            end: { x: lineX + lineWidth, y: lineY - 1.5 },
+            thickness: Math.max(fontSize * 0.06, 0.5),
+            color,
+          });
+        }
+      }
+      continue;
+    }
+
     const textWidth = font.widthOfTextAtSize(text, fontSize);
     if (field.align === "center" && field.width) {
       x = field.x + (field.width - textWidth) / 2;
@@ -250,7 +386,6 @@ export async function generateFilledPdf(
       size: fontSize,
       font,
       color,
-      maxWidth: field.width,
     });
 
     if (field.underline) {
@@ -271,17 +406,16 @@ export async function generateFilledPdf(
   //     Skipped when the admin marked the field `borderless` (because
   //     the underlying printed PDF already shows the box).
   //
-  //  2. The MARK (✓) — drawn ONLY when the option is selected.
-  //     Bold blue at near-full opacity so the user's answer reads
-  //     instantly. Used for both checkboxes and radio selections so
-  //     the visual language is consistent across the form.
+  //  2. The MARK (✓ or ✗ per `selectionMarkStyle`) — drawn ONLY when
+  //     the option is selected. Black ink at near-full opacity. Same
+  //     glyph for checkboxes and radios.
   //
   // We don't create AcroForm widgets — the side-panel is the source
   // of truth and the recipient receives a finalized, printed-style
   // PDF rather than an editable form.
   //
   // Selected boxes get NO outline, NO tint, NO border — just the
-  // bold ✓ mark itself. The user's chosen answer is the only thing
+  // bold vector mark. The user's chosen answer is the only thing
   // in the printed form, exactly like a real signed paper form.
 
   if (opts?.checkboxes?.length) {
@@ -292,16 +426,19 @@ export async function generateFilledPdf(
       const cbOverride = opts.checkboxOverrides?.[cb.id];
       const isChecked = typeof cbOverride === "boolean" ? cbOverride : !!cb.defaultChecked;
 
-      if (isChecked) {
+      if (isChecked && !opts?.skipSelectionMarks) {
         const size = Math.min(cb.width, cb.height);
-        const cx = cb.x + (cb.width - size) / 2;
-        const cy = cb.y + (cb.height - size) / 2;
-        drawVectorGlyph(page, "✓", cx, cy, size, MARKUP_COLOR, MARK_OPACITY);
+        const glyphSize = size * selectionMarkScale;
+        const cx = cb.x + (cb.width - glyphSize) / 2;
+        const cy = cb.y + (cb.height - glyphSize) / 2;
+        drawVectorGlyph(page, selectedMarkGlyph, cx, cy, glyphSize, SELECTION_MARK_INK, MARK_OPACITY);
       } else if (!opts?.flatten) {
         // Non-selected = the "markup". A soft blue tint FILL (no
         // border at all) showing "this spot is fillable". Skipped
         // in flat/email mode — the client copy should look like a
         // clean signed form with no editor helper tints.
+        // When `skipSelectionMarks` is on, every cell (including
+        // selected) gets the tint so the client overlay has a frame.
         page.drawRectangle({
           x: cb.x,
           y: cb.y,
@@ -328,11 +465,12 @@ export async function generateFilledPdf(
 
         const isChosen = !!chosen && opt.value === chosen;
 
-        if (isChosen) {
+        if (isChosen && !opts?.skipSelectionMarks) {
           const size = Math.min(opt.width, opt.height);
-          const cx = opt.x + (opt.width - size) / 2;
-          const cy = opt.y + (opt.height - size) / 2;
-          drawVectorGlyph(page, "✓", cx, cy, size, MARKUP_COLOR, MARK_OPACITY);
+          const glyphSize = size * selectionMarkScale;
+          const cx = opt.x + (opt.width - glyphSize) / 2;
+          const cy = opt.y + (opt.height - glyphSize) / 2;
+          drawVectorGlyph(page, selectedMarkGlyph, cx, cy, glyphSize, SELECTION_MARK_INK, MARK_OPACITY);
         } else if (!opts?.flatten) {
           // Same rationale as checkboxes — soft blue tint fill, no
           // border. Skipped in flat/email mode for the same reason.

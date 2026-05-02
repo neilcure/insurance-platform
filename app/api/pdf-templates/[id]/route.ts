@@ -119,6 +119,30 @@ export async function PATCH(
   if ("accountingLineKey" in body) {
     newMeta.accountingLineKey = typeof body.accountingLineKey === "string" ? body.accountingLineKey : undefined;
   }
+  if ("packageCategories" in body) {
+    // Sanitize: must be a plain object whose values are non-empty arrays
+    // of trimmed string category values. Empty arrays are dropped (treat
+    // as "no restriction" — same as the entry being missing). Invalid
+    // shapes silently clear the field instead of writing garbage.
+    const raw = body.packageCategories;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const cleaned: Record<string, string[]> = {};
+      for (const [pkgKey, valsRaw] of Object.entries(raw as Record<string, unknown>)) {
+        const pkg = String(pkgKey ?? "").trim();
+        if (!pkg) continue;
+        if (!Array.isArray(valsRaw)) continue;
+        const cats = valsRaw
+          .map((v) => String(v ?? "").trim())
+          .filter((v) => v.length > 0);
+        if (cats.length === 0) continue;
+        // Dedupe while preserving order
+        cleaned[pkg] = Array.from(new Set(cats));
+      }
+      newMeta.packageCategories = Object.keys(cleaned).length > 0 ? cleaned : undefined;
+    } else {
+      newMeta.packageCategories = undefined;
+    }
+  }
   if ("repeatableSlots" in body) {
     const raw = Number(body.repeatableSlots);
     if (Number.isFinite(raw) && raw > 0) {

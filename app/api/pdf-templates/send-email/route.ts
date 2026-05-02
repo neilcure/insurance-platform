@@ -9,6 +9,7 @@ import { PDF_TEMPLATE_GROUP_KEY } from "@/lib/types/pdf-template";
 import type { PdfTemplateMeta, PdfImageMapping } from "@/lib/types/pdf-template";
 import { generateFilledPdf } from "@/lib/pdf/generate";
 import { buildMergeContext } from "@/lib/pdf/build-context";
+import { normalizePdfSelectionMarkScale } from "@/lib/pdf/normalize-pdf-selection-mark-scale";
 import { sendEmail } from "@/lib/email";
 
 export const dynamic = "force-dynamic";
@@ -42,6 +43,13 @@ export async function POST(request: Request) {
     body.templateOverrides && typeof body.templateOverrides === "object"
       ? (body.templateOverrides as Record<string, TemplateOverride>)
       : {};
+  const selectionMarkStyle: "check" | "cross" | undefined =
+    body.selectionMarkStyle === "cross"
+      ? "cross"
+      : body.selectionMarkStyle === "check"
+        ? "check"
+        : undefined;
+  const selectionMarkScale = normalizePdfSelectionMarkScale(body.selectionMarkScale);
 
   if (!policyId) {
     return NextResponse.json({ error: "policyId is required" }, { status: 400 });
@@ -109,6 +117,8 @@ export async function POST(request: Request) {
         checkboxOverrides: ov.checkboxOverrides,
         radioOverrides: ov.radioOverrides,
         textInputOverrides: ov.textInputOverrides,
+        selectionMarkStyle,
+        selectionMarkScale,
         loadImage: (storedName: string) => readPdfTemplate(storedName),
         flatten: flattenPdfs,
       });

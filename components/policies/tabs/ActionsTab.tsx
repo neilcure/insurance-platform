@@ -8,6 +8,10 @@ import { Loader2 } from "lucide-react";
 import { getIcon } from "@/lib/icons";
 import type { WorkflowActionRow, WorkflowActionMeta } from "@/lib/types/workflow-action";
 import type { PolicyDetail } from "@/lib/types/policy";
+import {
+  readPdfSelectionMarkFromStorage,
+  readPdfSelectionMarkScaleFromStorage,
+} from "@/lib/pdf/form-selections-preferences";
 
 async function recordActionTimestamp(
   policyId: number,
@@ -122,7 +126,11 @@ function ActionCard({
           const genRes = await fetch(`/api/pdf-templates/${meta.documentTemplateId}/generate`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ policyId }),
+            body: JSON.stringify({
+              policyId,
+              selectionMarkStyle: readPdfSelectionMarkFromStorage(),
+              selectionMarkScale: readPdfSelectionMarkScaleFromStorage(),
+            }),
           });
           if (!genRes.ok) throw new Error(await genRes.text());
           if (inputVal.trim()) {
@@ -133,6 +141,8 @@ function ActionCard({
                 policyId,
                 templateId: meta.documentTemplateId,
                 email: inputVal.trim(),
+                selectionMarkStyle: readPdfSelectionMarkFromStorage(),
+                selectionMarkScale: readPdfSelectionMarkScaleFromStorage(),
               }),
             });
             if (!sendRes.ok) throw new Error(await sendRes.text());

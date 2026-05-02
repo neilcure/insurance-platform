@@ -29,6 +29,22 @@ export type PdfFieldMapping = {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  /**
+   * When true, long text wraps onto multiple lines within `width`
+   * (Max Width). Requires `width` to be set — wrap has no effect on
+   * a field with no width because there is no boundary to wrap at.
+   *
+   * Backwards compat: if `wrap` is `undefined` (i.e. the template was
+   * created before this toggle existed), we treat a field with `width`
+   * set as wrapping by default — this matches the previous pdf-lib
+   * `maxWidth` auto-wrap behavior so existing addresses / long values
+   * keep wrapping after the upgrade.
+   *
+   * Set explicitly to `false` to force a single line even when `width`
+   * is set (text past the boundary will just overflow / be clipped by
+   * surrounding form artwork).
+   */
+  wrap?: boolean;
 
   sectionId?: string;
 
@@ -240,6 +256,26 @@ export type PdfTemplateMeta = {
   showOn?: ("policy" | "agent")[];
   /** Restrict to a specific accounting line key (e.g. "tpo", "od"). Only shows when the policy has a premium line with this key. Empty = all. */
   accountingLineKey?: string;
+  /**
+   * Restrict the template to specific package categories. Each entry maps
+   * a package key (e.g. `"vehicleinfo"`, `"insured"`) to one or more
+   * allowed category values (e.g. `["pcar", "solo"]`). The template is
+   * shown ONLY when the policy snapshot's `packagesSnapshot[pkg].category`
+   * is included in the configured array for THAT package.
+   *
+   * Semantics:
+   *  - Empty / missing entry for a package → no restriction from that package.
+   *  - Multiple categories within one package → OR (any match passes).
+   *  - Multiple packages configured → AND (all must pass).
+   *  - An empty array `[]` for a package is treated as "no restriction"
+   *    (same as missing) so admins can clear all checks without deleting
+   *    the key.
+   *
+   * Example: a Commercial-Vehicle Proposal Form would set
+   * `{ vehicleinfo: ["commvehicle"] }` to be hidden on private-car
+   * policies.
+   */
+  packageCategories?: Record<string, string[]>;
   /**
    * For repeatable package fields (drivers, beneficiaries, etc.) — how
    * many indexed slots ("Driver 1", "Driver 2", …) to expose in the

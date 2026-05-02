@@ -219,10 +219,23 @@ async function loadPackageFieldVariants(
               branchOptionPairs.push({ value: cv, label: cl });
             }
             const childLabel = String(child.label ?? "").trim();
-            // Use parent's label as a meaningful fallback so the
-            // by-label fallback can still find these via the parent's
-            // slug if needed.
-            const variantLabel = childLabel || String(r.label ?? r.value ?? "");
+            const parentLabel = String(r.label ?? r.value ?? "").trim();
+            // Disambiguate the variant label so it can't collide with a
+            // same-named top-level field via `slugifyLabel`. Without
+            // this, a TAILGATE→Yes→"Make" child variant would share the
+            // slug `make` with the vehicle's top-level Make field, and
+            // any by-label resolution path would render the wrong value
+            // when the nested child is empty (the user would see the
+            // vehicle Make next to "TAILGATE (Yes) — Make" on the PDF).
+            //
+            // When the child has no own label, fall back to just the
+            // parent label — a boolean parent placement still smart-
+            // routes to `c0` via `resolvePackage`, which uses the
+            // variant's `options[]` (not its `label`) for translation,
+            // so the parent-label fallback stays correct for that path.
+            const variantLabel = childLabel
+              ? (parentLabel ? `${parentLabel} — ${childLabel}` : childLabel)
+              : parentLabel;
             // If this branch child is itself a repeatable (e.g.
             // "Add More Drivers? — Yes" → repeatable list of drivers),
             // capture its row schema so the resolver can evaluate any

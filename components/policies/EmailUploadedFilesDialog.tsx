@@ -17,6 +17,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { PolicyDocumentRow } from "@/lib/types/upload-document";
 import type { PdfTemplateMeta } from "@/lib/types/pdf-template";
+import {
+  readPdfSelectionMarkFromStorage,
+  readPdfSelectionMarkScaleFromStorage,
+} from "@/lib/pdf/form-selections-preferences";
 
 type PdfTplItem = { id: number; label: string };
 
@@ -190,6 +194,8 @@ export function EmailUploadedFilesDialog({
           email: email.trim(),
           subject: subject.trim(),
           message: message.trim(),
+          selectionMarkStyle: readPdfSelectionMarkFromStorage(),
+          selectionMarkScale: readPdfSelectionMarkScaleFromStorage(),
         }),
       });
       if (!res.ok) {

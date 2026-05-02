@@ -21,7 +21,7 @@ import {
   FolderPlus, Pencil, Check, X,
   FileText, ImagePlus, Eye, EyeOff, Search, Loader2,
   Type, Square, CheckSquare, Settings2, FlaskConical, CheckCircle2,
-  CircleDot, TextCursorInput,
+  CircleDot, TextCursorInput, PanelLeft, WrapText,
 } from "lucide-react";
 import type {
   PdfTemplateRow, PdfTemplateMeta, PdfFieldMapping, PdfTemplateSection,
@@ -33,6 +33,9 @@ import {
   SECTION_COLORS, DEFAULT_REPEATABLE_SLOTS,
 } from "@/lib/types/pdf-template";
 import { buildByLabelKey, slugifyLabel } from "@/lib/field-resolver";
+import { FormSelectionsPanel, radioOptionMatchesSelection } from "@/components/pdf/form-selections-panel";
+import { usePdfSelectionMarkSync, usePdfSelectionMarkScaleSync } from "@/lib/pdf/form-selections-mark-prefs-client";
+import { cn } from "@/lib/utils";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
@@ -60,6 +63,15 @@ type SectionField = {
    * one PDF placement (e.g. "Make") works across vehicle types.
    */
   synthetic?: boolean;
+  /**
+   * Human-readable branch label (e.g. "Yes" / "No", or whatever the
+   * admin configured via `meta.booleanLabels`) for entries derived from
+   * a boolean parent's `meta.booleanChildren.{true,false}[]`. Rendered
+   * as a small badge in the picker so admins can tell which branch a
+   * per-child placement belongs to. Display-only — does not affect how
+   * the resolver fetches the value.
+   */
+  branchLabel?: string;
 };
 type OptionRow = { label?: unknown; value?: unknown; valueType?: unknown; meta?: unknown };
 type RepeatableChildSpec = {
@@ -94,6 +106,38 @@ type DynamicAdminField = {
    * Falls back to the parent's `label` when missing.
    */
   repeatableItemLabel?: string;
+  /**
+   * True when this entry was synthesised from a non-repeatable child of
+   * a boolean parent's `meta.booleanChildren.{true,false}[]`. Each such
+   * child has the deterministic snapshot key
+   * `${pkg}__${parentValue}__${branch}__c${childIdx}` (matching the
+   * wizard's form-name template at
+   * `app/(dashboard)/policies/new/page.tsx` ~line 822) and is
+   * individually placeable on the PDF. Distinct from `isChildOption`
+   * (which marks cascading second-level fields nested under
+   * `meta.options[].children` — those have synthetic placeholder values
+   * and are NOT individually placeable).
+   *
+   * Used by `buildPackageSectionTemplate` to:
+   *   • tuck these under the "More fields" divider (`defaultOn: false`)
+   *     since admins typically only place a few of the available
+   *     children, not all of them.
+   *   • propagate {@link branchLabel} into the resulting `SectionField`
+   *     so the picker can render a "Yes" / "No" badge.
+   *
+   * Smart-routing of the parent boolean to `c0` (legacy single-child
+   * Pattern D behaviour, see `lib/field-resolver.ts` `resolvePackage`)
+   * still works unchanged — these per-child entries are EXTRA picker
+   * rows, not a replacement for the parent placement.
+   */
+  isBooleanBranchChild?: boolean;
+  /**
+   * Human-readable branch label (e.g. "Yes" / "No", or whatever the
+   * admin configured via `meta.booleanLabels` on the parent boolean
+   * field) when {@link isBooleanBranchChild} is true. Carried through
+   * into the resulting `SectionField` for the picker badge.
+   */
+  branchLabel?: string;
 };
 type OrganisationRow = { id?: unknown; name?: unknown };
 
@@ -428,6 +472,7 @@ function buildPackageSectionTemplate(
           // Tucked under "More fields"; admins reach for a specific
           // variant only when they want a category-locked placement.
           defaultOn: false,
+          branchLabel: f.branchLabel,
         });
       }
       continue;
@@ -448,8 +493,15 @@ function buildPackageSectionTemplate(
         categories: f.categories,
         // Admin fields whose value is already covered by a synthetic
         // entity-level field are tucked under "More fields"; everything
-        // else stays promoted as a default-on suggestion.
-        defaultOn: !handledKeys.has(normalizeFieldKey(f.value)),
+        // else stays promoted as a default-on suggestion. Boolean-branch
+        // children are also tucked away — admins typically only place a
+        // few of the available children, not all of them, and the
+        // parent boolean's smart-route to `c0` already covers the
+        // single-child common case.
+        defaultOn: f.isBooleanBranchChild
+          ? false
+          : !handledKeys.has(normalizeFieldKey(f.value)),
+        branchLabel: f.branchLabel,
       });
     }
   }
@@ -545,6 +597,14 @@ function SectionFieldRow({
             className="rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-[9px] font-medium uppercase tracking-wide px-1.5 py-0.5"
           >
             Auto
+          </span>
+        )}
+        {field.branchLabel && (
+          <span
+            title={`This field only renders a value when the parent boolean is ${field.branchLabel}.`}
+            className="rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-[9px] font-medium uppercase tracking-wide px-1.5 py-0.5"
+          >
+            {field.branchLabel}
           </span>
         )}
         {cats.map((c) => (
@@ -707,6 +767,9 @@ type Props = {
 
 export default function PdfTemplateEditor({ template, onClose }: Props) {
   const meta = template.meta as unknown as PdfTemplateMeta;
+  const pdfMarkStyle = usePdfSelectionMarkSync();
+  const pdfMarkScale = usePdfSelectionMarkScaleSync();
+  const pdfMarkChar = pdfMarkStyle === "cross" ? "✗" : "✓";
   const pdfUrl = React.useMemo(
     () => `/api/pdf-templates/${template.id}/preview`,
     [template.id],
@@ -788,6 +851,8 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const [previewPolicyNumber, setPreviewPolicyNumber] = React.useState("");
   const [previewValues, setPreviewValues] = React.useState<Record<string, string>>({});
   const [showPolicyPicker, setShowPolicyPicker] = React.useState(false);
+  /** Fillable checkbox / Yes–No list — drawer so the PDF preview stays full width */
+  const [showFormWidgetsDrawer, setShowFormWidgetsDrawer] = React.useState(false);
   const [policySearch, setPolicySearch] = React.useState("");
   const [policyResults, setPolicyResults] = React.useState<{ id: number; policyNumber: string }[]>([]);
   const [policySearching, setPolicySearching] = React.useState(false);
@@ -822,6 +887,24 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const [availableFlows, setAvailableFlows] = React.useState<{ label: string; value: string }[]>([]);
   const [availableStatuses, setAvailableStatuses] = React.useState<{ label: string; value: string }[]>([]);
   const [availableOrgs, setAvailableOrgs] = React.useState<{ id: number; name: string }[]>([]);
+  // Package categories: loaded per-package from `${pkg}_category`
+  // form_options. Drives the "Restrict to Package Categories" UI in
+  // the settings drawer so an admin can scope e.g. a Commercial
+  // Vehicle Proposal Form to vehicleinfo.category=commvehicle only.
+  const [availablePackageCategories, setAvailablePackageCategories] = React.useState<
+    { packageKey: string; packageLabel: string; categories: { value: string; label: string }[] }[]
+  >([]);
+  const [settingsPackageCategories, setSettingsPackageCategories] = React.useState<Record<string, string[]>>(
+    () => {
+      const raw = meta.packageCategories ?? {};
+      // Defensive copy so editing the UI doesn't mutate the prop.
+      const out: Record<string, string[]> = {};
+      for (const [k, v] of Object.entries(raw)) {
+        if (Array.isArray(v)) out[k] = [...v];
+      }
+      return out;
+    },
+  );
 
   // Load package section templates dynamically from form_options. Each
   // package configured under `/admin/policy-settings/<pkg>/fields` becomes
@@ -856,6 +939,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                   options?: unknown;
                   repeatable?: unknown;
                   booleanChildren?: unknown;
+                  booleanLabels?: unknown;
                 } | null;
                 const rawCats = Array.isArray(meta?.categories) ? meta!.categories : [];
                 const categories = rawCats
@@ -865,6 +949,18 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                 const parentLabel = String(f.label ?? "");
                 const parentValueType =
                   typeof f.valueType === "string" ? f.valueType : undefined;
+                // Resolve the human-readable Yes/No labels for the
+                // parent boolean. Mirrors the wizard's fallback at
+                // `app/(dashboard)/policies/new/page.tsx` ~line 829 so
+                // the picker entry text matches what end users see in
+                // the policy form (e.g. "Has Driving License?" tenants
+                // that customise to "Licensed" / "Not Licensed").
+                const booleanLabelsRaw = (meta as { booleanLabels?: unknown })?.booleanLabels;
+                const blObj = (booleanLabelsRaw && typeof booleanLabelsRaw === "object")
+                  ? (booleanLabelsRaw as { true?: unknown; false?: unknown })
+                  : null;
+                const yesLabel = String(blObj?.true ?? "").trim() || "Yes";
+                const noLabel = String(blObj?.false ?? "").trim() || "No";
 
                 // Read a repeatable config block (top-level or nested)
                 // into the editor's child schema. Returns undefined when
@@ -939,6 +1035,10 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                   if (Array.isArray(bc.false)) branches.push({ key: "false", arr: bc.false });
                 }
                 for (const branch of branches) {
+                  // Cache the human-readable branch label once per branch
+                  // so both the repeatable and non-repeatable child loops
+                  // emit consistent picker text for this branch.
+                  const branchHumanLabel = branch.key === "true" ? yesLabel : noLabel;
                   for (let cIdx = 0; cIdx < branch.arr.length; cIdx++) {
                     const childRaw = branch.arr[cIdx] as Record<string, unknown> | undefined;
                     if (!childRaw) continue;
@@ -950,9 +1050,6 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                       cInputType === "repeatable"
                       || cInputType.includes("repeat")
                       || childRaw.repeatable !== undefined;
-                    if (!isChildRepeatable) continue;
-                    const rep = readRepeatable(childRaw.repeatable);
-                    if (!rep) continue;
                     // Snapshot key = wizard form-name minus the `${pkg}__`
                     // prefix (which is stripped by the policy submit
                     // aggregator). Keep this in sync with the wizard:
@@ -960,27 +1057,60 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                     // `nameBase = ${pkg}__${parentValue}`.
                     const nestedValue = `${parentValue}__${branch.key}__c${cIdx}`;
                     const childLabel = String(childRaw.label ?? "").trim();
-                    // Prefix the picker label with the parent field's
-                    // label so admins can tell which boolean branch this
-                    // nested repeatable lives under (e.g. "Add More
-                    // Drivers? — Driver 1 — Last Name").
-                    const nestedDisplayLabel =
-                      childLabel || rep.itemLabel || `Item ${cIdx + 1}`;
-                    // Use the repeatable's own `itemLabel` (e.g. "Driver")
-                    // as the per-slot picker prefix. We deliberately do
-                    // NOT include the parent boolean's question text
-                    // here — admins find the long form unreadable in
-                    // the picker — so collisions are only possible if
-                    // two repeatables in the same package share the
-                    // exact same itemLabel, which admins can rename.
-                    const slotItemLabel = rep.itemLabel || nestedDisplayLabel;
+
+                    if (isChildRepeatable) {
+                      const rep = readRepeatable(childRaw.repeatable);
+                      if (!rep) continue;
+                      // Prefix the picker label with the parent field's
+                      // label so admins can tell which boolean branch this
+                      // nested repeatable lives under (e.g. "Add More
+                      // Drivers? — Driver 1 — Last Name").
+                      const nestedDisplayLabel =
+                        childLabel || rep.itemLabel || `Item ${cIdx + 1}`;
+                      // Use the repeatable's own `itemLabel` (e.g. "Driver")
+                      // as the per-slot picker prefix. We deliberately do
+                      // NOT include the parent boolean's question text
+                      // here — admins find the long form unreadable in
+                      // the picker — so collisions are only possible if
+                      // two repeatables in the same package share the
+                      // exact same itemLabel, which admins can rename.
+                      const slotItemLabel = rep.itemLabel || nestedDisplayLabel;
+                      out.push({
+                        label: nestedDisplayLabel,
+                        value: nestedValue,
+                        valueType: "repeatable",
+                        categories,
+                        repeatableChildren: rep.children,
+                        repeatableItemLabel: slotItemLabel,
+                      });
+                      continue;
+                    }
+
+                    // Non-repeatable boolean-branch child — expose as an
+                    // individually-placeable picker entry so admins can
+                    // drop each child (e.g. TAILGATE → Tonnes / Price /
+                    // Year of Make) onto the PDF directly. Pattern D's
+                    // smart-route on the parent still covers `c0` for
+                    // legacy templates that placed the parent boolean
+                    // (see `lib/field-resolver.ts` `resolvePackage`); these
+                    // entries are EXTRA picker rows, not a replacement.
+                    //
+                    // Falls back to "Sub-field N" so children with no
+                    // configured label still get a unique-slug picker
+                    // entry (otherwise multiple unlabeled children would
+                    // collide in `groupsBySlug` and trigger the unwanted
+                    // Auto-by-label aggregation).
+                    const fallbackChildLabel =
+                      childLabel || `Sub-field ${cIdx + 1}`;
                     out.push({
-                      label: nestedDisplayLabel,
+                      label: `${parentLabel} (${branchHumanLabel}) — ${fallbackChildLabel}`,
                       value: nestedValue,
-                      valueType: "repeatable",
+                      valueType: typeof childRaw.inputType === "string"
+                        ? childRaw.inputType
+                        : undefined,
                       categories,
-                      repeatableChildren: rep.children,
-                      repeatableItemLabel: slotItemLabel,
+                      isBooleanBranchChild: true,
+                      branchLabel: branchHumanLabel,
                     });
                   }
                 }
@@ -1102,20 +1232,74 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
 
   React.useEffect(() => {
     if (!showSettings) return;
+    let cancelled = false;
     Promise.all([
       fetch("/api/form-options?groupKey=flows", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).catch(() => []),
       fetch("/api/form-options?groupKey=policy_statuses", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).catch(() => []),
       fetch("/api/admin/organisations", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).catch(() => []),
     ]).then(([flowsData, statusData, orgData]) => {
+      if (cancelled) return;
       setAvailableFlows(Array.isArray(flowsData) ? flowsData.map((f: OptionRow) => ({ label: String(f.label ?? ""), value: String(f.value ?? "") })) : []);
       setAvailableStatuses(Array.isArray(statusData) ? statusData.map((s: OptionRow) => ({ label: String(s.label ?? ""), value: String(s.value ?? "") })) : []);
       setAvailableOrgs(Array.isArray(orgData) ? orgData.map((org: OrganisationRow) => ({ id: Number(org.id), name: String(org.name ?? "") })) : []);
     });
+
+    // Discover all packages, then fetch each `${pkg}_category` group in
+    // parallel. Only packages that have at least one category appear in
+    // the settings UI — keeps the drawer tidy for tenants that haven't
+    // configured categories on every package yet.
+    void (async () => {
+      try {
+        const pkgRes = await fetch("/api/form-options?groupKey=packages", { cache: "no-store" });
+        if (!pkgRes.ok) return;
+        const pkgs = (await pkgRes.json()) as OptionRow[];
+        const packages = (Array.isArray(pkgs) ? pkgs : [])
+          .map((p) => ({ value: String(p.value ?? "").trim(), label: String(p.label ?? "").trim() }))
+          .filter((p) => p.value);
+        const catsByPkg = await Promise.all(
+          packages.map(async (p) => {
+            try {
+              const cr = await fetch(
+                `/api/form-options?groupKey=${encodeURIComponent(`${p.value}_category`)}`,
+                { cache: "no-store" },
+              );
+              if (!cr.ok) return [];
+              const data = (await cr.json()) as OptionRow[];
+              return (Array.isArray(data) ? data : [])
+                .map((c) => ({ value: String(c.value ?? "").trim(), label: String(c.label ?? "").trim() || String(c.value ?? "") }))
+                .filter((c) => c.value);
+            } catch {
+              return [];
+            }
+          }),
+        );
+        if (cancelled) return;
+        const out: { packageKey: string; packageLabel: string; categories: { value: string; label: string }[] }[] = [];
+        packages.forEach((p, i) => {
+          const cats = catsByPkg[i];
+          if (cats.length > 0) {
+            out.push({ packageKey: p.value, packageLabel: p.label || p.value, categories: cats });
+          }
+        });
+        setAvailablePackageCategories(out);
+      } catch {
+        if (!cancelled) setAvailablePackageCategories([]);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [showSettings]);
 
   async function handleSaveSettings() {
     setSettingsSaving(true);
     try {
+      // Strip out empty arrays before sending so the server stores
+      // `undefined` (no restriction) rather than a noisy `{ pkg: [] }`
+      // entry that would still serialise into the JSON meta blob.
+      const cleanedPackageCategories: Record<string, string[]> = {};
+      for (const [k, arr] of Object.entries(settingsPackageCategories)) {
+        if (Array.isArray(arr) && arr.length > 0) cleanedPackageCategories[k] = arr;
+      }
+
       const res = await fetch(`/api/pdf-templates/${template.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -1126,6 +1310,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           accountingLineKey: settingsLineKey || undefined,
           description: settingsDesc,
           repeatableSlots: effectiveRepeatableSlots,
+          packageCategories: cleanedPackageCategories,
         }),
       });
       if (!res.ok) throw new Error("Save failed");
@@ -2891,6 +3076,36 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
     [images, currentPage],
   );
 
+  function clearEditorPanelSelections() {
+    setCtxMenu(null);
+    setSelectedId(null);
+    setSelectedImageId(null);
+    setSelectedDrawingId(null);
+    setSelectedTextInputId(null);
+    setMultiSelectedIds(new Set());
+    setMultiSelectedShapeIds(new Set());
+  }
+
+  /** Highlight widget on the PDF — does not close the Form selections drawer */
+  function focusCheckboxFromPanel(cb: PdfCheckbox) {
+    clearEditorPanelSelections();
+    setSelectedRadioOption(null);
+    setCurrentPage(cb.page);
+    setSelectedCheckboxId(cb.id);
+  }
+
+  function focusRadioGroupFromPanel(rg: PdfRadioGroup) {
+    if (!rg.options.length) return;
+    clearEditorPanelSelections();
+    const minPage = Math.min(...rg.options.map((o) => o.page));
+    setCurrentPage(minPage);
+    const defOpt = rg.defaultValue
+      ? rg.options.find((o) => radioOptionMatchesSelection(rg.defaultValue, o.value))
+      : undefined;
+    const opt = defOpt ?? rg.options[0];
+    setSelectedRadioOption({ groupId: rg.id, optionId: opt.id });
+  }
+
   return (
     <div className="space-y-3">
       {/* Toolbar row 1: navigation + name + settings/save */}
@@ -2993,6 +3208,20 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           <TextCursorInput className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Add Input</span>
         </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            setEditingCheckboxId(null);
+            setEditingRadioGroupId(null);
+            setShowFormWidgetsDrawer(true);
+          }}
+          className="gap-1.5"
+          title="Form selections — defaults for checkboxes and Yes/No"
+        >
+          <PanelLeft className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Form selections</span>
+        </Button>
         <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-700 hidden sm:block" />
         <Button
           size="sm"
@@ -3035,6 +3264,58 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           })}
         </div>
       )}
+
+      <SlideDrawer
+        open={showFormWidgetsDrawer}
+        onClose={() => setShowFormWidgetsDrawer(false)}
+        title="Form selections"
+        side="left"
+        widthClass="w-[min(100vw-1rem,320px)] sm:w-72 sm:max-w-xs"
+        zClass="z-[60]"
+      >
+        <FormSelectionsPanel
+          shell="drawer-body"
+          accent="violet"
+          checkboxes={checkboxes}
+          radioGroups={radioGroups}
+          getCheckboxChecked={(cb) => !!cb.defaultChecked}
+          getRadioCurrent={(rg) => rg.defaultValue ?? ""}
+          onToggleCheckbox={(cbId, _templateDefault) => {
+            const row = checkboxes.find((c) => c.id === cbId);
+            if (row) updateCheckbox(cbId, { defaultChecked: !row.defaultChecked });
+          }}
+          onSetRadio={(rgId, value) => updateRadioGroup(rgId, { defaultValue: value })}
+          onClearRadio={(rgId) => updateRadioGroup(rgId, { defaultValue: "" })}
+          canRenameLabels
+          onSaveLabel={async (kind, id, label) => {
+            if (kind === "cb") updateCheckbox(id, { label });
+            else updateRadioGroup(id, { label });
+          }}
+          onRadioTitleClick={(rg) => focusRadioGroupFromPanel(rg)}
+          onCheckboxTitleClick={(cb) => focusCheckboxFromPanel(cb)}
+          // In-panel "Save now" so admins can persist Yes/No / checkbox
+          // template defaults without closing the drawer to reach the
+          // top-right toolbar button. Drives the same `handleSave` —
+          // saves ALL editor state (fields, sections, widgets) in one
+          // PATCH so the panel never leaves the rest of the editor in
+          // a half-saved state.
+          onSaveNow={handleSave}
+          saveStatus={saving ? "saving" : isDirty ? "dirty" : "saved"}
+          intro={
+            <>
+              <p className="text-[11px] text-neutral-500 dark:text-neutral-400 leading-relaxed">
+                <span className="font-medium text-neutral-700 dark:text-neutral-300">Yes / No</span> and{" "}
+                <span className="font-medium text-neutral-700 dark:text-neutral-300">checkboxes</span> set{" "}
+                <span className="font-medium text-neutral-700 dark:text-neutral-300">template defaults</span>. Click <span className="font-medium text-neutral-700 dark:text-neutral-300">Save</span> below (or in the toolbar) to persist. Purple and green rings on the preview update; the flat scan in the PDF does not redraw.
+              </p>
+              <p className="text-[11px] text-neutral-500 dark:text-neutral-400 leading-relaxed">
+                Double-click a widget on the PDF for position and advanced options.
+              </p>
+            </>
+          }
+          emptyMessage='No widgets yet — use "Add Checkbox" or "Add Yes/No", then place on the PDF.'
+        />
+      </SlideDrawer>
 
       {/* PDF Preview with field overlays */}
       <div ref={pageContainerRef}>
@@ -3266,17 +3547,21 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  fontSize: Math.max(8, Math.min(cW, cH) * 0.85),
-                  color: "#059669",
+                  fontSize: Math.max(8, Math.min(cW, cH) * 0.85 * pdfMarkScale),
+                  color: "#0a0a0a",
                   fontWeight: 700,
                   lineHeight: 1,
                 }}
                 onMouseDown={(e) => handleCheckboxMouseDown(c.id, e)}
-                onDoubleClick={(e) => { e.stopPropagation(); setEditingCheckboxId(c.id); }}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  if (!showFormWidgetsDrawer) setEditingCheckboxId(c.id);
+                  else focusCheckboxFromPanel(c);
+                }}
                 onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ kind: "checkbox", id: c.id, screenX: e.clientX, screenY: e.clientY }); }}
                 title={c.label || (c.borderless ? "Fillable checkbox (no border in PDF)" : "Fillable checkbox (client-tickable in PDF)")}
               >
-                {c.defaultChecked ? "✓" : ""}
+                {c.defaultChecked ? pdfMarkChar : ""}
                 {(isSel || isDrag || isResize) && (
                   <>
                     {(["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const).map((edge) => {
@@ -3401,7 +3686,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                 const isDrag = draggingRadioOption?.groupId === g.id && draggingRadioOption?.optionId === o.id;
                 const isResize = resizingRadioOption?.groupId === g.id && resizingRadioOption?.optionId === o.id;
                 const isMultiSel = multiSelectedShapeIds.has(`ro:${g.id}/${o.id}`);
-                const isDefault = g.defaultValue === o.value;
+                const isDefault = radioOptionMatchesSelection(g.defaultValue, o.value);
                 const editorBorder = g.borderless
                   ? `${Math.max(1, scale)}px dashed rgba(124,58,237,0.55)`
                   : `${Math.max(1, scale)}px solid #7c3aed`;
@@ -3421,32 +3706,45 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                       width: oW,
                       height: oH,
                       border: editorBorder,
-                      // Render as a circle in the editor so it visually
-                      // matches a radio button (vs. a checkbox square).
+                      // Circular hit target; default selection shows ✓/✗
+                      // from “Mark on PDF” (same as merged output).
                       borderRadius: "50%",
                       backgroundColor: isDefault ? "rgba(124,58,237,0.18)" : "rgba(124,58,237,0.04)",
                       cursor: isDrag ? "grabbing" : "grab",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      color: "#7c3aed",
+                      color: "#0a0a0a",
                       fontWeight: 700,
                       lineHeight: 1,
                     }}
                     onMouseDown={(e) => handleRadioOptionMouseDown(g.id, o.id, e)}
-                    onDoubleClick={(e) => { e.stopPropagation(); setEditingRadioGroupId(g.id); }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      if (!showFormWidgetsDrawer) setEditingRadioGroupId(g.id);
+                      else {
+                        clearEditorPanelSelections();
+                        setSelectedCheckboxId(null);
+                        setCurrentPage(o.page);
+                        setSelectedRadioOption({ groupId: g.id, optionId: o.id });
+                      }
+                    }}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ kind: "radioOption", groupId: g.id, optionId: o.id, screenX: e.clientX, screenY: e.clientY }); }}
                     title={`${g.label || "Selection"} → ${o.label || o.value}${isDefault ? " (default)" : ""}${g.borderless ? " — borderless" : ""}`}
                   >
                     {isDefault ? (
-                      <div
+                      <span
                         style={{
-                          width: "55%",
-                          height: "55%",
-                          borderRadius: "50%",
-                          backgroundColor: "#7c3aed",
+                          fontSize: Math.max(9, Math.min(oW, oH) * 0.62 * pdfMarkScale),
+                          lineHeight: 1,
+                          fontWeight: 700,
+                          color: "#0a0a0a",
+                          userSelect: "none",
                         }}
-                      />
+                        aria-hidden
+                      >
+                        {pdfMarkChar}
+                      </span>
                     ) : null}
                     {(isSel || isDrag || isResize) && (
                       <>
@@ -3474,7 +3772,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                           className="absolute left-0 px-1 rounded-b text-[9px] leading-none py-0.5 whitespace-nowrap text-white pointer-events-none"
                           style={{ top: "100%", backgroundColor: "#7c3aed" }}
                         >
-                          {(g.label || "Selection")}: {o.label || o.value}{isDefault ? " ●" : ""}
+                          {(g.label || "Selection")}: {o.label || o.value}{isDefault ? ` ${pdfMarkChar}` : ""}
                         </div>
                       </>
                     )}
@@ -3524,6 +3822,15 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
             const realFontPx = (field.fontSize ?? DEFAULT_FONT_SIZE) * scale;
             const fieldWidth = field.width ? field.width * scale : undefined;
             const sColor = getSectionColor(field.sectionId);
+            // Mirror the generator's effective-wrap logic so the editor
+            // preview matches the rendered PDF: explicit wrap wins,
+            // otherwise wrap when a width is set (legacy default).
+            const effectiveWrap =
+              field.wrap === true
+                ? !!field.width
+                : field.wrap === false
+                ? false
+                : !!field.width;
 
             return (
               <div
@@ -3543,27 +3850,72 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                 onMouseDown={(e) => handleFieldMouseDown(field.id, e)}
                 onDoubleClick={(e) => handleFieldDoubleClick(field.id, e)}
               >
-                <div
-                  className="border-b-2 whitespace-nowrap overflow-hidden"
-                  style={{
-                    fontSize: realFontPx,
-                    lineHeight: `${realFontPx + 2}px`,
-                    height: realFontPx + 4,
-                    color: field.fontColor ?? "#000",
-                    textAlign: field.align ?? "left",
-                    borderColor: sColor,
-                    backgroundColor: isSelected || isDragging || isMultiSel ? `${sColor}26` : `${sColor}1a`,
-                    fontWeight: field.bold ? "bold" : undefined,
-                    fontStyle: field.italic ? "italic" : undefined,
-                    textDecoration: field.underline ? "underline" : undefined,
-                  }}
-                >
-                  {previewValues[field.id] ? (
-                    <span>{previewValues[field.id]}</span>
-                  ) : (
-                    <span className="opacity-60">{field.label || field.fieldKey}</span>
-                  )}
-                </div>
+                {(() => {
+                  const hasPreview = !!previewValues[field.id];
+                  // Three render modes for the field marker:
+                  //  1. effectiveWrap → real wrap mode (auto height, pre-wrap)
+                  //  2. !hasPreview && !effectiveWrap → label-only mode
+                  //     (small font, up to 2 lines, auto height) so long
+                  //     editor-only hints like "Driver 2 — Last Name" stop
+                  //     overflowing and overlapping neighbour fields.
+                  //  3. hasPreview && !effectiveWrap → single-line preview
+                  //     of the actual PDF value (existing behaviour).
+                  const labelOnlyMode = !hasPreview && !effectiveWrap;
+                  return (
+                    <div
+                      className={`border-b-2 ${
+                        effectiveWrap
+                          ? "whitespace-pre-wrap wrap-break-word"
+                          : labelOnlyMode
+                          ? ""
+                          : "whitespace-nowrap overflow-hidden"
+                      }`}
+                      style={{
+                        fontSize: realFontPx,
+                        lineHeight: effectiveWrap ? 1.2 : `${realFontPx + 2}px`,
+                        height: effectiveWrap || labelOnlyMode ? "auto" : realFontPx + 4,
+                        minHeight: effectiveWrap || labelOnlyMode ? realFontPx + 4 : undefined,
+                        color: field.fontColor ?? "#000",
+                        textAlign: field.align ?? "left",
+                        borderColor: sColor,
+                        backgroundColor: isSelected || isDragging || isMultiSel ? `${sColor}26` : `${sColor}1a`,
+                        fontWeight: field.bold ? "bold" : undefined,
+                        fontStyle: field.italic ? "italic" : undefined,
+                        textDecoration: field.underline ? "underline" : undefined,
+                      }}
+                    >
+                      {hasPreview ? (
+                        <span>{previewValues[field.id]}</span>
+                      ) : (
+                        // Placeholder label is an editor-only hint — it doesn't
+                        // render on the actual PDF, so it shouldn't be drawn at
+                        // the real PDF font size. Big labels like "Driver 2 —
+                        // Last Name" or "with hire Purchase Owner" otherwise
+                        // overflow their placement and visually overlap
+                        // neighbour fields. Cap to 8–10 CSS px, allow wrapping
+                        // up to 2 lines (with ellipsis if longer) so the
+                        // marker stays close to its real position.
+                        <span
+                          className="opacity-60 line-clamp-2"
+                          style={{
+                            display: "-webkit-box",
+                            WebkitBoxOrient: "vertical",
+                            WebkitLineClamp: 2,
+                            overflow: "hidden",
+                            wordBreak: "break-word",
+                            whiteSpace: "normal",
+                            fontSize: Math.min(10, Math.max(8, realFontPx * 0.75)),
+                            lineHeight: 1.15,
+                            maxWidth: fieldWidth ?? 140,
+                          }}
+                          title={field.label || field.fieldKey}
+                        >
+                          {field.label || field.fieldKey}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div
                   className={`absolute left-0 px-1 rounded-b text-[9px] leading-none py-0.5 whitespace-nowrap transition-opacity text-white ${
                     isSelected || isDragging ? "opacity-100" : "opacity-0 group-hover:opacity-100"
@@ -4344,6 +4696,61 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                   </select>
                 </div>
               </div>
+              {(() => {
+                const hasWidth = !!selectedField.width;
+                const wrapOn =
+                  selectedField.wrap === true
+                    ? hasWidth
+                    : selectedField.wrap === false
+                    ? false
+                    : hasWidth;
+                return (
+                  <div className="mt-2 flex items-start justify-between gap-2 rounded-md border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 px-2 py-1.5">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <WrapText className="h-3.5 w-3.5 text-neutral-500 dark:text-neutral-400" />
+                        <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Wrap text</span>
+                      </div>
+                      <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+                        {hasWidth
+                          ? "Long text wraps onto multiple lines within the max width."
+                          : "Set a Max Width above to enable wrapping."}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={wrapOn}
+                      disabled={!hasWidth}
+                      onClick={() =>
+                        updateField(selectedField.id, {
+                          wrap: wrapOn ? false : true,
+                        })
+                      }
+                      className={`shrink-0 relative inline-flex h-5 w-9 items-center rounded-full border transition-colors ${
+                        !hasWidth
+                          ? "bg-neutral-200 dark:bg-neutral-800 border-neutral-200 dark:border-neutral-800 cursor-not-allowed opacity-60"
+                          : wrapOn
+                          ? "bg-blue-600 border-blue-600 dark:bg-blue-500 dark:border-blue-500"
+                          : "bg-neutral-200 dark:bg-neutral-700 border-neutral-300 dark:border-neutral-600 hover:bg-neutral-300 dark:hover:bg-neutral-600"
+                      }`}
+                      title={
+                        !hasWidth
+                          ? "Set Max Width first"
+                          : wrapOn
+                          ? "Wrap is on — click to keep on a single line"
+                          : "Wrap is off — click to wrap onto multiple lines"
+                      }
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          wrapOn ? "translate-x-4" : "translate-x-0.5"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="border-t border-neutral-200 dark:border-neutral-800 pt-3">
@@ -4689,7 +5096,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
       {/* Checkbox editing drawer — opens on double-click */}
       {(() => {
         const ec = editingCheckboxId ? checkboxes.find((c) => c.id === editingCheckboxId) : null;
-        if (!ec || selectedImage) return null;
+        if (!ec || selectedImage || showFormWidgetsDrawer) return null;
         return (
           <SlideDrawer
             open
@@ -4940,7 +5347,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
       {/* Radio group editing drawer — opens on double-click of an option */}
       {(() => {
         const eg = editingRadioGroupId ? radioGroups.find((g) => g.id === editingRadioGroupId) : null;
-        if (!eg) return null;
+        if (!eg || showFormWidgetsDrawer) return null;
         const otherNames = radioGroups.filter((g) => g.id !== eg.id).map((g) => g.name);
         return (
           <SlideDrawer
@@ -5077,7 +5484,7 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                               }`}
                               title="Pre-select this option in the generated PDF"
                             >
-                              {isDefault ? "Default ●" : "Set default"}
+                              {isDefault ? `Default (${pdfMarkChar})` : "Set default"}
                             </button>
                             {eg.options.length > 1 && (
                               <button
@@ -5321,8 +5728,17 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                     <button className={itemCls} onClick={() => { updateCheckbox(cb.id, { defaultChecked: !cb.defaultChecked }); closeMenu(); }}>
                       {cb.defaultChecked ? "✓ " : ""}Pre-ticked by default
                     </button>
-                    <button className={itemCls} onClick={() => { setEditingCheckboxId(cb.id); closeMenu(); }}>
-                      Edit properties…
+                    <button
+                      className={itemCls}
+                      onClick={() => {
+                        setEditingCheckboxId(null);
+                        setEditingRadioGroupId(null);
+                        setShowFormWidgetsDrawer(true);
+                        focusCheckboxFromPanel(cb);
+                        closeMenu();
+                      }}
+                    >
+                      Edit in Form selections…
                     </button>
                     <div className={sepCls} />
                     <button className={`${itemCls} text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950`}
@@ -5368,8 +5784,17 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
                         {isDefault ? "✓ " : ""}Pre-select "{opt.label || opt.value}"
                       </button>
                     )}
-                    <button className={itemCls} onClick={() => { setEditingRadioGroupId(group.id); closeMenu(); }}>
-                      Edit selection…
+                    <button
+                      className={itemCls}
+                      onClick={() => {
+                        setEditingCheckboxId(null);
+                        setEditingRadioGroupId(null);
+                        setShowFormWidgetsDrawer(true);
+                        focusRadioGroupFromPanel(group);
+                        closeMenu();
+                      }}
+                    >
+                      Edit in Form selections…
                     </button>
                     <div className={sepCls} />
                     {opt && group.options.length > 1 && (
@@ -5606,6 +6031,92 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
               ))}
             </div>
           </div>
+
+          {/* Restrict to Package Categories — e.g. show this template
+              only on Commercial Vehicle policies (vehicleinfo=commvehicle)
+              or only on Company-insured policies (insured=company). One
+              section per configured package. Empty (nothing checked
+              within a package) means no restriction from that package.
+              Multiple categories within a package are OR'd; multiple
+              packages are AND'd. Filter logic lives in
+              `lib/pdf/template-visibility.ts`. */}
+          {availablePackageCategories.length > 0 && (
+            <div>
+              <Label className="text-xs">
+                Restrict to Package Categories <span className="text-neutral-400">(empty = all)</span>
+              </Label>
+              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5 mb-1.5">
+                Show this template only on policies whose package category matches.
+                Useful when one type of document differs by vehicle type, insured type, etc.
+              </p>
+              <div className="space-y-2">
+                {availablePackageCategories.map((pkg) => {
+                  const selected = settingsPackageCategories[pkg.packageKey] ?? [];
+                  return (
+                    <div
+                      key={pkg.packageKey}
+                      className="rounded-md border border-neutral-200 dark:border-neutral-800 p-2"
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300">
+                          {pkg.packageLabel}
+                        </span>
+                        {selected.length > 0 && (
+                          <button
+                            type="button"
+                            className="text-[10px] text-blue-600 hover:underline dark:text-blue-400"
+                            onClick={() =>
+                              setSettingsPackageCategories((prev) => {
+                                const next = { ...prev };
+                                delete next[pkg.packageKey];
+                                return next;
+                              })
+                            }
+                            title="Clear all category restrictions for this package"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        {pkg.categories.map((cat) => {
+                          const checked = selected.includes(cat.value);
+                          return (
+                            <label
+                              key={cat.value}
+                              className="flex items-center gap-2 text-xs cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  setSettingsPackageCategories((prev) => {
+                                    const cur = prev[pkg.packageKey] ?? [];
+                                    const nextArr = e.target.checked
+                                      ? Array.from(new Set([...cur, cat.value]))
+                                      : cur.filter((v) => v !== cat.value);
+                                    const next = { ...prev };
+                                    if (nextArr.length === 0) {
+                                      delete next[pkg.packageKey];
+                                    } else {
+                                      next[pkg.packageKey] = nextArr;
+                                    }
+                                    return next;
+                                  })
+                                }
+                                className="h-3.5 w-3.5"
+                              />
+                              {cat.label}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div>
             <Label className="text-xs">Cover Type (Accounting Line Key)</Label>

@@ -8,6 +8,7 @@ import { PDF_TEMPLATE_GROUP_KEY } from "@/lib/types/pdf-template";
 import type { PdfTemplateMeta, PdfImageMapping } from "@/lib/types/pdf-template";
 import { generateFilledPdf } from "@/lib/pdf/generate";
 import { buildMergeContext } from "@/lib/pdf/build-context";
+import { normalizePdfSelectionMarkScale } from "@/lib/pdf/normalize-pdf-selection-mark-scale";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,16 @@ export async function POST(
     body.radioOverrides && typeof body.radioOverrides === "object" ? body.radioOverrides : undefined;
   const textInputOverrides: Record<string, string> | undefined =
     body.textInputOverrides && typeof body.textInputOverrides === "object" ? body.textInputOverrides : undefined;
+  const selectionMarkStyle: "check" | "cross" | undefined =
+    body.selectionMarkStyle === "cross"
+      ? "cross"
+      : body.selectionMarkStyle === "check"
+        ? "check"
+        : undefined;
+  const selectionMarkScale = normalizePdfSelectionMarkScale(body.selectionMarkScale);
+  // Preview canvas opt-in — server skips ✓/✗ glyphs and just leaves
+  // the soft blue tint, so the client can overlay marks instantly.
+  const skipSelectionMarks: boolean = body.skipSelectionMarks === true;
 
   if (!policyId) {
     return NextResponse.json({ error: "policyId is required" }, { status: 400 });
@@ -84,6 +95,9 @@ export async function POST(
       checkboxOverrides,
       radioOverrides,
       textInputOverrides,
+      selectionMarkStyle,
+      selectionMarkScale,
+      skipSelectionMarks,
       loadImage: (storedName: string) => readPdfTemplate(storedName),
     });
 

@@ -12,6 +12,7 @@ import { sendEmail } from "@/lib/email";
 import { appendPolicyAudit } from "@/lib/audit";
 import { buildMergeContext } from "@/lib/pdf/build-context";
 import { generateFilledPdf } from "@/lib/pdf/generate";
+import { normalizePdfSelectionMarkScale } from "@/lib/pdf/normalize-pdf-selection-mark-scale";
 import { PDF_TEMPLATE_GROUP_KEY } from "@/lib/types/pdf-template";
 import type { PdfTemplateMeta, PdfImageMapping } from "@/lib/types/pdf-template";
 
@@ -86,6 +87,13 @@ export async function POST(
       .filter((n: number) => Number.isFinite(n) && n > 0);
     // Default true: email recipients get a tamper-proof flat copy.
     const flattenPdfs = body?.flattenPdfs !== false;
+    const selectionMarkStyle: "check" | "cross" | undefined =
+      body?.selectionMarkStyle === "cross"
+        ? "cross"
+        : body?.selectionMarkStyle === "check"
+          ? "check"
+          : undefined;
+    const selectionMarkScale = normalizePdfSelectionMarkScale(body?.selectionMarkScale);
     const email = String(body?.email ?? "").trim();
     const subject = String(body?.subject ?? "").trim();
     const message = String(body?.message ?? "").trim();
@@ -241,6 +249,8 @@ export async function POST(
               checkboxes: meta.checkboxes,
               radioGroups: meta.radioGroups,
               textInputs: meta.textInputs,
+              selectionMarkStyle,
+              selectionMarkScale,
               loadImage: (storedName: string) => readPdfTemplate(storedName),
               flatten: flattenPdfs,
             });
