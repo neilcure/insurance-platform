@@ -31,6 +31,22 @@ if (typeof window !== "undefined") {
   pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 }
 
+/**
+ * pdf.js needs CMaps + standard-font data to decode CJK glyphs (Adobe-GB1 /
+ * Adobe-CNS1 / Adobe-Japan1 / Adobe-Korea1) embedded in source PDFs. Without
+ * these, every Chinese / Japanese / Korean character in the source renders
+ * blank. Assets are provisioned to `public/pdfjs/` by
+ * `scripts/copy-pdfjs-assets.mjs` (runs on postinstall / predev / prebuild).
+ *
+ * MUST be a module-scoped constant — react-pdf reloads the document whenever
+ * `options` changes by reference.
+ */
+const PDF_DOC_OPTIONS = {
+  cMapUrl: "/pdfjs/cmaps/",
+  cMapPacked: true,
+  standardFontDataUrl: "/pdfjs/standard_fonts/",
+} as const;
+
 type Props = {
   /** Object URL pointing at the merged PDF (skipSelectionMarks=true). */
   pdfUrl: string;
@@ -92,6 +108,7 @@ export function PdfMergePreviewCanvas({
       {pdfUrl ? (
         <Document
           file={pdfUrl}
+          options={PDF_DOC_OPTIONS}
           onLoadSuccess={({ numPages: n }) => setNumPages(n)}
           loading={
             <div className="flex h-32 items-center justify-center text-sm text-neutral-500">
@@ -172,7 +189,18 @@ function PagePreview({
         pageNumber={pageIndex + 1}
         width={renderWidth}
         renderTextLayer={false}
-        renderAnnotationLayer={false}
+        // Annotation layer must be ON so AcroForm text-input widgets created
+        // by `generateFilledPdf` (the fillable blanks the recipient types
+        // into) are visible in the in-app preview. Without this, pdf.js
+        // skips them entirely and the user sees an empty rectangle where
+        // their input field should be — the field IS in the saved PDF, but
+        // the in-app preview falsely suggests the export "lost" it.
+        //
+        // Safe in our pipeline because checkboxes / radios are NOT AcroForm
+        // widgets in the generated PDF — they're drawn as plain rectangles
+        // + vector glyphs, so the existing DOM overlay (above) for ✓/✗ and
+        // tints continues to be the single source of truth for those.
+        renderAnnotationLayer
         loading={
           <div className="flex h-32 items-center justify-center text-sm text-neutral-500">
             <Loader2 className="h-4 w-4 animate-spin mr-2" />

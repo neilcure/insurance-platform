@@ -39,6 +39,23 @@ import { cn } from "@/lib/utils";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
+/**
+ * pdf.js needs CMaps + standard-font data to decode CJK glyphs (Adobe-GB1 /
+ * Adobe-CNS1 / Adobe-Japan1 / Adobe-Korea1) embedded in source PDFs, and the
+ * 14 PDF base fonts on machines without them. The assets are provisioned to
+ * `public/pdfjs/` by `scripts/copy-pdfjs-assets.mjs` (runs on postinstall /
+ * predev / prebuild).
+ *
+ * MUST be a module-scoped constant — react-pdf reloads the document whenever
+ * `options` changes by reference, so an inline `{}` would re-render the PDF
+ * on every parent re-render.
+ */
+const PDF_DOC_OPTIONS = {
+  cMapUrl: "/pdfjs/cmaps/",
+  cMapPacked: true,
+  standardFontDataUrl: "/pdfjs/standard_fonts/",
+} as const;
+
 const DEFAULT_FONT_SIZE = 10;
 
 type SectionField = {
@@ -717,7 +734,7 @@ type PdfPageBackgroundProps = {
 const PdfPageInner = React.memo(
   function PdfPageInner({ pdfUrl, currentPage }: { pdfUrl: string; currentPage: number }) {
     return (
-      <Document file={pdfUrl} loading={PDF_LOADING_VIEW} error={PDF_ERROR_VIEW}>
+      <Document file={pdfUrl} options={PDF_DOC_OPTIONS} loading={PDF_LOADING_VIEW} error={PDF_ERROR_VIEW}>
         <Page
           pageNumber={currentPage + 1}
           width={NATURAL_PDF_WIDTH}

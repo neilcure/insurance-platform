@@ -1,10 +1,12 @@
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb, type PDFFont } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
 import type {
   PdfFieldMapping, PdfPageInfo, PdfImageMapping, PdfDrawing,
   PdfCheckbox, PdfRadioGroup, PdfTextInput,
 } from "@/lib/types/pdf-template";
 import { resolveFieldValue, type MergeContext } from "./resolve-data";
 import { normalizePdfSelectionMarkScale } from "./normalize-pdf-selection-mark-scale";
+import { containsCjk, loadCjkFontBytes } from "./cjk-font";
 
 function hexToRgb(hex: string) {
   const h = hex.replace("#", "");
@@ -236,10 +238,79 @@ export async function generateFilledPdf(
   const selectionMarkScale = normalizePdfSelectionMarkScale(opts?.selectionMarkScale);
 
   const pdfDoc = await PDFDocument.load(templateBytes);
+  // Required for embedding any non-StandardFont (i.e. our CJK font).
+  // Cheap to register even when no CJK text shows up in this document.
+  pdfDoc.registerFontkit(fontkit);
+
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const fontItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
   const fontBoldItalic = await pdfDoc.embedFont(StandardFonts.HelveticaBoldOblique);
+
+  // CJK font is embedded LAZILY — only the first time a CJK string is
+  // actually drawn. English-only PDFs (the common case) pay zero cost
+  // and never hit the network. Subsequent CJK draws in the same PDF
+  // reuse the same embedded subset.
+  //
+  // We cache the embedded PDFFont on the doc itself; once embedded we
+  // can reuse for every CJK string in this PDF. `subset: true` means
+  // pdf-lib only writes the actually-used glyphs into the output, so
+  // a typical filled PDF gains ~30–80 KB instead of the full ~5 MB
+  // font file.
+  let cjkFontPromise: Promise<PDFFont> | null = null;
+  let cjkFontWarned = false;
+  const ensureCjkFont = async (): Promise<PDFFont | null> => {
+    if (!cjkFontPromise) {
+      cjkFontPromise = (async () => {
+        const bytes = await loadCjkFontBytes();
+        return pdfDoc.embedFont(bytes, { subset: true });
+      })();
+      cjkFontPromise.catch(() => {
+        // Allow a future CJK string in *this same* PDF to retry —
+        // and prevent the unhandled rejection from crashing the request.
+        cjkFontPromise = null;
+      });
+    }
+    try {
+      return await cjkFontPromise;
+    } catch (err) {
+      if (!cjkFontWarned) {
+        cjkFontWarned = true;
+        console.error(
+          "[pdf-generate] CJK font unavailable, Chinese characters will be omitted from this render:",
+          err,
+        );
+      }
+      return null;
+    }
+  };
+
+  /**
+   * Pick the right font for a piece of text. Latin-only text keeps
+   * Helvetica (incl. bold/italic variants the admin configured); any
+   * text containing CJK switches to the CJK font for the WHOLE string
+   * — Noto Sans CJK has first-class Latin glyphs so mixed strings like
+   * "Mr. 陳大文" still look natural. Bold/italic CJK falls back to
+   * regular CJK because Noto Sans CJK ships no italic variant; this is
+   * standard CJK typography (CJK scripts traditionally don't italicise).
+   */
+  const pickFont = async (
+    text: string,
+    bold: boolean | undefined,
+    italic: boolean | undefined,
+  ): Promise<PDFFont> => {
+    if (containsCjk(text)) {
+      const cjk = await ensureCjkFont();
+      if (cjk) return cjk;
+      // Fall through to Helvetica — drawText will throw on the CJK char,
+      // but at least a localised error is preferable to silently
+      // dropping non-CJK fields elsewhere in the same render.
+    }
+    if (bold && italic) return fontBoldItalic;
+    if (bold) return fontBold;
+    if (italic) return fontItalic;
+    return fontRegular;
+  };
 
   const existingPageCount = pdfDoc.getPages().length;
   const pageDefs = opts?.pages ?? [];
@@ -301,11 +372,10 @@ export async function generateFilledPdf(
     const fontSize = field.fontSize ?? 10;
     const color = field.fontColor ? hexToRgb(field.fontColor) : rgb(0, 0, 0);
 
-    const font =
-      field.bold && field.italic ? fontBoldItalic :
-      field.bold ? fontBold :
-      field.italic ? fontItalic :
-      fontRegular;
+    // pickFont automatically routes CJK text through the embedded
+    // Noto Sans CJK font; pure-Latin text keeps the existing
+    // Helvetica family with full bold/italic support.
+    const font = await pickFont(text, field.bold, field.italic);
 
     let x = field.x;
     const vectorGlyphWidth = fontSize;
@@ -527,11 +597,16 @@ export async function generateFilledPdf(
           const textY = ti.multiline
             ? ti.y + ti.height - fontSize - 2
             : ti.y + Math.max(2, (ti.height - fontSize) / 2);
+          // Route through pickFont so a recipient who pre-fills a
+          // text input with CJK (e.g. a handwritten Chinese name in
+          // the "Driver name" blank) renders correctly in the
+          // flattened email copy too.
+          const tiFont = await pickFont(String(initialValue), false, false);
           page.drawText(String(initialValue), {
             x: ti.x + 2,
             y: textY,
             size: fontSize,
-            font: fontRegular,
+            font: tiFont,
             color: rgb(0, 0, 0),
             maxWidth: ti.multiline ? Math.max(0, ti.width - 4) : undefined,
             lineHeight: ti.multiline ? fontSize * 1.2 : undefined,
@@ -549,8 +624,28 @@ export async function generateFilledPdf(
       }
       usedNames.add(fieldName);
 
+      // If the pre-fill contains CJK, the field needs to be rendered with
+      // the CJK font rather than pdf-lib's default Helvetica — otherwise
+      // `pdfDoc.save()` throws "WinAnsi cannot encode <char>" when it
+      // builds the widget appearance stream, which crashes the WHOLE
+      // export and the recipient gets no PDF at all (matching the
+      // "input field is missing" symptom). On English-only inputs we
+      // keep Helvetica so the embedded font set stays minimal.
+      const widgetFont = containsCjk(String(initialValue))
+        ? await ensureCjkFont()
+        : null;
+
       const tf = form.createTextField(fieldName);
-      if (initialValue) tf.setText(initialValue);
+      if (initialValue) {
+        try {
+          tf.setText(initialValue);
+        } catch (err) {
+          console.warn(
+            `[pdf-generate] Skipping pre-fill for text input "${ti.label ?? ti.id}" — value contains characters the embedded font cannot encode:`,
+            err,
+          );
+        }
+      }
       if (ti.multiline) tf.enableMultiline();
 
       tf.addToPage(page, {
@@ -560,6 +655,7 @@ export async function generateFilledPdf(
         height: ti.height,
         borderWidth: 0,
         backgroundColor: rgb(0.9, 0.95, 1),
+        ...(widgetFont ? { font: widgetFont } : {}),
       });
 
       if (typeof ti.fontSize === "number" && ti.fontSize > 0) {

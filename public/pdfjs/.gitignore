@@ -1,0 +1,19 @@
+# PDF.js CMaps + standard fonts for the in-browser PDF preview.
+#
+# These are copied from `node_modules/pdfjs-dist/{cmaps,standard_fonts}` by
+# `scripts/copy-pdfjs-assets.mjs`, which runs automatically on `npm install`
+# (see `postinstall` in package.json). Re-run manually with:
+#   node scripts/copy-pdfjs-assets.mjs
+#
+# They are required so pdf.js can decode CJK fonts (Adobe-GB1 / Adobe-CNS1 /
+# Adobe-Japan1 / Adobe-Korea1) embedded in source PDFs — without them, every
+# Chinese character in an uploaded PDF renders as blank / a square.
+#
+# We intentionally don't commit them: ~1.85 MB of binary blobs that would
+# bloat the repo and re-appear in every diff after a pdfjs-dist upgrade.
+
+cmaps/
+standard_fonts/
+
+# Always commit this .gitignore so the directory exists in fresh clones.
+!.gitignore

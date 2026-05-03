@@ -1,0 +1,22 @@
+# CJK font files for the PDF Mail Merge pipeline.
+#
+# These are intentionally NOT committed:
+#   - Noto Sans CJK is ~5-17 MB per weight and bloats clones.
+#   - The runtime auto-downloads to OS tmpdir on first use and caches
+#     there for subsequent renders (see lib/pdf/cjk-font.ts).
+#
+# If you want offline / air-gapped builds, drop the file at:
+#   lib/pdf/fonts/NotoSansCJK-Regular.otf
+# Get it from:
+#   https://github.com/notofonts/noto-cjk/raw/165c01b/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf
+# The loader checks this path first, so committed bundles always win
+# over the CDN cache.
+
+*.otf
+*.ttf
+*.ttc
+*.woff
+*.woff2
+
+# But DO commit this .gitignore so the directory exists in fresh clones.
+!.gitignore

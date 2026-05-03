@@ -184,6 +184,11 @@ export async function POST(
         drawings: meta.drawings,
         checkboxes: meta.checkboxes,
         radioGroups: meta.radioGroups,
+        // Fillable text inputs the admin placed on the template (e.g.
+        // "Cheque number", "Branch", "Authorising signature"). Without
+        // this, accounting invoice/receipt PDFs silently dropped every
+        // text-input widget the admin had configured.
+        textInputs: meta.textInputs,
         loadImage: (storedName: string) => readPdfTemplate(storedName),
       });
 
