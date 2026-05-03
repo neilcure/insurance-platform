@@ -255,13 +255,41 @@ export function SidebarMenuButton({
   className,
   children,
   asChild,
+  isActive: isActiveProp,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { tooltip?: string; asChild?: boolean }) {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  tooltip?: string;
+  asChild?: boolean;
+  /** Force active state. When omitted, auto-detected from the wrapped <Link> href. */
+  isActive?: boolean;
+}) {
   const ctx = React.useContext(SidebarContext)!;
+  const pathname = usePathname();
   const showTooltip = ctx.collapsed && !ctx.isMobile && !!tooltip;
   const ref = React.useRef<HTMLElement | null>(null);
+
+  // Auto-detect active state from the asChild <Link>'s href so callers don't
+  // need to pass anything. Highlight on exact OR sub-route match (deep pages
+  // still feel "in" their section). No-op only on EXACT match — from a deep
+  // page like /dashboard/agents/123/logs, clicking "Agents" must still go to
+  // the list view.
+  let derivedActive = false;
+  let derivedExact = false;
+  let childHref: string | undefined;
+  if (asChild && React.isValidElement(children)) {
+    const child = children as React.ReactElement<{ href?: string }>;
+    childHref = typeof child.props.href === "string" ? child.props.href : undefined;
+    if (pathname && childHref && childHref !== "#") {
+      derivedExact = pathname === childHref;
+      derivedActive = derivedExact || pathname.startsWith(childHref + "/");
+    }
+  }
+  const active = isActiveProp ?? derivedActive;
+
   const cls = cn(
     "flex w-full items-center rounded-md text-sm hover:bg-neutral-100 dark:hover:bg-neutral-900",
+    active &&
+      "bg-neutral-200 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50",
     ctx.collapsed && !ctx.isMobile
       ? "justify-center px-1 py-1.5 [&_svg]:h-5 [&_svg]:w-5"
       : "gap-2 px-2 py-2 text-left",
@@ -269,13 +297,36 @@ export function SidebarMenuButton({
   );
 
   if (asChild && React.isValidElement(children)) {
-    const child = children as React.ReactElement<Record<string, unknown>>;
+    const child = children as React.ReactElement<{
+      href?: string;
+      onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+      className?: string;
+    }>;
+    const childOnClick = child.props.onClick;
+    // Only block the navigation when we're already on the exact same URL.
+    // Always preserve modifier-click semantics (Cmd/Ctrl/Shift/middle-click
+    // → open in new tab) so power users aren't punished.
+    const handleClick = derivedExact
+      ? (e: React.MouseEvent<HTMLAnchorElement>) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+            childOnClick?.(e);
+            return;
+          }
+          e.preventDefault();
+          // On mobile, close the overlay so the tap feels like it did
+          // something — otherwise the menu just stays open silently.
+          if (ctx.isMobile) ctx.setMobileOpen(false);
+          childOnClick?.(e);
+        }
+      : childOnClick;
     return (
       <div ref={ref as React.RefObject<HTMLDivElement>}>
         {React.cloneElement(child, {
           ...child.props,
-          className: cn((child.props as { className?: string })?.className, cls),
-        })}
+          className: cn(child.props.className, cls),
+          onClick: handleClick,
+          "aria-current": derivedExact ? "page" : undefined,
+        } as React.HTMLAttributes<HTMLAnchorElement> & { href?: string })}
         {showTooltip && <FloatingTooltip text={tooltip} anchorRef={ref} />}
       </div>
     );
