@@ -124,6 +124,7 @@ export type DocumentStatusEntry = {
   formSelections?: {
     checkboxes?: Record<string, boolean>;
     radioGroups?: Record<string, string>;
+    textInputs?: Record<string, string>;
   };
 };
 

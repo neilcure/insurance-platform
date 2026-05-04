@@ -261,6 +261,17 @@ export async function POST(
           try {
             const templateBytes = await readPdfTemplate(meta.filePath);
             const images: PdfImageMapping[] = meta.images ?? [];
+            const formSelections = (
+              mergeCtx.currentDocTrackingKey
+                ? mergeCtx.documentTracking?.[mergeCtx.currentDocTrackingKey]?.formSelections
+                : undefined
+            ) as
+              | {
+                  checkboxes?: Record<string, boolean>;
+                  radioGroups?: Record<string, string>;
+                  textInputs?: Record<string, string>;
+                }
+              | undefined;
             const filledPdf = await generateFilledPdf(templateBytes, meta.fields, mergeCtx, {
               pages: meta.pages,
               images,
@@ -268,6 +279,9 @@ export async function POST(
               checkboxes: meta.checkboxes,
               radioGroups: meta.radioGroups,
               textInputs: meta.textInputs,
+              checkboxOverrides: formSelections?.checkboxes,
+              radioOverrides: formSelections?.radioGroups,
+              textInputOverrides: formSelections?.textInputs,
               selectionMarkStyle,
               selectionMarkScale,
               loadImage: (storedName: string) => readPdfTemplate(storedName),

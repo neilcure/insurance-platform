@@ -138,7 +138,47 @@ export async function POST(request: Request) {
       const filteredFields = audience
         ? meta.fields.filter((f) => !f.audience || f.audience === "all" || f.audience === audience)
         : meta.fields;
+
+      // Set the tracking key so the resolver can pull the right
+      // documentNumber AND so we can read the saved side-panel
+      // formSelections (checkboxes / radios / text inputs) for
+      // THIS template — same pattern as
+      // app/api/policies/[id]/documents/email/route.ts and
+      // app/api/share/[token]/file/[idx]/route.ts. This is the
+      // SINGLE rule: every server PDF send reads saved selections
+      // from documentTracking; live unsaved overrides from the
+      // client take precedence if provided.
+      const docTrackingKey = tplRow.label
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_|_$/g, "");
+      mergeCtx.currentDocTrackingKey = meta.isAgentTemplate
+        ? `${docTrackingKey}_agent`
+        : docTrackingKey;
+      const savedFormSelections = (
+        mergeCtx.currentDocTrackingKey
+          ? mergeCtx.documentTracking?.[mergeCtx.currentDocTrackingKey]?.formSelections
+          : undefined
+      ) as
+        | {
+            checkboxes?: Record<string, boolean>;
+            radioGroups?: Record<string, string>;
+            textInputs?: Record<string, string>;
+          }
+        | undefined;
       const ov = templateOverrides[String(tplRow.id)] ?? {};
+      const mergedCheckboxes = {
+        ...(savedFormSelections?.checkboxes ?? {}),
+        ...(ov.checkboxOverrides ?? {}),
+      };
+      const mergedRadios = {
+        ...(savedFormSelections?.radioGroups ?? {}),
+        ...(ov.radioOverrides ?? {}),
+      };
+      const mergedTextInputs = {
+        ...(savedFormSelections?.textInputs ?? {}),
+        ...(ov.textInputOverrides ?? {}),
+      };
       const filledPdf = await generateFilledPdf(templateBytes, filteredFields, mergeCtx, {
         pages: meta.pages,
         images: templateImages,
@@ -146,9 +186,9 @@ export async function POST(request: Request) {
         checkboxes: meta.checkboxes,
         radioGroups: meta.radioGroups,
         textInputs: meta.textInputs,
-        checkboxOverrides: ov.checkboxOverrides,
-        radioOverrides: ov.radioOverrides,
-        textInputOverrides: ov.textInputOverrides,
+        checkboxOverrides: Object.keys(mergedCheckboxes).length ? mergedCheckboxes : undefined,
+        radioOverrides: Object.keys(mergedRadios).length ? mergedRadios : undefined,
+        textInputOverrides: Object.keys(mergedTextInputs).length ? mergedTextInputs : undefined,
         selectionMarkStyle,
         selectionMarkScale,
         loadImage: (storedName: string) => readPdfTemplate(storedName),

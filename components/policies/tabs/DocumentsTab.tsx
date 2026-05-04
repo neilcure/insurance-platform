@@ -3299,11 +3299,14 @@ function PdfMergeButton({
   const [radioOverrides, setRadioOverrides] = React.useState<Record<string, string>>(
     () => entry?.formSelections?.radioGroups ?? {},
   );
+  const [textInputOverrides, setTextInputOverrides] = React.useState<Record<string, string>>(
+    () => entry?.formSelections?.textInputs ?? {},
+  );
   const containerRef = React.useRef<HTMLDivElement>(null);
   const meta = tpl.meta as unknown as PdfTemplateMeta | null;
   const status = entry?.status;
   const badge = status ? STATUS_BADGE[status] : null;
-  const hasInteractive = !!(meta?.checkboxes?.length || meta?.radioGroups?.length);
+  const hasInteractive = !!(meta?.checkboxes?.length || meta?.radioGroups?.length || meta?.textInputs?.length);
 
   // When the parent ships an updated `entry` (e.g. after a tracking
   // action) re-seed local overrides so external changes don't get
@@ -3312,10 +3315,12 @@ function PdfMergeButton({
   // render even when the content is the same.
   const persistedCheckboxesJson = JSON.stringify(entry?.formSelections?.checkboxes ?? {});
   const persistedRadiosJson = JSON.stringify(entry?.formSelections?.radioGroups ?? {});
+  const persistedTextInputsJson = JSON.stringify(entry?.formSelections?.textInputs ?? {});
   React.useEffect(() => {
     setCheckboxOverrides(JSON.parse(persistedCheckboxesJson) as Record<string, boolean>);
     setRadioOverrides(JSON.parse(persistedRadiosJson) as Record<string, string>);
-  }, [persistedCheckboxesJson, persistedRadiosJson]);
+    setTextInputOverrides(JSON.parse(persistedTextInputsJson) as Record<string, string>);
+  }, [persistedCheckboxesJson, persistedRadiosJson, persistedTextInputsJson]);
 
   // ─── Save plumbing ────────────────────────────────────────────────
   // Auto-save (400ms debounce) keeps the user's work safe; the manual
@@ -3324,7 +3329,7 @@ function PdfMergeButton({
   // consistent and ensure only the latest snapshot ever lands on disk.
   const [saveState, setSaveState] = React.useState<"saved" | "dirty" | "saving">("saved");
   const lastSavedRef = React.useRef<string>(
-    JSON.stringify({ cb: persistedCheckboxesJson, rd: persistedRadiosJson }),
+    JSON.stringify({ cb: persistedCheckboxesJson, rd: persistedRadiosJson, ti: persistedTextInputsJson }),
   );
   const debounceTimerRef = React.useRef<number | null>(null);
   const inflightCtrlRef = React.useRef<AbortController | null>(null);
@@ -3335,17 +3340,19 @@ function PdfMergeButton({
     lastSavedRef.current = JSON.stringify({
       cb: persistedCheckboxesJson,
       rd: persistedRadiosJson,
+      ti: persistedTextInputsJson,
     });
     setSaveState("saved");
-  }, [persistedCheckboxesJson, persistedRadiosJson]);
+  }, [persistedCheckboxesJson, persistedRadiosJson, persistedTextInputsJson]);
 
   const performSave = React.useCallback(
     async (
       cb: Record<string, boolean>,
       rd: Record<string, string>,
+      ti: Record<string, string>,
       opts: { showToast?: boolean } = {},
     ): Promise<boolean> => {
-      const snapshot = JSON.stringify({ cb: JSON.stringify(cb), rd: JSON.stringify(rd) });
+      const snapshot = JSON.stringify({ cb: JSON.stringify(cb), rd: JSON.stringify(rd), ti: JSON.stringify(ti) });
       if (snapshot === lastSavedRef.current) {
         // Nothing to save — pretend success so callers can still
         // surface a friendly toast if they asked for one.
@@ -3371,6 +3378,7 @@ function PdfMergeButton({
               docType: trackingKey,
               checkboxes: Object.keys(cb).length ? cb : null,
               radioGroups: Object.keys(rd).length ? rd : null,
+              textInputs: Object.keys(ti).length ? ti : null,
             }),
             signal: ctrl.signal,
           },
@@ -3398,6 +3406,7 @@ function PdfMergeButton({
     const snapshot = JSON.stringify({
       cb: JSON.stringify(checkboxOverrides),
       rd: JSON.stringify(radioOverrides),
+      ti: JSON.stringify(textInputOverrides),
     });
     if (snapshot === lastSavedRef.current) return;
     setSaveState("dirty");
@@ -3406,19 +3415,19 @@ function PdfMergeButton({
     }
     debounceTimerRef.current = window.setTimeout(() => {
       debounceTimerRef.current = null;
-      void performSave(checkboxOverrides, radioOverrides, { showToast: false });
+      void performSave(checkboxOverrides, radioOverrides, textInputOverrides, { showToast: false });
     }, 400);
     return () => {
       if (debounceTimerRef.current !== null) {
         window.clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [checkboxOverrides, radioOverrides, hasInteractive, performSave]);
+  }, [checkboxOverrides, radioOverrides, textInputOverrides, hasInteractive, performSave]);
 
   // Manual "Save now" — flushes the debounce immediately and toasts.
   const handleSaveNow = React.useCallback(async () => {
-    await performSave(checkboxOverrides, radioOverrides, { showToast: true });
-  }, [performSave, checkboxOverrides, radioOverrides]);
+    await performSave(checkboxOverrides, radioOverrides, textInputOverrides, { showToast: true });
+  }, [performSave, checkboxOverrides, radioOverrides, textInputOverrides]);
 
   React.useEffect(() => {
     if (!actionsOpen) return;
@@ -3433,14 +3442,20 @@ function PdfMergeButton({
 
   // Internal: generate the PDF blob once. Used by:
   //  - `handleGenerate` (preview open) → passes `skipSelectionMarks: true`
-  //    so the server returns a base PDF with empty cells. The canvas
-  //    overlay then draws the live ✓/✗ marks on top — interactive,
-  //    zero server roundtrips per click.
+  //    AND empty cb/rd/ti overrides so the server returns a base PDF
+  //    with empty cells. The canvas overlay then draws the live ✓/✗
+  //    marks AND typed text input values on top — interactive, zero
+  //    server roundtrips per click. Critical: `tiOv` MUST be
+  //    parameterized just like `cbOv`/`rdOv`, otherwise the saved
+  //    text-input values get baked into the base PDF AND redrawn by
+  //    the overlay → "M" appears twice on screen.
   //  - `handleDownload` / send-email → passes `skipSelectionMarks: false`
-  //    so the recipient PDF has marks fully baked in.
+  //    AND the live override state so the recipient PDF has marks
+  //    AND typed values fully baked in.
   async function generatePdfBlob(
     cbOv: Record<string, boolean> = checkboxOverrides,
     rdOv: Record<string, string> = radioOverrides,
+    tiOv: Record<string, string> = textInputOverrides,
     opts: { skipSelectionMarks?: boolean } = {},
   ): Promise<Blob | null> {
     const generateBody: Record<string, unknown> = {
@@ -3451,6 +3466,7 @@ function PdfMergeButton({
     if (meta?.isAgentTemplate) generateBody.audience = "agent";
     if (Object.keys(cbOv).length) generateBody.checkboxOverrides = cbOv;
     if (Object.keys(rdOv).length) generateBody.radioOverrides = rdOv;
+    if (Object.keys(tiOv).length) generateBody.textInputOverrides = tiOv;
     if (opts.skipSelectionMarks) generateBody.skipSelectionMarks = true;
     const res = await fetch(`/api/pdf-templates/${tpl.id}/generate`, {
       method: "POST",
@@ -3467,15 +3483,23 @@ function PdfMergeButton({
   async function handleGenerate() {
     setGenerating(true);
     try {
-      // Base PDF only — every checkbox / radio cell is tinted, no
-      // ✓/✗ baked in. The canvas overlay reads the live override
-      // state so toggling Yes/No / Tick/Cross / size is instant.
+      // Base PDF only — every checkbox / radio / text-input cell is
+      // tinted, no ✓/✗ or typed value baked in. The canvas overlay
+      // reads the live override state so toggling Yes/No, switching
+      // Tick/Cross, changing size, OR typing into Input 1/2/3 all
+      // update instantly without a server roundtrip.
       //
-      // We deliberately KEEP `checkboxOverrides` / `radioOverrides`
-      // intact across close → reopen so the user's prior picks
-      // survive re-opening the dialog. Click the panel's "Reset"
-      // button to clear them on demand.
-      const blob = await generatePdfBlob({}, {}, { skipSelectionMarks: true });
+      // We deliberately KEEP `checkboxOverrides` / `radioOverrides` /
+      // `textInputOverrides` intact across close → reopen so the
+      // user's prior picks and typed values survive re-opening the
+      // dialog. Click the panel's "Reset" button to clear them.
+      //
+      // ALL three override maps are passed empty here — if any of
+      // them flowed through to the server, the value would be baked
+      // into the base PDF AND redrawn by the overlay (the bug that
+      // caused "M" to appear twice in the driver gender column when
+      // the dialog was reopened).
+      const blob = await generatePdfBlob({}, {}, {}, { skipSelectionMarks: true });
       if (!blob) return;
       const url = URL.createObjectURL(blob);
       setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
@@ -3503,6 +3527,10 @@ function PdfMergeButton({
 
   function clearRadioOverride(rgId: string) {
     setRadioOverrides((prev) => ({ ...prev, [rgId]: "" }));
+  }
+
+  function setTextInputOverride(inputId: string, value: string) {
+    setTextInputOverrides((prev) => ({ ...prev, [inputId]: value }));
   }
 
   // Direct download — no preview, just save the file. If a preview is
@@ -3535,7 +3563,7 @@ function PdfMergeButton({
     // dialog should feel instant; the toast updates when the PUT
     // resolves.
     if (saveState !== "saved") {
-      void performSave(checkboxOverrides, radioOverrides, { showToast: true });
+      void performSave(checkboxOverrides, radioOverrides, textInputOverrides, { showToast: true });
     }
     setPreviewOpen(false);
     setTimeout(() => {
@@ -3892,6 +3920,7 @@ function PdfMergeButton({
                 defaultEmail={defaultEmail ?? ""}
                 checkboxOverrides={checkboxOverrides}
                 radioOverrides={radioOverrides}
+                textInputOverrides={textInputOverrides}
                 onSent={(sentEmail) => {
                   setPreviewSendOpen(false);
                   onTrackingAction(trackingKey, "send", sentEmail, meta?.documentPrefix || undefined, undefined, meta?.documentSetGroup || undefined, meta?.type);
@@ -3909,6 +3938,7 @@ function PdfMergeButton({
                 accent="blue"
                 checkboxes={meta.checkboxes ?? []}
                 radioGroups={meta.radioGroups ?? []}
+                textInputs={meta.textInputs ?? []}
                 getCheckboxChecked={(cb) => {
                   const o = checkboxOverrides[cb.id];
                   return typeof o === "boolean" ? o : !!cb.defaultChecked;
@@ -3920,11 +3950,17 @@ function PdfMergeButton({
                 onToggleCheckbox={toggleCheckboxOverride}
                 onSetRadio={setRadioOverride}
                 onClearRadio={clearRadioOverride}
+                getTextInputValue={(ti) => {
+                  const o = textInputOverrides[ti.id];
+                  return o !== undefined ? o : (ti.defaultValue ?? "");
+                }}
+                onSetTextInput={setTextInputOverride}
                 onResetAll={() => {
                   setCheckboxOverrides({});
                   setRadioOverrides({});
+                  setTextInputOverrides({});
                 }}
-                resetVisible={Object.keys(checkboxOverrides).length > 0 || Object.keys(radioOverrides).length > 0}
+                resetVisible={Object.keys(checkboxOverrides).length > 0 || Object.keys(radioOverrides).length > 0 || Object.keys(textInputOverrides).length > 0}
                 onSaveNow={handleSaveNow}
                 saveStatus={saveState}
                 canRenameLabels={isAdmin}
@@ -3950,6 +3986,7 @@ function PdfMergeButton({
                   pages={meta.pages ?? []}
                   checkboxes={meta.checkboxes ?? []}
                   radioGroups={meta.radioGroups ?? []}
+                  textInputs={meta.textInputs ?? []}
                   getCheckboxChecked={(cb) => {
                     const o = checkboxOverrides[cb.id];
                     return typeof o === "boolean" ? o : !!cb.defaultChecked;
@@ -3957,6 +3994,10 @@ function PdfMergeButton({
                   getRadioCurrent={(rg) => {
                     const o = radioOverrides[rg.id];
                     return o !== undefined ? o : (rg.defaultValue ?? "");
+                  }}
+                  getTextInputValue={(ti) => {
+                    const o = textInputOverrides[ti.id];
+                    return o !== undefined ? o : (ti.defaultValue ?? "");
                   }}
                   className="absolute inset-0"
                 />
@@ -4082,6 +4123,7 @@ function PreviewSendForm({
   defaultEmail,
   checkboxOverrides,
   radioOverrides,
+  textInputOverrides,
   onSent,
 }: {
   policyId: number;
@@ -4089,9 +4131,14 @@ function PreviewSendForm({
   tpl: PdfTemplateRow;
   defaultEmail: string;
   /** Live overrides from the preview side panel; sent so the recipient
-   *  receives the same PDF state the user is currently looking at. */
+   *  receives the same PDF state the user is currently looking at,
+   *  even if the 400ms auto-save debounce hasn't yet flushed to the
+   *  server. The server itself ALSO reads saved formSelections from
+   *  policies.documentTracking and merges these on top — so the saved
+   *  state is the floor and any unsaved keystroke wins. */
   checkboxOverrides: Record<string, boolean>;
   radioOverrides: Record<string, string>;
+  textInputOverrides: Record<string, string>;
   onSent: (email: string) => void;
 }) {
   const [email, setEmail] = React.useState(defaultEmail);
@@ -4109,16 +4156,22 @@ function PreviewSendForm({
     try {
       // Forward the user's preview edits as a per-template override map.
       // Only attach when there's actually something to override, so
-      // bulk-send (no preview) calls remain unchanged.
-      const templateOverrides =
-        Object.keys(checkboxOverrides).length || Object.keys(radioOverrides).length
-          ? {
-              [String(tpl.id)]: {
-                ...(Object.keys(checkboxOverrides).length ? { checkboxOverrides } : {}),
-                ...(Object.keys(radioOverrides).length ? { radioOverrides } : {}),
-              },
-            }
-          : undefined;
+      // bulk-send (no preview) calls remain unchanged. Includes
+      // text-input overrides too so the recipient sees what the user
+      // just typed even if the 400ms debounce hasn't fired.
+      const hasAny =
+        Object.keys(checkboxOverrides).length ||
+        Object.keys(radioOverrides).length ||
+        Object.keys(textInputOverrides).length;
+      const templateOverrides = hasAny
+        ? {
+            [String(tpl.id)]: {
+              ...(Object.keys(checkboxOverrides).length ? { checkboxOverrides } : {}),
+              ...(Object.keys(radioOverrides).length ? { radioOverrides } : {}),
+              ...(Object.keys(textInputOverrides).length ? { textInputOverrides } : {}),
+            },
+          }
+        : undefined;
 
       const res = await fetch("/api/pdf-templates/send-email", {
         method: "POST",

@@ -19,7 +19,7 @@ import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import { Loader2 } from "lucide-react";
-import type { PdfCheckbox, PdfPageInfo, PdfRadioGroup } from "@/lib/types/pdf-template";
+import type { PdfCheckbox, PdfPageInfo, PdfRadioGroup, PdfTextInput } from "@/lib/types/pdf-template";
 import { radioOptionMatchesSelection } from "@/components/pdf/form-selections-panel";
 import {
   usePdfSelectionMarkScaleSync,
@@ -61,10 +61,12 @@ type Props = {
   pages: PdfPageInfo[];
   checkboxes: PdfCheckbox[];
   radioGroups: PdfRadioGroup[];
+  textInputs?: PdfTextInput[];
   /** Resolved checked state per checkbox (overrides → defaultChecked). */
   getCheckboxChecked: (cb: PdfCheckbox) => boolean;
   /** Resolved selected value per radio group ("" if none). */
   getRadioCurrent: (rg: PdfRadioGroup) => string;
+  getTextInputValue?: (input: PdfTextInput) => string;
   className?: string;
 };
 
@@ -73,8 +75,10 @@ export function PdfMergePreviewCanvas({
   pages,
   checkboxes,
   radioGroups,
+  textInputs = [],
   getCheckboxChecked,
   getRadioCurrent,
+  getTextInputValue,
   className,
 }: Props) {
   const [numPages, setNumPages] = React.useState(0);
@@ -137,8 +141,10 @@ export function PdfMergePreviewCanvas({
                   pdfHeight={pageInfo.height}
                   checkboxes={checkboxes.filter((c) => c.page === i)}
                   radioGroups={radioGroups}
+                  textInputs={textInputs.filter((ti) => ti.page === i)}
                   getCheckboxChecked={getCheckboxChecked}
                   getRadioCurrent={getRadioCurrent}
+                  getTextInputValue={getTextInputValue}
                   markGlyph={markGlyph}
                   markScale={markScale}
                 />
@@ -162,8 +168,10 @@ function PagePreview({
   pdfHeight,
   checkboxes,
   radioGroups,
+  textInputs,
   getCheckboxChecked,
   getRadioCurrent,
+  getTextInputValue,
   markGlyph,
   markScale,
 }: {
@@ -173,8 +181,10 @@ function PagePreview({
   pdfHeight: number;
   checkboxes: PdfCheckbox[];
   radioGroups: PdfRadioGroup[];
+  textInputs: PdfTextInput[];
   getCheckboxChecked: (cb: PdfCheckbox) => boolean;
   getRadioCurrent: (rg: PdfRadioGroup) => string;
+  getTextInputValue?: (input: PdfTextInput) => string;
   markGlyph: "✓" | "✗";
   markScale: number;
 }) {
@@ -261,6 +271,28 @@ function PagePreview({
                 );
               });
           })}
+          {getTextInputValue
+            ? textInputs.map((ti) => {
+                const value = getTextInputValue(ti);
+                if (!value) return null;
+                return (
+                  <div
+                    key={ti.id}
+                    className="absolute overflow-hidden whitespace-pre-wrap wrap-break-word text-neutral-950"
+                    style={{
+                      left: (ti.x + 2) * scale,
+                      top: (pdfHeight - ti.y - ti.height + 2) * scale,
+                      width: Math.max(0, ti.width - 4) * scale,
+                      height: Math.max(0, ti.height - 4) * scale,
+                      fontSize: (ti.fontSize ?? 10) * scale,
+                      lineHeight: ti.multiline ? 1.2 : 1,
+                    }}
+                  >
+                    {value}
+                  </div>
+                );
+              })
+            : null}
         </div>
       )}
     </div>

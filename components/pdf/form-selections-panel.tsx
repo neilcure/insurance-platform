@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Check, Loader2, Pencil, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { PdfCheckbox, PdfRadioGroup, PdfTemplateMeta } from "@/lib/types/pdf-template";
+import type { PdfCheckbox, PdfRadioGroup, PdfTemplateMeta, PdfTextInput } from "@/lib/types/pdf-template";
 import {
   PDF_SELECTION_MARK_STORAGE_KEY,
   PDF_SELECTION_MARK_SCALE_KEY,
@@ -101,6 +101,7 @@ const MARK_SIZE_PRESETS = [
 export type FormSelectionsPanelProps = {
   checkboxes: PdfCheckbox[];
   radioGroups: PdfRadioGroup[];
+  textInputs?: PdfTextInput[];
   /** Resolved checked state per checkbox (preview: overrides; template: defaultChecked) */
   getCheckboxChecked: (cb: PdfCheckbox) => boolean;
   /** Resolved selected value per radio group (string, may be "") */
@@ -108,6 +109,8 @@ export type FormSelectionsPanelProps = {
   onToggleCheckbox: (cbId: string, templateDefaultChecked: boolean) => void;
   onSetRadio: (rgId: string, value: string) => void;
   onClearRadio: (rgId: string) => void;
+  getTextInputValue?: (input: PdfTextInput) => string;
+  onSetTextInput?: (inputId: string, value: string) => void;
   /** preview: reset overrides */
   onResetAll?: () => void;
   /** Show Reset when preview overrides are non-empty */
@@ -156,11 +159,14 @@ export type FormSelectionsPanelProps = {
 export function FormSelectionsPanel({
   checkboxes: checkboxesIn,
   radioGroups: radioGroupsIn,
+  textInputs: textInputsIn = [],
   getCheckboxChecked,
   getRadioCurrent,
   onToggleCheckbox,
   onSetRadio,
   onClearRadio,
+  getTextInputValue,
+  onSetTextInput,
   onResetAll,
   resetVisible = false,
   refreshing,
@@ -179,6 +185,10 @@ export function FormSelectionsPanel({
 }: FormSelectionsPanelProps) {
   const checkboxes = React.useMemo(() => sortCheckboxes(checkboxesIn), [checkboxesIn]);
   const radioGroups = React.useMemo(() => sortRadioGroups(radioGroupsIn), [radioGroupsIn]);
+  const textInputs = React.useMemo(
+    () => [...textInputsIn].sort((a, b) => (a.page !== b.page ? a.page - b.page : textInputsIn.indexOf(a) - textInputsIn.indexOf(b))),
+    [textInputsIn],
+  );
   const [pdfMarkStyle, setPdfMarkStyle] = usePdfSelectionMark(onPdfSelectionMarkChange);
   const [pdfMarkScale, setPdfMarkScale] = usePdfMarkScale(onPdfSelectionMarkChange);
 
@@ -317,7 +327,7 @@ export function FormSelectionsPanel({
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-2 space-y-3 text-xs">
       {preferencesHeader}
       {intro}
-      {radioGroups.length === 0 && checkboxes.length === 0 && (
+      {radioGroups.length === 0 && checkboxes.length === 0 && textInputs.length === 0 && (
         <div className="text-neutral-500 dark:text-neutral-400 italic">{emptyMessage}</div>
       )}
 
@@ -510,6 +520,51 @@ export function FormSelectionsPanel({
                     title={`On page ${cb.page + 1}`}
                   >
                     p.{cb.page + 1}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
+      {textInputs.length > 0 && getTextInputValue && onSetTextInput && (
+        <section>
+          <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Input fields</h4>
+          <ul className="space-y-2">
+            {textInputs.map((ti, idx) => {
+              const fallback = `Input ${idx + 1}`;
+              const label = ti.label?.trim() || ti.placeholder?.trim() || fallback;
+              const value = getTextInputValue(ti);
+              const pageLabel = `p.${ti.page + 1}`;
+              return (
+                <li
+                  key={ti.id}
+                  className="relative rounded-md border border-neutral-200 bg-neutral-50 p-2 pr-10 dark:border-neutral-800 dark:bg-neutral-900/50"
+                >
+                  <label className="mb-1 block text-[11px] font-medium leading-snug text-neutral-700 dark:text-neutral-200">
+                    {label}
+                  </label>
+                  {ti.multiline ? (
+                    <textarea
+                      value={value}
+                      onChange={(e) => onSetTextInput(ti.id, e.target.value)}
+                      placeholder={ti.placeholder || ti.defaultValue || ""}
+                      className="min-h-16 w-full rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs text-neutral-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+                    />
+                  ) : (
+                    <Input
+                      value={value}
+                      onChange={(e) => onSetTextInput(ti.id, e.target.value)}
+                      placeholder={ti.placeholder || ti.defaultValue || ""}
+                      className="h-7 text-xs dark:bg-neutral-950 dark:text-neutral-100 dark:border-neutral-700"
+                    />
+                  )}
+                  <span
+                    className="pointer-events-none absolute bottom-1.5 right-1.5 rounded bg-neutral-200 px-1.5 py-0.5 text-[11px] font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+                    title={`On page ${ti.page + 1}`}
+                  >
+                    {pageLabel}
                   </span>
                 </li>
               );

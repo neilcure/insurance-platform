@@ -18,10 +18,11 @@
  *   {
  *     "docType": "<trackingKey>",                  // required
  *     "checkboxes": { "<cbId>": true | false, ... }, // optional
- *     "radioGroups": { "<rgId>": "<value>", ... }   // optional
+ *     "radioGroups": { "<rgId>": "<value>", ... },  // optional
+ *     "textInputs": { "<inputId>": "<value>", ... }  // optional
  *   }
  *
- * Pass an empty `checkboxes` / `radioGroups` (or `null`) to clear.
+ * Pass empty maps (or `null`) to clear.
  * Returns the full updated documentTracking map so callers can
  * cache-invalidate exactly like the action route.
  */
@@ -41,6 +42,7 @@ type Body = {
   docType?: string;
   checkboxes?: Record<string, boolean> | null;
   radioGroups?: Record<string, string> | null;
+  textInputs?: Record<string, string> | null;
 };
 
 function sanitizeCheckboxes(input: unknown): Record<string, boolean> | undefined {
@@ -58,6 +60,15 @@ function sanitizeRadios(input: unknown): Record<string, string> | undefined {
   for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
     // Allow empty string — represents an explicit "no choice".
     if (typeof v === "string") out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function sanitizeTextInputs(input: unknown): Record<string, string> | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof v === "string" && v.trim() !== "") out[k] = v;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -94,15 +105,17 @@ export async function PUT(
 
     const checkboxes = sanitizeCheckboxes(body.checkboxes);
     const radioGroups = sanitizeRadios(body.radioGroups);
+    const textInputs = sanitizeTextInputs(body.textInputs);
 
     // Both null/empty → drop the key so the entry stays slim and
     // future reads fall back to the template's defaultChecked /
     // defaultValue without any ambiguity.
     const formSelections =
-      checkboxes || radioGroups
+      checkboxes || radioGroups || textInputs
         ? {
             ...(checkboxes ? { checkboxes } : {}),
             ...(radioGroups ? { radioGroups } : {}),
+            ...(textInputs ? { textInputs } : {}),
           }
         : undefined;
 

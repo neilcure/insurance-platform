@@ -36,8 +36,8 @@ silently failed in the others.
 | Get the insured's mobile from a policy snapshot | `getDefaultPhoneFromInsured(insuredSnapshot)` |
 | Get the insured's display name from a snapshot | `getDefaultRecipientNameFromInsured(insuredSnapshot)` |
 | All three at once from `extraAttributes` | `resolveDefaultRecipientFromExtra(detail.extraAttributes)` |
-| Load the PDF templates a client-share dialog should show | `usePolicyVisiblePdfTemplates(open)` |
-| Filter raw `/api/pdf-templates` rows server-side | `filterPolicyVisibleTemplates(rows)` |
+| Load the PDF templates a client-share dialog should show | `usePolicyVisiblePdfTemplates(open, policyId)` — ALWAYS pass `policyId` so the list is scoped to the policy's linked insurer (otherwise admins/users see every insurer's proposal form) |
+| Filter raw `/api/pdf-templates` rows server-side | `filterPolicyVisibleTemplates(rows, { matchingInsurerIds })` — pass `[policyId, ...linkedInsurerIds]` to apply the same insurer scope as `DocumentsTab` |
 | Build a `wa.me` URL for a given phone + message | `buildWhatsAppUrl(phone, message)` from `@/lib/whatsapp` |
 | Normalise an HK / international phone for WhatsApp | `normalizeForWhatsApp(raw)` from `@/lib/whatsapp` |
 

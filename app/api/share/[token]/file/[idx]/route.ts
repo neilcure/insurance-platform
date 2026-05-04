@@ -177,6 +177,17 @@ export async function GET(
       try {
         const templateBytes = await readPdfTemplate(meta.filePath);
         const images: PdfImageMapping[] = meta.images ?? [];
+        const formSelections = (
+          mergeCtx.currentDocTrackingKey
+            ? mergeCtx.documentTracking?.[mergeCtx.currentDocTrackingKey]?.formSelections
+            : undefined
+        ) as
+          | {
+              checkboxes?: Record<string, boolean>;
+              radioGroups?: Record<string, string>;
+              textInputs?: Record<string, string>;
+            }
+          | undefined;
         const filled = await generateFilledPdf(templateBytes, meta.fields, mergeCtx, {
           pages: meta.pages,
           images,
@@ -184,6 +195,9 @@ export async function GET(
           checkboxes: meta.checkboxes,
           radioGroups: meta.radioGroups,
           textInputs: meta.textInputs,
+          checkboxOverrides: formSelections?.checkboxes,
+          radioOverrides: formSelections?.radioGroups,
+          textInputOverrides: formSelections?.textInputs,
           loadImage: (storedName: string) => readPdfTemplate(storedName),
           flatten: share.flattenPdfs,
         });

@@ -90,8 +90,12 @@ export function EmailUploadedFilesDialog({
 
   // PDF merge template selection — list comes from the shared
   // loader so this dialog stays in lockstep with WhatsApp Files.
+  // Passing `policyId` scopes the list to templates that match the
+  // policy's linked insurer (so an Allied World policy no longer
+  // shows AIG / Zurich / BOC / AXA / Hanson / Dah Sing proposal
+  // forms — same rule as the per-row Documents tab list).
   const { templates: pdfTemplates, loading: loadingTpls } =
-    usePolicyVisiblePdfTemplates(open);
+    usePolicyVisiblePdfTemplates(open, policyId);
   const [selectedTplIds, setSelectedTplIds] = React.useState<Set<number>>(new Set());
   // Flatten AcroForm fields before attaching — on by default so recipients
   // get a tamper-proof copy instead of an editable form.

@@ -93,8 +93,11 @@ export function WhatsAppUploadedFilesDialog({
   const [createdExpiresAt, setCreatedExpiresAt] = React.useState<string | null>(null);
 
   // PDF merge templates — same loader as Email Files dialog.
+  // Pass policyId so the list is filtered down to templates that
+  // match the policy's insurer (proposal forms etc.). See the
+  // EmailUploadedFilesDialog for the matching rationale.
   const { templates: pdfTemplates, loading: loadingTpls } =
-    usePolicyVisiblePdfTemplates(open);
+    usePolicyVisiblePdfTemplates(open, policyId);
   const [selectedTplIds, setSelectedTplIds] = React.useState<Set<number>>(new Set());
 
   // Re-seed local state every time the dialog opens.
