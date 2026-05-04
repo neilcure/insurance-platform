@@ -5,13 +5,9 @@ import { Mail, MessageCircle, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DocumentUploadCard } from "@/components/ui/document-upload-card";
 import {
-  EmailUploadedFilesDialog,
-  type EmailableDocGroup,
-} from "@/components/policies/EmailUploadedFilesDialog";
-import {
-  WhatsAppUploadedFilesDialog,
-  type WhatsAppDocGroup,
-} from "@/components/policies/WhatsAppUploadedFilesDialog";
+  useDeliverDocuments,
+  type DeliveryDocGroup,
+} from "@/lib/document-delivery";
 import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 import type {
   DocumentStatus,
@@ -301,14 +297,14 @@ export function UploadDocumentsTab({
   }
 
   // Group ALL non-rejected uploads across the visible requirements
-  // for the "Email Files" picker. We deliberately skip rejected
-  // files (per product spec) — verified + pending verification are
-  // the meaningful "the file exists, it's worth sending" states.
+  // for the share picker. We deliberately skip rejected files (per
+  // product spec) — verified + pending verification are the
+  // meaningful "the file exists, it's worth sending" states.
   // Filter only kicks in when this tab is showing the "documents"
   // (or "all") slice; when filter==="payments" the parent already
   // hides everything else, so the picker is naturally scoped.
-  const emailableGroups: EmailableDocGroup[] = React.useMemo(() => {
-    const groups: EmailableDocGroup[] = [];
+  const shareableGroups: DeliveryDocGroup[] = React.useMemo(() => {
+    const groups: DeliveryDocGroup[] = [];
     for (const req of requirements) {
       const usable = req.uploads.filter((u) => u.status !== "rejected");
       if (usable.length === 0) continue;
@@ -321,21 +317,19 @@ export function UploadDocumentsTab({
     return groups;
   }, [requirements]);
 
-  const totalEmailableFiles = emailableGroups.reduce(
+  const totalShareableFiles = shareableGroups.reduce(
     (sum, g) => sum + g.uploads.length,
     0,
   );
-  const [emailDialogOpen, setEmailDialogOpen] = React.useState(false);
-  const [whatsappDialogOpen, setWhatsappDialogOpen] = React.useState(false);
+
+  const deliver = useDeliverDocuments();
+
   // The Email Files / WhatsApp Files affordances only make sense for
   // the "documents" slice — rendering them next to payment cards
   // would be confusing. The "all" filter (no parent filtering) also
   // benefits, e.g. when this tab is mounted standalone.
   const showShareButtons =
-    filter !== "payments" && totalEmailableFiles > 0;
-  // The WhatsApp dialog accepts the same EmailableDocGroup shape; we
-  // alias the type to keep imports tidy and explicit at call sites.
-  const whatsappGroups: WhatsAppDocGroup[] = emailableGroups;
+    filter !== "payments" && totalShareableFiles > 0;
 
   if (loading) {
     if (filter === "payments") return null;
@@ -380,14 +374,22 @@ export function UploadDocumentsTab({
       {showShareButtons && (
         <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
           <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-            {totalEmailableFiles} file{totalEmailableFiles === 1 ? "" : "s"} available
+            {totalShareableFiles} file{totalShareableFiles === 1 ? "" : "s"} available
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
             <Button
               size="sm"
               variant="outline"
               className="h-7 gap-1.5 px-2 text-[11px]"
-              onClick={() => setEmailDialogOpen(true)}
+              onClick={() =>
+                deliver({
+                  channel: "email",
+                  policyId,
+                  policyNumber,
+                  groups: shareableGroups,
+                  recipient: { email: defaultEmail, name: defaultRecipientName },
+                })
+              }
               title="Send selected uploaded files in one email"
             >
               <Mail className="h-3.5 w-3.5" />
@@ -397,7 +399,15 @@ export function UploadDocumentsTab({
               size="sm"
               variant="outline"
               className="h-7 gap-1.5 px-2 text-[11px] border-emerald-300 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-400 dark:border-emerald-900/60 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
-              onClick={() => setWhatsappDialogOpen(true)}
+              onClick={() =>
+                deliver({
+                  channel: "whatsapp",
+                  policyId,
+                  policyNumber,
+                  groups: shareableGroups,
+                  recipient: { phone: defaultPhone, name: defaultRecipientName },
+                })
+              }
               title="Generate a download link and open WhatsApp pre-filled"
             >
               <MessageCircle className="h-3.5 w-3.5" />
@@ -427,27 +437,6 @@ export function UploadDocumentsTab({
         />
       ))}
 
-      {showShareButtons && (
-        <>
-          <EmailUploadedFilesDialog
-            open={emailDialogOpen}
-            onOpenChange={setEmailDialogOpen}
-            policyId={policyId}
-            policyNumber={policyNumber}
-            defaultEmail={defaultEmail}
-            groups={emailableGroups}
-          />
-          <WhatsAppUploadedFilesDialog
-            open={whatsappDialogOpen}
-            onOpenChange={setWhatsappDialogOpen}
-            policyId={policyId}
-            policyNumber={policyNumber}
-            defaultPhone={defaultPhone}
-            defaultRecipientName={defaultRecipientName}
-            groups={whatsappGroups}
-          />
-        </>
-      )}
     </div>
   );
 }

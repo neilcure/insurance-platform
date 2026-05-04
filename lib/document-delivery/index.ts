@@ -32,3 +32,8 @@ export type {
   DeliveryRecipient,
   DeliveryRequest,
 } from "./types";
+
+export {
+  DocumentDeliveryProvider,
+  useDeliverDocuments,
+} from "./delivery-context";
