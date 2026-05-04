@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { ChevronRight, FileText } from "lucide-react";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
+import { resolveDefaultRecipientFromExtra } from "@/lib/document-delivery";
 
 type LinkedEndorsement = {
   policyId: number;
@@ -67,80 +68,17 @@ export function WorkflowTab({
     ? (statusExtra.statusHistoryAgent as Array<{ status: string; changedAt: string; changedBy?: string; note?: string }>)
     : [];
 
-  // Pre-fill recipient for the "Email Files" dialog. Mirrors the
-  // logic used by DocumentsTab when picking a default recipient
-  // for client-facing PDF templates: prefer the insured's email
-  // captured in the snapshot, fall back to common alternative
-  // keys. Falls through to empty string when nothing is on file —
-  // the dialog still opens, the user just types it in.
-  const defaultEmailRecipient = React.useMemo(() => {
-    const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
-    const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
-    const candidate =
-      insured.email ??
-      insured.contactinfo__email ??
-      insured.contact_email ??
-      "";
-    return String(candidate ?? "").trim();
-  }, [detail.extraAttributes]);
-
-  // Pre-fill recipient for the "WhatsApp Files" dialog. We check the
-  // same snapshot keys our presence/online endpoint resolves from
-  // (see app/api/presence/online/route.ts). Mobile is preferred over
-  // landline because WhatsApp is a mobile-first product, but a
-  // landline can still register a WhatsApp Business account so we
-  // fall through.
-  const defaultPhoneRecipient = React.useMemo(() => {
-    const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
-    const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
-    const candidate =
-      insured.contactinfo__mobile ??
-      insured.contactinfo_mobile ??
-      insured.mobile ??
-      insured.contactPhone ??
-      insured.phone ??
-      insured.contactinfo__tel ??
-      insured.contactinfo_tel ??
-      insured.tel ??
-      "";
-    return String(candidate ?? "").trim();
-  }, [detail.extraAttributes]);
-
-  // Recipient display name used to personalise the WhatsApp greeting.
-  // Reuses the canonical resolver in lib/field-resolver so we don't
-  // duplicate the personal/company name extraction logic.
-  const defaultRecipientName = React.useMemo(() => {
-    const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
-    const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown> | undefined;
-    if (!insured) return "";
-    const isCompany = (() => {
-      const t = String(
-        insured.insuredType ?? insured.insured__category ?? insured.category ?? "",
-      ).toLowerCase();
-      return t === "company";
-    })();
-    if (isCompany) {
-      return String(
-        insured.insured__companyName ??
-          insured.insured_companyName ??
-          insured.companyName ??
-          "",
-      ).trim();
-    }
-    const last = String(
-      insured.insured__lastName ??
-        insured.insured_lastName ??
-        insured.lastName ??
-        "",
-    ).trim();
-    const first = String(
-      insured.insured__firstName ??
-        insured.insured_firstName ??
-        insured.firstName ??
-        "",
-    ).trim();
-    return [first, last].filter(Boolean).join(" ");
-  }, [detail.extraAttributes]);
+  // Default recipient (email + phone + display name) for the Email
+  // Files / WhatsApp Files dialogs. All three resolutions live in
+  // `lib/document-delivery/recipient.ts` so every surface that
+  // pre-fills a recipient field gets the same fallback chain.
+  const defaultRecipient = React.useMemo(
+    () => resolveDefaultRecipientFromExtra(detail.extraAttributes),
+    [detail.extraAttributes],
+  );
+  const defaultEmailRecipient = defaultRecipient.email;
+  const defaultPhoneRecipient = defaultRecipient.phone;
+  const defaultRecipientName = defaultRecipient.name;
 
   const { insuredType, hasNcb } = React.useMemo(() => {
     const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;

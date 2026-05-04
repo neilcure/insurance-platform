@@ -15,14 +15,14 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { PolicyDocumentRow } from "@/lib/types/upload-document";
-import type { PdfTemplateMeta } from "@/lib/types/pdf-template";
 import {
   readPdfSelectionMarkFromStorage,
   readPdfSelectionMarkScaleFromStorage,
 } from "@/lib/pdf/form-selections-preferences";
-
-type PdfTplItem = { id: number; label: string };
+import {
+  usePolicyVisiblePdfTemplates,
+  type DeliveryDocGroup,
+} from "@/lib/document-delivery";
 
 /**
  * Maximum aggregate attachment size we let the user pick. Mirrors
@@ -34,14 +34,12 @@ type PdfTplItem = { id: number; label: string };
  */
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
-export type EmailableDocGroup = {
-  /** Document type key (e.g. "driving_license_copy"). */
-  typeKey: string;
-  /** Human-readable label shown above the file rows. */
-  label: string;
-  /** Uploaded files for this type. Rejected uploads are excluded by the parent. */
-  uploads: PolicyDocumentRow[];
-};
+/**
+ * @deprecated Re-exported from `@/lib/document-delivery` as `DeliveryDocGroup`.
+ * Kept here as a type alias so existing imports keep working — new
+ * code should import the canonical name from the shared module.
+ */
+export type EmailableDocGroup = DeliveryDocGroup;
 
 export type EmailUploadedFilesDialogProps = {
   open: boolean;
@@ -85,10 +83,11 @@ export function EmailUploadedFilesDialog({
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
   const [sending, setSending] = React.useState(false);
 
-  // PDF merge template selection
-  const [pdfTemplates, setPdfTemplates] = React.useState<PdfTplItem[]>([]);
+  // PDF merge template selection — list comes from the shared
+  // loader so this dialog stays in lockstep with WhatsApp Files.
+  const { templates: pdfTemplates, loading: loadingTpls } =
+    usePolicyVisiblePdfTemplates(open);
   const [selectedTplIds, setSelectedTplIds] = React.useState<Set<number>>(new Set());
-  const [loadingTpls, setLoadingTpls] = React.useState(false);
   // Flatten AcroForm fields before attaching — on by default so recipients
   // get a tamper-proof copy instead of an editable form.
   const [flattenPdfs, setFlattenPdfs] = React.useState(true);
@@ -103,33 +102,12 @@ export function EmailUploadedFilesDialog({
       policyNumber ? `Documents — Policy ${policyNumber}` : "Documents",
     );
     setMessage("");
+    setSelectedTplIds(new Set());
     const seed = initialSelectedIds && initialSelectedIds.length > 0
       ? initialSelectedIds.filter((id) => allDocIds.includes(id))
       : allDocIds;
     setSelectedIds(new Set(seed));
   }, [open, defaultEmail, policyNumber, initialSelectedIds, allDocIds]);
-
-  // Load available PDF merge templates when the dialog opens
-  React.useEffect(() => {
-    if (!open) return;
-    setSelectedTplIds(new Set());
-    setLoadingTpls(true);
-    fetch("/api/pdf-templates")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows: Array<{ id: number; label: string; isActive: boolean; meta: PdfTemplateMeta | null }>) => {
-        const visible = rows.filter((r) => {
-          if (!r.isActive) return false;
-          // Skip agent-only templates in the policy email context
-          if (r.meta?.isAgentTemplate) return false;
-          const showOn = r.meta?.showOn;
-          if (showOn && showOn.length > 0 && !showOn.includes("policy")) return false;
-          return true;
-        });
-        setPdfTemplates(visible.map((r) => ({ id: r.id, label: r.label })));
-      })
-      .catch(() => setPdfTemplates([]))
-      .finally(() => setLoadingTpls(false));
-  }, [open]);
 
   const totalSelectedBytes = React.useMemo(() => {
     let bytes = 0;

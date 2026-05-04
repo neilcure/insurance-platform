@@ -15,21 +15,22 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { PolicyDocumentRow } from "@/lib/types/upload-document";
-import type { PdfTemplateMeta } from "@/lib/types/pdf-template";
 import {
   buildWhatsAppUrl,
   formatWhatsAppDisplay,
   normalizeForWhatsApp,
 } from "@/lib/whatsapp";
+import {
+  usePolicyVisiblePdfTemplates,
+  type DeliveryDocGroup,
+} from "@/lib/document-delivery";
 
-type PdfTplItem = { id: number; label: string };
-
-export type WhatsAppDocGroup = {
-  typeKey: string;
-  label: string;
-  uploads: PolicyDocumentRow[];
-};
+/**
+ * @deprecated Re-exported from `@/lib/document-delivery` as `DeliveryDocGroup`.
+ * Kept here so existing imports continue to compile — new code should
+ * import the canonical name from the shared module.
+ */
+export type WhatsAppDocGroup = DeliveryDocGroup;
 
 export type WhatsAppUploadedFilesDialogProps = {
   open: boolean;
@@ -87,9 +88,9 @@ export function WhatsAppUploadedFilesDialog({
   const [createdExpiresAt, setCreatedExpiresAt] = React.useState<string | null>(null);
 
   // PDF merge templates — same loader as Email Files dialog.
-  const [pdfTemplates, setPdfTemplates] = React.useState<PdfTplItem[]>([]);
+  const { templates: pdfTemplates, loading: loadingTpls } =
+    usePolicyVisiblePdfTemplates(open);
   const [selectedTplIds, setSelectedTplIds] = React.useState<Set<number>>(new Set());
-  const [loadingTpls, setLoadingTpls] = React.useState(false);
 
   // Re-seed local state every time the dialog opens.
   React.useEffect(() => {
@@ -103,6 +104,7 @@ export function WhatsAppUploadedFilesDialog({
         ? `${greetingName}, here are your documents for policy ${policyNumber}. Tap the link to download — it expires in 7 days.`
         : `${greetingName}, here are your documents. Tap the link to download — it expires in 7 days.`,
     );
+    setSelectedTplIds(new Set());
     const seed = initialSelectedIds && initialSelectedIds.length > 0
       ? initialSelectedIds.filter((id) => allDocIds.includes(id))
       : allDocIds;
@@ -110,29 +112,6 @@ export function WhatsAppUploadedFilesDialog({
     setCreatedUrl(null);
     setCreatedExpiresAt(null);
   }, [open, defaultPhone, defaultRecipientName, policyNumber, initialSelectedIds, allDocIds]);
-
-  // Load PDF templates when the dialog opens.
-  React.useEffect(() => {
-    if (!open) return;
-    setSelectedTplIds(new Set());
-    setLoadingTpls(true);
-    fetch("/api/pdf-templates")
-      .then((r) => (r.ok ? r.json() : []))
-      .then(
-        (rows: Array<{ id: number; label: string; isActive: boolean; meta: PdfTemplateMeta | null }>) => {
-          const visible = rows.filter((r) => {
-            if (!r.isActive) return false;
-            if (r.meta?.isAgentTemplate) return false;
-            const showOn = r.meta?.showOn;
-            if (showOn && showOn.length > 0 && !showOn.includes("policy")) return false;
-            return true;
-          });
-          setPdfTemplates(visible.map((r) => ({ id: r.id, label: r.label })));
-        },
-      )
-      .catch(() => setPdfTemplates([]))
-      .finally(() => setLoadingTpls(false));
-  }, [open]);
 
   const totalSelectedBytes = React.useMemo(() => {
     let bytes = 0;
