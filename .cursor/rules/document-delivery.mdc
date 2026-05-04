@@ -1,0 +1,171 @@
+---
+description: Use the shared document-delivery system for ALL Email Files / WhatsApp Files / share-link flows — never inline wa.me URLs, fetch /api/pdf-templates, or read insured contact info from snapshots manually
+globs: **/*.tsx,**/*.ts
+alwaysApply: true
+---
+
+# Document Delivery System (`@/lib/document-delivery`)
+
+Sending files to a customer (or agent, or anyone) is a SINGLE concern in
+this codebase. Every "Email this file" / "WhatsApp this file" / "Share
+download link" flow goes through the same shared abstractions.
+
+## Why this rule exists
+
+Before the document-delivery extraction the same logic was duplicated
+in 4+ places:
+
+- `components/policies/tabs/WorkflowTab.tsx` — recipient resolution
+- `components/policies/EmailUploadedFilesDialog.tsx` — PDF template loader
+- `components/policies/WhatsAppUploadedFilesDialog.tsx` — PDF template loader
+- `components/policies/tabs/DocumentsTab.tsx` — inline `wa.me` URL builders, `handleEmail` / `handleWhatsApp` handlers
+- `app/api/presence/online/route.ts` — phone resolution (different shape, different fallback chain)
+
+Each copy was slightly different (different keys, different order),
+which meant the same insured surfaced different phone/email values
+depending on which surface the user opened. A bug fix in one place
+silently failed in the others.
+
+## The contract — one-line rules
+
+| Need | Use |
+|---|---|
+| Pop the Email Files dialog from anywhere | `useDeliverDocuments()({ channel: "email", ... })` |
+| Pop the WhatsApp Files dialog from anywhere | `useDeliverDocuments()({ channel: "whatsapp", ... })` |
+| Get the insured's email from a policy snapshot | `getDefaultEmailFromInsured(insuredSnapshot)` |
+| Get the insured's mobile from a policy snapshot | `getDefaultPhoneFromInsured(insuredSnapshot)` |
+| Get the insured's display name from a snapshot | `getDefaultRecipientNameFromInsured(insuredSnapshot)` |
+| All three at once from `extraAttributes` | `resolveDefaultRecipientFromExtra(detail.extraAttributes)` |
+| Load the PDF templates a client-share dialog should show | `usePolicyVisiblePdfTemplates(open)` |
+| Filter raw `/api/pdf-templates` rows server-side | `filterPolicyVisibleTemplates(rows)` |
+| Build a `wa.me` URL for a given phone + message | `buildWhatsAppUrl(phone, message)` from `@/lib/whatsapp` |
+| Normalise an HK / international phone for WhatsApp | `normalizeForWhatsApp(raw)` from `@/lib/whatsapp` |
+
+## NEVER do these
+
+```typescript
+// ❌ BAD — inline wa.me URL with hand-rolled phone cleanup
+const phone = String(insured?.contactPhone ?? insured?.phone ?? "").replace(/[^0-9+]/g, "");
+const url = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
+window.open(url, "_blank");
+
+// ✅ GOOD — use the shared builder + delivery hook
+import { buildWhatsAppUrl } from "@/lib/whatsapp";
+import { useDeliverDocuments, getDefaultPhoneFromInsured } from "@/lib/document-delivery";
+
+const deliver = useDeliverDocuments();
+deliver({
+  channel: "whatsapp",
+  policyId,
+  policyNumber,
+  groups,                                              // see DeliveryDocGroup
+  recipient: { phone: getDefaultPhoneFromInsured(insured) },
+});
+```
+
+```typescript
+// ❌ BAD — inline duplicated fallback chain
+const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
+const candidate =
+  insured.contactinfo__mobile ??
+  insured.contactinfo_mobile ??
+  insured.mobile ??
+  // ... 5 more lines ...
+  "";
+
+// ✅ GOOD
+import { resolveDefaultRecipientFromExtra } from "@/lib/document-delivery";
+const { email, phone, name } = resolveDefaultRecipientFromExtra(detail.extraAttributes);
+```
+
+```typescript
+// ❌ BAD — re-fetching + re-filtering PDF templates inline
+fetch("/api/pdf-templates")
+  .then(r => r.json())
+  .then(rows => rows.filter(r => r.isActive && !r.meta?.isAgentTemplate /* etc */));
+
+// ✅ GOOD
+import { usePolicyVisiblePdfTemplates } from "@/lib/document-delivery";
+const { templates, loading } = usePolicyVisiblePdfTemplates(dialogOpen);
+```
+
+```typescript
+// ❌ BAD — local dialog state + inline mount
+const [emailOpen, setEmailOpen] = React.useState(false);
+const [waOpen, setWaOpen] = React.useState(false);
+return (
+  <>
+    <Button onClick={() => setEmailOpen(true)}>Email</Button>
+    <Button onClick={() => setWaOpen(true)}>WhatsApp</Button>
+    <EmailUploadedFilesDialog open={emailOpen} onOpenChange={setEmailOpen} ... />
+    <WhatsAppUploadedFilesDialog open={waOpen} onOpenChange={setWaOpen} ... />
+  </>
+);
+
+// ✅ GOOD — host is mounted ONCE in the dashboard layout; just call the hook
+const deliver = useDeliverDocuments();
+return (
+  <>
+    <Button onClick={() => deliver({ channel: "email", ... })}>Email</Button>
+    <Button onClick={() => deliver({ channel: "whatsapp", ... })}>WhatsApp</Button>
+  </>
+);
+```
+
+## How the system is wired
+
+```
+app/(dashboard)/layout.tsx
+  <DocumentDeliveryProvider>
+    <header>...</header>
+    {children}                          ← every page reads context here
+    <DocumentDeliveryHost />            ← single Email + WhatsApp dialogs
+  </DocumentDeliveryProvider>
+```
+
+```
+lib/document-delivery/
+├── recipient.ts              # email/phone/name extraction from insured snapshot
+├── pdf-templates-loader.ts   # usePolicyVisiblePdfTemplates() hook + pure filter
+├── delivery-context.tsx      # DocumentDeliveryProvider + useDeliverDocuments hook
+├── types.ts                  # DeliveryFile, DeliveryRecipient, DeliveryRequest
+└── index.ts                  # public barrel — import everything from here
+
+components/document-delivery/
+└── DocumentDeliveryHost.tsx  # subscribes to context, mounts the right dialog
+```
+
+The two dialogs (`EmailUploadedFilesDialog`, `WhatsAppUploadedFilesDialog`)
+are now controlled-only — the host owns the open/close lifecycle.
+
+## Adding a new channel (SMS, Telegram, etc.)
+
+1. Add the new value to `DeliveryChannel` in `lib/document-delivery/types.ts`.
+2. Build a new dialog component (`SmsDeliveryDialog`, etc.) that reuses
+   `usePolicyVisiblePdfTemplates` + the shared recipient helpers.
+3. Render it conditionally in `DocumentDeliveryHost` based on the
+   `channel` field.
+4. Update this rule's "Need / Use" table.
+
+That's it — no caller-side changes, no new context, no new fetch logic.
+
+## Scope boundaries
+
+- **Multi-file delivery** (Email Files / WhatsApp Files) → use `useDeliverDocuments`.
+- **Single-PDF "send this template" buttons** (per-row icons in `DocumentsTab`)
+  → still use `useDeliverDocuments` with `groups: []` and the template
+  registered as a pre-checked PDF; OR use the share-link API directly
+  for headless sends. Don't reinvent `wa.me` text-only URLs.
+- **Server-to-server email** (e.g. `/api/cron/send-reminders`) → use
+  `lib/email.ts` `sendEmail()` directly; this rule is for human-driven
+  client surfaces.
+- **Phone display** (UI only, e.g. "shown to user") → use
+  `formatWhatsAppDisplay` from `@/lib/whatsapp`.
+
+## Skill summary
+
+1. Need to ship files to a person? `useDeliverDocuments()` — one call, dialog opens.
+2. Need to know the recipient? `resolveDefaultRecipientFromExtra(extraAttributes)`.
+3. Need PDF templates in a dialog? `usePolicyVisiblePdfTemplates(open)`.
+4. Need a `wa.me` URL? `buildWhatsAppUrl(phone, msg)`.
+5. Never copy-paste any of the above inline — the duplicated past was a bug factory.

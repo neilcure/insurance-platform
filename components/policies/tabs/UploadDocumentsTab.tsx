@@ -1,13 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { Mail, MessageCircle, Upload } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Upload } from "lucide-react";
 import { DocumentUploadCard } from "@/components/ui/document-upload-card";
-import {
-  useDeliverDocuments,
-  type DeliveryDocGroup,
-} from "@/lib/document-delivery";
+import { DocumentActionBar } from "@/components/document-delivery/DocumentActionBar";
+import { type DeliveryDocGroup } from "@/lib/document-delivery";
 import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 import type {
   DocumentStatus,
@@ -322,8 +319,6 @@ export function UploadDocumentsTab({
     0,
   );
 
-  const deliver = useDeliverDocuments();
-
   // The Email Files / WhatsApp Files affordances only make sense for
   // the "documents" slice — rendering them next to payment cards
   // would be confusing. The "all" filter (no parent filtering) also
@@ -376,44 +371,16 @@ export function UploadDocumentsTab({
           <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
             {totalShareableFiles} file{totalShareableFiles === 1 ? "" : "s"} available
           </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 gap-1.5 px-2 text-[11px]"
-              onClick={() =>
-                deliver({
-                  channel: "email",
-                  policyId,
-                  policyNumber,
-                  groups: shareableGroups,
-                  recipient: { email: defaultEmail, name: defaultRecipientName },
-                })
-              }
-              title="Send selected uploaded files in one email"
-            >
-              <Mail className="h-3.5 w-3.5" />
-              Email Files
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 gap-1.5 px-2 text-[11px] border-emerald-300 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-400 dark:border-emerald-900/60 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
-              onClick={() =>
-                deliver({
-                  channel: "whatsapp",
-                  policyId,
-                  policyNumber,
-                  groups: shareableGroups,
-                  recipient: { phone: defaultPhone, name: defaultRecipientName },
-                })
-              }
-              title="Generate a download link and open WhatsApp pre-filled"
-            >
-              <MessageCircle className="h-3.5 w-3.5" />
-              WhatsApp Files
-            </Button>
-          </div>
+          <DocumentActionBar
+            policyId={policyId}
+            policyNumber={policyNumber}
+            groups={shareableGroups}
+            recipient={{
+              email: defaultEmail,
+              phone: defaultPhone,
+              name: defaultRecipientName,
+            }}
+          />
         </div>
       )}
 
