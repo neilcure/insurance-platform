@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/db/client";
 import { memberships, organisations } from "@/db/schema/core";
 import { requireUser } from "@/lib/auth/require-user";
-import { and, eq } from "drizzle-orm";
+import { resolveActiveOrgId, ActiveOrgError } from "@/lib/auth/active-org";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 const toOptionalTrimmedString = (v: unknown) => {
@@ -45,34 +46,49 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: "Invalid body" }, { status: 400 });
     }
 
-    // Resolve the organisation via membership for the current user
-    let [m] = await db
-      .select({ organisationId: memberships.organisationId })
-      .from(memberships)
-      .where(eq(memberships.userId, Number(me.id)))
-      .limit(1);
-
     const values = parsed.data;
     if (Object.keys(values).length === 0) {
       return NextResponse.json({ error: "No changes provided" }, { status: 400 });
     }
 
-    // If user has no organisation membership yet, create one on-the-fly
-    if (!m) {
-      const fallbackName =
-        values.name ??
-        (typeof me.name === "string" && me.name.trim().length > 0
-          ? `${me.name.trim()} Organisation`
-          : "My Organisation");
-      const [org] = await db.insert(organisations).values({ name: fallbackName }).returning({
-        id: organisations.id,
+    // Resolve the target organisation. We honor an optional
+    // `organisationId` from the request (admins / multi-org users
+    // can target a specific tenant); otherwise the JWT's active
+    // org is used. Falls through to legacy "first membership"
+    // behavior in warn-only mode (logged in `lib/auth/active-org.ts`).
+    const candidateOrgId = (parsed.data as Record<string, unknown>).organisationId;
+    let organisationId: number | null = null;
+    try {
+      organisationId = await resolveActiveOrgId(me, candidateOrgId as number | string | null | undefined, {
+        context: "PATCH /api/account/organisation",
       });
-      await db.insert(memberships).values({
-        userId: Number(me.id),
-        organisationId: org.id,
-        role: "member",
-      });
-      m = { organisationId: org.id };
+    } catch (err) {
+      if (err instanceof ActiveOrgError) {
+        // Special case: a brand-new user with NO memberships and
+        // no candidate gets a 400 here, but our legacy contract
+        // was to create an org on-the-fly. Preserve that for
+        // first-time users so onboarding doesn't break.
+        if (err.status === 400) {
+          const fallbackName =
+            values.name ??
+            (typeof me.name === "string" && me.name.trim().length > 0
+              ? `${me.name.trim()} Organisation`
+              : "My Organisation");
+          const [org] = await db.insert(organisations).values({ name: fallbackName }).returning({
+            id: organisations.id,
+          });
+          await db.insert(memberships).values({
+            userId: Number(me.id),
+            organisationId: org.id,
+            role: "member",
+          });
+          organisationId = org.id;
+        } else {
+          return NextResponse.json({ error: err.message }, { status: err.status });
+        }
+      } else {
+        throw err;
+      }
     }
 
     const [updated] = await db
@@ -93,7 +109,7 @@ export async function PATCH(request: NextRequest) {
         area: values.area,
         updatedAt: new Date().toISOString() as unknown as any,
       })
-      .where(eq(organisations.id, m.organisationId))
+      .where(eq(organisations.id, organisationId!))
       .returning({
         id: organisations.id,
         name: organisations.name,

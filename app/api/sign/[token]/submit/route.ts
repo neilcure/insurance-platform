@@ -1,7 +1,4 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
-import { db } from "@/db/client";
-import { policies } from "@/db/schema/insurance";
 import {
   getSigningSession,
   isSessionOpenable,
@@ -19,6 +16,7 @@ import {
   autoAdvanceFromTrackingAction,
   isAgentTrackingDocType,
 } from "@/lib/auto-advance-status";
+import { updateDocumentTracking } from "@/lib/document-tracking/atomic-update";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -138,23 +136,17 @@ export async function POST(
     // signing we don't fail the request (the signed PDF is still
     // stored and downloadable via the public token).
     try {
-      const [policyRow] = await db
-        .select({ documentTracking: policies.documentTracking })
-        .from(policies)
-        .where(eq(policies.id, session.policyId))
-        .limit(1);
-      if (policyRow) {
-        const existing: DocumentTrackingData =
-          (policyRow.documentTracking as DocumentTrackingData | null) ?? {};
+      const signerLabel =
+        session.recipientName || session.recipientEmail || "Online signer";
+      const noteByMethod: Record<SignaturePayload["method"], string> = {
+        draw: `Signed online by ${signerLabel} (drawn signature)`,
+        type: `Signed online by ${signerLabel} (typed signature)`,
+        accept: `Accepted online by ${signerLabel}`,
+      };
+      const nextMap = await updateDocumentTracking(session.policyId, (current) => {
         const prevEntry: DocumentStatusEntry =
-          existing[session.trackingKey] ?? ({ status: "sent" } as DocumentStatusEntry);
-        const signerLabel =
-          session.recipientName || session.recipientEmail || "Online signer";
-        const noteByMethod: Record<SignaturePayload["method"], string> = {
-          draw: `Signed online by ${signerLabel} (drawn signature)`,
-          type: `Signed online by ${signerLabel} (typed signature)`,
-          accept: `Accepted online by ${signerLabel}`,
-        };
+          (current[session.trackingKey] as DocumentStatusEntry | undefined) ??
+          ({ status: "sent" } as DocumentStatusEntry);
         const nextEntry: DocumentStatusEntry = {
           ...prevEntry,
           status: "confirmed",
@@ -164,14 +156,13 @@ export async function POST(
           confirmNote: noteByMethod[method],
           signedPdfStoredName: updated.signedPdfStoredName ?? undefined,
         };
-        const nextMap: DocumentTrackingData = {
-          ...existing,
+        const next: DocumentTrackingData = {
+          ...current,
           [session.trackingKey]: nextEntry,
         };
-        await db
-          .update(policies)
-          .set({ documentTracking: nextMap })
-          .where(eq(policies.id, session.policyId));
+        return next;
+      });
+      if (nextMap) {
 
         // Mirror the regular "Confirm" path in /document-tracking:
         // a confirmed quotation/invoice/receipt should also drive

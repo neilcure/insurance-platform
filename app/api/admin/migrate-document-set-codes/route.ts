@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { formOptions } from "@/db/schema/form_options";
 import { policies } from "@/db/schema/insurance";
-import { eq, isNotNull, sql } from "drizzle-orm";
+import { isNotNull, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import {
   generateDocumentNumberWithCode,
@@ -14,6 +14,7 @@ import type {
 } from "@/lib/types/accounting";
 import type { DocumentTemplateMeta } from "@/lib/types/document-template";
 import type { PdfTemplateMeta } from "@/lib/types/pdf-template";
+import { updateDocumentTracking } from "@/lib/document-tracking/atomic-update";
 
 export const dynamic = "force-dynamic";
 
@@ -136,6 +137,9 @@ async function runMigration(dryRun: boolean) {
         oldNumber: string;
         newNumber: string;
       }[] = [];
+      // Decisions computed OUTSIDE the row lock — applied atomically below.
+      const numberChanges: Record<string, string> = {};
+      const groupCodes: Record<string, { code: string; year: number }> = {};
 
       for (const [group, entries] of Object.entries(entriesByGroup)) {
         // Find canonical code from the first client entry
@@ -151,8 +155,7 @@ async function runMigration(dryRun: boolean) {
           return ex && ex.code === extracted.code;
         });
         if (allSame) {
-          if (!tracking._setCodes) tracking._setCodes = {};
-          tracking._setCodes[group] = extracted;
+          groupCodes[group] = extracted;
           continue;
         }
 
@@ -174,26 +177,39 @@ async function runMigration(dryRun: boolean) {
           );
           const oldNumber = e.entry.documentNumber!;
           policyChanges.push({ key: e.key, oldNumber, newNumber });
-          (tracking[e.key] as DocumentStatusEntry).documentNumber =
-            newNumber;
+          numberChanges[e.key] = newNumber;
         }
 
-        if (!tracking._setCodes) tracking._setCodes = {};
-        tracking._setCodes[group] = extracted;
+        groupCodes[group] = extracted;
       }
 
-      if (policyChanges.length > 0) {
+      if (policyChanges.length > 0 || Object.keys(groupCodes).length > 0) {
         if (!dryRun) {
-          await db
-            .update(policies)
-            .set({ documentTracking: tracking })
-            .where(eq(policies.id, policy.id));
+          // Apply the precomputed changes through the atomic helper.
+          // We only touch the keys we decided on — concurrent user
+          // edits to other doc types (or other entry fields) are
+          // preserved because we re-read the live tracking under the
+          // row lock.
+          await updateDocumentTracking(policy.id, (current) => {
+            const next: DocumentTrackingData = { ...current };
+            for (const [key, newNumber] of Object.entries(numberChanges)) {
+              const live = next[key] as DocumentStatusEntry | undefined;
+              if (!live) continue;
+              next[key] = { ...live, documentNumber: newNumber };
+            }
+            if (Object.keys(groupCodes).length > 0) {
+              next._setCodes = { ...(current._setCodes ?? {}), ...groupCodes };
+            }
+            return next;
+          });
         }
-        results.push({
-          policyId: policy.id,
-          policyNumber: policy.policyNumber,
-          changes: policyChanges,
-        });
+        if (policyChanges.length > 0) {
+          results.push({
+            policyId: policy.id,
+            policyNumber: policy.policyNumber,
+            changes: policyChanges,
+          });
+        }
       }
     }
 

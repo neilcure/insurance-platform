@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
-import { db } from "@/db/client";
-import { policies } from "@/db/schema/insurance";
 import {
   getSigningSession,
   isSessionOpenable,
   markSigningSessionDeclined,
 } from "@/lib/signing-sessions";
+import { updateDocumentTracking } from "@/lib/document-tracking/atomic-update";
 import type { DocumentStatusEntry, DocumentTrackingData } from "@/lib/types/accounting";
 
 export const runtime = "nodejs";
@@ -91,18 +89,12 @@ export async function POST(
     // session is still marked declined and the sender can see it
     // when they re-open the (gone) link.
     try {
-      const [policyRow] = await db
-        .select({ documentTracking: policies.documentTracking })
-        .from(policies)
-        .where(eq(policies.id, session.policyId))
-        .limit(1);
-      if (policyRow) {
-        const existing: DocumentTrackingData =
-          (policyRow.documentTracking as DocumentTrackingData | null) ?? {};
+      const declinerLabel =
+        session.recipientName || session.recipientEmail || "Recipient";
+      await updateDocumentTracking(session.policyId, (current) => {
         const prevEntry: DocumentStatusEntry =
-          existing[session.trackingKey] ?? ({ status: "sent" } as DocumentStatusEntry);
-        const declinerLabel =
-          session.recipientName || session.recipientEmail || "Recipient";
+          (current[session.trackingKey] as DocumentStatusEntry | undefined) ??
+          ({ status: "sent" } as DocumentStatusEntry);
         const nextEntry: DocumentStatusEntry = {
           ...prevEntry,
           status: "rejected",
@@ -110,15 +102,12 @@ export async function POST(
           rejectedBy: declinerLabel,
           rejectionNote: reason,
         };
-        const nextMap: DocumentTrackingData = {
-          ...existing,
+        const next: DocumentTrackingData = {
+          ...current,
           [session.trackingKey]: nextEntry,
         };
-        await db
-          .update(policies)
-          .set({ documentTracking: nextMap })
-          .where(eq(policies.id, session.policyId));
-      }
+        return next;
+      });
     } catch (err) {
       console.error("[/api/sign/decline] tracking update failed (non-fatal):", err);
     }

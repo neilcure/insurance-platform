@@ -1,0 +1,43 @@
+---
+description: Tripwire for `policies.policy_number` generation, prefix resolution, and display normalization. Must read the policy-numbering skill before editing any of the listed files.
+alwaysApply: true
+---
+
+# Policy-Number Generation & Resolution
+
+The `policies.policy_number` column is `NOT NULL UNIQUE`. The full
+contract for how it's generated, where its prefix comes from, and
+how it's displayed lives in the skill — and it is NOT obvious from
+reading any single file.
+
+If your task touches **any** of the following, STOP and read
+[`.cursor/skills/policy-numbering/SKILL.md`](mdc:.cursor/skills/policy-numbering/SKILL.md)
+**before** writing code:
+
+- Editing `app/api/policies/route.ts` (POST path or response handling)
+- Editing or replacing `lib/policy-number.ts`
+- Editing `lib/policies/policy-number-display.ts` (suffix stripping, display normalization)
+- Editing the bulk-import flow in `lib/import/batch-service.ts`
+- Editing the wizard at `app/(dashboard)/policies/new/page.tsx` where it composes the policy payload
+- Adding any new prefix scheme to `app_settings` (`flow_prefixes:*`, `client_number_prefixes:*`)
+- Generating policy numbers in any new code path (cron jobs, scripts, dev endpoints, tests)
+- Diagnosing "duplicate key value violates unique constraint policies_policy_number" 500s
+- Diagnosing "wrong prefix appearing on a tenant's policies after admin changes"
+- Diagnosing rapid-fire imports producing collisions or partial commits
+
+## The 30-second cheatsheet
+
+| Concern | Pattern | Don't do |
+|---|---|---|
+| Auto-generate a number | `await generatePolicyNumber(prefix)` from `@/lib/policy-number` | `${prefix}-${Date.now()}` inline |
+| Resolution chain | `insurerPolicyNo` → `covernoteNo` → `generatePolicyNumber()` | Skip the user-supplied steps |
+| Prefix lookup order | Default `"POL"` → `flow_prefixes:<orgId>[flowKey]` → `client_number_prefixes:<orgId>` for client+insuredType flows only | Hard-code "POL" or skip the org-suffixed key |
+| User-supplied number conflict | Catch with `isPolicyNumberUniqueViolation(err)` → return 409 | Let the 23505 propagate as 500 |
+| DB lookup by number | `stripPolicyLineSuffix(num)` first | Match `"POLS-1775(a)"` literally — won't find the row |
+| Endorsements | Generate their OWN number with the endorsement flow's prefix | Reuse the parent's `policy_number` |
+| Bulk imports | Same `/api/policies` POST → same helper | Pre-generate numbers in `batch-service.ts` |
+| Multi-tenancy | Resolve `organisationId` via `lib/auth/active-org.ts` BEFORE prefix lookup | Trust raw `body.organisationId` |
+
+If anything above is unclear, the skill has the full contract,
+examples, and a verification recipe (SQL + manual UI smoke test) you
+can run to confirm correctness.

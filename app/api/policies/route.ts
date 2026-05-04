@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { cars, policies } from "@/db/schema/insurance";
-import { memberships, organisations, clients, appSettings } from "@/db/schema/core";
+import { memberships, clients, appSettings } from "@/db/schema/core";
 import { policyPremiums } from "@/db/schema/premiums";
 import { formOptions } from "@/db/schema/form_options";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { policyCreateSchema } from "@/lib/validation/policy";
 import { requireUser } from "@/lib/auth/require-user";
 import { canCreatePolicy } from "@/lib/auth/rbac";
+import { resolveActiveOrgId, ActiveOrgError } from "@/lib/auth/active-org";
+import { generatePolicyNumber, isPolicyNumberUniqueViolation } from "@/lib/policy-number";
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { loadAccountingFields, buildFieldColumnMap, getColumnType } from "@/lib/accounting-fields";
 
@@ -85,37 +87,24 @@ export async function POST(request: Request) {
       const policy = (body.policy ?? pkgPolicy ?? null) as FinalPolicyPayload["policy"] | null;
       const vehicle = (body.vehicle ?? pkgVehicle ?? null) as FinalPolicyPayload["vehicle"] | null;
 
-      let organisationIdCandidate =
+      // Resolve the target organisation. Order of preference:
+      //   1. policy.insurerOrgId / body.organisationId / packages.organisationId
+      //   2. user.activeOrganisationId (from JWT, set at sign-in)
+      //   3. (warn-only fallback) first membership / first org in DB
+      // resolveActiveOrgId also enforces membership for non-admins,
+      // replacing the inline membership check below.
+      const organisationIdCandidate =
         (policy as any)?.insurerOrgId ?? body.organisationId ?? (packages as any)?.organisationId;
-      let organisationId = Number(organisationIdCandidate);
-      if (!Number.isFinite(organisationId) || organisationId <= 0) {
-        // Fallback to the first organisation the user belongs to (if any)
-        const firstMembership = await db
-          .select({ organisationId: memberships.organisationId })
-          .from(memberships)
-          .where(eq(memberships.userId, Number(user.id)))
-          .limit(1);
-        organisationId = Number(firstMembership?.[0]?.organisationId);
-        // If still missing (e.g., admin without memberships), pick the first organisation in the system
-        if (!Number.isFinite(organisationId) || organisationId <= 0) {
-          const firstOrgRow = await db.select({ id: organisations.id }).from(organisations).limit(1);
-          organisationId = Number(firstOrgRow?.[0]?.id);
+      let organisationId: number;
+      try {
+        organisationId = await resolveActiveOrgId(user, organisationIdCandidate, {
+          context: "POST /api/policies",
+        });
+      } catch (err) {
+        if (err instanceof ActiveOrgError) {
+          return NextResponse.json({ error: err.message }, { status: err.status });
         }
-      if (!Number.isFinite(organisationId) || organisationId <= 0) {
-        return NextResponse.json({ error: "Invalid or missing insurer organisation" }, { status: 400 });
-        }
-      }
-
-      // For non-admin/internal_staff, ensure the user has membership in the target organisation
-      if (!(user.userType === "admin" || user.userType === "internal_staff")) {
-        const hasMembership = await db
-          .select({ exists: memberships.organisationId })
-          .from(memberships)
-          .where(and(eq(memberships.userId, Number(user.id)), eq(memberships.organisationId, organisationId)))
-          .limit(1);
-        if (hasMembership.length === 0) {
-          return NextResponse.json({ error: "Forbidden: no access to organisation" }, { status: 403 });
-        }
+        throw err;
       }
 
       // Start getPolicyColumns() early so it runs concurrently with prefix resolution
@@ -165,10 +154,16 @@ export async function POST(request: Request) {
         }
       }
 
+      // Resolution chain (ORDER MATTERS — see .cursor/skills/policy-numbering/SKILL.md):
+      //   1. Insurer-supplied policy number (authoritative when known)
+      //   2. Covernote number (interim insurer reference)
+      //   3. Auto-generated via lib/policy-number.ts — collision-safe
+      //      with retry; replaces the legacy `${prefix}-${Date.now()}`
+      //      pattern that was racy under bulk imports.
       const generatedPolicyNumber =
         (policy as any)?.insurerPolicyNo ||
         (policy as any)?.covernoteNo ||
-        `${recordPrefix}-${Date.now()}`;
+        (await generatePolicyNumber(recordPrefix));
 
 
       // Try to construct an insured candidate from either body.insured or packages snapshot
@@ -789,17 +784,23 @@ export async function POST(request: Request) {
       if (!parsed.success) {
         return NextResponse.json({ error: "Invalid body", details: parsed.error.flatten() }, { status: 400 });
       }
-      const { policyNumber, organisationId, car } = parsed.data;
+      const { policyNumber, organisationId: rawOrgId, car } = parsed.data;
 
-      if (!(user.userType === "admin" || user.userType === "internal_staff")) {
-        const hasMembership = await db
-          .select({ exists: memberships.organisationId })
-          .from(memberships)
-          .where(and(eq(memberships.userId, Number(user.id)), eq(memberships.organisationId, organisationId)))
-          .limit(1);
-        if (hasMembership.length === 0) {
-          return NextResponse.json({ error: "Forbidden: no access to organisation" }, { status: 403 });
+      // Re-resolve through the central helper so the membership
+      // check stays in one place. Legacy body always carries
+      // `organisationId`, so this is effectively just an
+      // assertion — we still pass it as the candidate so admins /
+      // internal_staff bypass naturally.
+      let organisationId: number;
+      try {
+        organisationId = await resolveActiveOrgId(user, rawOrgId, {
+          context: "POST /api/policies (legacy)",
+        });
+      } catch (err) {
+        if (err instanceof ActiveOrgError) {
+          return NextResponse.json({ error: err.message }, { status: err.status });
         }
+        throw err;
       }
 
       const result = await db.transaction(async (tx) => {
@@ -826,6 +827,20 @@ export async function POST(request: Request) {
     }
   } catch (err) {
     console.error(err);
+    // Translate the rare policy_number unique-violation into a 409
+    // with a clear message. The auto-generator's pre-flight check
+    // makes this nearly impossible to hit, but if a user supplied
+    // an `insurerPolicyNo` / `covernoteNo` that's already taken,
+    // they need to know — not see a generic 500.
+    if (isPolicyNumberUniqueViolation(err)) {
+      return NextResponse.json(
+        {
+          error:
+            "A policy with this number already exists. Please use a different policy number, or leave it blank to auto-generate.",
+        },
+        { status: 409 },
+      );
+    }
     const message =
       (err as any)?.message ||
       (typeof err === "string" ? err : undefined) ||

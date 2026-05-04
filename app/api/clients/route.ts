@@ -100,7 +100,18 @@ export async function POST(request: Request) {
     let displayName = (category === "company" ? companyName : fullName) || "";
     let primaryId = (category === "company" ? (brNumber || ciNumber) : idNumber) || "";
     const contactPhone = contactPhoneRaw ? String(contactPhoneRaw) : undefined;
-    if (!primaryId) primaryId = `AUTO-${Date.now()}`;
+    // Auto-generated placeholder for clients without a real ID (HKID /
+    // BR / CI). The `(category, primaryId)` pair is the de-duplication
+    // key used in 4 places (this route + policies/[id] + statements
+    // by-policy x2). With only `Date.now()`, two anonymous clients
+    // created in the same millisecond would collide on this key and
+    // the second policy would be silently linked to the first
+    // policy's client. The 6-char base36 random tail (≈ 2.2 billion
+    // combinations) eliminates that race. Matches the same pattern
+    // used for `tmpNumber` below.
+    if (!primaryId) {
+      primaryId = `AUTO-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    }
     // Enforce required identifiers
     if (category === "company") {
       if (!companyName || String(companyName).trim().length === 0) {

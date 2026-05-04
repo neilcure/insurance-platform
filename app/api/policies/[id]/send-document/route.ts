@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
-import { db } from "@/db/client";
-import { policies } from "@/db/schema/insurance";
 import { requireUser } from "@/lib/auth/require-user";
 import { sendEmail } from "@/lib/email";
 import { canAccessPolicy } from "@/lib/policy-access";
 import { renderHtmlToPdf } from "@/lib/pdf/html-to-pdf";
 import { createSigningSession } from "@/lib/signing-sessions";
+import { updateDocumentTracking } from "@/lib/document-tracking/atomic-update";
 import type { DocumentStatusEntry, DocumentTrackingData } from "@/lib/types/accounting";
 
 export const dynamic = "force-dynamic";
@@ -246,29 +244,20 @@ export async function POST(
         // doing it here means the link is visible immediately,
         // even if the email send itself ends up failing later.
         try {
-          const [policyRow] = await db
-            .select({ documentTracking: policies.documentTracking })
-            .from(policies)
-            .where(eq(policies.id, policyId))
-            .limit(1);
-          if (policyRow) {
-            const existing: DocumentTrackingData =
-              (policyRow.documentTracking as DocumentTrackingData | null) ?? {};
+          await updateDocumentTracking(policyId, (current) => {
             const prevEntry: DocumentStatusEntry =
-              existing[trackingKey] ?? ({ status: "sent" } as DocumentStatusEntry);
+              (current[trackingKey] as DocumentStatusEntry | undefined) ??
+              ({ status: "sent" } as DocumentStatusEntry);
             const nextEntry: DocumentStatusEntry = {
               ...prevEntry,
               signingSessionToken: signingToken,
             };
-            const nextMap: DocumentTrackingData = {
-              ...existing,
+            const next: DocumentTrackingData = {
+              ...current,
               [trackingKey]: nextEntry,
             };
-            await db
-              .update(policies)
-              .set({ documentTracking: nextMap })
-              .where(eq(policies.id, policyId));
-          }
+            return next;
+          });
         } catch (innerErr) {
           // Don't fail the whole send if the tracking patch flops
           // — the signing session itself is still valid and the

@@ -27,11 +27,9 @@
  */
 
 import { NextResponse } from "next/server";
-import { db } from "@/db/client";
-import { policies } from "@/db/schema/insurance";
-import { eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { canAccessPolicy } from "@/lib/policy-access";
+import { updateDocumentTracking } from "@/lib/document-tracking/atomic-update";
 import type {
   DocumentStatusEntry,
   DocumentTrackingData,
@@ -97,20 +95,6 @@ export async function PUT(
     const checkboxes = sanitizeCheckboxes(body.checkboxes);
     const radioGroups = sanitizeRadios(body.radioGroups);
 
-    const [policy] = await db
-      .select({ documentTracking: policies.documentTracking })
-      .from(policies)
-      .where(eq(policies.id, policyId))
-      .limit(1);
-    if (!policy) {
-      return NextResponse.json({ error: "Policy not found" }, { status: 404 });
-    }
-
-    const existing: DocumentTrackingData =
-      (policy.documentTracking as DocumentTrackingData | null) ?? {};
-    const prevEntry: DocumentStatusEntry =
-      existing[docType] ?? ({} as DocumentStatusEntry);
-
     // Both null/empty → drop the key so the entry stays slim and
     // future reads fall back to the template's defaultChecked /
     // defaultValue without any ambiguity.
@@ -122,38 +106,47 @@ export async function PUT(
           }
         : undefined;
 
-    // Preserve every other field on the entry — we ONLY touch
-    // formSelections here.
-    const nextEntry: DocumentStatusEntry = {
-      ...prevEntry,
-      ...(formSelections ? { formSelections } : {}),
-    };
-    if (!formSelections && prevEntry.formSelections) {
-      delete (nextEntry as DocumentStatusEntry).formSelections;
+    const updated = await updateDocumentTracking(policyId, (current) => {
+      const prevEntry: DocumentStatusEntry =
+        (current[docType] as DocumentStatusEntry | undefined) ?? ({} as DocumentStatusEntry);
+
+      // Preserve every other field on the entry — we ONLY touch
+      // formSelections here. This is the whole reason we go through
+      // the atomic helper: a concurrent /document-tracking POST
+      // (send / confirm / reject) might be racing us, and we MUST
+      // re-read its latest fields under the lock instead of using
+      // a stale snapshot.
+      const nextEntry: DocumentStatusEntry = {
+        ...prevEntry,
+        ...(formSelections ? { formSelections } : {}),
+      };
+      if (!formSelections && prevEntry.formSelections) {
+        delete (nextEntry as DocumentStatusEntry).formSelections;
+      }
+
+      // If the entry has nothing on it at all (no status, no number,
+      // no formSelections) we still keep it absent rather than write
+      // a stub — keeps the jsonb tidy for new policies.
+      const isEntryEmpty =
+        !nextEntry.status &&
+        !nextEntry.documentNumber &&
+        !nextEntry.formSelections &&
+        !nextEntry.sentAt &&
+        !nextEntry.confirmedAt &&
+        !nextEntry.rejectedAt;
+
+      const next: DocumentTrackingData = { ...current };
+      if (isEntryEmpty) {
+        delete next[docType];
+      } else {
+        next[docType] = nextEntry;
+      }
+      return next;
+    });
+
+    if (updated === null) {
+      return NextResponse.json({ error: "Policy not found" }, { status: 404 });
     }
-
-    // If the entry has nothing on it at all (no status, no number,
-    // no formSelections) we still keep it absent rather than write
-    // a stub — keeps the jsonb tidy for new policies.
-    const isEntryEmpty =
-      !nextEntry.status &&
-      !nextEntry.documentNumber &&
-      !nextEntry.formSelections &&
-      !nextEntry.sentAt &&
-      !nextEntry.confirmedAt &&
-      !nextEntry.rejectedAt;
-
-    const updated: DocumentTrackingData = { ...existing };
-    if (isEntryEmpty) {
-      delete updated[docType];
-    } else {
-      updated[docType] = nextEntry;
-    }
-
-    await db
-      .update(policies)
-      .set({ documentTracking: updated })
-      .where(eq(policies.id, policyId));
 
     return NextResponse.json({ documentTracking: updated });
   } catch (err) {

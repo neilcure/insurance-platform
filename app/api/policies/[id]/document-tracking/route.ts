@@ -8,6 +8,7 @@ import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
 import { generateDocumentNumber, generateDocumentNumberWithCode, extractSetCodeFromDocNumber } from "@/lib/document-number";
 import type { DocumentStatusMap, DocumentStatusEntry, DocLifecycleStatus, DocumentTrackingData } from "@/lib/types/accounting";
 import { canAccessPolicy } from "@/lib/policy-access";
+import { updateDocumentTracking } from "@/lib/document-tracking/atomic-update";
 
 export const dynamic = "force-dynamic";
 
@@ -149,21 +150,22 @@ export async function POST(
         if (!documentPrefix) {
           return NextResponse.json({ error: "documentPrefix required for prepare" }, { status: 400 });
         }
+        // Generate the document number OUTSIDE the row lock — it has
+        // its own unique-index + retry concurrency strategy and can
+        // take a few hundred ms; we don't want to hold the policy
+        // row lock that long.
         let prepDocNumber: string | undefined;
+        let resolvedSetInfo: { code: string; year: number } | null = null;
         try {
           if (documentSetGroup) {
             const setInfo = resolveSetCode(existing, documentSetGroup, groupSiblingKeys);
             if (setInfo) {
               prepDocNumber = await generateDocumentNumberWithCode(documentPrefix, setInfo.code, setInfo.year, documentSuffix);
-              if (!existing._setCodes) existing._setCodes = {};
-              existing._setCodes[documentSetGroup] = setInfo;
+              resolvedSetInfo = setInfo;
             } else {
               prepDocNumber = await generateDocumentNumber(documentPrefix, documentSuffix);
               const extracted = extractSetCodeFromDocNumber(prepDocNumber);
-              if (extracted) {
-                if (!existing._setCodes) existing._setCodes = {};
-                existing._setCodes[documentSetGroup] = extracted;
-              }
+              if (extracted) resolvedSetInfo = extracted;
             }
           } else {
             prepDocNumber = await generateDocumentNumber(documentPrefix, documentSuffix);
@@ -172,33 +174,47 @@ export async function POST(
           console.error("Document number generation error:", err);
           return NextResponse.json({ error: "Failed to generate document number" }, { status: 500 });
         }
-        const prepEntry: DocumentStatusEntry = {
-          ...entry,
-          status: "prepared",
-          generatedAt: now,
-          documentNumber: prepDocNumber,
-        };
-        const prepMap = { ...existing, [docType]: prepEntry };
-        await db.update(policies).set({ documentTracking: prepMap }).where(eq(policies.id, policyId));
+        const prepMap = await updateDocumentTracking(policyId, (current) => {
+          // Re-resolve under the lock — another writer may have
+          // already prepared this docType while we were generating
+          // the number above. If so, keep their entry and discard
+          // ours so we don't clobber a winning writer.
+          const liveEntry = current[docType];
+          if (liveEntry?.documentNumber) {
+            return current;
+          }
+          const prepEntry: DocumentStatusEntry = {
+            ...(liveEntry ?? {}),
+            status: "prepared",
+            generatedAt: now,
+            documentNumber: prepDocNumber,
+          };
+          const next: DocumentTrackingData = { ...current, [docType]: prepEntry };
+          if (documentSetGroup && resolvedSetInfo) {
+            next._setCodes = { ...(current._setCodes ?? {}), [documentSetGroup]: resolvedSetInfo };
+          }
+          return next;
+        });
+        const finalMap = prepMap ?? existing;
         let statusAdvanced: string | null = null;
         if (isAgentDoc) {
-          statusAdvanced = await syncAgentStatus(policyId, prepMap, userEmail, `${docType.replace(/_/g, " ")} prepared`);
+          statusAdvanced = await syncAgentStatus(policyId, finalMap, userEmail, `${docType.replace(/_/g, " ")} prepared`);
         } else {
           statusAdvanced = await autoAdvancePolicyStatus(policyId, docType, action, userEmail, templateType, "client");
         }
         return NextResponse.json({
-          documentTracking: prepMap,
+          documentTracking: finalMap,
           ...(statusAdvanced ? { statusAdvanced } : {}),
         });
       }
       case "reset": {
-        const updated = { ...existing };
-        delete updated[docType];
-        // Clear cached set codes so next prepare re-scans sibling entries for the correct code
-        if (updated._setCodes) {
-          delete updated._setCodes;
-        }
-        await db.update(policies).set({ documentTracking: updated }).where(eq(policies.id, policyId));
+        const updated = await updateDocumentTracking(policyId, (current) => {
+          const next: DocumentTrackingData = { ...current };
+          delete next[docType];
+          // Clear cached set codes so next prepare re-scans sibling entries for the correct code
+          if (next._setCodes) delete next._setCodes;
+          return next;
+        }) ?? existing;
         let statusRolledBack: string | null = null;
         try {
           if (isAgentDoc) {
@@ -219,7 +235,9 @@ export async function POST(
         return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
 
-    // Handle proof file upload
+    // Handle proof file upload OUTSIDE the row lock — disk I/O can
+    // take seconds and we don't want concurrent writers to the same
+    // policy queueing on it.
     let proofPath: string | undefined;
     let proofName: string | undefined;
     if (action === "confirm" && confirmMethod === "upload" && proofFile) {
@@ -234,23 +252,22 @@ export async function POST(
       proofName = proofFile.name;
     }
 
-    // Fallback: generate document number on send if not already assigned during prepare
+    // Fallback: generate document number on send if not already
+    // assigned during prepare. Generated OUTSIDE the row lock — the
+    // sequence helper has its own concurrency safety.
     let docNumber = entry.documentNumber;
+    let resolvedSetInfoForSend: { code: string; year: number } | null = null;
     if (action === "send" && !docNumber && documentPrefix) {
       try {
         if (documentSetGroup) {
           const setInfo = resolveSetCode(existing, documentSetGroup, groupSiblingKeys);
           if (setInfo) {
             docNumber = await generateDocumentNumberWithCode(documentPrefix, setInfo.code, setInfo.year, documentSuffix);
-            if (!existing._setCodes) existing._setCodes = {};
-            existing._setCodes[documentSetGroup] = setInfo;
+            resolvedSetInfoForSend = setInfo;
           } else {
             docNumber = await generateDocumentNumber(documentPrefix, documentSuffix);
             const extracted = extractSetCodeFromDocNumber(docNumber);
-            if (extracted) {
-              if (!existing._setCodes) existing._setCodes = {};
-              existing._setCodes[documentSetGroup] = extracted;
-            }
+            if (extracted) resolvedSetInfoForSend = extracted;
           }
         } else {
           docNumber = await generateDocumentNumber(documentPrefix, documentSuffix);
@@ -260,31 +277,38 @@ export async function POST(
       }
     }
 
-    const updatedEntry: DocumentStatusEntry = {
-      ...entry,
-      status: newStatus,
-      ...(docNumber && { documentNumber: docNumber }),
-      ...(action === "send" && { sentAt: now, sentTo: sentTo || entry.sentTo }),
-      ...(action === "confirm" && {
-        confirmedAt: now,
-        confirmedBy: userName,
-        confirmMethod,
-        confirmNote: confirmNote || undefined,
-        confirmProofPath: proofPath || undefined,
-        confirmProofName: proofName || undefined,
-      }),
-      ...(action === "reject" && { rejectedAt: now, rejectionNote: rejectionNote || undefined }),
-    };
+    const updatedMap = await updateDocumentTracking(policyId, (current) => {
+      const liveEntry: DocumentStatusEntry =
+        (current[docType] as DocumentStatusEntry | undefined) ?? ({} as DocumentStatusEntry);
+      const nextEntry: DocumentStatusEntry = {
+        ...liveEntry,
+        status: newStatus,
+        // Don't downgrade an already-assigned number; only fill if missing.
+        ...((!liveEntry.documentNumber && docNumber) && { documentNumber: docNumber }),
+        ...(action === "send" && { sentAt: now, sentTo: sentTo || liveEntry.sentTo }),
+        ...(action === "confirm" && {
+          confirmedAt: now,
+          confirmedBy: userName,
+          confirmMethod,
+          confirmNote: confirmNote || undefined,
+          confirmProofPath: proofPath || undefined,
+          confirmProofName: proofName || undefined,
+        }),
+        ...(action === "reject" && { rejectedAt: now, rejectionNote: rejectionNote || undefined }),
+      };
+      const next: DocumentStatusMap = { ...current, [docType]: nextEntry };
+      if (resolvedSetInfoForSend && documentSetGroup) {
+        (next as DocumentTrackingData)._setCodes = {
+          ...(current._setCodes ?? {}),
+          [documentSetGroup]: resolvedSetInfoForSend,
+        };
+      }
+      return next as DocumentTrackingData;
+    }) ?? existing;
 
-    const updatedMap: DocumentStatusMap = {
-      ...existing,
-      [docType]: updatedEntry,
-    };
-
-    await db
-      .update(policies)
-      .set({ documentTracking: updatedMap })
-      .where(eq(policies.id, policyId));
+    // Re-derive the just-written entry for downstream consumers below.
+    const updatedEntry: DocumentStatusEntry =
+      (updatedMap[docType] as DocumentStatusEntry | undefined) ?? ({ status: newStatus } as DocumentStatusEntry);
 
     // On reject: recalculate status (may roll back if the rejected doc caused an advance)
     let autoStatusAdvanced: string | null = null;
