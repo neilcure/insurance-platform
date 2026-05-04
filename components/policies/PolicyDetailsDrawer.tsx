@@ -182,7 +182,11 @@ export function PolicyDetailsDrawer({
         }] : []),
       ] satisfies Omit<DrawerTab, "permanent">[]) : undefined}
     >
-      <PolicyPresenceBanner policyId={policyId} className="mb-3" />
+      <PolicyPresenceBanner
+        policyId={policyId}
+        policyNumber={detail?.policyNumber ?? null}
+        className="mb-3"
+      />
       {detail ? (
         <PolicySnapshotView
           detail={detail}

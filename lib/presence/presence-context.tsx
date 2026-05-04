@@ -33,7 +33,7 @@
 import * as React from "react";
 import { usePresenceHeartbeat } from "@/lib/presence/use-presence-heartbeat";
 
-const POLL_MS = 20_000;
+const POLL_MS = 60_000;
 
 export type OnlineUser = {
   id: number;
@@ -42,6 +42,15 @@ export type OnlineUser = {
   userType: string;
   lastSeenAt: string;
   resourceKey: string | null;
+  /**
+   * Mobile / WhatsApp phone resolved server-side from the linked
+   * `clients.contactPhone` for users who were set up via the
+   * "link client" admin flow. Null for users without a linked client
+   * (e.g. fresh admin / internal_staff accounts) — UI should hide
+   * any "ping on WhatsApp" affordance in that case rather than
+   * render a broken link.
+   */
+  phone: string | null;
   isSelf: boolean;
 };
 
@@ -76,6 +85,7 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
 
     const tick = async () => {
       if (cancelled) return;
+      if (typeof document !== "undefined" && document.hidden) return;
       try {
         const res = await fetch("/api/presence/online", {
           credentials: "same-origin",
@@ -106,9 +116,10 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
 
   // Bonus: when the viewer changes resourceKey (e.g. opens a policy
   // drawer), refresh the snapshot immediately so the banner doesn't
-  // have to wait up to 20s for the next poll cycle.
+  // have to wait up to 60s for the next poll cycle.
   React.useEffect(() => {
     if (typeof window === "undefined") return;
+    if (typeof document !== "undefined" && document.hidden) return;
     let cancelled = false;
     (async () => {
       try {
@@ -150,7 +161,7 @@ export function useOnlineUsers(): OnlineSnapshot | null {
  * calling component. Pass `null` to clear (or simply skip the call).
  *
  * Heartbeats fired AFTER this hook mounts will include `resourceKey`
- * in the request body, so within a heartbeat cycle (~30s) other
+ * in the request body, so within a heartbeat cycle (~60s) other
  * viewers' `<PolicyPresenceBanner />` will see this user appear.
  *
  * Common usage on a policy detail page:

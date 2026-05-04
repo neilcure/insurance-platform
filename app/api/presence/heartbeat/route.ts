@@ -2,9 +2,9 @@
  * POST /api/presence/heartbeat
  *
  * Stamps the caller's `user_presence.last_seen_at` to NOW(). Called by
- * the dashboard's `usePresenceHeartbeat` hook every ~30 seconds while
+ * the dashboard's `usePresenceHeartbeat` hook every ~60 seconds while
  * the tab is visible. The widget query then treats anyone with
- * `last_seen_at > now() - 60s` as "online".
+ * `last_seen_at > now() - 180s` as "online".
  *
  * Body (all optional):
  *   { "resourceKey": string | null }   // Phase B — what the user is
@@ -16,7 +16,7 @@
  * Why one row per user
  * --------------------
  * `user_presence.user_id` is the PK so this is a constant-time UPSERT
- * (no row growth). At our heartbeat cadence (2/min/user) this scales
+ * (no row growth). At our heartbeat cadence (1/min/user) this scales
  * to thousands of concurrent users on a single Postgres connection
  * without bloating the table.
  *

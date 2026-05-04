@@ -5,8 +5,8 @@
  * caller's active organisation. Powers the topbar widget.
  *
  * "Online" = heartbeated within the last `STALE_AFTER_SECONDS` seconds.
- * The cadence is set by `usePresenceHeartbeat` (~30s) so a 60s window
- * absorbs one missed beat.
+ * The cadence is set by `usePresenceHeartbeat` (~60s) so a 180s window
+ * absorbs a missed beat and avoids flapping when a tab is briefly paused.
  *
  * Auth & scoping
  * --------------
@@ -32,6 +32,7 @@
  *         userType: string,
  *         lastSeenAt: ISO string,
  *         resourceKey: string | null,    // Phase B
+ *         phone: string | null,          // From linked client; null for unlinked users
  *         isSelf: boolean,
  *       }
  *     ]
@@ -44,7 +45,7 @@ import { db } from "@/db/client";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveActiveOrgId, ActiveOrgError } from "@/lib/auth/active-org";
 
-const STALE_AFTER_SECONDS = 60;
+const STALE_AFTER_SECONDS = 180;
 
 type OnlineRow = {
   id: number;
@@ -53,6 +54,7 @@ type OnlineRow = {
   user_type: string;
   last_seen_at: string;
   resource_key: string | null;
+  phone: string | null;
 };
 
 export const GET = withAuth(async (_request, { user }) => {
@@ -80,13 +82,31 @@ export const GET = withAuth(async (_request, { user }) => {
     });
   }
 
+  // LEFT JOIN through `clients` so we can surface a WhatsApp button
+  // when a user has been linked to a client record (the existing
+  // "link client" flow stores the user's mobile on
+  // `clients.contactPhone`). Users without a linked client get
+  // `phone = NULL` and the UI suppresses the WhatsApp button.
+  //
+  // The DISTINCT-via-MAX collapses the (theoretically possible) case
+  // of one user being linked to multiple client rows; we just take
+  // the first non-null phone we find. In practice each user is linked
+  // to at most one client, but this keeps the row count = user count
+  // even if that invariant ever drifts.
   const rows = (await db.execute<OnlineRow>(sql`
     SELECT u.id,
            u.name,
            u.email,
            u.user_type,
            p.last_seen_at,
-           p.resource_key
+           p.resource_key,
+           (
+             SELECT c.contact_phone
+             FROM clients c
+             WHERE c.user_id = u.id AND c.contact_phone IS NOT NULL
+             ORDER BY c.id ASC
+             LIMIT 1
+           ) AS phone
     FROM user_presence p
     INNER JOIN users u ON u.id = p.user_id
     WHERE p.organisation_id = ${orgId}
@@ -103,6 +123,7 @@ export const GET = withAuth(async (_request, { user }) => {
     userType: r.user_type,
     lastSeenAt: r.last_seen_at,
     resourceKey: r.resource_key,
+    phone: r.phone,
     isSelf: Number(r.id) === viewerId,
   }));
 

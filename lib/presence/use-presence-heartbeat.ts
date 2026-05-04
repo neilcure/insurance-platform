@@ -8,10 +8,9 @@
  * Why a custom hook (no SSE / WebSocket)
  * --------------------------------------
  * SSE/WebSockets need a long-lived server process, which doesn't
- * exist in this app's serverless target. Plain HTTP polling at 30s
- * is ~2 requests/min/user — for the team sizes this app supports,
- * that's noise-level traffic and trivially scalable. If we ever
- * outgrow it, swap the implementation here without touching callers.
+ * exist in this app's serverless target. Plain HTTP polling at 60s is
+ * enough for "who is around" presence without turning every dashboard
+ * tab into constant background traffic.
  *
  * Phase B
  * -------
@@ -22,7 +21,7 @@
 
 import { useEffect, useRef } from "react";
 
-const DEFAULT_INTERVAL_MS = 30_000;
+const DEFAULT_INTERVAL_MS = 60_000;
 
 export function usePresenceHeartbeat(opts?: {
   intervalMs?: number;
