@@ -457,7 +457,7 @@ export function WhatsAppUploadedFilesDialog({
           )}
         </div>
 
-        <DialogFooter className="gap-1.5">
+        <DialogFooter>
           <Button
             variant="outline"
             size="sm"
