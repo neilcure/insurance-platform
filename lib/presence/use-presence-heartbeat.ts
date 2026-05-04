@@ -40,6 +40,27 @@ export function usePresenceHeartbeat(opts?: {
     resourceKeyRef.current = resourceKey;
   }, [resourceKey]);
 
+  // When a page/drawer changes the active resource (for example:
+  // open policy drawer -> `policy:345`), stamp it immediately. Without
+  // this, the DB may keep `resource_key = null` until the next scheduled
+  // heartbeat, making the "also viewing this policy" banner feel broken
+  // during manual testing.
+  useEffect(() => {
+    if (!enabled) return;
+    if (typeof window === "undefined") return;
+    if (typeof document !== "undefined" && document.hidden) return;
+
+    void fetch("/api/presence/heartbeat", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ resourceKey }),
+      keepalive: true,
+    }).catch(() => {
+      // Non-fatal; the scheduled heartbeat will retry.
+    });
+  }, [resourceKey, enabled]);
+
   useEffect(() => {
     if (!enabled) return;
     if (typeof window === "undefined") return;

@@ -82,17 +82,18 @@ export const GET = withAuth(async (_request, { user }) => {
     });
   }
 
-  // LEFT JOIN through `clients` so we can surface a WhatsApp button
-  // when a user has been linked to a client record (the existing
-  // "link client" flow stores the user's mobile on
-  // `clients.contactPhone`). Users without a linked client get
-  // `phone = NULL` and the UI suppresses the WhatsApp button.
+  // Resolve the user's WhatsApp phone from the data source users see
+  // in the app:
   //
-  // The DISTINCT-via-MAX collapses the (theoretically possible) case
-  // of one user being linked to multiple client rows; we just take
-  // the first non-null phone we find. In practice each user is linked
-  // to at most one client, but this keeps the row count = user count
-  // even if that invariant ever drifts.
+  // 1. Prefer the latest client-flow / policy snapshot mobile, because
+  //    users can edit contactinfo__mobile after the linked `clients`
+  //    row was created. That live snapshot is where values like
+  //    `63433816` usually live.
+  // 2. Fall back to clients.contact_phone (the denormalised value
+  //    created by the "link client" flow).
+  //
+  // Users without a linked client/snapshot get phone = NULL and the UI
+  // suppresses the WhatsApp button.
   const rows = (await db.execute<OnlineRow>(sql`
     SELECT u.id,
            u.name,
@@ -100,12 +101,58 @@ export const GET = withAuth(async (_request, { user }) => {
            u.user_type,
            p.last_seen_at,
            p.resource_key,
-           (
-             SELECT c.contact_phone
-             FROM clients c
-             WHERE c.user_id = u.id AND c.contact_phone IS NOT NULL
-             ORDER BY c.id ASC
-             LIMIT 1
+           COALESCE(
+             (
+               SELECT COALESCE(
+                 car.extra_attributes #>> '{insuredSnapshot,contactinfo__mobile}',
+                 car.extra_attributes #>> '{insuredSnapshot,contactinfo_mobile}',
+                 car.extra_attributes #>> '{packagesSnapshot,contactinfo,values,contactinfo__mobile}',
+                 car.extra_attributes #>> '{packagesSnapshot,contactinfo,values,contactinfo_mobile}',
+                 car.extra_attributes #>> '{insuredSnapshot,mobile}',
+                 car.extra_attributes #>> '{insuredSnapshot,tel}',
+                 car.extra_attributes #>> '{packagesSnapshot,contactinfo,values,mobile}',
+                 car.extra_attributes #>> '{packagesSnapshot,contactinfo,values,tel}'
+               )
+               FROM clients c
+               INNER JOIN cars car
+                 ON (
+                   COALESCE(
+                     car.extra_attributes #>> '{insuredSnapshot,clientPolicyId}',
+                     car.extra_attributes #>> '{clientPolicyId}'
+                   ) = c.client_number
+                   OR COALESCE(
+                     car.extra_attributes #>> '{insuredSnapshot,clientPolicyId}',
+                     car.extra_attributes #>> '{clientPolicyId}'
+                   ) = c.id::text
+                   OR lower(COALESCE(
+                     car.extra_attributes #>> '{insuredSnapshot,insured__idNumber}',
+                     car.extra_attributes #>> '{insuredSnapshot,insured__idnumber}',
+                     car.extra_attributes #>> '{insuredSnapshot,idNumber}',
+                     car.extra_attributes #>> '{insuredSnapshot,idnumber}',
+                     car.extra_attributes #>> '{insuredSnapshot,insured__brNumber}',
+                     car.extra_attributes #>> '{insuredSnapshot,insured__brnumber}',
+                     ''
+                   )) = lower(COALESCE(c.primary_id, ''))
+                 )
+               WHERE c.user_id = u.id
+               ORDER BY car.id DESC
+               LIMIT 1
+             ),
+             (
+               SELECT COALESCE(
+                 c.extra_attributes #>> '{contactinfo__mobile}',
+                 c.extra_attributes #>> '{contactinfo_mobile}',
+                 c.extra_attributes #>> '{mobile}',
+                 c.extra_attributes #>> '{contactinfo__tel}',
+                 c.extra_attributes #>> '{contactinfo_tel}',
+                 c.extra_attributes #>> '{tel}',
+                 c.contact_phone
+               )
+               FROM clients c
+               WHERE c.user_id = u.id
+               ORDER BY c.id ASC
+               LIMIT 1
+             )
            ) AS phone
     FROM user_presence p
     INNER JOIN users u ON u.id = p.user_id
