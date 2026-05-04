@@ -28,8 +28,36 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
 
   React.useEffect(() => {
     fetch("/api/admin/password-policy")
-      .then((r) => r.json())
-      .then((data: PasswordPolicy) => setPolicy(data))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: Partial<PasswordPolicy> | null) => {
+        // Defensive merge: if the API returns a partial / malformed payload,
+        // fall back field-by-field to DEFAULT_PASSWORD_POLICY so we never
+        // render "Min undefined characters" / "At least undefined characters".
+        if (data && typeof data === "object") {
+          setPolicy((prev) => ({
+            minLength:
+              typeof data.minLength === "number" && data.minLength > 0
+                ? data.minLength
+                : prev.minLength,
+            requireUppercase:
+              typeof data.requireUppercase === "boolean"
+                ? data.requireUppercase
+                : prev.requireUppercase,
+            requireLowercase:
+              typeof data.requireLowercase === "boolean"
+                ? data.requireLowercase
+                : prev.requireLowercase,
+            requireNumber:
+              typeof data.requireNumber === "boolean"
+                ? data.requireNumber
+                : prev.requireNumber,
+            requireSpecial:
+              typeof data.requireSpecial === "boolean"
+                ? data.requireSpecial
+                : prev.requireSpecial,
+          }));
+        }
+      })
       .catch(() => {})
       .finally(() => setPolicyLoaded(true));
   }, []);
@@ -95,11 +123,29 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
+            {/*
+              Hidden dummy username field: prevents browser password managers
+              (Chrome/Edge/Safari ignore autocomplete="off" on password inputs)
+              from auto-filling the LAST signed-in account's saved password
+              into this reset form. This field is non-focusable and never
+              submitted server-side — it only acts as an autofill decoy.
+            */}
+            <input
+              type="text"
+              name="username"
+              autoComplete="username"
+              value=""
+              readOnly
+              tabIndex={-1}
+              aria-hidden="true"
+              style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
+            />
             <div className="grid gap-1.5">
               <Label htmlFor="password">New Password</Label>
               <PasswordInput
                 id="password"
-                autoComplete="off"
+                name="new-password"
+                autoComplete="new-password"
                 placeholder={`At least ${policy.minLength} characters`}
                 value={password}
                 onChange={(e) => {
@@ -127,7 +173,8 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
               <Label htmlFor="confirm">Confirm Password</Label>
               <PasswordInput
                 id="confirm"
-                autoComplete="off"
+                name="confirm-new-password"
+                autoComplete="new-password"
                 placeholder="Re-enter your password"
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
