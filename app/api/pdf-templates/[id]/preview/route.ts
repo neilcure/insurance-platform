@@ -13,7 +13,15 @@ export async function GET(
   _request: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  await requireUser();
+  const user = await requireUser();
+  // This endpoint returns the RAW blank PDF template — only admin-side
+  // editors need it, never customers. Locking to non-client roles
+  // prevents a signed-in direct_client from enumerating template IDs
+  // and retrieving layouts they have no business seeing. See
+  // `.cursor/skills/document-user-rights/SKILL.md`.
+  if (user.userType === "direct_client" || user.userType === "service_provider") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   const { id } = await ctx.params;
   const [row] = await db

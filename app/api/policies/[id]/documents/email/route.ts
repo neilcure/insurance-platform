@@ -6,6 +6,7 @@ import { formOptions } from "@/db/schema/form_options";
 import { policies } from "@/db/schema/insurance";
 import { requireUser } from "@/lib/auth/require-user";
 import { canAccessPolicy } from "@/lib/policy-access";
+import { audienceVisibilityForRole } from "@/lib/auth/document-audience";
 import { readFile } from "@/lib/storage";
 import { readPdfTemplate } from "@/lib/storage-pdf-templates";
 import { sendEmail } from "@/lib/email";
@@ -222,12 +223,27 @@ export async function POST(
           ),
         );
 
+      // Layer 3: audience gate. Silently drop any template the caller
+      // is not allowed to see — we don't 403 the whole batch because
+      // a legitimate mixed-audience selection (e.g. a staff user
+      // sending both copies) should still go through. For a
+      // direct_client this collapses the list to client-audience
+      // templates only. See `.cursor/skills/document-user-rights/SKILL.md`.
+      const audienceFilteredTplRows = tplRows.filter((tplRow) => {
+        const meta = tplRow.meta as unknown as PdfTemplateMeta | null;
+        const decision = audienceVisibilityForRole(user.userType, {
+          isAgentTemplate: meta?.isAgentTemplate,
+          enableAgentCopy: (meta as unknown as { enableAgentCopy?: boolean } | null)?.enableAgentCopy,
+        });
+        return decision.allowedAudiences.length > 0;
+      });
+
       // Build merge context once; reuse across all templates for this policy
       const ctxResult = await buildMergeContext(policyId);
       if (ctxResult) {
         const { ctx: mergeCtx } = ctxResult;
 
-        for (const tplRow of tplRows) {
+        for (const tplRow of audienceFilteredTplRows) {
           const meta = tplRow.meta as unknown as PdfTemplateMeta | null;
           if (!meta?.filePath) continue; // skip blank templates with no PDF
 

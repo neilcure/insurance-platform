@@ -9,6 +9,7 @@ import { generateDocumentNumber, generateDocumentNumberWithCode, extractSetCodeF
 import type { DocumentStatusMap, DocumentStatusEntry, DocLifecycleStatus, DocumentTrackingData } from "@/lib/types/accounting";
 import { canAccessPolicy } from "@/lib/policy-access";
 import { updateDocumentTracking } from "@/lib/document-tracking/atomic-update";
+import { audienceVisibilityForRole } from "@/lib/auth/document-audience";
 
 export const dynamic = "force-dynamic";
 
@@ -105,6 +106,27 @@ export async function POST(
 
     if (!docType || typeof docType !== "string") {
       return NextResponse.json({ error: "Invalid document type" }, { status: 400 });
+    }
+
+    // Layer 3: audience gate. The tracking key convention is
+    // `<slug>` for the client copy and `<slug>_agent` for the agent
+    // copy (also signalled by `documentSuffix === "(A)"`). A
+    // direct_client must never mutate an agent-audience tracking
+    // entry — that would let them send themselves an agent copy or
+    // fake-confirm a document only the agent is supposed to handle.
+    // See `.cursor/skills/document-user-rights/SKILL.md`.
+    const isAgentAudience =
+      docType.endsWith("_agent") || documentSuffix === "(A)";
+    const audienceDecision = audienceVisibilityForRole(user.userType, {
+      isAgentTemplate: isAgentAudience,
+      enableAgentCopy: false,
+    });
+    const requiredAudience = isAgentAudience ? "agent" : "client";
+    if (!audienceDecision.allowedAudiences.includes(requiredAudience)) {
+      return NextResponse.json(
+        { error: "Forbidden: audience restricted", reason: "audience" },
+        { status: 403 },
+      );
     }
 
     const [policy] = await db

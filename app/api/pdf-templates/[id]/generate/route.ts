@@ -9,6 +9,11 @@ import type { PdfTemplateMeta, PdfImageMapping } from "@/lib/types/pdf-template"
 import { generateFilledPdf } from "@/lib/pdf/generate";
 import { buildMergeContext } from "@/lib/pdf/build-context";
 import { normalizePdfSelectionMarkScale } from "@/lib/pdf/normalize-pdf-selection-mark-scale";
+import { canAccessPolicy } from "@/lib/policy-access";
+import {
+  resolveDocumentVisibility,
+  type DocumentAudience,
+} from "@/lib/auth/document-audience";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +21,7 @@ export async function POST(
   request: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  await requireUser();
+  const user = await requireUser();
 
   const { id } = await ctx.params;
   const body = await request.json();
@@ -69,6 +74,37 @@ export async function POST(
     );
   }
 
+  // Layer 2 + 3: policy scope + audience gate. See
+  // `.cursor/skills/document-user-rights/SKILL.md`. Before this
+  // check existed, any signed-in user could POST any policyId to
+  // generate an arbitrary template (including agent-only proposal
+  // forms for policies they don't own).
+  const vis = await resolveDocumentVisibility(user, policyId, meta, (u, pid) =>
+    canAccessPolicy({ id: Number(u.id), userType: u.userType }, pid),
+  );
+  if (!vis.allowed) {
+    const message =
+      vis.reason === "scope"
+        ? "Forbidden: no access to policy"
+        : vis.reason === "audience"
+          ? "Forbidden: audience restricted"
+          : "Forbidden";
+    return NextResponse.json({ error: message, reason: vis.reason }, { status: 403 });
+  }
+  const isAgentTpl = (meta as unknown as { isAgentTemplate?: boolean }).isAgentTemplate;
+  const requestedAudience: DocumentAudience =
+    audience === "agent" || audience === "client"
+      ? audience
+      : isAgentTpl
+        ? "agent"
+        : "client";
+  if (!vis.allowedAudiences.includes(requestedAudience)) {
+    return NextResponse.json(
+      { error: "Forbidden: audience restricted", reason: "audience" },
+      { status: 403 },
+    );
+  }
+
   const result = await buildMergeContext(policyId);
   if (!result) {
     return NextResponse.json({ error: "Policy not found" }, { status: 404 });
@@ -76,7 +112,6 @@ export async function POST(
   const { ctx: mergeCtx, policyNumber } = result;
 
   const docTrackingKey = tplRow.label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-  const isAgentTpl = (meta as unknown as { isAgentTemplate?: boolean }).isAgentTemplate;
   mergeCtx.currentDocTrackingKey = isAgentTpl ? `${docTrackingKey}_agent` : docTrackingKey;
 
   try {

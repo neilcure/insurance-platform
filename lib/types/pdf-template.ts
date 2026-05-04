@@ -252,6 +252,15 @@ export type PdfTemplateMeta = {
   documentSetGroup?: string;
   /** Mark as agent template — auto-appends (A) to document numbers */
   isAgentTemplate?: boolean;
+  /**
+   * When true, this template generates BOTH a Client copy and an Agent
+   * copy (agent copy gets "(A)" suffix in its document number). Used by
+   * the Document Audience dropdown in the PDF Mail Merge editor; mirrors
+   * the same flag on `DocumentTemplateMeta` so the shared audience
+   * helper in `lib/auth/document-audience.ts` can reason about both
+   * template kinds uniformly.
+   */
+  enableAgentCopy?: boolean;
   /** Where this template should be listed/rendered */
   showOn?: ("policy" | "agent")[];
   /** Restrict to a specific accounting line key (e.g. "tpo", "od"). Only shows when the policy has a premium line with this key. Empty = all. */

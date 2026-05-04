@@ -11,6 +11,8 @@ import { generateFilledPdf } from "@/lib/pdf/generate";
 import { buildMergeContext } from "@/lib/pdf/build-context";
 import { normalizePdfSelectionMarkScale } from "@/lib/pdf/normalize-pdf-selection-mark-scale";
 import { sendEmail } from "@/lib/email";
+import { canAccessPolicy } from "@/lib/policy-access";
+import { audienceVisibilityForRole } from "@/lib/auth/document-audience";
 
 export const dynamic = "force-dynamic";
 
@@ -61,7 +63,20 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "At least one templateId is required" }, { status: 400 });
   }
 
-  const tplRows = await db
+  // Layer 2: policy scope check. Before this, the route only called
+  // requireUser() and trusted the policyId from the body — any
+  // signed-in user could POST any policyId and generate/email
+  // documents for a policy they don't own. See
+  // `.cursor/skills/document-user-rights/SKILL.md`.
+  const hasAccess = await canAccessPolicy(
+    { id: Number(user.id), userType: user.userType },
+    policyId,
+  );
+  if (!hasAccess) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const tplRowsRaw = await db
     .select()
     .from(formOptions)
     .where(
@@ -70,6 +85,20 @@ export async function POST(request: Request) {
         eq(formOptions.groupKey, PDF_TEMPLATE_GROUP_KEY),
       ),
     );
+
+  // Layer 3: drop templates the caller's role is not allowed to
+  // receive. Same semantics as the POST /api/policies/[id]/documents/email
+  // filter — a legitimate mixed-audience selection still goes through
+  // for staff; a direct_client ends up with only the client-audience
+  // templates (or 404 if none remain).
+  const tplRows = tplRowsRaw.filter((tplRow) => {
+    const meta = tplRow.meta as unknown as PdfTemplateMeta | null;
+    const decision = audienceVisibilityForRole(user.userType, {
+      isAgentTemplate: meta?.isAgentTemplate,
+      enableAgentCopy: (meta as unknown as { enableAgentCopy?: boolean } | null)?.enableAgentCopy,
+    });
+    return decision.allowedAudiences.length > 0;
+  });
 
   if (tplRows.length === 0) {
     return NextResponse.json({ error: "No templates found" }, { status: 404 });

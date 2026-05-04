@@ -891,6 +891,14 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
   const [settingsRepeatableSlots, setSettingsRepeatableSlots] = React.useState<string>(
     meta.repeatableSlots ? String(meta.repeatableSlots) : String(DEFAULT_REPEATABLE_SLOTS),
   );
+  // Document Audience — one of "client" / "both" / "agent". Derived
+  // from the two underlying flags so existing templates seeded with
+  // `isAgentTemplate: true` correctly start on "Agent Only". Feeds the
+  // shared role×audience helper in `lib/auth/document-audience.ts` —
+  // see `.cursor/skills/document-user-rights/SKILL.md`.
+  const [settingsAudience, setSettingsAudience] = React.useState<"client" | "both" | "agent">(
+    meta.enableAgentCopy ? "both" : meta.isAgentTemplate ? "agent" : "client",
+  );
   const [settingsSaving, setSettingsSaving] = React.useState(false);
 
   // Parsed + clamped slot count used by the picker. Empty/invalid input
@@ -1328,6 +1336,8 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
           description: settingsDesc,
           repeatableSlots: effectiveRepeatableSlots,
           packageCategories: cleanedPackageCategories,
+          isAgentTemplate: settingsAudience === "agent",
+          enableAgentCopy: settingsAudience === "both",
         }),
       });
       if (!res.ok) throw new Error("Save failed");
@@ -5941,6 +5951,35 @@ export default function PdfTemplateEditor({ template, onClose }: Props) {
               className="mt-1 h-8 text-xs"
               placeholder="Brief description of this template"
             />
+          </div>
+
+          {/* Document Audience — writes `isAgentTemplate` + `enableAgentCopy`
+              to the template meta. The shared audience helper
+              (`lib/auth/document-audience.ts`) reads these flags to
+              decide whether a direct_client / agent / staff user may
+              see, generate, or receive this template. Without this
+              control, PDF mail-merge templates defaulted to "Client"
+              audience on every role, which is how insurer proposal
+              forms were visible to customers. See
+              `.cursor/skills/document-user-rights/SKILL.md`. */}
+          <div>
+            <Label className="text-xs">Document Audience</Label>
+            <select
+              className="mt-1 h-8 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              value={settingsAudience}
+              onChange={(e) => setSettingsAudience(e.target.value as "client" | "both" | "agent")}
+            >
+              <option value="client">Client Only</option>
+              <option value="both">Client + Agent</option>
+              <option value="agent">Agent Only</option>
+            </select>
+            <p className="mt-1 text-[10px] text-neutral-400 dark:text-neutral-500">
+              {settingsAudience === "both"
+                ? "Generates both a Client copy and an Agent copy (Agent number suffixed with \"(A)\")."
+                : settingsAudience === "agent"
+                  ? "Agent-only. Hidden from customers. Used for insurer proposal forms, internal commission notes, etc."
+                  : "Visible to the customer and staff. Pick this for quotations, invoices, certificates."}
+            </p>
           </div>
 
           {/* Repeatable slots — controls how many indexed rows

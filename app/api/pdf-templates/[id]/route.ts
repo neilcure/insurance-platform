@@ -116,6 +116,20 @@ export async function PATCH(
   if (typeof body.description === "string") {
     newMeta.description = body.description;
   }
+  // Document Audience — writes the two audience flags that feed the
+  // shared role×audience helper (`lib/auth/document-audience.ts`).
+  // Both flags are accepted together; "Client Only" = both false,
+  // "Client + Agent" = enableAgentCopy true, "Agent Only" = isAgentTemplate
+  // true + enableAgentCopy false. See
+  // `.cursor/skills/document-user-rights/SKILL.md`.
+  if ("isAgentTemplate" in body) {
+    newMeta.isAgentTemplate =
+      typeof body.isAgentTemplate === "boolean" ? body.isAgentTemplate : false;
+  }
+  if ("enableAgentCopy" in body) {
+    newMeta.enableAgentCopy =
+      typeof body.enableAgentCopy === "boolean" ? body.enableAgentCopy : false;
+  }
   if ("accountingLineKey" in body) {
     newMeta.accountingLineKey = typeof body.accountingLineKey === "string" ? body.accountingLineKey : undefined;
   }

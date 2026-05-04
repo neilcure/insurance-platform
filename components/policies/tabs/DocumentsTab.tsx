@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,8 +43,25 @@ import {
   readPdfSelectionMarkScaleFromStorage,
 } from "@/lib/pdf/form-selections-preferences";
 import { FormSelectionsPanel, patchPdfTemplateFormLabels } from "@/components/pdf/form-selections-panel";
-import { PdfMergePreviewCanvas } from "@/components/pdf/pdf-merge-preview-canvas";
 import { useSession } from "next-auth/react";
+import { audienceVisibilityForRole } from "@/lib/auth/document-audience";
+
+// react-pdf / pdf.js touches browser-only APIs (`DOMMatrix`, workers).
+// This module is pulled in via admin `DocumentTemplateLivePreview → DocumentPreview`,
+// which still SSR-renders the parent — static import blows up Node. Chunk
+// on the client only: https://nextjs.org/docs/pages/building-your-application/optimizing/lazy-loading#with-no-ssr
+const PdfMergePreviewCanvas = dynamic(
+  () =>
+    import("@/components/pdf/pdf-merge-preview-canvas").then((m) => m.PdfMergePreviewCanvas),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex items-center justify-center py-16 text-muted-foreground">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    ),
+  },
+);
 
 function toTrackingKey(label: string): string {
   return label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
@@ -4379,9 +4397,20 @@ export function DocumentsTab({
   // Admin-only inline label editing in the preview side-panel uses the
   // /api/pdf-templates/:id PATCH endpoint which itself enforces admin.
   // Hide the pencil for non-admins so they don't see a button that 403s.
-  const isAdmin =
-    ((session.data?.user as { userType?: string } | undefined)?.userType ?? "") ===
-    "admin";
+  const sessionUserType =
+    (session.data?.user as { userType?: string } | undefined)?.userType ?? "";
+  const isAdmin = sessionUserType === "admin";
+  // Role → audience decision is routed through the single shared
+  // helper (`audienceVisibilityForRole`) so the UI and the server
+  // enforce the SAME rule. If you change the role × audience matrix,
+  // change it in `lib/auth/document-audience.ts` — never here.
+  // See `.cursor/skills/document-user-rights/SKILL.md`.
+  const roleAllowedAudiences = React.useMemo(
+    () => audienceVisibilityForRole(sessionUserType, {}).allowedAudiences,
+    [sessionUserType],
+  );
+  const canSeeClientAudience = roleAllowedAudiences.includes("client");
+  const canSeeAgentAudience = roleAllowedAudiences.includes("agent");
 
   const snapshot = (detail.extraAttributes ?? {}) as SnapshotData;
   const statusClient = currentStatusClient ?? currentStatus ?? "quotation_prepared";
@@ -5368,12 +5397,29 @@ export function DocumentsTab({
     return true;
   };
   const showPdfMergeTemplates = renderMode === "policy" && !onlyTemplateValue;
+  // Hide PDF mail-merge templates this role can't see at all. Routed
+  // through the shared helper so a template flagged "Agent Only" (e.g.
+  // the Hanson / Dah Sing insurer proposal forms the agent fills in)
+  // disappears for a direct_client, and a "Client + Agent" template
+  // stays visible (they can still see their own copy). Server-side
+  // /api/pdf-templates/[id]/generate + /documents/email endpoints
+  // enforce the same rule — this filter is defense-in-depth UI only.
+  const visiblePdfTemplates = React.useMemo(() => {
+    return pdfTemplates.filter((t) => {
+      const m = t.meta as unknown as { isAgentTemplate?: boolean; enableAgentCopy?: boolean } | null;
+      const decision = audienceVisibilityForRole(sessionUserType, {
+        isAgentTemplate: m?.isAgentTemplate,
+        enableAgentCopy: m?.enableAgentCopy,
+      });
+      return decision.allowedAudiences.length > 0;
+    });
+  }, [pdfTemplates, sessionUserType]);
   const hasAny = templates.some((tpl) =>
-    (templateMatchesAudienceStatus(tpl, "client") && isActionGatedTemplateVisibleForAudience(tpl, "client"))
-    || (detail.agent
+    (canSeeClientAudience && templateMatchesAudienceStatus(tpl, "client") && isActionGatedTemplateVisibleForAudience(tpl, "client"))
+    || (canSeeAgentAudience && detail.agent
       ? (templateMatchesAudienceStatus(tpl, "agent") && isActionGatedTemplateVisibleForAudience(tpl, "agent"))
       : false),
-  ) || (showPdfMergeTemplates && pdfTemplates.length > 0)
+  ) || (showPdfMergeTemplates && visiblePdfTemplates.length > 0)
     || (endorsements && endorsements.length > 0 && endorsementTemplates.length > 0);
 
   if (!hasAny) {
@@ -5398,8 +5444,14 @@ export function DocumentsTab({
   const visibleForAgent = (tpl: DocumentTemplateRow) =>
     templateMatchesAudienceStatus(tpl, "agent")
     && isActionGatedTemplateVisibleForAudience(tpl, "agent");
+  // Role-aware audience filter: show client-audience templates only if
+  // the role allows, same for agent. Decided by the shared helper so
+  // the UI and server agree. Without this guard, a direct_client would
+  // see AGENT DOCUMENTS with the agent's copy of the quotation / invoice
+  // / receipt — which is the privacy bug that prompted this fix.
   const visibleTemplates = templates.filter((tpl) =>
-    visibleForClient(tpl) || (policyHasAgent && visibleForAgent(tpl)),
+    (canSeeClientAudience && visibleForClient(tpl))
+    || (canSeeAgentAudience && policyHasAgent && visibleForAgent(tpl)),
   );
   const templateSupportsAgent = (tpl: DocumentTemplateRow) =>
     !!tpl.meta?.enableAgentCopy || !!tpl.meta?.isAgentTemplate || !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
@@ -5413,23 +5465,29 @@ export function DocumentsTab({
         : (!isDedicatedAgentTemplate(tpl))
     )
   );
-  const agentTemplates = visibleTemplates.filter((tpl) =>
-    visibleForAgent(tpl) && (
-      isStatementTemplate(tpl)
-        ? isDedicatedAgentTemplate(tpl)
-        : templateSupportsAgent(tpl)
-    )
-  );
+  const agentTemplates = canSeeAgentAudience
+    ? visibleTemplates.filter((tpl) =>
+        visibleForAgent(tpl) && (
+          isStatementTemplate(tpl)
+            ? isDedicatedAgentTemplate(tpl)
+            : templateSupportsAgent(tpl)
+        )
+      )
+    : [];
 
   const endorseClientTemplates = endorsementTemplates.filter((tpl) =>
     !isDedicatedAgentTemplate(tpl),
   );
-  const endorseAgentTemplates = endorsementTemplates.filter((tpl) =>
-    templateSupportsAgent(tpl),
-  );
+  const endorseAgentTemplates = canSeeAgentAudience
+    ? endorsementTemplates.filter((tpl) => templateSupportsAgent(tpl))
+    : [];
 
   const hasEndorsementAgentDocs = endorsements && endorsements.length > 0 && endorseAgentTemplates.length > 0;
-  const showGrouped = policyHasAgent && (agentTemplates.length > 0 || !!hasEndorsementAgentDocs);
+  // Roles that can't see the agent audience never see the two-group
+  // layout — only the single client group. Showing a colored "Client
+  // Documents" header with a missing "Agent Documents" sibling would
+  // look broken.
+  const showGrouped = canSeeAgentAudience && policyHasAgent && (agentTemplates.length > 0 || !!hasEndorsementAgentDocs);
 
   function renderTemplateButton(tpl: DocumentTemplateRow, aud: "client" | "agent", endorsement?: EndorsementEntry) {
     const isAgent = aud === "agent";
@@ -5545,10 +5603,10 @@ export function DocumentsTab({
         </>
       ) : null}
 
-      {showPdfMergeTemplates && pdfTemplates.length > 0 && (
+      {showPdfMergeTemplates && visiblePdfTemplates.length > 0 && (
         <>
           {visibleTemplates.length > 0 && <div className="border-t border-neutral-200 dark:border-neutral-800 pt-1" />}
-          {pdfTemplates.map((tpl) => {
+          {visiblePdfTemplates.map((tpl) => {
             const key = toTrackingKey(tpl.label);
             return (
               <PdfMergeButton
@@ -5585,7 +5643,7 @@ export function DocumentsTab({
               />
             );
           })}
-          {pdfTemplates.length > 1 && (
+          {visiblePdfTemplates.length > 1 && (
             <Button
               variant="outline"
               size="sm"
@@ -5593,7 +5651,7 @@ export function DocumentsTab({
               onClick={() => { setEmailPreSelectedId(undefined); setEmailDialogOpen(true); }}
             >
               <Mail className="h-3.5 w-3.5" />
-              Email All Documents ({pdfTemplates.length})
+              Email All Documents ({visiblePdfTemplates.length})
             </Button>
           )}
         </>
@@ -5604,7 +5662,7 @@ export function DocumentsTab({
         onOpenChange={setEmailDialogOpen}
         policyId={detail.policyId}
         policyNumber={detail.policyNumber}
-        pdfTemplates={pdfTemplates}
+        pdfTemplates={visiblePdfTemplates}
         preSelectedId={emailPreSelectedId}
         defaultEmail={(() => {
           if (emailPreSelectedId) {

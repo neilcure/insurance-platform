@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth/require-user";
 import { sendEmail } from "@/lib/email";
 import { canAccessPolicy } from "@/lib/policy-access";
+import { audienceVisibilityForRole } from "@/lib/auth/document-audience";
 import { renderHtmlToPdf } from "@/lib/pdf/html-to-pdf";
 import { createSigningSession } from "@/lib/signing-sessions";
 import { updateDocumentTracking } from "@/lib/document-tracking/atomic-update";
@@ -183,6 +184,25 @@ export async function POST(
         { error: "trackingKey is required when requesting a signature" },
         { status: 400 },
       );
+    }
+
+    // Layer 3: audience gate. `trackingKey` ends in `_agent` when the
+    // caller is sending the agent copy. A direct_client must not be
+    // able to email themselves the agent copy or attach it to a
+    // signing request. See `.cursor/skills/document-user-rights/SKILL.md`.
+    if (trackingKey) {
+      const isAgentAudience = trackingKey.endsWith("_agent");
+      const decision = audienceVisibilityForRole(user.userType, {
+        isAgentTemplate: isAgentAudience,
+        enableAgentCopy: false,
+      });
+      const requiredAudience = isAgentAudience ? "agent" : "client";
+      if (!decision.allowedAudiences.includes(requiredAudience)) {
+        return NextResponse.json(
+          { error: "Forbidden: audience restricted", reason: "audience" },
+          { status: 403 },
+        );
+      }
     }
 
     const senderName =
