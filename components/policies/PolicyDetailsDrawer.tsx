@@ -8,6 +8,8 @@ import { Activity, DollarSign } from "lucide-react";
 import { RecordDetailsDrawer } from "@/components/ui/record-details-drawer";
 import type { PolicyDetail } from "@/lib/types/policy";
 import type { DrawerTab } from "@/components/ui/drawer-tabs";
+import { useSetPresenceResource } from "@/lib/presence/presence-context";
+import { PolicyPresenceBanner } from "@/components/presence/policy-presence-banner";
 
 const PolicySnapshotView = dynamic(
   () => import("@/components/policies/PolicySnapshotView").then((m) => m.PolicySnapshotView),
@@ -52,6 +54,13 @@ export function PolicyDetailsDrawer({
   const [refreshing, setRefreshing] = React.useState(false);
 
   React.useEffect(() => { setMounted(true); }, []);
+
+  // Phase B presence: while the drawer is OPEN with a real policyId,
+  // tell the presence pipeline that this user is "viewing" that
+  // specific policy. Clears automatically on close / unmount, so the
+  // user is no longer counted on this resource as soon as the drawer
+  // animates shut.
+  useSetPresenceResource(open && policyId ? `policy:${policyId}` : null);
 
   const fetchDetail = React.useCallback(async (id: number, opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
@@ -172,6 +181,7 @@ export function PolicyDetailsDrawer({
         }] : []),
       ] satisfies Omit<DrawerTab, "permanent">[]) : undefined}
     >
+      <PolicyPresenceBanner policyId={policyId} className="mb-3" />
       {detail ? (
         <PolicySnapshotView
           detail={detail}

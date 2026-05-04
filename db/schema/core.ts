@@ -142,4 +142,34 @@ export const clientAgentAssignments = pgTable("client_agent_assignments", {
   assignedBy: integer("assigned_by").references(() => users.id, { onDelete: "set null" }),
 });
 
+// Online-presence heartbeats. One row per user (PK = userId) so heartbeats
+// are a cheap UPSERT instead of an append. `organisationId` mirrors the
+// JWT-resolved active org at heartbeat time so the widget can list
+// "who else is in MY org right now" with a single indexed lookup.
+//
+// `resourceKey` (Phase B) is set when a user is actively viewing/editing
+// a specific resource (e.g. `policy:123`). Null when the user is just
+// browsing. Phase A leaves this column NULL — the column is added now so
+// Phase B doesn't require another migration.
+export const userPresence = pgTable(
+  "user_presence",
+  {
+    userId: integer("user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    organisationId: integer("organisation_id").references(() => organisations.id, {
+      onDelete: "set null",
+    }),
+    resourceKey: text("resource_key"),
+    lastSeenAt: timestamp("last_seen_at", { mode: "string" }).defaultNow().notNull(),
+  },
+  (t) => ({
+    orgLastSeenIdx: index("user_presence_org_last_seen_idx").on(
+      t.organisationId,
+      t.lastSeenAt,
+    ),
+    resourceIdx: index("user_presence_resource_idx").on(t.resourceKey),
+  }),
+);
+
 
