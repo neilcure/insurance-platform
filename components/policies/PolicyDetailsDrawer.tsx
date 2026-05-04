@@ -160,6 +160,7 @@ export function PolicyDetailsDrawer({
                 }>) ?? undefined
               }
               isAdmin={!isClientUser}
+              currentUserType={sessionUserType}
               onRefresh={refreshCurrent}
             />
           ),

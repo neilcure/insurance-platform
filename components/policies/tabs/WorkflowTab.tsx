@@ -34,6 +34,7 @@ export function WorkflowTab({
   currentStatus,
   statusHistory,
   isAdmin,
+  currentUserType,
   onRefresh,
   initialSection,
   initialDocTemplateValue,
@@ -44,6 +45,7 @@ export function WorkflowTab({
   currentStatus?: string;
   statusHistory?: Array<{ status: string; changedAt: string; changedBy?: string; note?: string }>;
   isAdmin?: boolean;
+  currentUserType?: string;
   onRefresh?: () => void;
   initialSection?: string;
   initialDocTemplateValue?: string;
@@ -608,6 +610,8 @@ export function WorkflowTab({
                   <DocumentsTab
                     detail={detail}
                     flowKey={flowKey}
+                    currentUserType={currentUserType}
+                    isPrivilegedViewer={isAdmin === true}
                     currentStatus={curStatusClient}
                     currentStatusClient={curStatusClient}
                     currentStatusAgent={curStatusAgent}

@@ -48,6 +48,26 @@ export type AudienceDescriptor = {
   sections?: ReadonlyArray<unknown> | null;
 };
 
+/**
+ * PDF Mail Merge templates are usually insurer/internal forms. Existing rows
+ * created before the Document Audience dropdown have neither flag saved; do
+ * NOT treat that legacy empty state as client-visible. Once an admin opens
+ * Template Settings and explicitly saves "Client Only", both flags are
+ * present as false and the template becomes client-visible.
+ */
+export function pdfTemplateAudienceDescriptor(
+  meta: AudienceDescriptor | null | undefined,
+): AudienceDescriptor {
+  if (!meta) return { isAgentTemplate: true, enableAgentCopy: false };
+  const hasExplicitAudience =
+    Object.prototype.hasOwnProperty.call(meta, "isAgentTemplate")
+    || Object.prototype.hasOwnProperty.call(meta, "enableAgentCopy");
+  if (!hasExplicitAudience) {
+    return { ...meta, isAgentTemplate: true, enableAgentCopy: false };
+  }
+  return meta;
+}
+
 export type DocumentVisibility =
   | {
       allowed: true;
@@ -168,6 +188,14 @@ export function audienceVisibilityForRole(
   const roleAudiences = audiencesForRole(role);
   const offered = audiencesOfferedBy(meta ?? {});
   return { allowedAudiences: offered.filter((a) => roleAudiences.includes(a)) };
+}
+
+/**
+ * Role-only audience capability. Use this when a caller needs the role matrix
+ * itself, before it has a concrete template meta to intersect with.
+ */
+export function allowedAudiencesForRole(userType: string | undefined): DocumentAudience[] {
+  return audiencesForRole(normalizeRole(userType));
 }
 
 /**

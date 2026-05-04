@@ -976,38 +976,79 @@ export async function GET(request: Request) {
           rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
         }
       } else if (user.userType === "direct_client") {
-        // Client users only see policyset records where they are the insured
+        // Client users normally see only policyset records where they are the insured.
+        // When a caller asks for linked policies, return only endorsements linked
+        // to that already-owned parent policy; otherwise the drawer treats every
+        // client policy as an endorsement under every other policy.
         const userId = Number(user.id);
-        const result = await db.execute(sql`
-          select
-            p.id as "policyId",
-            p.policy_number as "policyNumber",
-            p.organisation_id as "organisationId",
-            p.created_at as "createdAt",
-            p.is_active as "isActive",
-            ${polCols.hasFlowKey ? sql`p.flow_key as "flowKey",` : sql``}
-            c.id as "carId",
-            c.plate_number as "plateNumber",
-            c.make as "make",
-            c.model as "model",
-            c.year as "year",
-            c.extra_attributes as "carExtra"
-          from "policies" p
-          left join "cars" c on c.policy_id = p.id
-          inner join "clients" cl on cl.user_id = ${userId}
-          where (
-            ${polCols.hasClientId ? sql`p.client_id = cl.id OR` : sql``}
-            ${polCols.hasFlowKey ? sql`p.flow_key = 'policyset'` : sql`(c.extra_attributes)::jsonb ->> 'flowKey' = 'policyset'`}
-            AND (
-              ((c.extra_attributes)::text ILIKE '%' || cl.display_name || '%')
-              OR ((c.extra_attributes)::text ILIKE '%' || cl.primary_id || '%')
-              ${polCols.hasClientId ? sql`OR p.client_id = cl.id` : sql``}
+        if (hasLinkedPolicyFilter) {
+          const result = await db.execute(sql`
+            select
+              p.id as "policyId",
+              p.policy_number as "policyNumber",
+              p.organisation_id as "organisationId",
+              p.created_at as "createdAt",
+              p.is_active as "isActive",
+              ${polCols.hasFlowKey ? sql`p.flow_key as "flowKey",` : sql``}
+              c.id as "carId",
+              c.plate_number as "plateNumber",
+              c.make as "make",
+              c.model as "model",
+              c.year as "year",
+              c.extra_attributes as "carExtra"
+            from "policies" p
+            left join "cars" c on c.policy_id = p.id
+            inner join "policies" parent on parent.id = ${linkedPolicyIdFilter}
+            left join "cars" parent_car on parent_car.policy_id = parent.id
+            inner join "clients" cl on cl.user_id = ${userId}
+            where (((c.extra_attributes)::jsonb ->> 'linkedPolicyId')::int = ${linkedPolicyIdFilter})
+              and (
+                ${polCols.hasClientId ? sql`parent.client_id = cl.id OR` : sql``}
+                (
+                  ${polCols.hasFlowKey ? sql`parent.flow_key = 'policyset'` : sql`(parent_car.extra_attributes)::jsonb ->> 'flowKey' = 'policyset'`}
+                  and (
+                    ((parent_car.extra_attributes)::text ILIKE '%' || cl.display_name || '%')
+                    OR ((parent_car.extra_attributes)::text ILIKE '%' || cl.primary_id || '%')
+                    ${polCols.hasClientId ? sql`OR parent.client_id = cl.id` : sql``}
+                  )
+                )
+              )
+            order by p.created_at desc, p.id desc
+            limit ${qLimit} offset ${qOffset}
+          `);
+          rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
+        } else {
+          const result = await db.execute(sql`
+            select
+              p.id as "policyId",
+              p.policy_number as "policyNumber",
+              p.organisation_id as "organisationId",
+              p.created_at as "createdAt",
+              p.is_active as "isActive",
+              ${polCols.hasFlowKey ? sql`p.flow_key as "flowKey",` : sql``}
+              c.id as "carId",
+              c.plate_number as "plateNumber",
+              c.make as "make",
+              c.model as "model",
+              c.year as "year",
+              c.extra_attributes as "carExtra"
+            from "policies" p
+            left join "cars" c on c.policy_id = p.id
+            inner join "clients" cl on cl.user_id = ${userId}
+            where (
+              ${polCols.hasClientId ? sql`p.client_id = cl.id OR` : sql``}
+              ${polCols.hasFlowKey ? sql`p.flow_key = 'policyset'` : sql`(c.extra_attributes)::jsonb ->> 'flowKey' = 'policyset'`}
+              AND (
+                ((c.extra_attributes)::text ILIKE '%' || cl.display_name || '%')
+                OR ((c.extra_attributes)::text ILIKE '%' || cl.primary_id || '%')
+                ${polCols.hasClientId ? sql`OR p.client_id = cl.id` : sql``}
+              )
             )
-          )
-          order by p.created_at desc, p.id desc
-          limit ${qLimit} offset ${qOffset}
-        `);
-        rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
+            order by p.created_at desc, p.id desc
+            limit ${qLimit} offset ${qOffset}
+          `);
+          rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
+        }
       } else {
         let scoped: any = baseSelect.innerJoin(
           memberships,

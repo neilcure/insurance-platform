@@ -152,8 +152,6 @@ function AgentStatementsPanel({
           if (!meta) return false;
           if (meta.type !== "statement") return false;
           if (!meta.isAgentTemplate) return false;
-          const flowRules = Array.isArray(meta.flows) ? meta.flows.map((v) => String(v).toLowerCase()) : [];
-          if (flowRules.length > 0 && !flowRules.includes("agent")) return false;
           const placements = resolveDocumentTemplateShowOn(meta);
           return placements.includes("agent");
         });
@@ -238,14 +236,14 @@ function AgentStatementsPanel({
   const matchesTemplateForRow = (tpl: AgentTemplateRow, row: AgentStatementRow) => {
     const meta = tpl.meta;
     if (!meta) return false;
-    const flowRules = Array.isArray(meta.flows) ? meta.flows.map((v) => String(v).toLowerCase()) : [];
+    const flowRules = Array.isArray(meta.flows)
+      ? meta.flows.map((v) => String(v).toLowerCase()).filter((v) => v !== "agent")
+      : [];
     if (flowRules.length > 0) {
-      if (!flowRules.includes("agent")) return false;
-      const nonAgentFlowRules = flowRules.filter((f) => f !== "agent");
       if (row.policyId) {
         const ctx = policyContextById[Number(row.policyId)];
         if (!ctx) return false;
-        if (nonAgentFlowRules.length > 0 && !nonAgentFlowRules.includes(ctx.flowKey)) return false;
+        if (!flowRules.includes(ctx.flowKey)) return false;
       }
     }
     if (!row.policyId) return true;

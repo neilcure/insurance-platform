@@ -11,6 +11,7 @@ import { buildMergeContext } from "@/lib/pdf/build-context";
 import { normalizePdfSelectionMarkScale } from "@/lib/pdf/normalize-pdf-selection-mark-scale";
 import { canAccessPolicy } from "@/lib/policy-access";
 import {
+  pdfTemplateAudienceDescriptor,
   resolveDocumentVisibility,
   type DocumentAudience,
 } from "@/lib/auth/document-audience";
@@ -79,7 +80,8 @@ export async function POST(
   // check existed, any signed-in user could POST any policyId to
   // generate an arbitrary template (including agent-only proposal
   // forms for policies they don't own).
-  const vis = await resolveDocumentVisibility(user, policyId, meta, (u, pid) =>
+  const audienceMeta = pdfTemplateAudienceDescriptor(meta);
+  const vis = await resolveDocumentVisibility(user, policyId, audienceMeta, (u, pid) =>
     canAccessPolicy({ id: Number(u.id), userType: u.userType }, pid),
   );
   if (!vis.allowed) {

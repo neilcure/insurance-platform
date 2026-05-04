@@ -136,12 +136,21 @@ function extractNameFromExtra(extra: Record<string, unknown> | null | undefined)
   });
 }
 
-export default function PoliciesTableClient({ initialRows, entityLabel }: { initialRows: Row[]; entityLabel?: string }) {
+export default function PoliciesTableClient({
+  initialRows,
+  entityLabel,
+  currentUserType,
+}: {
+  initialRows: Row[];
+  entityLabel?: string;
+  currentUserType?: string;
+}) {
   const label = entityLabel || "Policy";
   const session = useSession();
   const sessionUserType = (session.data?.user as any)?.userType as string | undefined;
-  const isAdmin = sessionUserType === "admin" || sessionUserType === "internal_staff";
-  const isClientUser = sessionUserType === "direct_client";
+  const effectiveUserType = currentUserType ?? sessionUserType;
+  const isAdmin = effectiveUserType === "admin" || effectiveUserType === "internal_staff";
+  const isClientUser = effectiveUserType === "direct_client";
   const [rows, setRows] = React.useState<Row[]>(initialRows);
   const [query, setQuery] = React.useState("");
   const [openId, setOpenId] = React.useState<number | null>(null);
@@ -1035,6 +1044,7 @@ export default function PoliciesTableClient({ initialRows, entityLabel }: { init
                   }>) ?? undefined
                 }
                 isAdmin={!isClientUser}
+                currentUserType={effectiveUserType}
                 onRefresh={refreshCurrent}
                 initialSection={deepLinkSection}
                 initialDocTemplateValue={deepLinkDocTemplate}

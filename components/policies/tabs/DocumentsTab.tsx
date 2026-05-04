@@ -44,7 +44,11 @@ import {
 } from "@/lib/pdf/form-selections-preferences";
 import { FormSelectionsPanel, patchPdfTemplateFormLabels } from "@/components/pdf/form-selections-panel";
 import { useSession } from "next-auth/react";
-import { audienceVisibilityForRole } from "@/lib/auth/document-audience";
+import {
+  allowedAudiencesForRole,
+  audienceVisibilityForRole,
+  pdfTemplateAudienceDescriptor,
+} from "@/lib/auth/document-audience";
 
 // react-pdf / pdf.js touches browser-only APIs (`DOMMatrix`, workers).
 // This module is pulled in via admin `DocumentTemplateLivePreview → DocumentPreview`,
@@ -4350,6 +4354,8 @@ export function DocumentsTab({
   trackingInvoiceId,
   onStatusAutoAdvanced,
   endorsements,
+  currentUserType,
+  isPrivilegedViewer,
 }: {
   detail: PolicyDetail;
   flowKey?: string;
@@ -4364,6 +4370,8 @@ export function DocumentsTab({
   trackingInvoiceId?: number;
   onStatusAutoAdvanced?: () => void;
   endorsements?: EndorsementEntry[];
+  currentUserType?: string;
+  isPrivilegedViewer?: boolean;
 }) {
   const { sortedValues: statusOrder, loading: statusesLoading } = usePolicyStatuses();
   const [templates, setTemplates] = React.useState<DocumentTemplateRow[]>([]);
@@ -4399,18 +4407,25 @@ export function DocumentsTab({
   // Hide the pencil for non-admins so they don't see a button that 403s.
   const sessionUserType =
     (session.data?.user as { userType?: string } | undefined)?.userType ?? "";
-  const isAdmin = sessionUserType === "admin";
+  const effectiveUserType = currentUserType ?? sessionUserType;
+  const isAdmin = effectiveUserType === "admin";
   // Role → audience decision is routed through the single shared
-  // helper (`audienceVisibilityForRole`) so the UI and the server
-  // enforce the SAME rule. If you change the role × audience matrix,
+  // helper so the UI and the server enforce the SAME rule.
+  // If you change the role × audience matrix,
   // change it in `lib/auth/document-audience.ts` — never here.
   // See `.cursor/skills/document-user-rights/SKILL.md`.
-  const roleAllowedAudiences = React.useMemo(
-    () => audienceVisibilityForRole(sessionUserType, {}).allowedAudiences,
-    [sessionUserType],
-  );
-  const canSeeClientAudience = roleAllowedAudiences.includes("client");
-  const canSeeAgentAudience = roleAllowedAudiences.includes("agent");
+  const roleAllowedAudiences = React.useMemo(() => {
+    // During session bootstrap, `userType` can be briefly empty. Do not
+    // collapse to client-only in that transient state, otherwise admin/agent
+    // users momentarily lose agent documents in the UI. Server routes still
+    // enforce the real permission model.
+    if (session.status === "loading" || !effectiveUserType) {
+      return ["client", "agent"] as const;
+    }
+    return allowedAudiencesForRole(effectiveUserType);
+  }, [session.status, effectiveUserType]);
+  const canSeeClientAudience = isPrivilegedViewer === true || roleAllowedAudiences.includes("client");
+  const canSeeAgentAudience = isPrivilegedViewer === true || roleAllowedAudiences.includes("agent");
 
   const snapshot = (detail.extraAttributes ?? {}) as SnapshotData;
   const statusClient = currentStatusClient ?? currentStatus ?? "quotation_prepared";
@@ -4845,11 +4860,13 @@ export function DocumentsTab({
           return lineKeys.size === 0 || lineKeys.has(key);
         };
 
+        const requiredPlacement = renderMode === "agent_statement" ? "agent" : "policy";
+
         const applicable = (htmlRows as DocumentTemplateRow[]).filter((r) => {
           if (!r.meta) return false;
           if (onlyTemplateValue) return r.value === onlyTemplateValue;
           const placements = resolveDocumentTemplateShowOn(r.meta);
-          if (!placements.includes("policy")) return false;
+          if (!placements.includes(requiredPlacement)) return false;
           // Flow + Insurer restrictions are now AND-ed (previously the
           // presence of any insurer restriction silently bypassed the
           // flow check, which led to unexpected templates appearing
@@ -4913,7 +4930,7 @@ export function DocumentsTab({
     );
 
     return () => { cancelled = true; };
-  }, [flowKey, statusClient, statusAgent, detail.policyId, statusOrder, statusesLoading, onlyTemplateValue, endorsements]);
+  }, [flowKey, statusClient, statusAgent, detail.policyId, statusOrder, statusesLoading, onlyTemplateValue, endorsements, renderMode]);
 
   // Auto-prepare: assign document numbers when templates become visible
   const [autoPrepared, setAutoPrepared] = React.useState<Set<string>>(new Set());
@@ -5375,6 +5392,13 @@ export function DocumentsTab({
     return currentIdx >= earliestIdx;
   };
   const templateMatchesAudienceStatus = (tpl: DocumentTemplateRow, aud: "client" | "agent") => {
+    // In Agent Details, `AgentStatementsPanel` has already selected a concrete
+    // statement row + matching agent template. Re-applying the policy workflow
+    // status here can hide the already-selected document (often because the
+    // linked policy is "active" while the statement template is gated by
+    // statement/credit-advice statuses). For this render mode, the statement
+    // row is the source of truth.
+    if (renderMode === "agent_statement") return true;
     const audienceRule = aud === "agent"
       ? tpl.meta?.showWhenStatusAgent
       : tpl.meta?.showWhenStatusClient;
@@ -5404,19 +5428,33 @@ export function DocumentsTab({
   // stays visible (they can still see their own copy). Server-side
   // /api/pdf-templates/[id]/generate + /documents/email endpoints
   // enforce the same rule — this filter is defense-in-depth UI only.
-  const visiblePdfTemplates = React.useMemo(() => {
-    return pdfTemplates.filter((t) => {
-      const m = t.meta as unknown as { isAgentTemplate?: boolean; enableAgentCopy?: boolean } | null;
-      const decision = audienceVisibilityForRole(sessionUserType, {
-        isAgentTemplate: m?.isAgentTemplate,
-        enableAgentCopy: m?.enableAgentCopy,
-      });
-      return decision.allowedAudiences.length > 0;
-    });
-  }, [pdfTemplates, sessionUserType]);
+  const visiblePdfTemplates = pdfTemplates.filter((t) => {
+    const m = t.meta as unknown as { isAgentTemplate?: boolean; enableAgentCopy?: boolean } | null;
+    const decision = audienceVisibilityForRole(
+      effectiveUserType,
+      pdfTemplateAudienceDescriptor(m),
+    );
+    return decision.allowedAudiences.length > 0;
+  });
+  const policyHasAgent = !!detail.agent;
+  // Admin/internal staff should always see both audience copies for a
+  // template, regardless of per-audience status gates. Those gates are
+  // for operational flow control on non-admin viewers.
+  const privilegedDocumentViewer =
+    isPrivilegedViewer === true
+    || effectiveUserType === "admin"
+    || effectiveUserType === "internal_staff";
+  const bypassAudienceStatusGate = privilegedDocumentViewer;
+  const canRenderAgentAudienceForPolicy =
+    canSeeAgentAudience && (
+      policyHasAgent
+      || privilegedDocumentViewer
+      || renderMode === "agent_statement"
+    );
+
   const hasAny = templates.some((tpl) =>
     (canSeeClientAudience && templateMatchesAudienceStatus(tpl, "client") && isActionGatedTemplateVisibleForAudience(tpl, "client"))
-    || (canSeeAgentAudience && detail.agent
+    || (canRenderAgentAudienceForPolicy
       ? (templateMatchesAudienceStatus(tpl, "agent") && isActionGatedTemplateVisibleForAudience(tpl, "agent"))
       : false),
   ) || (showPdfMergeTemplates && visiblePdfTemplates.length > 0)
@@ -5437,12 +5475,11 @@ export function DocumentsTab({
     );
   }
 
-  const policyHasAgent = !!detail.agent;
   const visibleForClient = (tpl: DocumentTemplateRow) =>
-    templateMatchesAudienceStatus(tpl, "client")
+    (bypassAudienceStatusGate || templateMatchesAudienceStatus(tpl, "client"))
     && isActionGatedTemplateVisibleForAudience(tpl, "client");
   const visibleForAgent = (tpl: DocumentTemplateRow) =>
-    templateMatchesAudienceStatus(tpl, "agent")
+    (bypassAudienceStatusGate || templateMatchesAudienceStatus(tpl, "agent"))
     && isActionGatedTemplateVisibleForAudience(tpl, "agent");
   // Role-aware audience filter: show client-audience templates only if
   // the role allows, same for agent. Decided by the shared helper so
@@ -5451,7 +5488,7 @@ export function DocumentsTab({
   // / receipt — which is the privacy bug that prompted this fix.
   const visibleTemplates = templates.filter((tpl) =>
     (canSeeClientAudience && visibleForClient(tpl))
-    || (canSeeAgentAudience && policyHasAgent && visibleForAgent(tpl)),
+    || (canRenderAgentAudienceForPolicy && visibleForAgent(tpl)),
   );
   const templateSupportsAgent = (tpl: DocumentTemplateRow) =>
     !!tpl.meta?.enableAgentCopy || !!tpl.meta?.isAgentTemplate || !!tpl.meta?.sections?.some((s) => s.audience === "client" || s.audience === "agent");
@@ -5487,7 +5524,7 @@ export function DocumentsTab({
   // layout — only the single client group. Showing a colored "Client
   // Documents" header with a missing "Agent Documents" sibling would
   // look broken.
-  const showGrouped = canSeeAgentAudience && policyHasAgent && (agentTemplates.length > 0 || !!hasEndorsementAgentDocs);
+  const showGrouped = canRenderAgentAudienceForPolicy && (agentTemplates.length > 0 || !!hasEndorsementAgentDocs);
 
   function renderTemplateButton(tpl: DocumentTemplateRow, aud: "client" | "agent", endorsement?: EndorsementEntry) {
     const isAgent = aud === "agent";
@@ -5590,7 +5627,9 @@ export function DocumentsTab({
       ) : visibleTemplates.length > 0 || (endorsements && endorsements.length > 0 && endorseClientTemplates.length > 0) ? (
         <>
           <div className="text-sm font-medium">Document Templates</div>
-          {clientTemplates.map((tpl) => renderTemplateButton(tpl, "client"))}
+          {(renderMode === "agent_statement" ? agentTemplates : clientTemplates).map((tpl) =>
+            renderTemplateButton(tpl, renderMode === "agent_statement" ? "agent" : "client"),
+          )}
           {endorsements && endorsements.length > 0 && endorseClientTemplates.length > 0 && endorsements.map((e) => (
             <React.Fragment key={`endorse-ungrouped-${e.policyId}`}>
               <div className="flex items-center gap-1.5 pt-2 pb-1">

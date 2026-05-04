@@ -99,6 +99,7 @@ export function AgentDocumentsTab({
         )}
         initialTemplateValue={preview.autoSelect ? preview.templateValue : undefined}
         initialAudience="agent"
+        currentUserType="agent"
         onlyTemplateValue={preview.templateValue}
         renderMode="agent_statement"
         trackingScope="invoice"

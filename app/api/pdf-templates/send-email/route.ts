@@ -12,7 +12,10 @@ import { buildMergeContext } from "@/lib/pdf/build-context";
 import { normalizePdfSelectionMarkScale } from "@/lib/pdf/normalize-pdf-selection-mark-scale";
 import { sendEmail } from "@/lib/email";
 import { canAccessPolicy } from "@/lib/policy-access";
-import { audienceVisibilityForRole } from "@/lib/auth/document-audience";
+import {
+  audienceVisibilityForRole,
+  pdfTemplateAudienceDescriptor,
+} from "@/lib/auth/document-audience";
 
 export const dynamic = "force-dynamic";
 
@@ -93,10 +96,10 @@ export async function POST(request: Request) {
   // templates (or 404 if none remain).
   const tplRows = tplRowsRaw.filter((tplRow) => {
     const meta = tplRow.meta as unknown as PdfTemplateMeta | null;
-    const decision = audienceVisibilityForRole(user.userType, {
-      isAgentTemplate: meta?.isAgentTemplate,
-      enableAgentCopy: (meta as unknown as { enableAgentCopy?: boolean } | null)?.enableAgentCopy,
-    });
+    const decision = audienceVisibilityForRole(
+      user.userType,
+      pdfTemplateAudienceDescriptor(meta),
+    );
     return decision.allowedAudiences.length > 0;
   });
 

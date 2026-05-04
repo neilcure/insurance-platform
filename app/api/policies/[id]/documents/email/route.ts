@@ -6,7 +6,10 @@ import { formOptions } from "@/db/schema/form_options";
 import { policies } from "@/db/schema/insurance";
 import { requireUser } from "@/lib/auth/require-user";
 import { canAccessPolicy } from "@/lib/policy-access";
-import { audienceVisibilityForRole } from "@/lib/auth/document-audience";
+import {
+  audienceVisibilityForRole,
+  pdfTemplateAudienceDescriptor,
+} from "@/lib/auth/document-audience";
 import { readFile } from "@/lib/storage";
 import { readPdfTemplate } from "@/lib/storage-pdf-templates";
 import { sendEmail } from "@/lib/email";
@@ -231,10 +234,10 @@ export async function POST(
       // templates only. See `.cursor/skills/document-user-rights/SKILL.md`.
       const audienceFilteredTplRows = tplRows.filter((tplRow) => {
         const meta = tplRow.meta as unknown as PdfTemplateMeta | null;
-        const decision = audienceVisibilityForRole(user.userType, {
-          isAgentTemplate: meta?.isAgentTemplate,
-          enableAgentCopy: (meta as unknown as { enableAgentCopy?: boolean } | null)?.enableAgentCopy,
-        });
+        const decision = audienceVisibilityForRole(
+          user.userType,
+          pdfTemplateAudienceDescriptor(meta),
+        );
         return decision.allowedAudiences.length > 0;
       });
 

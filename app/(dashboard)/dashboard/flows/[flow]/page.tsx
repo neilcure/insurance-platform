@@ -99,7 +99,11 @@ export default async function FlowDashboardPage({
               No records found.
             </div>
           ) : (
-            <PoliciesTableClient initialRows={rows} entityLabel={title} />
+            <PoliciesTableClient
+              initialRows={rows}
+              entityLabel={title}
+              currentUserType={currentUser?.userType}
+            />
           )}
         </CardContent>
       </Card>

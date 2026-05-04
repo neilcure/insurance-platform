@@ -43,7 +43,7 @@ export default async function PoliciesPage() {
               {isClient ? "No policies found linked to your account." : "No policies found."}
             </div>
           ) : (
-            <PoliciesTableClient initialRows={rows} />
+            <PoliciesTableClient initialRows={rows} currentUserType={me.userType} />
           )}
         </CardContent>
       </Card>
