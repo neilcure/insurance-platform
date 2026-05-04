@@ -1,13 +1,17 @@
 "use client";
 
 import * as React from "react";
-import { Mail, Upload } from "lucide-react";
+import { Mail, MessageCircle, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DocumentUploadCard } from "@/components/ui/document-upload-card";
 import {
   EmailUploadedFilesDialog,
   type EmailableDocGroup,
 } from "@/components/policies/EmailUploadedFilesDialog";
+import {
+  WhatsAppUploadedFilesDialog,
+  type WhatsAppDocGroup,
+} from "@/components/policies/WhatsAppUploadedFilesDialog";
 import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 import type {
   DocumentStatus,
@@ -81,6 +85,8 @@ export function UploadDocumentsTab({
   parentSchedules,
   policyNumber,
   defaultEmail,
+  defaultPhone,
+  defaultRecipientName,
 }: {
   policyId: number;
   flowKey?: string;
@@ -97,6 +103,10 @@ export function UploadDocumentsTab({
   policyNumber?: string;
   /** Pre-filled recipient when the user opens the Email Files dialog. */
   defaultEmail?: string;
+  /** Pre-filled mobile when the user opens the WhatsApp Files dialog. */
+  defaultPhone?: string;
+  /** Pre-filled recipient name shown in the WhatsApp message body. */
+  defaultRecipientName?: string;
 }) {
   const { allOptions: statusOptionsFromHook } = usePolicyStatuses();
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
@@ -316,12 +326,16 @@ export function UploadDocumentsTab({
     0,
   );
   const [emailDialogOpen, setEmailDialogOpen] = React.useState(false);
-  // The Email Files affordance only makes sense for the
-  // "documents" slice — rendering it next to payment cards would
-  // be confusing. The "all" filter (no parent filtering) also
+  const [whatsappDialogOpen, setWhatsappDialogOpen] = React.useState(false);
+  // The Email Files / WhatsApp Files affordances only make sense for
+  // the "documents" slice — rendering them next to payment cards
+  // would be confusing. The "all" filter (no parent filtering) also
   // benefits, e.g. when this tab is mounted standalone.
-  const showEmailFilesButton =
+  const showShareButtons =
     filter !== "payments" && totalEmailableFiles > 0;
+  // The WhatsApp dialog accepts the same EmailableDocGroup shape; we
+  // alias the type to keep imports tidy and explicit at call sites.
+  const whatsappGroups: WhatsAppDocGroup[] = emailableGroups;
 
   if (loading) {
     if (filter === "payments") return null;
@@ -363,21 +377,33 @@ export function UploadDocumentsTab({
 
   return (
     <div className="space-y-3">
-      {showEmailFilesButton && (
-        <div className="flex items-center justify-between gap-2 pb-1">
+      {showShareButtons && (
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
           <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
             {totalEmailableFiles} file{totalEmailableFiles === 1 ? "" : "s"} available
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 gap-1.5 text-[11px] px-2"
-            onClick={() => setEmailDialogOpen(true)}
-            title="Send selected uploaded files in one email"
-          >
-            <Mail className="h-3.5 w-3.5" />
-            Email Files
-          </Button>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1.5 px-2 text-[11px]"
+              onClick={() => setEmailDialogOpen(true)}
+              title="Send selected uploaded files in one email"
+            >
+              <Mail className="h-3.5 w-3.5" />
+              Email Files
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1.5 px-2 text-[11px] border-emerald-300 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-400 dark:border-emerald-900/60 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
+              onClick={() => setWhatsappDialogOpen(true)}
+              title="Generate a download link and open WhatsApp pre-filled"
+            >
+              <MessageCircle className="h-3.5 w-3.5" />
+              WhatsApp Files
+            </Button>
+          </div>
         </div>
       )}
 
@@ -401,15 +427,26 @@ export function UploadDocumentsTab({
         />
       ))}
 
-      {showEmailFilesButton && (
-        <EmailUploadedFilesDialog
-          open={emailDialogOpen}
-          onOpenChange={setEmailDialogOpen}
-          policyId={policyId}
-          policyNumber={policyNumber}
-          defaultEmail={defaultEmail}
-          groups={emailableGroups}
-        />
+      {showShareButtons && (
+        <>
+          <EmailUploadedFilesDialog
+            open={emailDialogOpen}
+            onOpenChange={setEmailDialogOpen}
+            policyId={policyId}
+            policyNumber={policyNumber}
+            defaultEmail={defaultEmail}
+            groups={emailableGroups}
+          />
+          <WhatsAppUploadedFilesDialog
+            open={whatsappDialogOpen}
+            onOpenChange={setWhatsappDialogOpen}
+            policyId={policyId}
+            policyNumber={policyNumber}
+            defaultPhone={defaultPhone}
+            defaultRecipientName={defaultRecipientName}
+            groups={whatsappGroups}
+          />
+        </>
       )}
     </div>
   );

@@ -84,6 +84,64 @@ export function WorkflowTab({
     return String(candidate ?? "").trim();
   }, [detail.extraAttributes]);
 
+  // Pre-fill recipient for the "WhatsApp Files" dialog. We check the
+  // same snapshot keys our presence/online endpoint resolves from
+  // (see app/api/presence/online/route.ts). Mobile is preferred over
+  // landline because WhatsApp is a mobile-first product, but a
+  // landline can still register a WhatsApp Business account so we
+  // fall through.
+  const defaultPhoneRecipient = React.useMemo(() => {
+    const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
+    const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
+    const candidate =
+      insured.contactinfo__mobile ??
+      insured.contactinfo_mobile ??
+      insured.mobile ??
+      insured.contactPhone ??
+      insured.phone ??
+      insured.contactinfo__tel ??
+      insured.contactinfo_tel ??
+      insured.tel ??
+      "";
+    return String(candidate ?? "").trim();
+  }, [detail.extraAttributes]);
+
+  // Recipient display name used to personalise the WhatsApp greeting.
+  // Reuses the canonical resolver in lib/field-resolver so we don't
+  // duplicate the personal/company name extraction logic.
+  const defaultRecipientName = React.useMemo(() => {
+    const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
+    const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown> | undefined;
+    if (!insured) return "";
+    const isCompany = (() => {
+      const t = String(
+        insured.insuredType ?? insured.insured__category ?? insured.category ?? "",
+      ).toLowerCase();
+      return t === "company";
+    })();
+    if (isCompany) {
+      return String(
+        insured.insured__companyName ??
+          insured.insured_companyName ??
+          insured.companyName ??
+          "",
+      ).trim();
+    }
+    const last = String(
+      insured.insured__lastName ??
+        insured.insured_lastName ??
+        insured.lastName ??
+        "",
+    ).trim();
+    const first = String(
+      insured.insured__firstName ??
+        insured.insured_firstName ??
+        insured.firstName ??
+        "",
+    ).trim();
+    return [first, last].filter(Boolean).join(" ");
+  }, [detail.extraAttributes]);
+
   const { insuredType, hasNcb } = React.useMemo(() => {
     const extra = (detail.extraAttributes ?? {}) as Record<string, unknown>;
     const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
@@ -521,6 +579,8 @@ export function WorkflowTab({
                     filter="documents"
                     policyNumber={detail.policyNumber}
                     defaultEmail={defaultEmailRecipient}
+                    defaultPhone={defaultPhoneRecipient}
+                    defaultRecipientName={defaultRecipientName}
                   />
                 </div>
                 {isParentPolicy && linkedEndorsements.map((e) => (
@@ -543,6 +603,8 @@ export function WorkflowTab({
                       filter="documents"
                       policyNumber={e.policyNumber}
                       defaultEmail={defaultEmailRecipient}
+                      defaultPhone={defaultPhoneRecipient}
+                      defaultRecipientName={defaultRecipientName}
                     />
                   </div>
                 ))}

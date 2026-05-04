@@ -31,6 +31,7 @@
  *
  *   - /api/auth/*   — NextAuth + invite / forgot / reset / change password
  *   - /api/sign/*   — public document signing flow (token-based)
+ *   - /api/share/*  — public document download flow (token-based)
  *   - /api/cron/*   — uses CRON_SECRET header, not session
  *
  * Kill switch
@@ -47,6 +48,7 @@ import { getToken } from "next-auth/jwt";
 const PUBLIC_API_PREFIXES = [
   "/api/auth/",
   "/api/sign/",
+  "/api/share/",
   "/api/cron/",
 ];
 
