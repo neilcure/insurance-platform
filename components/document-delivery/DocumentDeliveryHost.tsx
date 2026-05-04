@@ -25,15 +25,25 @@ export function DocumentDeliveryHost() {
   const isEmail = request?.channel === "email";
   const isWhatsApp = request?.channel === "whatsapp";
 
-  // Build initialSelectedIds from `request.initialFiles`. The
-  // dialogs accept a flat list of upload IDs; PDF template selection
-  // remains user-driven for now (a future iteration could honour
-  // `initialFiles` of kind "pdfTemplate" too).
+  // Split `request.initialFiles` into upload IDs vs. PDF template
+  // IDs so the dialog can pre-check both kinds independently. Per-
+  // template share buttons (DocumentsTab "Send via WhatsApp" icon)
+  // pass a single `{ kind: "pdfTemplate", id }` here so the dialog
+  // opens with that template already selected and 0 uploads chosen.
   const initialSelectedIds = React.useMemo(() => {
     if (!request?.initialFiles) return undefined;
-    return request.initialFiles
+    const ids = request.initialFiles
       .filter((f) => f.kind === "upload")
       .map((f) => f.id);
+    return ids.length > 0 ? ids : undefined;
+  }, [request?.initialFiles]);
+
+  const initialSelectedTplIds = React.useMemo(() => {
+    if (!request?.initialFiles) return undefined;
+    const ids = request.initialFiles
+      .filter((f) => f.kind === "pdfTemplate")
+      .map((f) => f.id);
+    return ids.length > 0 ? ids : undefined;
   }, [request?.initialFiles]);
 
   return (
@@ -47,6 +57,7 @@ export function DocumentDeliveryHost() {
         policyNumber={request?.policyNumber}
         defaultEmail={request?.recipient?.email ?? undefined}
         initialSelectedIds={initialSelectedIds}
+        initialSelectedTplIds={initialSelectedTplIds}
         groups={isEmail ? request.groups : []}
       />
       <WhatsAppUploadedFilesDialog
@@ -59,6 +70,7 @@ export function DocumentDeliveryHost() {
         defaultPhone={request?.recipient?.phone ?? undefined}
         defaultRecipientName={request?.recipient?.name ?? undefined}
         initialSelectedIds={initialSelectedIds}
+        initialSelectedTplIds={initialSelectedTplIds}
         groups={isWhatsApp ? request.groups : []}
       />
     </>

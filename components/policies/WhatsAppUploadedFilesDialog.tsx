@@ -43,6 +43,10 @@ export type WhatsAppUploadedFilesDialogProps = {
   defaultRecipientName?: string;
   /** Pre-checked file IDs. Optional; defaults to all visible files. */
   initialSelectedIds?: number[];
+  /** Pre-checked PDF template IDs. Optional; defaults to none.
+   *  Used by the per-template "WhatsApp this template" call sites to
+   *  open the dialog with one specific template ready to send. */
+  initialSelectedTplIds?: number[];
   groups: WhatsAppDocGroup[];
   /** Fired after the share link is created and WhatsApp opened. */
   onSent?: (sentCount: number, recipientPhone: string) => void;
@@ -70,6 +74,7 @@ export function WhatsAppUploadedFilesDialog({
   defaultPhone,
   defaultRecipientName,
   initialSelectedIds,
+  initialSelectedTplIds,
   groups,
   onSent,
 }: WhatsAppUploadedFilesDialogProps) {
@@ -104,14 +109,14 @@ export function WhatsAppUploadedFilesDialog({
         ? `${greetingName}, here are your documents for policy ${policyNumber}. Tap the link to download — it expires in 7 days.`
         : `${greetingName}, here are your documents. Tap the link to download — it expires in 7 days.`,
     );
-    setSelectedTplIds(new Set());
+    setSelectedTplIds(new Set(initialSelectedTplIds ?? []));
     const seed = initialSelectedIds && initialSelectedIds.length > 0
       ? initialSelectedIds.filter((id) => allDocIds.includes(id))
       : allDocIds;
     setSelectedIds(new Set(seed));
     setCreatedUrl(null);
     setCreatedExpiresAt(null);
-  }, [open, defaultPhone, defaultRecipientName, policyNumber, initialSelectedIds, allDocIds]);
+  }, [open, defaultPhone, defaultRecipientName, policyNumber, initialSelectedIds, initialSelectedTplIds, allDocIds]);
 
   const totalSelectedBytes = React.useMemo(() => {
     let bytes = 0;

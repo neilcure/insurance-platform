@@ -50,6 +50,10 @@ export type EmailUploadedFilesDialogProps = {
   defaultEmail?: string;
   /** Pre-checked file IDs. Optional; defaults to all visible files. */
   initialSelectedIds?: number[];
+  /** Pre-checked PDF template IDs. Optional; defaults to none.
+   *  Used by the per-template "Email this template" call sites to
+   *  open the dialog with one specific template ready to send. */
+  initialSelectedTplIds?: number[];
   groups: EmailableDocGroup[];
   /** Fired after a successful send so the parent can refresh / toast. */
   onSent?: (sentCount: number, recipient: string) => void;
@@ -69,6 +73,7 @@ export function EmailUploadedFilesDialog({
   policyNumber,
   defaultEmail,
   initialSelectedIds,
+  initialSelectedTplIds,
   groups,
   onSent,
 }: EmailUploadedFilesDialogProps) {
@@ -102,12 +107,12 @@ export function EmailUploadedFilesDialog({
       policyNumber ? `Documents — Policy ${policyNumber}` : "Documents",
     );
     setMessage("");
-    setSelectedTplIds(new Set());
+    setSelectedTplIds(new Set(initialSelectedTplIds ?? []));
     const seed = initialSelectedIds && initialSelectedIds.length > 0
       ? initialSelectedIds.filter((id) => allDocIds.includes(id))
       : allDocIds;
     setSelectedIds(new Set(seed));
-  }, [open, defaultEmail, policyNumber, initialSelectedIds, allDocIds]);
+  }, [open, defaultEmail, policyNumber, initialSelectedIds, initialSelectedTplIds, allDocIds]);
 
   const totalSelectedBytes = React.useMemo(() => {
     let bytes = 0;

@@ -49,6 +49,10 @@ import {
   audienceVisibilityForRole,
   pdfTemplateAudienceDescriptor,
 } from "@/lib/auth/document-audience";
+import {
+  useDeliverDocuments,
+  resolveDefaultRecipientFromExtra,
+} from "@/lib/document-delivery";
 
 // react-pdf / pdf.js touches browser-only APIs (`DOMMatrix`, workers).
 // This module is pulled in via admin `DocumentTemplateLivePreview → DocumentPreview`,
@@ -2213,14 +2217,30 @@ export function DocumentPreview({
     ? toTrackingKey(template.label) + "_agent"
     : toTrackingKey(template.label);
 
+  // WhatsApp delivery — pops the shared share-link dialog so the
+  // recipient gets a tap-to-download URL (with the rendered PDF
+  // generated on demand from the latest policy data) instead of just
+  // a plain-text paste in chat.
+  //
+  // This is the deliberate behaviour change from "WhatsApp Files
+  // Option A" (see .cursor/rules/document-delivery.mdc): customers
+  // no longer receive the inline quote/invoice TEXT in WhatsApp —
+  // they receive a download LINK to the PDF. If the user wants the
+  // old text-paste behaviour they can still hit "Copy Text" and
+  // paste manually in any chat app.
+  const deliverShareLink = useDeliverDocuments();
+  const defaultRecipient = React.useMemo(
+    () => resolveDefaultRecipientFromExtra(detail.extraAttributes),
+    [detail.extraAttributes],
+  );
   function handleWhatsApp() {
-    const insured = (detail.extraAttributes as Record<string, unknown> | undefined)?.insuredSnapshot as Record<string, unknown> | undefined;
-    const phone = String(insured?.contactPhone ?? insured?.phone ?? insured?.contactinfo__mobile ?? insured?.mobile ?? "").replace(/[^0-9+]/g, "");
-    const text = generatePlainText();
-    const url = phone
-      ? `https://wa.me/${phone.replace(/^\+/, "")}?text=${encodeURIComponent(text)}`
-      : `https://wa.me/?text=${encodeURIComponent(text)}`;
-    window.open(url, "_blank");
+    deliverShareLink({
+      channel: "whatsapp",
+      policyId: detail.policyId,
+      policyNumber: detail.policyNumber,
+      groups: [],
+      recipient: defaultRecipient,
+    });
   }
 
   async function handleEmail() {
@@ -4586,16 +4606,29 @@ export function DocumentsTab({
     setEmailDialogOpen(true);
   }
 
+  // Per-row WhatsApp icon — pops the shared share-link dialog with
+  // THIS PDF template pre-selected. The dialog mints a /d/<token>
+  // URL, regenerates the PDF on demand from current policy data,
+  // and opens WhatsApp with the link in the message body.
+  //
+  // Intentional behaviour change vs. the legacy `wa.me?text=...`:
+  // recipients now receive a tap-to-download link instead of a plain-
+  // text "please find the document" stub. See
+  // .cursor/rules/document-delivery.mdc § "WhatsApp Files Option A".
+  const deliverPdfTemplate = useDeliverDocuments();
+  const pdfTemplateRecipient = React.useMemo(
+    () => resolveDefaultRecipientFromExtra(detail.extraAttributes),
+    [detail.extraAttributes],
+  );
   function handleWhatsAppClick(tpl: PdfTemplateRow) {
-    const phone = (detail.extraAttributes?.insuredSnapshot as Record<string, unknown> | undefined)?.contactPhone
-      ?? (detail.extraAttributes?.insuredSnapshot as Record<string, unknown> | undefined)?.phone
-      ?? "";
-    const phoneStr = String(phone).replace(/[^0-9+]/g, "");
-    const text = encodeURIComponent(`Hi, please find the document "${tpl.label}" for Policy ${detail.policyNumber}.`);
-    const url = phoneStr
-      ? `https://wa.me/${phoneStr.replace(/^\+/, "")}?text=${text}`
-      : `https://wa.me/?text=${text}`;
-    window.open(url, "_blank");
+    deliverPdfTemplate({
+      channel: "whatsapp",
+      policyId: detail.policyId,
+      policyNumber: detail.policyNumber,
+      groups: [],
+      initialFiles: [{ kind: "pdfTemplate", id: tpl.id }],
+      recipient: pdfTemplateRecipient,
+    });
   }
 
   const [htmlConfirmKey, setHtmlConfirmKey] = React.useState<string | null>(null);

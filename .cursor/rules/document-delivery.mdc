@@ -153,14 +153,36 @@ That's it — no caller-side changes, no new context, no new fetch logic.
 
 - **Multi-file delivery** (Email Files / WhatsApp Files) → use `useDeliverDocuments`.
 - **Single-PDF "send this template" buttons** (per-row icons in `DocumentsTab`)
-  → still use `useDeliverDocuments` with `groups: []` and the template
-  registered as a pre-checked PDF; OR use the share-link API directly
-  for headless sends. Don't reinvent `wa.me` text-only URLs.
+  → use `useDeliverDocuments` with `groups: []` and `initialFiles: [{ kind: "pdfTemplate", id }]`.
+  Pre-selects the template in the dialog so the user just clicks Send.
 - **Server-to-server email** (e.g. `/api/cron/send-reminders`) → use
   `lib/email.ts` `sendEmail()` directly; this rule is for human-driven
   client surfaces.
 - **Phone display** (UI only, e.g. "shown to user") → use
   `formatWhatsAppDisplay` from `@/lib/whatsapp`.
+
+## WhatsApp Files Option A (active policy)
+
+The codebase used to have TWO WhatsApp behaviours:
+
+- **Old**: `wa.me?text=<rendered template text>` — recipient sees a long
+  plain-text quote/invoice in chat, no file.
+- **New**: `/api/policies/.../documents/share-link` mints a `/d/<token>`
+  URL → recipient gets a tap-to-download link to a fresh PDF.
+
+We intentionally chose **Option A** (file-link everywhere). The
+per-row WhatsApp icons and the HTML template "WhatsApp" buttons now
+both pop the share-link dialog. Customers no longer receive inline
+quote/invoice TEXT in WhatsApp.
+
+If a user wants to paste rendered text into chat manually they use
+the existing **"Copy Text"** button next to "WhatsApp" in the
+preview action group, then paste anywhere.
+
+Do not regress to `wa.me?text=...` — that path is dead by design.
+The tradeoff was discussed and agreed: customers gain a clean,
+authoritative PDF; the seller loses inline visibility in chat (but
+gains tamper-proof, auditable delivery via `document_shares`).
 
 ## Skill summary
 
