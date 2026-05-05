@@ -68,6 +68,11 @@ type PostBody = {
   clientId?: number;
   flowCarId?: number;
   creationMode?: "invite" | "account_only";
+  agentProfile?: {
+    accountType?: "personal" | "company";
+    companyName?: string;
+    primaryId?: string;
+  };
 };
 
 export async function POST(request: Request) {
@@ -80,6 +85,9 @@ export async function POST(request: Request) {
     const body = (await request.json()) as PostBody;
     const email = (body.email ?? "").trim().toLowerCase();
     const mobile = typeof body.mobile === "string" ? body.mobile.trim() : "";
+    const accountType = body.agentProfile?.accountType === "company" ? "company" : "personal";
+    const companyName = typeof body.agentProfile?.companyName === "string" ? body.agentProfile.companyName.trim() : "";
+    const primaryId = typeof body.agentProfile?.primaryId === "string" ? body.agentProfile.primaryId.trim() : "";
     if (!email) {
       return NextResponse.json({ error: "Email required" }, { status: 400 });
     }
@@ -122,6 +130,18 @@ export async function POST(request: Request) {
     if (body.userType === "direct_client" && creationMode === "account_only") {
       return NextResponse.json({ error: "Direct client accounts must be created via invite flow." }, { status: 400 });
     }
+    if (body.userType === "agent" && accountType === "company" && !companyName) {
+      return NextResponse.json({ error: "Company name is required for company agent account." }, { status: 400 });
+    }
+
+    const profileMeta =
+      body.userType === "agent"
+        ? {
+            accountType,
+            companyName: companyName || null,
+            primaryId: primaryId || null,
+          }
+        : null;
 
     // Create a random strong passphrase hash so the account can't be used
     const tempPassword = crypto.randomBytes(32).toString("hex");
@@ -135,6 +155,7 @@ export async function POST(request: Request) {
           email,
           mobile: mobile || null,
           name: body.name,
+          profileMeta,
           userType: body.userType,
           passwordHash,
           isActive: false,

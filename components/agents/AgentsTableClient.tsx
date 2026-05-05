@@ -715,6 +715,28 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
                   <div className="max-w-[60%] wrap-break-word font-mono text-right">{detail.email}</div>
                 </div>
                 <div className="flex items-start justify-between gap-3 text-xs">
+                  <div className="text-neutral-500 dark:text-neutral-400">Mobile</div>
+                  <div className="max-w-[60%] wrap-break-word font-mono text-right">{detail.mobile ?? "—"}</div>
+                </div>
+                <div className="flex items-start justify-between gap-3 text-xs">
+                  <div className="text-neutral-500 dark:text-neutral-400">Account Type</div>
+                  <div className="max-w-[60%] wrap-break-word font-mono text-right capitalize">
+                    {detail.profileMeta?.accountType ?? "personal"}
+                  </div>
+                </div>
+                {detail.profileMeta?.accountType === "company" ? (
+                  <div className="flex items-start justify-between gap-3 text-xs">
+                    <div className="text-neutral-500 dark:text-neutral-400">Company Name</div>
+                    <div className="max-w-[60%] wrap-break-word font-mono text-right">{detail.profileMeta?.companyName ?? "—"}</div>
+                  </div>
+                ) : null}
+                <div className="flex items-start justify-between gap-3 text-xs">
+                  <div className="text-neutral-500 dark:text-neutral-400">
+                    {detail.profileMeta?.accountType === "company" ? "BR / CI Number" : "ID Number"}
+                  </div>
+                  <div className="max-w-[60%] wrap-break-word font-mono text-right">{detail.profileMeta?.primaryId ?? "—"}</div>
+                </div>
+                <div className="flex items-start justify-between gap-3 text-xs">
                   <div className="text-neutral-500 dark:text-neutral-400">Role</div>
                   <div className="max-w-[60%] wrap-break-word font-mono text-right capitalize">{detail.userType}</div>
                 </div>

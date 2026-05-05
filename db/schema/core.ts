@@ -18,6 +18,7 @@ export const users = pgTable("users", {
   mobile: text("mobile"),
   passwordHash: text("password_hash").notNull(),
   name: text("name"),
+  profileMeta: jsonb("profile_meta").$type<Record<string, unknown> | null>().default(null),
   timezone: text("timezone"),
   userType: userTypeEnum("user_type").default("agent").notNull(),
   userNumber: text("user_number"),

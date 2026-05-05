@@ -11,6 +11,7 @@ import { Copy, Loader2, Search, UserPlus } from "lucide-react";
 
 type UserType = "admin" | "agent" | "accounting" | "internal_staff" | "direct_client";
 type CreationMode = "invite" | "account_only";
+type AgentAccountType = "personal" | "company";
 
 type UnlinkedClient = {
   id: number | string;
@@ -33,6 +34,9 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
   const [inviteLink, setInviteLink] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
   const [creationMode, setCreationMode] = React.useState<CreationMode>("invite");
+  const [agentAccountType, setAgentAccountType] = React.useState<AgentAccountType>("personal");
+  const [agentCompanyName, setAgentCompanyName] = React.useState("");
+  const [agentPrimaryId, setAgentPrimaryId] = React.useState("");
 
   // Client linking state
   const [unlinkedClients, setUnlinkedClients] = React.useState<UnlinkedClient[]>([]);
@@ -41,6 +45,7 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
   const [clientSearch, setClientSearch] = React.useState("");
 
   const isClientType = userType === "direct_client";
+  const isAgentType = userType === "agent";
 
   React.useEffect(() => {
     if (!safeTypes.includes(userType)) {
@@ -107,6 +112,13 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
       if (!isClientType) {
         payload.creationMode = creationMode;
       }
+      if (isAgentType) {
+        payload.agentProfile = {
+          accountType: agentAccountType,
+          companyName: agentAccountType === "company" ? agentCompanyName : undefined,
+          primaryId: agentPrimaryId || undefined,
+        };
+      }
       if (isClientType && selectedClientId) {
         const sel = unlinkedClients.find((c) => c.id === selectedClientId);
         if (sel?.source === "flow" && typeof sel.id === "string") {
@@ -137,6 +149,9 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
       setEmail("");
       setMobile("");
       setName("");
+      setAgentAccountType("personal");
+      setAgentCompanyName("");
+      setAgentPrimaryId("");
       setSelectedClientId(null);
       setUserType(safeTypes[0]!);
     } catch (err: unknown) {
@@ -171,6 +186,45 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
             className={isClientType && selectedClient ? "bg-neutral-100 dark:bg-neutral-800" : ""}
           />
         </div>
+        {isAgentType && (
+          <>
+            <div className="grid gap-2">
+              <Label>Agent Account Type</Label>
+              <RadioGroup
+                value={agentAccountType}
+                onValueChange={(v: string) => setAgentAccountType(v as AgentAccountType)}
+                className="flex flex-wrap gap-4"
+              >
+                <label className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem value="personal" id="agent-type-personal" />
+                  <span>Personal</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem value="company" id="agent-type-company" />
+                  <span>Company</span>
+                </label>
+              </RadioGroup>
+            </div>
+            {agentAccountType === "company" ? (
+              <div className="grid gap-2">
+                <Label>Company Name</Label>
+                <Input
+                  value={agentCompanyName}
+                  onChange={(e) => setAgentCompanyName(e.target.value)}
+                  placeholder="Company legal name"
+                />
+              </div>
+            ) : null}
+            <div className="grid gap-2">
+              <Label>{agentAccountType === "company" ? "BR / CI Number" : "ID Number"}</Label>
+              <Input
+                value={agentPrimaryId}
+                onChange={(e) => setAgentPrimaryId(e.target.value)}
+                placeholder={agentAccountType === "company" ? "Business registration or CI number" : "HKID or personal ID"}
+              />
+            </div>
+          </>
+        )}
         <div className="grid gap-2">
           <Label>User Type</Label>
           <RadioGroup value={userType} onValueChange={(v: string) => setUserType(v as UserType)} className="flex flex-wrap gap-4">
@@ -259,7 +313,11 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
         )}
 
         <div className="flex justify-start sm:justify-end">
-          <Button disabled={submitting || (isClientType && !selectedClientId)} onClick={submit} className="inline-flex items-center gap-2">
+          <Button
+            disabled={submitting || (isClientType && !selectedClientId) || (isAgentType && agentAccountType === "company" && !agentCompanyName.trim())}
+            onClick={submit}
+            className="inline-flex items-center gap-2"
+          >
             <UserPlus className="h-4 w-4 sm:hidden lg:inline" />
             <span className="hidden sm:inline">
               {submitting ? "Creating..." : !isClientType && creationMode === "account_only" ? "Create Account" : "Create Invite"}
