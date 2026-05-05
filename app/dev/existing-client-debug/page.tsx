@@ -65,8 +65,13 @@ export default function ExistingClientDebugPage() {
           fetch("/api/form-options?groupKey=insured_fields&includeInactive=true", { cache: "no-store" }),
         ]);
         if (!clientsRes.ok) throw new Error(await clientsRes.text());
-        const clientsJson = (await clientsRes.json()) as any[];
-        const list = (Array.isArray(clientsJson) ? clientsJson : []).map((r) => ({
+        const clientsRaw = await clientsRes.json();
+        const clientsJson: any[] = Array.isArray(clientsRaw)
+          ? clientsRaw
+          : Array.isArray(clientsRaw?.rows)
+            ? clientsRaw.rows
+            : [];
+        const list = clientsJson.map((r) => ({
           id: Number(r?.id ?? 0),
           clientNumber: String(r?.clientNumber ?? ""),
           category: String(r?.category ?? ""),

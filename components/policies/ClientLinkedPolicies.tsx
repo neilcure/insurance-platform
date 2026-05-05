@@ -95,7 +95,8 @@ export function ClientLinkedPolicies({
           fetch(`/api/form-options?groupKey=packages&_t=${Date.now()}`, { cache: "no-store" }),
         ]);
         if (!polRes.ok || cancelled) return;
-        const rows = (await polRes.json()) as Array<{
+        const polJson = await polRes.json();
+        type PolicyApiRow = {
           policyId?: number;
           id?: number;
           policyNumber?: string;
@@ -106,7 +107,12 @@ export function ClientLinkedPolicies({
           plate_number?: string | null;
           carExtra?: Record<string, unknown> | null;
           car_extra?: Record<string, unknown> | null;
-        }>;
+        };
+        const rows: PolicyApiRow[] = Array.isArray(polJson)
+          ? (polJson as PolicyApiRow[])
+          : Array.isArray(polJson?.rows)
+            ? (polJson.rows as PolicyApiRow[])
+            : [];
         const labels: Record<string, string> = {};
         if (pkgRes.ok) {
           const pkgRows = (await pkgRes.json()) as FormOptionRow[];

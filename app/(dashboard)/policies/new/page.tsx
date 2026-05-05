@@ -1595,10 +1595,16 @@ export default function NewPolicyStep1Page() {
       if (!agentPickerOpen) return;
       setLoadingAgentList(true);
       try {
-        const res = await fetch("/api/agents", { cache: "no-store" });
+        const res = await fetch("/api/agents?limit=500", { cache: "no-store" });
         if (!res.ok) return;
-        const list = (await res.json()) as Array<{ id: number; userNumber?: string | null; name?: string | null; email: string }>;
-        if (!cancelled) setAgentRows(Array.isArray(list) ? list : []);
+        type AgentLite = { id: number; userNumber?: string | null; name?: string | null; email: string };
+        const raw = await res.json();
+        const list: AgentLite[] = Array.isArray(raw)
+          ? (raw as AgentLite[])
+          : Array.isArray(raw?.rows)
+            ? (raw.rows as AgentLite[])
+            : [];
+        if (!cancelled) setAgentRows(list);
       } catch {
         if (!cancelled) setAgentRows([]);
       } finally {
@@ -1688,8 +1694,13 @@ export default function NewPolicyStep1Page() {
         const flows = flowsRes.ok ? ((await flowsRes.json()) as Array<{ value?: string }>) : [];
         const clientFlow = flows.find((f) => String(f.value ?? "").toLowerCase().includes("client"));
         const clientFlowKey = clientFlow?.value ?? "clientSet";
-        const res = await fetch(`/api/policies?flow=${encodeURIComponent(clientFlowKey)}&_t=${Date.now()}`, { cache: "no-store" });
-        const json = (res.ok ? ((await res.json()) as unknown[]) : []) as Array<Record<string, unknown>>;
+        const res = await fetch(`/api/policies?flow=${encodeURIComponent(clientFlowKey)}&limit=500&_t=${Date.now()}`, { cache: "no-store" });
+        const raw = res.ok ? await res.json() : null;
+        const json: Array<Record<string, unknown>> = Array.isArray(raw)
+          ? (raw as Array<Record<string, unknown>>)
+          : Array.isArray(raw?.rows)
+            ? (raw.rows as Array<Record<string, unknown>>)
+            : [];
         if (!cancelled) {
           setClientRows(
             json

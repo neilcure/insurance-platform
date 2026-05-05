@@ -101,8 +101,14 @@ export default function PaymentSchedulesPage() {
     fetch("/api/clients?limit=500", { cache: "no-store" })
       .then((r) => r.json())
       .then((data) => {
-        const arr = Array.isArray(data) ? data : data?.clients ?? [];
-        setClients(arr.map((c: Record<string, unknown>) => ({
+        const arr: Array<Record<string, unknown>> = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.rows)
+            ? data.rows
+            : Array.isArray(data?.clients)
+              ? data.clients
+              : [];
+        setClients(arr.map((c) => ({
           id: c.id as number,
           clientNumber: (c.clientNumber ?? null) as string | null,
           profilePolicyNumber: (c.profilePolicyNumber ?? null) as string | null,
@@ -113,8 +119,12 @@ export default function PaymentSchedulesPage() {
     fetch("/api/agents?limit=500", { cache: "no-store" })
       .then((r) => r.json())
       .then((data) => {
-        const arr = Array.isArray(data) ? data : [];
-        setAgents(arr.map((a: Record<string, unknown>) => ({
+        const arr: Array<Record<string, unknown>> = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.rows)
+            ? data.rows
+            : [];
+        setAgents(arr.map((a) => ({
           id: a.id as number,
           userNumber: (a.userNumber ?? null) as string | null,
           name: (a.name ?? null) as string | null,

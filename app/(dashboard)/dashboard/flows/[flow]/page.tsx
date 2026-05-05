@@ -5,6 +5,7 @@ import { ImportPoliciesButton } from "@/components/flows/ImportPoliciesButton";
 import { serverFetch } from "@/lib/auth/server-fetch";
 import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
 import { requireUser } from "@/lib/auth/require-user";
+import { DEFAULT_PAGE_SIZE } from "@/lib/pagination/types";
 
 const IMPORT_ENABLED_FLOWS = new Set(["policyset"]);
 
@@ -35,14 +36,22 @@ function extractDisplayName(extra: Record<string, unknown> | null | undefined): 
   });
 }
 
-async function fetchPolicies(flowKey: string): Promise<PolicyRow[]> {
-  const res = await serverFetch(`/api/policies?flow=${encodeURIComponent(flowKey)}`);
+async function fetchPolicies(flowKey: string, limit: number): Promise<{ rows: PolicyRow[]; total: number }> {
+  const res = await serverFetch(
+    `/api/policies?flow=${encodeURIComponent(flowKey)}&limit=${limit}&offset=0`,
+  );
   if (!res.ok) {
-    if (res.status === 401) return [];
+    if (res.status === 401) return { rows: [], total: 0 };
     throw new Error("Failed to load policies");
   }
-  const raw = (await res.json()) as PolicyRowRaw[];
-  return raw.map((r) => ({
+  const raw = await res.json();
+  const list: PolicyRowRaw[] = Array.isArray(raw)
+    ? (raw as PolicyRowRaw[])
+    : Array.isArray(raw?.rows)
+      ? (raw.rows as PolicyRowRaw[])
+      : [];
+  const total = Array.isArray(raw) ? list.length : Number(raw?.total ?? list.length);
+  const rows = list.map((r) => ({
     policyId: r.policyId,
     policyNumber: r.policyNumber,
     recordId: r.recordId ?? r.policyId,
@@ -53,6 +62,7 @@ async function fetchPolicies(flowKey: string): Promise<PolicyRow[]> {
     displayName: extractDisplayName(r.carExtra),
     carExtra: r.carExtra ?? null,
   }));
+  return { rows, total };
 }
 
 async function fetchFlowInfo(flowKey: string): Promise<FlowOption | null> {
@@ -68,11 +78,13 @@ export default async function FlowDashboardPage({
   params: Promise<{ flow: string }>;
 }) {
   const { flow } = await params;
-  const [flowInfo, rows, currentUser] = await Promise.all([
+  const pageSize = DEFAULT_PAGE_SIZE;
+  const [flowInfo, policiesPage, currentUser] = await Promise.all([
     fetchFlowInfo(flow),
-    fetchPolicies(flow),
+    fetchPolicies(flow, pageSize),
     requireUser().catch(() => null),
   ]);
+  const { rows, total } = policiesPage;
 
   const title = flowInfo?.meta?.dashboardLabel || flowInfo?.label || flow;
   const canImport =
@@ -94,14 +106,17 @@ export default async function FlowDashboardPage({
           <CardTitle>All {title}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {rows.length === 0 ? (
+          {total === 0 ? (
             <div className="rounded-md border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-600 dark:border-neutral-800 dark:text-neutral-400">
               No records found.
             </div>
           ) : (
             <PoliciesTableClient
               initialRows={rows}
+              initialTotal={total}
+              initialPageSize={pageSize}
               entityLabel={title}
+              flowKey={flow}
               currentUserType={currentUser?.userType}
             />
           )}

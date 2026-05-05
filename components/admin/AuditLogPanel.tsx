@@ -3,7 +3,9 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Bell, CheckCheck, Loader2 } from "lucide-react";
+import { CheckCheck, Loader2 } from "lucide-react";
+import { usePagination } from "@/lib/pagination/use-pagination";
+import { Pagination } from "@/components/ui/pagination";
 
 type AuditEntry = {
   id: number;
@@ -62,21 +64,21 @@ function timeAgo(dateStr: string): string {
 }
 
 export function AuditLogPanel() {
-  const [entries, setEntries] = React.useState<AuditEntry[]>([]);
-  const [loading, setLoading] = React.useState(true);
-
-  const load = React.useCallback(async () => {
-    try {
-      const res = await fetch("/api/admin/audit-log?limit=30", { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        setEntries(Array.isArray(data) ? data : []);
-      }
-    } catch {}
-    setLoading(false);
-  }, []);
-
-  React.useEffect(() => { void load(); }, [load]);
+  const {
+    rows: entries,
+    total,
+    page,
+    pageSize,
+    loading,
+    setPage,
+    setPageSize,
+    refresh,
+    patchRow,
+  } = usePagination<AuditEntry>({
+    url: "/api/admin/audit-log",
+    scope: "admin-audit-log",
+    initialPageSize: 30,
+  });
 
   async function markAllRead() {
     try {
@@ -85,9 +87,16 @@ export function AuditLogPanel() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ markAll: true }),
       });
-      setEntries((prev) => prev.map((e) => ({ ...e, isRead: true })));
+      // Update visible rows in place; the badge in the sidebar listens
+      // to "audit:changed" and will refetch the global unread count.
+      entries.forEach((entry, idx) => {
+        if (!entry.isRead) patchRow(idx, { ...entry, isRead: true });
+      });
       window.dispatchEvent(new Event("audit:changed"));
       toast.success("All marked as read");
+      // Mark-all-read is a global action — refresh to reflect any rows on
+      // other pages that are now read too.
+      refresh();
     } catch {
       toast.error("Failed to mark as read");
     }
@@ -95,7 +104,7 @@ export function AuditLogPanel() {
 
   const unreadCount = entries.filter((e) => !e.isRead).length;
 
-  if (loading) {
+  if (loading && entries.length === 0) {
     return (
       <div className="flex items-center justify-center py-6">
         <Loader2 className="h-5 w-5 animate-spin text-neutral-400" />
@@ -103,7 +112,7 @@ export function AuditLogPanel() {
     );
   }
 
-  if (entries.length === 0) {
+  if (total === 0) {
     return (
       <p className="py-4 text-center text-sm text-neutral-500 dark:text-neutral-400">
         No activity yet.
@@ -116,9 +125,9 @@ export function AuditLogPanel() {
       {unreadCount > 0 && (
         <div className="flex items-center justify-between">
           <span className="text-sm text-neutral-600 dark:text-neutral-400">
-            {unreadCount} unread
+            {unreadCount} unread on this page
           </span>
-          <Button size="sm" variant="outline" onClick={markAllRead} title="Mark all read">
+          <Button size="sm" variant="outline" onClick={markAllRead} title="Mark all read (across every page)">
             <CheckCheck className="h-4 w-4 sm:hidden lg:inline" />
             <span className="hidden sm:inline">Mark all read</span>
           </Button>
@@ -167,6 +176,16 @@ export function AuditLogPanel() {
           </div>
         ))}
       </div>
+
+      <Pagination
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        loading={loading}
+        onPageChange={setPage}
+        onPageSizeChange={setPageSize}
+        itemNoun="entries"
+      />
     </div>
   );
 }

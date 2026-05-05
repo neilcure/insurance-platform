@@ -4,23 +4,26 @@ import { requireUser } from "@/lib/auth/require-user";
 import { desc, eq, inArray } from "drizzle-orm";
 import { policies, cars } from "@/db/schema/insurance";
 import { getInsuredPrimaryId, getInsuredType } from "@/lib/field-resolver";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import InviteForm from "@/components/admin/invite-form";
-import { UserRowActions } from "@/components/admin/user-row-actions";
+import UserSettingsTableClient from "@/components/admin/UserSettingsTableClient";
 import { SettingsBlock } from "@/components/ui/settings-block";
 import { Separator } from "@/components/ui/separator";
 import { ServerErrorToast } from "@/components/ui/ServerErrorToast";
-import BackfillUserNumbersButton from "@/components/admin/backfill-user-numbers-button";
+import { getCompletedSetupUserIds } from "@/lib/auth/user-setup-status";
 
-// Align with current allowed/legacy user types in UI components
 type UserType = "admin" | "agent" | "accounting" | "internal_staff" | "direct_client" | "service_provider";
 
 type UserRow = {
   id: number;
   email: string;
+  mobile: string | null;
   name: string | null;
+  companyName: string | null;
+  primaryId: string | null;
+  accountType: "personal" | "company" | null;
   userType: UserType;
   isActive: boolean;
+  hasCompletedSetup: boolean;
   createdAt: string;
   userNumber: string | null;
 };
@@ -39,20 +42,36 @@ export default async function AdminUsersPage() {
         .select({
           id: users.id,
           email: users.email,
+          mobile: users.mobile,
           name: users.name,
+          profileMeta: users.profileMeta,
           userType: users.userType,
           isActive: users.isActive,
           createdAt: users.createdAt,
           userNumber: users.userNumber,
         })
-        .from(users)) as unknown as Array<Omit<UserRow, "userType"> & { userType: string }>) ?? [];
-    // Normalize legacy values (e.g., insurer_staff -> internal_staff)
-    rows = raw.map(
-      (r): UserRow => ({
-        ...r,
+        .from(users)) as unknown as Array<Omit<UserRow, "userType" | "companyName" | "primaryId" | "accountType" | "hasCompletedSetup"> & { userType: string; profileMeta?: Record<string, unknown> | null }>) ?? [];
+    rows = raw.map((r): UserRow => {
+      const meta = (r.profileMeta ?? {}) as Record<string, unknown>;
+      const accountType: "personal" | "company" | null =
+        meta.accountType === "company" || meta.accountType === "personal" ? meta.accountType : null;
+      return {
+        id: r.id,
+        email: r.email,
+        mobile: r.mobile,
+        name: r.name,
+        userNumber: r.userNumber,
+        isActive: r.isActive,
+        createdAt: r.createdAt,
+        companyName:
+          typeof meta.companyName === "string" && meta.companyName.trim() ? meta.companyName.trim() : null,
+        primaryId:
+          typeof meta.primaryId === "string" && meta.primaryId.trim() ? meta.primaryId.trim() : null,
+        accountType,
+        hasCompletedSetup: false,
         userType: r.userType === "insurer_staff" ? ("internal_staff" as UserType) : (r.userType as UserType),
-      })
-    );
+      };
+    });
     if (!(me.userType === "admin" || me.userType === "internal_staff")) {
       rows = rows.filter((r) => Number(r.id) === Number(me.id));
     }
@@ -64,17 +83,34 @@ export default async function AdminUsersPage() {
           .select({
             id: users.id,
             email: users.email,
+            mobile: users.mobile,
             name: users.name,
+            profileMeta: users.profileMeta,
             userType: users.userType,
             isActive: users.isActive,
             createdAt: users.createdAt,
           })
-          .from(users)) as unknown as Omit<UserRow, "userNumber">[]) ?? [];
-      const mapped = fallback.map((r) => ({
-        ...r,
-        userNumber: null,
-        userType: (r.userType as any) === "insurer_staff" ? ("internal_staff" as UserType) : (r.userType as UserType),
-      }));
+          .from(users)) as unknown as Array<Omit<UserRow, "userNumber" | "companyName"> & { profileMeta?: Record<string, unknown> | null }>) ?? [];
+      const mapped: UserRow[] = fallback.map((r) => {
+        const meta = (r.profileMeta ?? {}) as Record<string, unknown>;
+        const accountType: "personal" | "company" | null =
+          meta.accountType === "company" || meta.accountType === "personal" ? meta.accountType : null;
+        return {
+          id: r.id,
+          email: r.email,
+          mobile: (r as { mobile?: string | null }).mobile ?? null,
+          name: r.name,
+          companyName:
+            typeof meta.companyName === "string" && meta.companyName.trim() ? meta.companyName.trim() : null,
+          primaryId: typeof meta.primaryId === "string" && meta.primaryId.trim() ? meta.primaryId.trim() : null,
+          accountType,
+          userType: (r.userType as string) === "insurer_staff" ? ("internal_staff" as UserType) : (r.userType as UserType),
+          isActive: r.isActive,
+          hasCompletedSetup: false,
+          createdAt: r.createdAt,
+          userNumber: null,
+        };
+      });
       rows =
         me.userType === "admin" || me.userType === "internal_staff"
           ? mapped
@@ -139,19 +175,18 @@ export default async function AdminUsersPage() {
     }
   } catch {}
 
-  // Ensure stable ordering regardless of active status or refreshes
+  try {
+    const completedSet = await getCompletedSetupUserIds(rows.map((r) => r.id));
+    rows = rows.map((r) => ({ ...r, hasCompletedSetup: completedSet.has(r.id) }));
+  } catch {
+    // If the lookup fails, leave hasCompletedSetup as `false` — UI will show
+    // the "Setup Pending" status, which is the safe default that exposes the
+    // re-issue invite affordance.
+  }
+
   const makeSortKey = (r: UserRow) =>
     `${(r.userNumber ?? "").toString()}|${(r.email || "").toLowerCase()}|${String(r.id).padStart(10, "0")}`;
   rows = rows.slice().sort((a, b) => makeSortKey(a).localeCompare(makeSortKey(b)));
-  const getDirectClientPrimaryNumber = (userId: number): string =>
-    profilePolicyNumbers[userId] || clientNumbers[userId] || "";
-  const getDirectClientSecondaryNumber = (userId: number): string => {
-    const primary = profilePolicyNumbers[userId] || "";
-    const secondary = clientNumbers[userId] || "";
-    if (!secondary) return "";
-    if (primary && primary === secondary) return "";
-    return secondary;
-  };
 
   return (
     <main className="mx-auto max-w-6xl space-y-6">
@@ -165,71 +200,13 @@ export default async function AdminUsersPage() {
         <div className="space-y-4">
           <InviteForm allowedTypes={me.userType === "admin" ? ["admin","agent","accounting","internal_staff","direct_client"] : ["accounting","internal_staff"]} />
           <Separator />
-          <div className="flex justify-end">
-            <BackfillUserNumbersButton />
-          </div>
-          <div className="w-full overflow-x-auto">
-            <Table className="min-w-[480px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="hidden md:table-cell">User #</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead className="text-left">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((u) => (
-                  <TableRow key={u.id}>
-                    <TableCell
-                      title={
-                        u.userType === "direct_client"
-                          ? [getDirectClientPrimaryNumber(u.id), getDirectClientSecondaryNumber(u.id)].filter(Boolean).join(" / ")
-                          : (u.userNumber ?? "")
-                      }
-                      className={`hidden md:table-cell font-mono text-xs ${
-                        u.isActive ? "text-green-600 dark:text-green-400" : "text-neutral-600 dark:text-neutral-400"
-                      }`}
-                    >
-                      {u.userType === "direct_client" ? (
-                        <div className="space-y-0.5">
-                          <div>{getDirectClientPrimaryNumber(u.id) || "—"}</div>
-                          {getDirectClientSecondaryNumber(u.id) ? (
-                            <div className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-                              {getDirectClientSecondaryNumber(u.id)}
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : (
-                        u.userNumber ?? "—"
-                      )}
-                    </TableCell>
-                    <TableCell className="block w-full md:table-cell">
-                      <div className="flex items-center gap-2 md:block">
-                        <span
-                          title={
-                            u.userType === "direct_client"
-                              ? [getDirectClientPrimaryNumber(u.id), getDirectClientSecondaryNumber(u.id)].filter(Boolean).join(" / ")
-                              : (u.userNumber ?? "")
-                          }
-                          className={`md:hidden font-mono text-xs ${
-                            u.isActive ? "text-green-600 dark:text-green-400" : "text-neutral-600 dark:text-neutral-400"
-                          }`}
-                        >
-                          {u.userType === "direct_client"
-                            ? getDirectClientPrimaryNumber(u.id) || "—"
-                            : (u.userNumber ?? "—")}
-                        </span>
-                        <span className="font-mono text-sm">{u.email}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="block w-full md:table-cell md:text-left">
-                      <UserRowActions userId={u.id} userType={u.userType} isActive={u.isActive} canAssignAdmin={me.userType === "admin"} linkedClientName={clientLinks[u.id] ?? null} />
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <UserSettingsTableClient
+            initialRows={rows}
+            canAssignAdmin={me.userType === "admin"}
+            clientLinks={clientLinks}
+            clientNumbers={clientNumbers}
+            profilePolicyNumbers={profilePolicyNumbers}
+          />
         </div>
       </SettingsBlock>
 

@@ -592,10 +592,15 @@ export default function FlowNewPage() {
         const flowFilter = clientFlowKey || flowKey;
         const isClientFlow = flowFilter.toLowerCase().includes("client");
         const url = isClientFlow
-          ? `/api/policies?flow=${encodeURIComponent(flowFilter)}&_t=${Date.now()}`
-          : `/api/policies?flow=${encodeURIComponent(flowFilter)}&_t=${Date.now()}`;
+          ? `/api/policies?flow=${encodeURIComponent(flowFilter)}&limit=500&_t=${Date.now()}`
+          : `/api/policies?flow=${encodeURIComponent(flowFilter)}&limit=500&_t=${Date.now()}`;
         const res = await fetch(url, { cache: "no-store" });
-        const json = (res.ok ? ((await res.json()) as unknown[]) : []) as Array<Record<string, unknown>>;
+        const raw = res.ok ? await res.json() : null;
+        const json: Array<Record<string, unknown>> = Array.isArray(raw)
+          ? (raw as Array<Record<string, unknown>>)
+          : Array.isArray(raw?.rows)
+            ? (raw.rows as Array<Record<string, unknown>>)
+            : [];
         if (!cancelled) {
           setClientRows(
             json
@@ -673,8 +678,13 @@ export default function FlowNewPage() {
       const pickerFlow = activeRow?.meta?.recordPickerFlow || flowInfo?.meta?.recordPickerFlow || flowKey;
       setLoadingRecords(true);
       try {
-        const res = await fetch(`/api/policies?flow=${encodeURIComponent(pickerFlow)}`, { cache: "no-store" });
-        const json = (res.ok ? ((await res.json()) as RecordRow[]) : []);
+        const res = await fetch(`/api/policies?flow=${encodeURIComponent(pickerFlow)}&limit=500`, { cache: "no-store" });
+        const raw = res.ok ? await res.json() : null;
+        const json: RecordRow[] = Array.isArray(raw)
+          ? (raw as RecordRow[])
+          : Array.isArray(raw?.rows)
+            ? (raw.rows as RecordRow[])
+            : [];
         if (!cancelled) {
           // Use the shared canonical extractor — same path the EntityPickerDrawer
           // and "Select Existing Client" picker use. Tries `insuredSnapshot`

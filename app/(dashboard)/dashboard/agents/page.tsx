@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import AgentsTableClient from "@/components/agents/AgentsTableClient";
 import { serverFetch } from "@/lib/auth/server-fetch";
+import { DEFAULT_PAGE_SIZE } from "@/lib/pagination/types";
 
 type AgentRow = {
   id: number;
@@ -13,17 +14,25 @@ type AgentRow = {
   createdAt: string;
 };
 
-async function fetchAgents(): Promise<AgentRow[]> {
-  const res = await serverFetch("/api/agents");
+async function fetchAgents(limit: number): Promise<{ rows: AgentRow[]; total: number }> {
+  const res = await serverFetch(`/api/agents?limit=${limit}&offset=0`);
   if (!res.ok) {
-    if (res.status === 401) return [];
+    if (res.status === 401) return { rows: [], total: 0 };
     throw new Error("Failed to load agents");
   }
-  return (await res.json()) as AgentRow[];
+  const raw = await res.json();
+  const rows: AgentRow[] = Array.isArray(raw)
+    ? (raw as AgentRow[])
+    : Array.isArray(raw?.rows)
+      ? (raw.rows as AgentRow[])
+      : [];
+  const total = Array.isArray(raw) ? rows.length : Number(raw?.total ?? rows.length);
+  return { rows, total };
 }
 
 export default async function AgentsPage() {
-  const rows = await fetchAgents();
+  const pageSize = DEFAULT_PAGE_SIZE;
+  const { rows, total } = await fetchAgents(pageSize);
 
   return (
     <main className="mx-auto max-w-6xl">
@@ -40,9 +49,20 @@ export default async function AgentsPage() {
             </Link>
           </div>
         </CardHeader>
-        <CardContent>{rows.length === 0 ? <div className="rounded-md border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-600 dark:border-neutral-800 dark:text-neutral-400">No agents found.</div> : <AgentsTableClient initialRows={rows} />}</CardContent>
+        <CardContent>
+          {total === 0 ? (
+            <div className="rounded-md border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-600 dark:border-neutral-800 dark:text-neutral-400">
+              No agents found.
+            </div>
+          ) : (
+            <AgentsTableClient
+              initialRows={rows}
+              initialTotal={total}
+              initialPageSize={pageSize}
+            />
+          )}
+        </CardContent>
       </Card>
     </main>
   );
 }
-

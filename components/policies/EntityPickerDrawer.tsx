@@ -49,15 +49,18 @@ export function EntityPickerDrawer({
       setLoading(true);
       try {
         const res = await fetch(
-          `/api/policies?flow=${encodeURIComponent(flowKey)}`,
+          `/api/policies?flow=${encodeURIComponent(flowKey)}&limit=500`,
           { cache: "no-store" },
         );
-        const json = res.ok ? ((await res.json()) as RecordRow[]) : [];
+        const json = res.ok ? await res.json() : null;
+        const list: RecordRow[] = Array.isArray(json)
+          ? (json as RecordRow[])
+          : Array.isArray(json?.rows)
+            ? (json.rows as RecordRow[])
+            : [];
         if (!cancelled) {
           setRows(
-            (Array.isArray(json) ? json : []).filter(
-              (r) => Number.isFinite(r.policyId) && r.policyId > 0,
-            ),
+            list.filter((r) => Number.isFinite(r.policyId) && r.policyId > 0),
           );
         }
       } catch {

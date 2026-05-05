@@ -29,7 +29,8 @@ export function EndorsementHistory({ policyId }: { policyId: number }) {
           { cache: "no-store" },
         );
         if (!res.ok || cancelled) return;
-        const rows = (await res.json()) as Array<{
+        const raw = await res.json();
+        type ApiEndorsement = {
           policyId?: number;
           id?: number;
           policyNumber?: string;
@@ -40,7 +41,12 @@ export function EndorsementHistory({ policyId }: { policyId: number }) {
           is_active?: boolean;
           extraAttributes?: Record<string, unknown>;
           carExtra?: Record<string, unknown>;
-        }>;
+        };
+        const rows: ApiEndorsement[] = Array.isArray(raw)
+          ? (raw as ApiEndorsement[])
+          : Array.isArray(raw?.rows)
+            ? (raw.rows as ApiEndorsement[])
+            : [];
         if (cancelled) return;
         const mapped: EndorsementRecord[] = rows.map((r) => {
           const extra = (r.extraAttributes ?? r.carExtra ?? {}) as Record<string, unknown>;

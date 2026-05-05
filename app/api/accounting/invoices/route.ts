@@ -4,9 +4,10 @@ import { accountingInvoices, accountingInvoiceItems, accountingPayments } from "
 import { memberships, organisations, clients, users } from "@/db/schema/core";
 import { policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
-import { and, desc, eq, sql, inArray } from "drizzle-orm";
+import { and, desc, eq, sql, inArray, type SQL } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { resolveInvoicePrefix } from "@/lib/resolve-prefix";
+import { parsePaginationParams } from "@/lib/pagination/types";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
@@ -18,14 +19,24 @@ export async function GET(request: Request) {
     const entityTypeFilter = url.searchParams.get("entityType");
     const premiumTypeFilter = url.searchParams.get("premiumType");
     const flowFilter = url.searchParams.get("flow");
-    const qLimit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 100, 1), 500);
-    const qOffset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
+    const excludeStatementType = url.searchParams.get("excludeStatementType") === "1";
+    const { limit: qLimit, offset: qOffset } = parsePaginationParams(url.searchParams, {
+      defaultLimit: 50,
+      maxLimit: 500,
+    });
 
-    const conditions: ReturnType<typeof eq>[] = [];
-    if (statusFilter) conditions.push(eq(accountingInvoices.status, statusFilter));
+    const conditions: SQL[] = [];
+    if (statusFilter && statusFilter !== "all")
+      conditions.push(eq(accountingInvoices.status, statusFilter));
     if (directionFilter) conditions.push(eq(accountingInvoices.direction, directionFilter));
     if (entityTypeFilter) conditions.push(eq(accountingInvoices.entityType, entityTypeFilter));
     if (premiumTypeFilter) conditions.push(eq(accountingInvoices.premiumType, premiumTypeFilter));
+    // Caller can ask the API to drop statement-type rows so client-side
+    // doesn't have to filter them out (which would corrupt pagination
+    // counts). Used by /dashboard/accounting which only shows individual
+    // invoices.
+    if (excludeStatementType)
+      conditions.push(sql`${accountingInvoices.invoiceType} <> 'statement'`);
 
     let orgIds: number[] | null = null;
     if (!(user.userType === "admin" || user.userType === "internal_staff")) {
@@ -34,7 +45,12 @@ export async function GET(request: Request) {
         .from(memberships)
         .where(eq(memberships.userId, Number(user.id)));
       orgIds = userMemberships.map((m) => m.orgId);
-      if (orgIds.length === 0) return NextResponse.json([], { status: 200 });
+      if (orgIds.length === 0) {
+        return NextResponse.json(
+          { rows: [], total: 0, limit: qLimit, offset: qOffset },
+          { status: 200 },
+        );
+      }
       conditions.push(inArray(accountingInvoices.organisationId, orgIds));
     }
 
@@ -52,13 +68,22 @@ export async function GET(request: Request) {
 
     const includePayments = url.searchParams.get("includePayments") === "1";
 
-    const rawRows = await db
-      .select()
-      .from(accountingInvoices)
-      .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(desc(accountingInvoices.createdAt))
-      .limit(qLimit)
-      .offset(qOffset);
+    const whereExpr = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [rawRows, totalRow] = await Promise.all([
+      db
+        .select()
+        .from(accountingInvoices)
+        .where(whereExpr)
+        .orderBy(desc(accountingInvoices.createdAt))
+        .limit(qLimit)
+        .offset(qOffset),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(accountingInvoices)
+        .where(whereExpr),
+    ]);
+    const total = totalRow[0]?.count ?? 0;
 
     let rows: any[] = rawRows;
 
@@ -200,7 +225,10 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json(rows, { status: 200 });
+    return NextResponse.json(
+      { rows, total, limit: qLimit, offset: qOffset },
+      { status: 200 },
+    );
   } catch (err) {
     console.error("GET /api/accounting/invoices error:", err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

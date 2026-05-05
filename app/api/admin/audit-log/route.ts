@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/db/client";
 import { auditLog, users } from "@/db/schema/core";
 import { requireUser } from "@/lib/auth/require-user";
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, eq, sql, type SQL } from "drizzle-orm";
+import { parsePaginationParams } from "@/lib/pagination/types";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,6 @@ export async function GET(request: NextRequest) {
     const url = new URL(request.url);
     const unreadOnly = url.searchParams.get("unread") === "true";
     const countOnly = url.searchParams.get("count") === "true";
-    const limit = Math.min(Number(url.searchParams.get("limit")) || 50, 200);
 
     if (countOnly) {
       const [row] = await db
@@ -26,31 +26,48 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ unreadCount: row?.count ?? 0 });
     }
 
-    let query = db
-      .select({
-        id: auditLog.id,
-        userId: auditLog.userId,
-        userType: auditLog.userType,
-        action: auditLog.action,
-        entityType: auditLog.entityType,
-        entityId: auditLog.entityId,
-        changes: auditLog.changes,
-        isRead: auditLog.isRead,
-        createdAt: auditLog.createdAt,
-        userName: users.name,
-        userEmail: users.email,
-      })
-      .from(auditLog)
-      .leftJoin(users, eq(users.id, auditLog.userId))
-      .orderBy(desc(auditLog.createdAt))
-      .limit(limit);
+    const { limit, offset } = parsePaginationParams(url.searchParams, {
+      defaultLimit: 30,
+      maxLimit: 200,
+    });
 
-    if (unreadOnly) {
-      query = query.where(eq(auditLog.isRead, false)) as any;
-    }
+    const whereExpr: SQL | undefined = unreadOnly
+      ? eq(auditLog.isRead, false)
+      : undefined;
 
-    const rows = await query;
-    return NextResponse.json(rows);
+    const [rows, totalRow] = await Promise.all([
+      db
+        .select({
+          id: auditLog.id,
+          userId: auditLog.userId,
+          userType: auditLog.userType,
+          action: auditLog.action,
+          entityType: auditLog.entityType,
+          entityId: auditLog.entityId,
+          changes: auditLog.changes,
+          isRead: auditLog.isRead,
+          createdAt: auditLog.createdAt,
+          userName: users.name,
+          userEmail: users.email,
+        })
+        .from(auditLog)
+        .leftJoin(users, eq(users.id, auditLog.userId))
+        .where(whereExpr)
+        .orderBy(desc(auditLog.createdAt))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(auditLog)
+        .where(whereExpr),
+    ]);
+
+    return NextResponse.json({
+      rows,
+      total: totalRow[0]?.count ?? 0,
+      limit,
+      offset,
+    });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

@@ -147,9 +147,14 @@ export function WorkflowTab({
     if (!isParentPolicy) return;
     let cancelled = false;
     fetch(`/api/policies?linkedPolicyId=${detail.policyId}&_t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows: Array<Record<string, unknown>>) => {
+      .then((r) => (r.ok ? r.json() : null))
+      .then((raw: unknown) => {
         if (cancelled) return;
+        const rows: Array<Record<string, unknown>> = Array.isArray(raw)
+          ? (raw as Array<Record<string, unknown>>)
+          : Array.isArray((raw as { rows?: unknown })?.rows)
+            ? ((raw as { rows: Array<Record<string, unknown>> }).rows)
+            : [];
         const mapped: LinkedEndorsement[] = rows
           .filter((r) => (r.isActive ?? r.is_active) !== false)
           .map((r) => ({

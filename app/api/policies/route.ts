@@ -884,6 +884,9 @@ export async function GET(request: Request) {
         model: cars.model,
         year: cars.year,
         carExtra: cars.extraAttributes,
+        // Window-function total — the count of rows that match the WHERE
+        // clause BEFORE limit/offset. Echoed on every row; we read [0].
+        totalCount: sql<number>`count(*) over ()::int`,
       })
       .from(policies)
       .leftJoin(cars, eq(cars.policyId, policies.id));
@@ -900,6 +903,7 @@ export async function GET(request: Request) {
       model: string | null;
       year: number | null;
       carExtra: Record<string, unknown> | null;
+      totalCount?: number;
     };
     let rows: Row[];
     const polCols = await getPolicyColumns();
@@ -961,7 +965,8 @@ export async function GET(request: Request) {
               c.make as "make",
               c.model as "model",
               c.year as "year",
-              c.extra_attributes as "carExtra"
+              c.extra_attributes as "carExtra",
+              count(*) over ()::int as "totalCount"
             from "policies" p
             left join "cars" c on c.policy_id = p.id
             where p.agent_id = ${agentId}
@@ -995,7 +1000,8 @@ export async function GET(request: Request) {
               c.make as "make",
               c.model as "model",
               c.year as "year",
-              c.extra_attributes as "carExtra"
+              c.extra_attributes as "carExtra",
+              count(*) over ()::int as "totalCount"
             from "policies" p
             left join "cars" c on c.policy_id = p.id
             inner join "policies" parent on parent.id = ${linkedPolicyIdFilter}
@@ -1031,7 +1037,8 @@ export async function GET(request: Request) {
               c.make as "make",
               c.model as "model",
               c.year as "year",
-              c.extra_attributes as "carExtra"
+              c.extra_attributes as "carExtra",
+              count(*) over ()::int as "totalCount"
             from "policies" p
             left join "cars" c on c.policy_id = p.id
             inner join "clients" cl on cl.user_id = ${userId}
@@ -1089,16 +1096,25 @@ export async function GET(request: Request) {
       }
     }
 
+    const total =
+      rows.length > 0
+        ? Number((rows[0] as { totalCount?: number }).totalCount ?? 0)
+        : 0;
     const enrichedRows = rows.map((r: any) => {
       const resolvedFlowKey = r.flowKey || (r.carExtra as any)?.flowKey || null;
+      const rest = { ...r };
+      delete (rest as { totalCount?: number }).totalCount;
       return {
-        ...r,
+        ...rest,
         flowKey: resolvedFlowKey,
         recordId: r.policyId,
         recordNumber: r.policyNumber,
       };
     });
-    return NextResponse.json(enrichedRows, { status: 200 });
+    return NextResponse.json(
+      { rows: enrichedRows, total, limit: qLimit, offset: qOffset },
+      { status: 200 },
+    );
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

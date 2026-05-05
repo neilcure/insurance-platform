@@ -43,9 +43,15 @@ export function PolicyStep({ onComplete, initialValues, flowKey }: { onComplete:
         setUserType(ut);
         if (ut === "admin" || ut === "internal_staff") {
           setLoadingAgents(true);
-          const aRes = await fetch("/api/agents", { cache: "no-store" });
+          const aRes = await fetch("/api/agents?limit=500", { cache: "no-store" });
           if (aRes.ok) {
-            const list = (await aRes.json()) as Array<{ id: number; userNumber?: string | null; name?: string | null; email: string }>;
+            type AgentLite = { id: number; userNumber?: string | null; name?: string | null; email: string };
+            const raw = await aRes.json();
+            const list: AgentLite[] = Array.isArray(raw)
+              ? (raw as AgentLite[])
+              : Array.isArray(raw?.rows)
+                ? (raw.rows as AgentLite[])
+                : [];
             if (!mounted) return;
             setAgents(list);
           }

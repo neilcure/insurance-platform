@@ -130,10 +130,6 @@ export async function POST(request: Request) {
     if (body.userType === "direct_client" && creationMode === "account_only") {
       return NextResponse.json({ error: "Direct client accounts must be created via invite flow." }, { status: 400 });
     }
-    if (body.userType === "agent" && accountType === "company" && !companyName) {
-      return NextResponse.json({ error: "Company name is required for company agent account." }, { status: 400 });
-    }
-
     const profileMeta =
       body.userType === "agent"
         ? {

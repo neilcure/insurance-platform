@@ -442,6 +442,9 @@ export async function GET(request: Request) {
             isActive: clients.isActive,
             extraAttributes: clients.extraAttributes,
             createdAt: clients.createdAt,
+            // Window function: total row count BEFORE limit/offset.
+            // Echoed on every row; we read [0].
+            totalCount: sql<number>`count(*) over ()::int`,
           })
           .from(clients)
           .orderBy(asc(clients.id))
@@ -459,7 +462,8 @@ export async function GET(request: Request) {
             c.contact_phone as "contactPhone",
             c.extra_attributes as "extraAttributes",
             coalesce(c.is_active, true) as "isActive",
-            c.created_at as "createdAt"
+            c.created_at as "createdAt",
+            count(*) over ()::int as "totalCount"
           from "clients" c
           where exists (
             select 1
@@ -496,6 +500,7 @@ export async function GET(request: Request) {
             isActive: clients.isActive,
             extraAttributes: clients.extraAttributes,
             createdAt: clients.createdAt,
+            totalCount: sql<number>`count(*) over ()::int`,
           })
           .from(clients)
           .orderBy(asc(clients.id))
@@ -504,6 +509,9 @@ export async function GET(request: Request) {
       }
       // Ensure the list reflects the latest dynamic insured/contact data even if legacy writes
       // didn't keep core columns in sync.
+      const total = (Array.isArray(rows) && rows.length > 0)
+        ? Number((rows[0] as { totalCount?: number }).totalCount ?? 0)
+        : 0;
       const clientProfileMap = await loadClientProfileMap();
       const mapped = (Array.isArray(rows) ? rows : []).map((r: any) => {
         const extraRaw =
@@ -547,12 +555,13 @@ export async function GET(request: Request) {
           profilePolicyNumber: clientProfileMap.get(`${String(r?.category ?? "").trim().toLowerCase()}::${(primaryExplicit ? derivedPrimary : (derivedPrimary || String(r?.primaryId ?? r?.primary_id ?? ""))).trim()}`) ?? null,
         };
       });
-      return NextResponse.json(mapped, {
-        status: 200,
-        headers: {
-          "cache-control": "no-store, max-age=0",
+      return NextResponse.json(
+        { rows: mapped, total, limit: qLimit, offset: qOffset },
+        {
+          status: 200,
+          headers: { "cache-control": "no-store, max-age=0" },
         },
-      });
+      );
     } catch {
       // Fallback if the is_active column hasn't been migrated yet
       const base = db
@@ -568,7 +577,12 @@ export async function GET(request: Request) {
         })
         .from(clients);
       // In legacy DBs (no created_by), avoid data leakage: agents see none until migration applied
-      const rows = me.userType === "agent" ? [] : await base.orderBy(asc(clients.id));
+      const rows = me.userType === "agent"
+        ? []
+        : await base.orderBy(asc(clients.id)).limit(qLimit).offset(qOffset);
+      const fallbackTotal = me.userType === "agent"
+        ? 0
+        : (await db.select({ count: sql<number>`count(*)::int` }).from(clients))[0]?.count ?? 0;
       const clientProfileMap = await loadClientProfileMap();
       const mapped = rows.map((r) => ({
         ...((): {
@@ -602,12 +616,13 @@ export async function GET(request: Request) {
         isActive:
           (r.extra as unknown as { shadow_is_active?: boolean } | null)?.shadow_is_active ?? true,
       }));
-      return NextResponse.json(mapped, {
-        status: 200,
-        headers: {
-          "cache-control": "no-store, max-age=0",
+      return NextResponse.json(
+        { rows: mapped, total: fallbackTotal, limit: qLimit, offset: qOffset },
+        {
+          status: 200,
+          headers: { "cache-control": "no-store, max-age=0" },
         },
-      });
+      );
     }
   } catch (err) {
     console.error(err);

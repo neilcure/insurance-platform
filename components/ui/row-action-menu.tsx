@@ -7,7 +7,8 @@ import { cn } from "@/lib/utils";
 export interface RowAction {
   label: string;
   icon?: React.ReactNode;
-  onClick: () => void;
+  onClick?: () => void;
+  content?: React.ReactNode;
   variant?: "default" | "destructive";
   loading?: boolean;
   disabled?: boolean;
@@ -74,38 +75,48 @@ export function RowActionMenu({ actions, label = "Actions", align = "start" }: R
           expandLeft
             ? cn(
                 "absolute top-1/2 -translate-y-1/2 right-full z-30",
-                open ? "max-w-[500px] opacity-100 mr-2" : "max-w-0 opacity-0 mr-0",
+                open ? "max-w-[640px] opacity-100 mr-2" : "max-w-0 opacity-0 mr-0",
               )
             : open
-              ? "max-w-[500px] opacity-100 ml-2"
+              ? "max-w-[640px] opacity-100 ml-2"
               : "max-w-0 opacity-0 ml-0",
         )}
       >
         <div className="flex items-center gap-0 rounded-md border border-neutral-200 bg-neutral-100 p-0.5 dark:border-neutral-700 dark:bg-neutral-800">
           {actions.map((action, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => {
-                action.onClick();
-                setOpen(false);
-              }}
-              disabled={action.disabled || action.loading}
-              className={cn(
-                "inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
-                "focus:outline-none disabled:pointer-events-none disabled:opacity-50",
-                action.variant === "destructive"
-                  ? "text-red-600 hover:bg-red-100 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-900/50 dark:hover:text-red-300"
-                  : "text-neutral-600 hover:bg-white hover:text-neutral-900 hover:shadow-sm dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-neutral-100",
-              )}
-            >
-              {action.loading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin lg:inline" />
-              ) : action.icon ? (
-                <span className="lg:inline [&_svg]:h-3.5 [&_svg]:w-3.5">{action.icon}</span>
-              ) : null}
-              <span>{action.label}</span>
-            </button>
+            action.content ? (
+              <div
+                key={i}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 py-1 text-xs font-medium text-neutral-600 dark:text-neutral-300"
+              >
+                {action.icon ? <span className="lg:inline [&_svg]:h-3.5 [&_svg]:w-3.5">{action.icon}</span> : null}
+                {action.content}
+              </div>
+            ) : (
+              <button
+                key={i}
+                type="button"
+                onClick={() => {
+                  action.onClick?.();
+                  setOpen(false);
+                }}
+                disabled={action.disabled || action.loading}
+                className={cn(
+                  "inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
+                  "focus:outline-none disabled:pointer-events-none disabled:opacity-50",
+                  action.variant === "destructive"
+                    ? "text-red-600 hover:bg-red-100 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-900/50 dark:hover:text-red-300"
+                    : "text-neutral-600 hover:bg-white hover:text-neutral-900 hover:shadow-sm dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-neutral-100",
+                )}
+              >
+                {action.loading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin lg:inline" />
+                ) : action.icon ? (
+                  <span className="lg:inline [&_svg]:h-3.5 [&_svg]:w-3.5">{action.icon}</span>
+                ) : null}
+                <span>{action.label}</span>
+              </button>
+            )
           ))}
         </div>
       </div>
@@ -119,29 +130,39 @@ export function RowActionMenu({ actions, label = "Actions", align = "start" }: R
       >
         <div className="flex flex-col rounded-md border border-neutral-200 bg-neutral-100 p-0.5 shadow-md dark:border-neutral-700 dark:bg-neutral-800">
           {actions.map((action, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => {
-                action.onClick();
-                setOpen(false);
-              }}
-              disabled={action.disabled || action.loading}
-              className={cn(
-                "inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 py-1.5 text-xs font-medium transition-colors",
-                "focus:outline-none disabled:pointer-events-none disabled:opacity-50",
-                action.variant === "destructive"
-                  ? "text-red-600 hover:bg-red-100 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-900/50 dark:hover:text-red-300"
-                  : "text-neutral-600 hover:bg-white hover:text-neutral-900 hover:shadow-sm dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-neutral-100",
-              )}
-            >
-              {action.loading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : action.icon ? (
-                <span className="[&_svg]:h-3.5 [&_svg]:w-3.5">{action.icon}</span>
-              ) : null}
-              <span>{action.label}</span>
-            </button>
+            action.content ? (
+              <div
+                key={i}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-300"
+              >
+                {action.icon ? <span className="[&_svg]:h-3.5 [&_svg]:w-3.5">{action.icon}</span> : null}
+                {action.content}
+              </div>
+            ) : (
+              <button
+                key={i}
+                type="button"
+                onClick={() => {
+                  action.onClick?.();
+                  setOpen(false);
+                }}
+                disabled={action.disabled || action.loading}
+                className={cn(
+                  "inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 py-1.5 text-xs font-medium transition-colors",
+                  "focus:outline-none disabled:pointer-events-none disabled:opacity-50",
+                  action.variant === "destructive"
+                    ? "text-red-600 hover:bg-red-100 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-900/50 dark:hover:text-red-300"
+                    : "text-neutral-600 hover:bg-white hover:text-neutral-900 hover:shadow-sm dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-neutral-100",
+                )}
+              >
+                {action.loading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : action.icon ? (
+                  <span className="[&_svg]:h-3.5 [&_svg]:w-3.5">{action.icon}</span>
+                ) : null}
+                <span>{action.label}</span>
+              </button>
+            )
           ))}
         </div>
       </div>

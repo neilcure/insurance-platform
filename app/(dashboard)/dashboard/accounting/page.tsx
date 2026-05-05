@@ -29,6 +29,8 @@ import {
   type PaymentStatus,
   type InvoiceStatus,
 } from "@/lib/types/accounting";
+import { usePagination } from "@/lib/pagination/use-pagination";
+import { Pagination } from "@/components/ui/pagination";
 
 type DisplayColumn = {
   key: string;
@@ -179,10 +181,8 @@ const FREQ_LABELS: Record<string, string> = {
 
 export default function AccountingPage() {
   const [stats, setStats] = React.useState<Stats | null>(null);
-  const [invoices, setInvoices] = React.useState<InvoiceRow[]>([]);
   const [schedules, setSchedules] = React.useState<ScheduleSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [invoicesLoading, setInvoicesLoading] = React.useState(true);
   const [expandedInvoice, setExpandedInvoice] = React.useState<number | null>(null);
   const [verifyingId, setVerifyingId] = React.useState<number | null>(null);
   const [statusFilter, setStatusFilter] = React.useState<string>("all");
@@ -190,6 +190,34 @@ export default function AccountingPage() {
   const [showSettings, setShowSettings] = React.useState(false);
   const [displayColumns, setDisplayColumns] = React.useState<DisplayColumn[]>([]);
   const [savingCols, setSavingCols] = React.useState(false);
+
+  // Server-side filter + pagination. Status changes reset the page to 0
+  // automatically (handled by `usePagination` when params change). The
+  // `excludeStatementType=1` flag pushes the "no statement rows" filter
+  // to the server so the page count is accurate.
+  const invoiceParams = React.useMemo(
+    () => ({
+      includePayments: 1,
+      excludeStatementType: 1,
+      status: statusFilter !== "all" ? statusFilter : undefined,
+      // Bust the SSR-snapshot in the hook when the user clicks Refresh.
+      _t: refreshKey > 0 ? refreshKey : undefined,
+    }),
+    [statusFilter, refreshKey],
+  );
+  const {
+    rows: invoices,
+    total: invoicesTotal,
+    page: invoicesPage,
+    pageSize: invoicesPageSize,
+    loading: invoicesLoading,
+    setPage: setInvoicesPage,
+    setPageSize: setInvoicesPageSize,
+  } = usePagination<InvoiceRow>({
+    url: "/api/accounting/invoices",
+    scope: "accounting-invoices",
+    params: invoiceParams,
+  });
 
   // Load display column settings
   React.useEffect(() => {
@@ -237,15 +265,6 @@ export default function AccountingPage() {
   }, [refreshKey]);
 
   React.useEffect(() => {
-    setInvoicesLoading(true);
-    fetch(`/api/accounting/invoices?includePayments=1&_t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data) => setInvoices(Array.isArray(data) ? (data as InvoiceRow[]).filter((inv) => inv.invoiceType !== "statement") : []))
-      .catch(() => setInvoices([]))
-      .finally(() => setInvoicesLoading(false));
-  }, [refreshKey]);
-
-  React.useEffect(() => {
     fetch("/api/accounting/schedules", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : []))
       .then((data) => setSchedules(Array.isArray(data) ? data.filter((s: ScheduleSummary) => s.isActive) : []))
@@ -282,10 +301,9 @@ export default function AccountingPage() {
   const methodLabel = (m: string | null) =>
     PAYMENT_METHOD_OPTIONS.find((o) => o.value === m)?.label ?? m ?? "—";
 
-  const filtered = React.useMemo(() => {
-    if (statusFilter === "all") return invoices;
-    return invoices.filter((inv) => inv.status === statusFilter);
-  }, [invoices, statusFilter]);
+  // Filter is now applied server-side via `invoiceParams.status`. The
+  // visible rows are whatever the API returned for the current page.
+  const filtered = invoices;
 
   const pendingPayments = React.useMemo(() => {
     const result: { invoice: InvoiceRow; payment: PaymentRow }[] = [];
@@ -762,6 +780,15 @@ export default function AccountingPage() {
               })}
             </div>
           )}
+          <Pagination
+            page={invoicesPage}
+            pageSize={invoicesPageSize}
+            total={invoicesTotal}
+            loading={invoicesLoading}
+            onPageChange={setInvoicesPage}
+            onPageSizeChange={setInvoicesPageSize}
+            itemNoun={invoicesTotal === 1 ? "invoice" : "invoices"}
+          />
         </CardContent>
       </Card>
       {/* Active Payment Schedules */}

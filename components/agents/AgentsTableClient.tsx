@@ -25,15 +25,23 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ArrowUpDown, Ban, CheckCircle2, ChevronRight, CreditCard, FileText, Settings2, Trash2 } from "lucide-react";
+import { ArrowUpDown, Ban, CheckCircle2, ChevronRight, CreditCard, FileText, Link2, Pencil, RefreshCcw, Settings2, Trash2 } from "lucide-react";
+import { EditUserDialog, type EditableUser } from "@/components/admin/edit-user-dialog";
 import { PaymentSection } from "@/components/policies/tabs/PaymentSection";
+import { usePagination } from "@/lib/pagination/use-pagination";
+import { Pagination } from "@/components/ui/pagination";
 
 type Row = {
   id: number;
   userNumber: string | null;
   email: string;
+  mobile?: string | null;
   name: string | null;
   isActive: boolean;
+  hasCompletedSetup?: boolean;
+  accountType?: "personal" | "company" | null;
+  companyName?: string | null;
+  primaryId?: string | null;
   createdAt: string;
 };
 
@@ -403,7 +411,17 @@ function AgentWorkflowPanel({ detail }: { detail: AgentDetail }) {
   );
 }
 
-export default function AgentsTableClient({ initialRows }: { initialRows: Row[] }) {
+export default function AgentsTableClient({
+  initialRows,
+  initialTotal,
+  initialPageSize,
+}: {
+  initialRows: Row[];
+  /** SSR-seeded total count (across every page). Falls back to
+   *  `initialRows.length` for callers that haven't been migrated yet. */
+  initialTotal?: number;
+  initialPageSize?: number;
+}) {
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => {
     setMounted(true);
@@ -412,7 +430,29 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
   const session = useSession();
   const sessionUserType = (session.data?.user as { userType?: string } | undefined)?.userType;
   const canManageAgents = mounted && sessionUserType === "admin";
-  const [rows, setRows] = React.useState<Row[]>(initialRows);
+
+  const {
+    rows,
+    total,
+    page,
+    pageSize,
+    loading: rowsLoading,
+    setPage,
+    setPageSize,
+    patchRow,
+    removeRow,
+  } = usePagination<Row>({
+    url: "/api/agents",
+    scope: "agents",
+    initialRows,
+    initialTotal: initialTotal ?? initialRows.length,
+    initialPageSize,
+  });
+
+  function patchRowById(id: number, next: Partial<Row>) {
+    const idx = rows.findIndex((r) => r.id === id);
+    if (idx >= 0) patchRow(idx, { ...rows[idx], ...next });
+  }
   const [query, setQuery] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState<"all" | "active" | "inactive">("all");
   const [sortDir, setSortDir] = React.useState<"asc" | "desc">("desc");
@@ -424,6 +464,32 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
   const [toggleConfirm, setToggleConfirm] = React.useState<{ id: number; currentlyActive: boolean } | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = React.useState<number | null>(null);
   const [searchText, setSearchText] = React.useState("");
+  const [editAgent, setEditAgent] = React.useState<EditableUser | null>(null);
+  const [inviteAgent, setInviteAgent] = React.useState<EditableUser | null>(null);
+  const [inviteVerb, setInviteVerb] = React.useState<"send" | "reissue">("send");
+
+  function rowToEditable(r: Row): EditableUser {
+    return {
+      id: r.id,
+      email: r.email,
+      mobile: r.mobile ?? null,
+      name: r.name ?? null,
+      userType: "agent",
+      accountType: r.accountType ?? null,
+      companyName: r.companyName ?? null,
+      primaryId: r.primaryId ?? null,
+    };
+  }
+
+  function openEditAgent(r: Row) {
+    setEditAgent(rowToEditable(r));
+  }
+
+  function openInviteAgent(r: Row) {
+    if (!canManageAgents) return;
+    setInviteVerb(r.hasCompletedSetup === false ? "send" : "reissue");
+    setInviteAgent(rowToEditable(r));
+  }
 
   function closeDrawer() {
     setDrawerOpen(false);
@@ -458,7 +524,7 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data as { error?: string }).error || "Update failed");
-      setRows((prev) => prev.map((r) => (r.id === id ? { ...r, isActive: !currentlyActive } : r)));
+      patchRowById(id, { isActive: !currentlyActive });
       if (detail?.id === id) setDetail((prev) => (prev ? { ...prev, isActive: !currentlyActive } : prev));
       toast.success(currentlyActive ? "Agent disabled" : "Agent enabled");
       setToggleConfirm(null);
@@ -478,7 +544,7 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
       const res = await fetch(`/api/admin/users/${id}`, { method: "DELETE" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data as { error?: string }).error || "Delete failed");
-      setRows((prev) => prev.filter((r) => r.id !== id));
+      removeRow((r) => r.id === id);
       if (openId === id) closeDrawer();
       toast.success("Agent deleted");
       setDeleteConfirmId(null);
@@ -629,9 +695,18 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
               )}
               {visibleCols.includes("status") && (
                 <TableCell>
-                  <span className={r.isActive ? "text-green-600 dark:text-green-400" : "text-neutral-500 dark:text-neutral-400"}>
-                    {r.isActive ? "Active" : "Inactive"}
-                  </span>
+                  {r.hasCompletedSetup === false ? (
+                    <span
+                      className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                      title="Account created but the agent has not completed the invite flow yet."
+                    >
+                      Setup Pending
+                    </span>
+                  ) : r.isActive ? (
+                    <span className="text-green-600 dark:text-green-400">Active</span>
+                  ) : (
+                    <span className="text-neutral-500 dark:text-neutral-400">Inactive</span>
+                  )}
                 </TableCell>
               )}
               <TableCell className="text-right">
@@ -641,6 +716,22 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
                 >
                   <RowActionMenu
                     actions={[
+                      ...(canManageAgents
+                        ? [{
+                          label: "Edit",
+                          icon: <Pencil className="h-4 w-4" />,
+                          onClick: () => openEditAgent(r),
+                          loading: actionBusyId === r.id,
+                        }]
+                        : []),
+                      ...(canManageAgents && (r.hasCompletedSetup === false || !r.isActive)
+                        ? [{
+                          label: r.hasCompletedSetup === false ? "Send Invite" : "Re-Invite",
+                          icon: r.hasCompletedSetup === false ? <Link2 className="h-4 w-4" /> : <RefreshCcw className="h-4 w-4" />,
+                          onClick: () => openInviteAgent(r),
+                          loading: actionBusyId === r.id,
+                        }]
+                        : []),
                       ...(canManageAgents
                         ? [{
                           label: r.isActive ? "Disable" : "Enable",
@@ -674,6 +765,16 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
         </TableBody>
       </Table>
       </div>
+
+      <Pagination
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        loading={rowsLoading}
+        onPageChange={setPage}
+        onPageSizeChange={setPageSize}
+        itemNoun={total === 1 ? "agent" : "agents"}
+      />
 
       <RecordDetailsDrawer
         open={openId !== null}
@@ -803,7 +904,41 @@ export default function AgentsTableClient({ initialRows }: { initialRows: Row[] 
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <EditUserDialog
+        open={editAgent !== null}
+        onOpenChange={(o) => { if (!o) setEditAgent(null); }}
+        user={editAgent}
+        onSaved={(u) => {
+          applyAgentUpdate(u);
+          setEditAgent(null);
+        }}
+      />
+
+      <EditUserDialog
+        open={inviteAgent !== null}
+        onOpenChange={(o) => { if (!o) setInviteAgent(null); }}
+        user={inviteAgent}
+        mode="invite"
+        inviteVerb={inviteVerb}
+        onSaved={(u) => applyAgentUpdate(u)}
+        onInviteSent={() => setInviteAgent(null)}
+      />
     </div>
   );
+
+  function applyAgentUpdate(u: EditableUser) {
+    patchRowById(u.id, {
+      email: u.email,
+      mobile: u.mobile ?? null,
+      name: u.name ?? null,
+      accountType: u.accountType ?? null,
+      companyName: u.companyName ?? null,
+      primaryId: u.primaryId ?? null,
+    });
+    if (detail?.id === u.id) {
+      setDetail((prev) => (prev ? { ...prev, email: u.email, mobile: u.mobile ?? null, name: u.name ?? null } : prev));
+    }
+  }
 }
 

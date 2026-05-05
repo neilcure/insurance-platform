@@ -16,20 +16,17 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
 import { RowActionMenu } from "@/components/ui/row-action-menu";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuCheckboxItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
-import { Settings2 } from "lucide-react";
 import dynamic from "next/dynamic";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { RecordDetailsDrawer } from "@/components/ui/record-details-drawer";
 import { FieldEditDialog, loadEditFields, type EditField } from "@/components/ui/field-edit-dialog";
 import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
+import { useTableViewPresets } from "@/lib/view-presets/use-table-view-presets";
+import type { ViewPreset, ViewPresetColumnGroup } from "@/lib/view-presets/types";
+import { TableViewPresetBar } from "@/components/ui/table-view-preset-bar";
+import { TableViewPresetEditor } from "@/components/ui/table-view-preset-editor";
+import { usePagination } from "@/lib/pagination/use-pagination";
+import { Pagination } from "@/components/ui/pagination";
 
 const PolicySnapshotView = dynamic(
   () => import("@/components/policies/PolicySnapshotView").then((m) => m.PolicySnapshotView),
@@ -138,11 +135,23 @@ function extractNameFromExtra(extra: Record<string, unknown> | null | undefined)
 
 export default function PoliciesTableClient({
   initialRows,
+  initialTotal,
+  initialPageSize,
   entityLabel,
+  flowKey,
   currentUserType,
 }: {
   initialRows: Row[];
+  /** Total row count for the SSR-seeded first page. Required when
+   *  `initialRows` is provided; falls back to `initialRows.length` to keep
+   *  pre-migration callers working. */
+  initialTotal?: number;
+  initialPageSize?: number;
   entityLabel?: string;
+  /** Optional flow scope (`policyset`, `endorsement`, ...). Forwarded to
+   *  `/api/policies?flow=...` so paging respects the same filter the
+   *  server used for the first page. */
+  flowKey?: string;
   currentUserType?: string;
 }) {
   const label = entityLabel || "Policy";
@@ -151,7 +160,38 @@ export default function PoliciesTableClient({
   const effectiveUserType = currentUserType ?? sessionUserType;
   const isAdmin = effectiveUserType === "admin" || effectiveUserType === "internal_staff";
   const isClientUser = effectiveUserType === "direct_client";
-  const [rows, setRows] = React.useState<Row[]>(initialRows);
+
+  // Pagination: hook owns rows / total / page state. Optimistic updates
+  // (toggle active, soft-delete, rename) go through the hook helpers so
+  // they survive a refetch correctly.
+  const paginationParams = React.useMemo(
+    () => (flowKey ? { flow: flowKey } : undefined),
+    [flowKey],
+  );
+  const {
+    rows,
+    total,
+    page,
+    pageSize,
+    loading: rowsLoading,
+    setPage,
+    setPageSize,
+    patchRow,
+    removeRow,
+  } = usePagination<Row>({
+    url: "/api/policies",
+    scope: `policies:${entityLabel ?? "default"}`,
+    params: paginationParams,
+    initialRows,
+    initialTotal: initialTotal ?? initialRows.length,
+    initialPageSize: initialPageSize,
+  });
+
+  function patchRowById(id: number, next: Partial<Row>) {
+    const idx = rows.findIndex((r) => r.policyId === id);
+    if (idx >= 0) patchRow(idx, { ...rows[idx], ...next });
+  }
+
   const [query, setQuery] = React.useState("");
   const [openId, setOpenId] = React.useState<number | null>(null);
   const [deepLinkSection, setDeepLinkSection] = React.useState<string | undefined>(undefined);
@@ -175,12 +215,9 @@ export default function PoliciesTableClient({
   const [toggleConfirm, setToggleConfirm] = React.useState<{ id: number; currentlyActive: boolean } | null>(null);
   const [toggling, setToggling] = React.useState(false);
 
-  // ── Column presets system ──
   const MAX_COLS = 4;
-  const MAX_PRESETS = 5;
   const PRESETS_KEY = `policies-presets-${entityLabel ?? "default"}`;
 
-  type ColumnPreset = { id: string; name: string; columns: string[]; isDefault: boolean };
   type FieldOption = { path: string; label: string };
   type FieldGroup = { groupKey: string; groupLabel: string; fields: FieldOption[] };
 
@@ -364,82 +401,45 @@ export default function PoliciesTableClient({
       });
   }, [availableFields, packageLabels, packageSortOrders, label]);
 
-  // Preset state — synced to database
+  const columnGroups = React.useMemo<ViewPresetColumnGroup[]>(
+    () =>
+      groupedFields.map((g) => ({
+        groupKey: g.groupKey,
+        groupLabel: g.groupLabel,
+        options: g.fields.map((f) => ({ path: f.path, label: f.label })),
+      })),
+    [groupedFields],
+  );
+
   const presetScope = entityLabel ?? "default";
-  const [presets, setPresets] = React.useState<ColumnPreset[]>([]);
-  const [presetsLoaded, setPresetsLoaded] = React.useState(false);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/view-presets?scope=${encodeURIComponent(presetScope)}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .catch(() => {
-        try {
-          const stored = localStorage.getItem(PRESETS_KEY);
-          if (stored) return JSON.parse(stored) as ColumnPreset[];
-        } catch {}
-        return [];
-      })
-      .then((data: ColumnPreset[]) => {
-        if (cancelled) return;
-        setPresets(Array.isArray(data) ? data : []);
-        setPresetsLoaded(true);
-      });
-    return () => { cancelled = true; };
-  }, [presetScope]);
-
-  const savePresets = (next: ColumnPreset[]) => {
-    setPresets(next);
-    try { localStorage.setItem(PRESETS_KEY, JSON.stringify(next)); } catch {}
-    fetch(`/api/view-presets?scope=${encodeURIComponent(presetScope)}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(next),
-    }).catch(() => {});
-  };
-
-  const defaultPreset = presets.find((p) => p.isDefault) ?? presets[0] ?? null;
-  const [activePresetId, setActivePresetId] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    if (presetsLoaded && activePresetId === null && defaultPreset) {
-      setActivePresetId(defaultPreset.id);
-    }
-  }, [presetsLoaded, defaultPreset?.id]);
-
-  const activePreset = presets.find((p) => p.id === activePresetId) ?? defaultPreset;
+  const {
+    presets,
+    activePresetId,
+    setActivePresetId,
+    activePreset,
+    upsertPreset,
+    deletePreset,
+    setDefault,
+  } = useTableViewPresets({ scope: presetScope, legacyLocalStorageKey: PRESETS_KEY });
   const activeColumns = activePreset?.columns ?? [];
 
-  // Config dialog state
   const [configOpen, setConfigOpen] = React.useState(false);
-  const [editingPreset, setEditingPreset] = React.useState<ColumnPreset | null>(null);
+  const [editingPreset, setEditingPreset] = React.useState<ViewPreset | null>(null);
   const [draftName, setDraftName] = React.useState("");
   const [draftColumns, setDraftColumns] = React.useState<string[]>([]);
 
   function openNewPreset() {
-    if (presets.length >= MAX_PRESETS) {
-      toast.error(`Maximum ${MAX_PRESETS} views allowed`);
-      return;
-    }
     setEditingPreset(null);
     setDraftName(`View ${presets.length + 1}`);
     setDraftColumns([]);
     setConfigOpen(true);
   }
 
-  function openEditPreset(preset: ColumnPreset) {
+  function openEditPreset(preset: ViewPreset) {
     setEditingPreset(preset);
     setDraftName(preset.name);
     setDraftColumns([...preset.columns]);
     setConfigOpen(true);
-  }
-
-  function toggleDraftColumn(path: string) {
-    setDraftColumns((prev) => {
-      if (prev.includes(path)) return prev.filter((p) => p !== path);
-      if (prev.length >= MAX_COLS) return prev;
-      return [...prev, path];
-    });
   }
 
   function saveCurrentPreset() {
@@ -449,32 +449,23 @@ export default function PoliciesTableClient({
       return;
     }
     if (editingPreset) {
-      const next = presets.map((p) =>
-        p.id === editingPreset.id ? { ...p, name, columns: draftColumns } : p,
-      );
-      savePresets(next);
+      const updated = upsertPreset({
+        ...editingPreset,
+        name,
+        columns: draftColumns,
+      });
+      if (!updated) return;
     } else {
-      const newPreset: ColumnPreset = {
+      const created = upsertPreset({
         id: `preset_${Date.now()}`,
         name,
         columns: draftColumns,
         isDefault: presets.length === 0,
-      };
-      savePresets([...presets, newPreset]);
-      setActivePresetId(newPreset.id);
+      });
+      if (!created) return;
+      setActivePresetId(created.id);
     }
     setConfigOpen(false);
-  }
-
-  function deletePreset(id: string) {
-    const next = presets.filter((p) => p.id !== id);
-    if (next.length > 0 && !next.some((p) => p.isDefault)) next[0].isDefault = true;
-    savePresets(next);
-    if (activePresetId === id) setActivePresetId(next[0]?.id ?? null);
-  }
-
-  function setDefault(id: string) {
-    savePresets(presets.map((p) => ({ ...p, isDefault: p.id === id })));
   }
 
   function getColumnValue(row: Row, path: string): React.ReactNode {
@@ -795,7 +786,8 @@ export default function PoliciesTableClient({
       const updated = await openDetails(detail.policyId, { silent: true });
       if (updated) {
         const newName = extractNameFromExtra(updated.extraAttributes as Record<string, unknown> | undefined);
-        setRows((r) => r.map((x) => x.policyId === detail.policyId ? { ...x, displayName: newName || x.displayName } : x));
+        const idx = rows.findIndex((x) => x.policyId === detail.policyId);
+        if (idx >= 0) patchRow(idx, { ...rows[idx], displayName: newName || rows[idx].displayName });
       }
     } catch (err: unknown) {
       toast.error((err as { message?: string })?.message ?? "Save failed");
@@ -843,7 +835,7 @@ export default function PoliciesTableClient({
         body: JSON.stringify({ isActive: !currentlyActive }),
       });
       if (!res.ok) throw new Error(await res.text());
-      setRows((r) => r.map((x) => x.policyId === id ? { ...x, isActive: !currentlyActive } : x));
+      patchRowById(id, { isActive: !currentlyActive });
       toast.success(currentlyActive ? "Record disabled" : "Record enabled");
       setToggleConfirm(null);
     } catch (err: unknown) {
@@ -862,10 +854,10 @@ export default function PoliciesTableClient({
       if (!res.ok) throw new Error(data?.error ?? "Delete failed");
 
       if (data.softDeleted) {
-        setRows((r) => r.map((x) => x.policyId === id ? { ...x, isActive: false } : x));
+        patchRowById(id, { isActive: false });
         toast.success(data.message ?? "Endorsement deactivated and changes rolled back.");
       } else {
-        setRows((r) => r.filter((x) => x.policyId !== id));
+        removeRow((x) => x.policyId === id);
         toast.success("Deleted");
       }
       if (openId === id) closeDrawer();
@@ -883,43 +875,15 @@ export default function PoliciesTableClient({
           Search
         </Button>
         <div className="ml-auto flex items-center gap-2 text-sm">
-          {presets.length > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-auto max-w-20 flex-col gap-0 py-1 sm:h-9 sm:max-w-none sm:flex-row sm:gap-1.5 sm:py-0">
-                  <span className="truncate text-[9px] leading-tight sm:text-xs">{activePreset?.name ?? "View"}</span>
-                  <ChevronDown className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuLabel>Saved Views</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {presets.map((p) => (
-                  <DropdownMenuCheckboxItem
-                    key={p.id}
-                    checked={activePresetId === p.id}
-                    onCheckedChange={() => setActivePresetId(p.id)}
-                    onSelect={(e) => e.preventDefault()}
-                  >
-                    <span className="flex-1">{p.name}</span>
-                    {p.isDefault && <span className="ml-1 text-[10px] text-neutral-400">default</span>}
-                  </DropdownMenuCheckboxItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-          {activePreset && (
-            <Button variant="outline" size="sm" className="h-auto flex-col gap-0 py-1 sm:h-9 sm:flex-row sm:gap-1 sm:py-0" onClick={() => openEditPreset(activePreset)}>
-              <span className="text-[9px] leading-tight sm:hidden">Edit</span>
-              <Settings2 className="h-4 w-4" />
-              <span className="hidden sm:inline">Edit</span>
-            </Button>
-          )}
-          <Button variant="outline" size="sm" className="h-auto flex-col gap-0 py-1 sm:h-9 sm:flex-row sm:gap-1.5 sm:py-0" onClick={openNewPreset}>
-            <span className="text-[9px] leading-tight sm:hidden">{presets.length === 0 ? "Set Up" : "New"}</span>
-            <Settings2 className="h-4 w-4" />
-            <span className="hidden sm:inline">{presets.length === 0 ? "Set Up Columns" : "New View"}</span>
-          </Button>
+          <TableViewPresetBar
+            presets={presets}
+            activePresetId={activePresetId}
+            activePreset={activePreset}
+            onSelect={setActivePresetId}
+            onEditActive={() => activePreset && openEditPreset(activePreset)}
+            onNew={openNewPreset}
+            emptySetupLabel="Set Up Columns"
+          />
           <label className="hidden sm:inline text-neutral-500 dark:text-neutral-400">Sort</label>
           <CompactSelect
             options={sortOptions}
@@ -1010,6 +974,16 @@ export default function PoliciesTableClient({
         </TableBody>
       </Table>
       </div>
+
+      <Pagination
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        loading={rowsLoading}
+        onPageChange={setPage}
+        onPageSizeChange={setPageSize}
+        itemNoun={`${label.toLowerCase()}${total === 1 ? "" : "s"}`}
+      />
 
       <RecordDetailsDrawer
         open={openId !== null}
@@ -1133,160 +1107,31 @@ export default function PoliciesTableClient({
         </DialogContent>
       </Dialog>
 
-      {/* Column preset configuration dialog */}
-      <Dialog open={configOpen} onOpenChange={setConfigOpen}>
-        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>{editingPreset ? "Edit View" : "Set Up Table Columns"}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <label className="mb-1 block text-sm font-medium">View Name</label>
-              <Input
-                value={draftName}
-                onChange={(e) => setDraftName(e.target.value)}
-                placeholder="e.g. My Default View"
-              />
-            </div>
-
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <label className="text-sm font-medium">
-                  Columns <span className="font-normal text-neutral-400">({draftColumns.length}/{MAX_COLS})</span>
-                </label>
-                {draftColumns.length > 0 && (
-                  <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setDraftColumns([])}>
-                    Clear all
-                  </Button>
-                )}
-              </div>
-
-              {draftColumns.length > 0 && (
-                <div className="mb-3 space-y-1">
-                  {draftColumns.map((path, i) => (
-                    <div
-                      key={path}
-                      className="flex items-center gap-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-                    >
-                      <span className="w-4 text-center text-[10px] font-medium text-neutral-400">{i + 1}</span>
-                      <span className="flex-1">{getFieldLabel(path)}</span>
-                      <button
-                        type="button"
-                        disabled={i === 0}
-                        onClick={() => setDraftColumns((prev) => {
-                          const next = [...prev];
-                          [next[i - 1], next[i]] = [next[i], next[i - 1]];
-                          return next;
-                        })}
-                        className="rounded p-0.5 text-neutral-400 hover:text-neutral-600 disabled:opacity-20 dark:hover:text-neutral-200"
-                        title="Move up"
-                      >
-                        <ChevronUp className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={i === draftColumns.length - 1}
-                        onClick={() => setDraftColumns((prev) => {
-                          const next = [...prev];
-                          [next[i], next[i + 1]] = [next[i + 1], next[i]];
-                          return next;
-                        })}
-                        className="rounded p-0.5 text-neutral-400 hover:text-neutral-600 disabled:opacity-20 dark:hover:text-neutral-200"
-                        title="Move down"
-                      >
-                        <ChevronDown className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDraftColumns((prev) => prev.filter((p) => p !== path))}
-                        className="rounded p-0.5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-                        title="Remove"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="max-h-80 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700">
-                {groupedFields.map((group) => (
-                  <div key={group.groupKey}>
-                    <div className="sticky top-0 border-b border-neutral-100 bg-neutral-50 px-3 py-1.5 text-xs font-semibold text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
-                      {group.groupLabel}
-                    </div>
-                    {group.fields.map((f) => {
-                      const checked = draftColumns.includes(f.path);
-                      const disabled = !checked && draftColumns.length >= MAX_COLS;
-                      return (
-                        <label
-                          key={f.path}
-                          className={cn(
-                            "flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800/50",
-                            disabled && "cursor-not-allowed opacity-40",
-                          )}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={disabled}
-                            onChange={() => toggleDraftColumn(f.path)}
-                            className="h-3.5 w-3.5 rounded border-neutral-300 dark:border-neutral-600"
-                          />
-                          <span>{f.label}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {presets.length > 0 && !editingPreset && (
-              <div>
-                <label className="mb-1 block text-sm font-medium">Saved Views</label>
-                <div className="space-y-1">
-                  {presets.map((p) => (
-                    <div
-                      key={p.id}
-                      className="flex items-center justify-between rounded-md border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-700"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{p.name}</span>
-                        {p.isDefault && (
-                          <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
-                            Default
-                          </span>
-                        )}
-                        <span className="text-xs text-neutral-400">{p.columns.length} cols</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        {!p.isDefault && (
-                          <Button variant="ghost" size="sm" className="h-6 text-[11px]" onClick={() => setDefault(p.id)}>
-                            Set Default
-                          </Button>
-                        )}
-                        <Button variant="ghost" size="sm" className="h-6 text-[11px]" onClick={() => { setConfigOpen(false); setTimeout(() => openEditPreset(p), 150); }}>
-                          Edit
-                        </Button>
-                        <Button variant="ghost" size="sm" className="h-6 text-[11px] text-red-500 hover:text-red-600" onClick={() => deletePreset(p.id)}>
-                          Delete
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfigOpen(false)}>Cancel</Button>
-            <Button onClick={saveCurrentPreset} disabled={draftColumns.length === 0}>
-              {editingPreset ? "Update View" : "Save View"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <TableViewPresetEditor
+        open={configOpen}
+        onOpenChange={setConfigOpen}
+        editing={editingPreset}
+        draftName={draftName}
+        setDraftName={setDraftName}
+        draftColumns={draftColumns}
+        setDraftColumns={setDraftColumns}
+        maxColumns={MAX_COLS}
+        getSelectedLabel={getFieldLabel}
+        columnGroups={columnGroups}
+        savedViewsPanel={
+          editingPreset
+            ? undefined
+            : {
+                presets,
+                onEdit: openEditPreset,
+                onDelete: deletePreset,
+                onSetDefault: setDefault,
+              }
+        }
+        onSave={saveCurrentPreset}
+        editTitle="Edit View"
+        newTitle="Set Up Table Columns"
+      />
     </div>
   );
 }

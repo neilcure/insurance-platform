@@ -5,12 +5,33 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { RefreshCcw, Copy } from "lucide-react";
+import { confirmDialog } from "@/components/ui/global-dialogs";
 
-export default function ReissueInviteButton({ userId }: { userId: number }) {
+export default function ReissueInviteButton({
+  userId,
+  recipientEmail,
+  recipientName,
+}: {
+  userId: number;
+  recipientEmail?: string | null;
+  recipientName?: string | null;
+}) {
   const [inviteLink, setInviteLink] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
 
   async function reissue() {
+    const targetEmail = (recipientEmail ?? "").trim();
+    const targetName = (recipientName ?? "").trim();
+    const ok = await confirmDialog({
+      title: "Re-issue invite?",
+      description: targetEmail
+        ? `An invite link will be emailed to:\n\n${targetEmail}${targetName ? `  (${targetName})` : ""}\n\nIf this address is wrong, click Cancel and use Edit to fix it first.`
+        : "An invite link will be emailed to this user. Confirm to continue.",
+      confirmLabel: "Send Invite",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+
     setLoading(true);
     setInviteLink(null);
     try {
@@ -21,14 +42,15 @@ export default function ReissueInviteButton({ userId }: { userId: number }) {
         setLoading(false);
         return;
       }
+      const successMsg = targetEmail ? `Invite sent to ${targetEmail}` : "Invite sent";
       if (data.inviteLink) {
         setInviteLink(data.inviteLink);
-        toast.success("Invite re-issued (development)");
+        toast.success(`${successMsg} (link copied below)`);
       } else {
-        toast.success("Invite re-issued");
+        toast.success(successMsg);
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Failed to re-issue invite";
+      const message = err instanceof Error ? err.message : "Failed to send invite";
       toast.error(message);
     } finally {
       setLoading(false);

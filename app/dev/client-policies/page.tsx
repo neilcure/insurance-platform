@@ -27,7 +27,8 @@ export default async function ClientPoliciesDebugPage({
     const qs = params.join("&");
     const res = await serverFetch(`/api/policies?${qs}`);
     if (!res.ok) return [];
-    return (await res.json()) as Row[];
+    const raw = await res.json();
+    return Array.isArray(raw) ? (raw as Row[]) : Array.isArray(raw?.rows) ? (raw.rows as Row[]) : [];
   }
 
   async function fetchOne(): Promise<Row | null> {
@@ -36,8 +37,9 @@ export default async function ClientPoliciesDebugPage({
       `/api/policies?policyNumber=${encodeURIComponent(policyNumber)}&include=extra`,
     );
     if (!res.ok) return null;
-    const arr = (await res.json()) as Row[];
-    return Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
+    const raw = await res.json();
+    const arr: Row[] = Array.isArray(raw) ? (raw as Row[]) : Array.isArray(raw?.rows) ? (raw.rows as Row[]) : [];
+    return arr.length > 0 ? arr[0] : null;
   }
 
   const [rows, one] = await Promise.all([fetchPolicies(), fetchOne()]);

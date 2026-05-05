@@ -42,13 +42,16 @@ export function AgentPickerDrawer({
     async function load() {
       setLoading(true);
       try {
-        const res = await fetch("/api/agents", { cache: "no-store" });
-        const json = res.ok ? ((await res.json()) as AgentRow[]) : [];
+        const res = await fetch("/api/agents?limit=500", { cache: "no-store" });
+        const raw = res.ok ? await res.json() : null;
+        const json: AgentRow[] = Array.isArray(raw)
+          ? (raw as AgentRow[])
+          : Array.isArray(raw?.rows)
+            ? (raw.rows as AgentRow[])
+            : [];
         if (!cancelled) {
           setRows(
-            (Array.isArray(json) ? json : []).filter(
-              (r) => r.isActive && Number.isFinite(r.id) && r.id > 0,
-            ),
+            json.filter((r) => r.isActive && Number.isFinite(r.id) && r.id > 0),
           );
         }
       } catch {

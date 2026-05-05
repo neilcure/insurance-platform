@@ -186,6 +186,19 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
             className={isClientType && selectedClient ? "bg-neutral-100 dark:bg-neutral-800" : ""}
           />
         </div>
+        <div className="grid gap-2">
+          <Label>User Type</Label>
+          <RadioGroup value={userType} onValueChange={(v: string) => setUserType(v as UserType)} className="flex flex-wrap gap-4">
+            {safeTypes.map((t) => (
+              <label key={t} className="flex items-center gap-2 text-sm">
+                <RadioGroupItem value={t} id={`t-${t}`} />
+                <span className="capitalize">
+                  {t === "internal_staff" ? "Internal Staff" : t === "direct_client" ? "Direct Client" : t.replace("_", " ")}
+                </span>
+              </label>
+            ))}
+          </RadioGroup>
+        </div>
         {isAgentType && (
           <>
             <div className="grid gap-2">
@@ -225,19 +238,6 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
             </div>
           </>
         )}
-        <div className="grid gap-2">
-          <Label>User Type</Label>
-          <RadioGroup value={userType} onValueChange={(v: string) => setUserType(v as UserType)} className="flex flex-wrap gap-4">
-            {safeTypes.map((t) => (
-              <label key={t} className="flex items-center gap-2 text-sm">
-                <RadioGroupItem value={t} id={`t-${t}`} />
-                <span className="capitalize">
-                  {t === "internal_staff" ? "Internal Staff" : t === "direct_client" ? "Direct Client" : t.replace("_", " ")}
-                </span>
-              </label>
-            ))}
-          </RadioGroup>
-        </div>
         {!isClientType && (
           <div className="grid gap-2">
             <Label>Creation Mode</Label>
@@ -314,7 +314,7 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
 
         <div className="flex justify-start sm:justify-end">
           <Button
-            disabled={submitting || (isClientType && !selectedClientId) || (isAgentType && agentAccountType === "company" && !agentCompanyName.trim())}
+            disabled={submitting || (isClientType && !selectedClientId)}
             onClick={submit}
             className="inline-flex items-center gap-2"
           >
