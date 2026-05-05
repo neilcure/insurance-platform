@@ -12,6 +12,7 @@ const toOptionalTrimmedString = (v: unknown) => {
 
 export const PersonalInfoSchema = z.object({
   personalName: z.string().min(1, "Name is required").max(200),
+  mobile: z.preprocess(toOptionalTrimmedString, z.string().max(64).optional()),
   timezone: z.preprocess(toOptionalTrimmedString, z.string().max(255).optional()),
 });
 

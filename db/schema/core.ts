@@ -15,6 +15,7 @@ export const userTypeEnum = pgEnum("user_type", [
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   email: text("email").notNull().unique(),
+  mobile: text("mobile"),
   passwordHash: text("password_hash").notNull(),
   name: text("name"),
   timezone: text("timezone"),

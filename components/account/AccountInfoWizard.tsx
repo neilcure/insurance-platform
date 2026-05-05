@@ -21,7 +21,7 @@ import {
  import { useRouter } from "next/navigation";
 
 type InitialData = {
-  user: { id: number; email: string; name?: string | null } | null;
+  user: { id: number; email: string; mobile?: string | null; name?: string | null; timezone?: string | null } | null;
   organisation:
     | {
         id: number;
@@ -73,6 +73,7 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
     resolver: zodResolver(AccountWizardSchema),
     defaultValues: {
       personalName: initial.user?.name ?? "",
+      mobile: initial.user?.mobile ?? undefined,
       timezone: (initial.user as any)?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       // Organisation
       ...({
@@ -114,7 +115,7 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const pendingAction = React.useRef<(() => Promise<void>) | null>(null);
 
-  const personalFields = ["personalName", "timezone"] as const;
+  const personalFields = ["personalName", "mobile", "timezone"] as const;
   const orgFields = ["organisationName", "contactName", "contactEmail", "contactPhone"] as const;
   const addressFields = ["flatNumber", "floorNumber", "blockNumber", "blockName", "streetNumber", "streetName", "propertyName", "districtName", "area"] as const;
 
@@ -129,7 +130,7 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
   }
 
   const fieldLabels: Record<string, string> = {
-    personalName: "Name", timezone: "Time zone",
+    personalName: "Name", mobile: "Mobile", timezone: "Time zone",
     organisationName: "Organisation Name", contactName: "Contact Name",
     contactEmail: "Contact Email", contactPhone: "Contact Phone",
     flatNumber: "Flat", floorNumber: "Floor", blockNumber: "Block No.",
@@ -148,7 +149,7 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
     const res = await fetch("/api/account/user", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: values.personalName, timezone: (values as any).timezone }),
+      body: JSON.stringify({ name: values.personalName, mobile: values.mobile, timezone: (values as any).timezone }),
     });
     if (!res.ok) {
       const msg = await res.text();
@@ -191,7 +192,7 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
 
   async function doSaveAll(values: AccountWizardInput) {
     try {
-      await savePersonal({ personalName: values.personalName });
+      await savePersonal({ personalName: values.personalName, mobile: values.mobile, timezone: (values as any).timezone });
       await saveOrganisation({
         organisationName: values.organisationName,
         contactName: values.contactName,
@@ -279,6 +280,14 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
                 />
               </div>
               <div className="grid gap-2">
+                <Label htmlFor="mobile">Mobile</Label>
+                <Input
+                  id="mobile"
+                  {...form.register("mobile")}
+                  placeholder="Mobile number"
+                />
+              </div>
+              <div className="grid gap-2">
                 <Label htmlFor="timezone">Time zone</Label>
                 <select
                   id="timezone"
@@ -304,7 +313,11 @@ export function AccountInfoWizard({ initial }: { initial: InitialData }) {
                       }
                       pendingAction.current = async () => {
                         const values = form.getValues();
-                        await savePersonal({ personalName: values.personalName, timezone: (values as any).timezone });
+                        await savePersonal({
+                          personalName: values.personalName,
+                          mobile: values.mobile,
+                          timezone: (values as any).timezone,
+                        });
                         form.reset(form.getValues());
                         toast.success("Saved");
                         next();

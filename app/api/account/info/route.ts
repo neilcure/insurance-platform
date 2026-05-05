@@ -15,6 +15,7 @@ export async function GET() {
         .select({
           id: users.id,
           email: users.email,
+          mobile: users.mobile,
           name: users.name,
           userType: users.userType,
           timezone: users.timezone,

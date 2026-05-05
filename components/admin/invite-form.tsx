@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Copy, Loader2, Search, UserPlus } from "lucide-react";
 
 type UserType = "admin" | "agent" | "accounting" | "internal_staff" | "direct_client";
+type CreationMode = "invite" | "account_only";
 
 type UnlinkedClient = {
   id: number | string;
@@ -26,10 +27,12 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
     [allowedTypes]
   );
   const [email, setEmail] = React.useState("");
+  const [mobile, setMobile] = React.useState("");
   const [name, setName] = React.useState("");
   const [userType, setUserType] = React.useState<UserType>(safeTypes[0]!);
   const [inviteLink, setInviteLink] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
+  const [creationMode, setCreationMode] = React.useState<CreationMode>("invite");
 
   // Client linking state
   const [unlinkedClients, setUnlinkedClients] = React.useState<UnlinkedClient[]>([]);
@@ -44,6 +47,12 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
       setUserType(safeTypes[0]!);
     }
   }, [safeTypes, userType]);
+
+  React.useEffect(() => {
+    if (isClientType && creationMode !== "invite") {
+      setCreationMode("invite");
+    }
+  }, [isClientType, creationMode]);
 
   React.useEffect(() => {
     if (!isClientType) {
@@ -94,7 +103,10 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
     setSubmitting(true);
     setInviteLink(null);
     try {
-      const payload: Record<string, unknown> = { email, name, userType };
+      const payload: Record<string, unknown> = { email, mobile, name, userType };
+      if (!isClientType) {
+        payload.creationMode = creationMode;
+      }
       if (isClientType && selectedClientId) {
         const sel = unlinkedClients.find((c) => c.id === selectedClientId);
         if (sel?.source === "flow" && typeof sel.id === "string") {
@@ -117,10 +129,13 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
       if (data.inviteLink) {
         setInviteLink(data.inviteLink);
         toast.success("Invite created (development)");
+      } else if (data.creationMode === "account_only") {
+        toast.success("Account created without invite");
       } else {
         toast.success("Invite created");
       }
       setEmail("");
+      setMobile("");
       setName("");
       setSelectedClientId(null);
       setUserType(safeTypes[0]!);
@@ -141,6 +156,10 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
         <div className="grid gap-2">
           <Label>Email</Label>
           <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@example.com" />
+        </div>
+        <div className="grid gap-2">
+          <Label>Mobile</Label>
+          <Input value={mobile} onChange={(e) => setMobile(e.target.value)} placeholder="Optional mobile number" />
         </div>
         <div className="grid gap-2">
           <Label>{isClientType && selectedClient ? (selectedClient.category === "company" ? "Company Name" : "Client Name") : "Name"}</Label>
@@ -165,6 +184,25 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
             ))}
           </RadioGroup>
         </div>
+        {!isClientType && (
+          <div className="grid gap-2">
+            <Label>Creation Mode</Label>
+            <RadioGroup
+              value={creationMode}
+              onValueChange={(v: string) => setCreationMode(v as CreationMode)}
+              className="flex flex-wrap gap-4"
+            >
+              <label className="flex items-center gap-2 text-sm">
+                <RadioGroupItem value="invite" id="creation-invite" />
+                <span>Create + Invite Now</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <RadioGroupItem value="account_only" id="creation-account-only" />
+                <span>Create Account Only</span>
+              </label>
+            </RadioGroup>
+          </div>
+        )}
 
         {isClientType && (
           <div className="grid gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-800/50">
@@ -223,7 +261,9 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
         <div className="flex justify-start sm:justify-end">
           <Button disabled={submitting || (isClientType && !selectedClientId)} onClick={submit} className="inline-flex items-center gap-2">
             <UserPlus className="h-4 w-4 sm:hidden lg:inline" />
-            <span className="hidden sm:inline">{submitting ? "Creating..." : "Create Invite"}</span>
+            <span className="hidden sm:inline">
+              {submitting ? "Creating..." : !isClientType && creationMode === "account_only" ? "Create Account" : "Create Invite"}
+            </span>
           </Button>
         </div>
         {inviteLink ? (

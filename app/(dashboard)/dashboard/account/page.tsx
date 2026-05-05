@@ -16,6 +16,7 @@ export default async function AccountPage() {
     | {
         id: number;
         email: string;
+        mobile: string | null;
         name: string | null;
         timezone?: string | null;
         userType?: string;
@@ -48,6 +49,7 @@ export default async function AccountPage() {
         .select({
           id: users.id,
           email: users.email,
+          mobile: users.mobile,
           name: users.name,
           timezone: users.timezone,
           userType: users.userType,

@@ -62,10 +62,12 @@ async function createClientFromFlow(carId: number, createdBy: number): Promise<n
 
 type PostBody = {
   email: string;
+  mobile?: string;
   name?: string;
   userType: "admin" | "agent" | "accounting" | "internal_staff" | "direct_client";
   clientId?: number;
   flowCarId?: number;
+  creationMode?: "invite" | "account_only";
 };
 
 export async function POST(request: Request) {
@@ -75,15 +77,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const body = (await request.json()) as any;
+    const body = (await request.json()) as PostBody;
     const email = (body.email ?? "").trim().toLowerCase();
+    const mobile = typeof body.mobile === "string" ? body.mobile.trim() : "";
     if (!email) {
       return NextResponse.json({ error: "Email required" }, { status: 400 });
     }
-    if (body.userType === "service_provider") {
-      return NextResponse.json({ error: "Service provider type is not supported." }, { status: 400 });
-    }
-
     // For direct_client: resolve the client record (from table or flow)
     let resolvedClientId: number | null = null;
     if (body.userType === "direct_client") {
@@ -119,6 +118,10 @@ export async function POST(request: Request) {
     if (me.userType !== "admin" && (body.userType === "admin" || body.userType === "agent")) {
       return NextResponse.json({ error: "Only admin can assign admin/agent roles." }, { status: 403 });
     }
+    const creationMode = body.creationMode === "account_only" ? "account_only" : "invite";
+    if (body.userType === "direct_client" && creationMode === "account_only") {
+      return NextResponse.json({ error: "Direct client accounts must be created via invite flow." }, { status: 400 });
+    }
 
     // Create a random strong passphrase hash so the account can't be used
     const tempPassword = crypto.randomBytes(32).toString("hex");
@@ -130,6 +133,7 @@ export async function POST(request: Request) {
         .insert(users)
         .values({
           email,
+          mobile: mobile || null,
           name: body.name,
           userType: body.userType,
           passwordHash,
@@ -177,7 +181,23 @@ export async function POST(request: Request) {
       console.error("Failed to generate userNumber:", err);
     }
 
-    // Create invite
+    const isDev = process.env.NODE_ENV !== "production";
+    if (creationMode === "account_only") {
+      return NextResponse.json(
+        {
+          id: createdUser.id,
+          email: createdUser.email,
+          name: createdUser.name,
+          userType: createdUser.userType,
+          isActive: createdUser.isActive,
+          creationMode,
+          message: "Account created without invite",
+        },
+        { status: 201 }
+      );
+    }
+
+    // Invite mode: create one-time invite token
     const token = crypto.randomBytes(32).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48 hours
@@ -188,7 +208,6 @@ export async function POST(request: Request) {
       expiresAt: expiresAt.toISOString() as unknown as any,
     });
 
-    const isDev = process.env.NODE_ENV !== "production";
     const baseUrl = getBaseUrlFromRequestUrl(request.url);
     const inviteLink = `${baseUrl}/invite/${token}`;
 
@@ -214,6 +233,7 @@ export async function POST(request: Request) {
             name: createdUser.name,
             userType: createdUser.userType,
             isActive: createdUser.isActive,
+            creationMode,
             inviteLink,
             emailSent: emailResult.ok,
             emailError: emailResult.ok ? undefined : emailResult.error,

@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import ReissueInviteButton from "@/components/admin/reissue-invite-button";
+import GenerateSetupLinkButton from "@/components/admin/generate-setup-link-button";
+import { confirmDialog, promptDialog } from "@/components/ui/global-dialogs";
 import { useRouter } from "next/navigation";
 import { KeyRound, Link2, Loader2, Power, Search, Trash2, X } from "lucide-react";
 
@@ -57,7 +59,12 @@ export function UserRowActions({
   }
 
   async function resetPassword() {
-    const newPassword = prompt("Enter new password for this user (min 6 characters):");
+    const newPassword = await promptDialog({
+      title: "Reset password",
+      description: "Enter a new password for this user.",
+      placeholder: "New password",
+      confirmLabel: "Reset",
+    });
     if (!newPassword) return;
     if (newPassword.length < 6) {
       toast.error("Password must be at least 6 characters");
@@ -81,7 +88,13 @@ export function UserRowActions({
   }
 
   async function del() {
-    if (!confirm("Delete this user? This cannot be undone.")) return;
+    const ok = await confirmDialog({
+      title: "Delete this user?",
+      description: "This action cannot be undone.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       setLoading(true);
       const res = await fetch(`/api/admin/users/${userId}`, { method: "DELETE" });
@@ -140,6 +153,7 @@ export function UserRowActions({
   const allowedRoles = canAssignAdmin
     ? ["admin", "agent", "accounting", "internal_staff", "direct_client"]
     : ["accounting", "internal_staff"];
+  const isStaffRole = type === "agent" || type === "accounting" || type === "internal_staff";
 
   return (
     <div className="space-y-2">
@@ -185,6 +199,7 @@ export function UserRowActions({
           <KeyRound className="h-4 w-4 sm:hidden lg:inline" />
           <span className="hidden sm:inline">Reset PW</span>
         </Button>
+        {!active && isStaffRole ? <GenerateSetupLinkButton userId={userId} /> : null}
         {!active ? <ReissueInviteButton userId={userId} /> : null}
         <Button
           size="sm"

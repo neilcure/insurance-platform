@@ -7,6 +7,7 @@ import { z } from "zod";
 
 const Body = z.object({
   name: z.string().min(1, "Name is required").max(200),
+  mobile: z.string().max(64).optional(),
   timezone: z.string().max(255).optional(),
 });
 
@@ -25,12 +26,16 @@ export async function PATCH(request: NextRequest) {
     if (typeof parsed.data.timezone === "string" && parsed.data.timezone.trim().length > 0) {
       updateValues.timezone = parsed.data.timezone.trim();
     }
+    if (typeof parsed.data.mobile === "string") {
+      const trimmedMobile = parsed.data.mobile.trim();
+      updateValues.mobile = trimmedMobile.length > 0 ? trimmedMobile : null;
+    }
 
     const [updated] = await db
       .update(users)
       .set(updateValues)
       .where(eq(users.id, Number(me.id)))
-      .returning({ id: users.id, name: users.name, timezone: users.timezone });
+      .returning({ id: users.id, name: users.name, mobile: users.mobile, timezone: users.timezone });
 
     return NextResponse.json(updated, { status: 200 });
   } catch (err) {
