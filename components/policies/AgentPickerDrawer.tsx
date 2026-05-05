@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SlideDrawer } from "@/components/ui/slide-drawer";
+import { toast } from "sonner";
 
 type AgentRow = {
   id: number;
@@ -12,6 +13,7 @@ type AgentRow = {
   email: string;
   name: string | null;
   isActive: boolean;
+  hasCompletedSetup?: boolean;
 };
 
 export type AgentPickerSelection = {
@@ -50,9 +52,12 @@ export function AgentPickerDrawer({
             ? (raw.rows as AgentRow[])
             : [];
         if (!cancelled) {
-          setRows(
-            json.filter((r) => r.isActive && Number.isFinite(r.id) && r.id > 0),
-          );
+          // Show every valid agent including ones who haven't completed the
+          // invite flow yet — they're still a legitimate assignment target
+          // (e.g. admin pre-assigns work before the agent accepts the
+          // invite). The "Setup Pending" badge below makes the state
+          // visible, and the warning toast on Select makes it explicit.
+          setRows(json.filter((r) => Number.isFinite(r.id) && r.id > 0));
         }
       } catch {
         if (!cancelled) setRows([]);
@@ -79,6 +84,24 @@ export function AgentPickerDrawer({
     );
   }, [rows, search]);
 
+  function handleSelect(r: AgentRow) {
+    onSelect({
+      id: r.id,
+      userNumber: r.userNumber,
+      name: r.name,
+      email: r.email,
+    });
+    if (r.hasCompletedSetup === false) {
+      toast.warning(
+        `Agent assigned, but ${r.name ?? r.email ?? "they"} hasn't activated their account yet.`,
+        {
+          description: "They'll see this work once they accept the invite.",
+        },
+      );
+    }
+    onClose();
+  }
+
   return (
     <SlideDrawer open={open} onClose={onClose} title="Select Agent" side="left" zClass="z-[60]">
       <div className="flex h-full flex-col gap-3 p-4">
@@ -100,39 +123,53 @@ export function AgentPickerDrawer({
             </div>
           ) : (
             <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
-              {filtered.map((r) => (
-                <li
-                  key={r.id}
-                  className="flex items-center justify-between gap-3 p-3"
-                >
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium">
-                      {r.name ?? "—"}
-                    </div>
-                    <div className="truncate font-mono text-xs text-neutral-500 dark:text-neutral-400">
-                      {r.userNumber ?? "—"}
-                    </div>
-                    <div className="text-[11px] text-neutral-400 dark:text-neutral-500">
-                      {r.email}
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    className="shrink-0"
-                    onClick={() => {
-                      onSelect({
-                        id: r.id,
-                        userNumber: r.userNumber,
-                        name: r.name,
-                        email: r.email,
-                      });
-                      onClose();
-                    }}
+              {filtered.map((r) => {
+                const isPending = r.hasCompletedSetup === false;
+                const isInactive = r.isActive === false && !isPending;
+                return (
+                  <li
+                    key={r.id}
+                    className="flex items-center justify-between gap-3 p-3"
                   >
-                    Select
-                  </Button>
-                </li>
-              ))}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-xs font-medium">
+                          {r.name ?? "—"}
+                        </span>
+                        {isPending && (
+                          <span
+                            className="inline-flex shrink-0 items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                            title="Account created but the agent has not completed the invite flow yet."
+                          >
+                            Setup Pending
+                          </span>
+                        )}
+                        {isInactive && (
+                          <span
+                            className="inline-flex shrink-0 items-center rounded-full bg-neutral-200 px-2 py-0.5 text-[10px] font-medium text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+                            title="Agent account is disabled."
+                          >
+                            Inactive
+                          </span>
+                        )}
+                      </div>
+                      <div className="truncate font-mono text-xs text-neutral-500 dark:text-neutral-400">
+                        {r.userNumber ?? "—"}
+                      </div>
+                      <div className="truncate text-[11px] text-neutral-400 dark:text-neutral-500">
+                        {r.email}
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => handleSelect(r)}
+                    >
+                      Select
+                    </Button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

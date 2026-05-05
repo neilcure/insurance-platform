@@ -1557,7 +1557,7 @@ export default function NewPolicyStep1Page() {
   const [currentUserType, setCurrentUserType] = React.useState<string>("");
   const [agentPickerOpen, setAgentPickerOpen] = React.useState(false);
   const [agentDrawerOpen, setAgentDrawerOpen] = React.useState(false);
-  const [agentRows, setAgentRows] = React.useState<Array<{ id: number; userNumber?: string | null; name?: string | null; email: string }>>([]);
+  const [agentRows, setAgentRows] = React.useState<Array<{ id: number; userNumber?: string | null; name?: string | null; email: string; isActive?: boolean; hasCompletedSetup?: boolean }>>([]);
   const [agentSearch, setAgentSearch] = React.useState("");
   const [loadingAgentList, setLoadingAgentList] = React.useState(false);
   const [selectedAgent, setSelectedAgent] = React.useState<{ id: number; label: string } | null>(null);
@@ -1597,7 +1597,14 @@ export default function NewPolicyStep1Page() {
       try {
         const res = await fetch("/api/agents?limit=500", { cache: "no-store" });
         if (!res.ok) return;
-        type AgentLite = { id: number; userNumber?: string | null; name?: string | null; email: string };
+        type AgentLite = {
+          id: number;
+          userNumber?: string | null;
+          name?: string | null;
+          email: string;
+          isActive?: boolean;
+          hasCompletedSetup?: boolean;
+        };
         const raw = await res.json();
         const list: AgentLite[] = Array.isArray(raw)
           ? (raw as AgentLite[])
@@ -1635,7 +1642,16 @@ export default function NewPolicyStep1Page() {
       policy: { ...(w.policy ?? {}), agentId: id },
     }));
     setSelectedAgent({ id, label: label.trim() || `#${id}` });
-    toast.success(`Agent selected: ${label || `#${id}`}`);
+    if (agent?.hasCompletedSetup === false) {
+      // Pre-assign is allowed but the admin should know the agent
+      // hasn't accepted their invite yet — they can't log in or
+      // receive in-app notifications until they do.
+      toast.warning(`Agent assigned, but ${agent.name ?? agent.email ?? "they"} hasn't activated their account yet.`, {
+        description: "They'll see this work once they accept the invite.",
+      });
+    } else {
+      toast.success(`Agent selected: ${label || `#${id}`}`);
+    }
     setAgentPickerOpen(false);
   }
   // moved below wizard initialization
@@ -4547,14 +4563,21 @@ export default function NewPolicyStep1Page() {
                         (a.userNumber ? `${a.userNumber} — ` : "") +
                         (a.name ?? "") +
                         ` <${a.email}>`;
+                      const isPending = a.hasCompletedSetup === false;
                       return (
                         <button
                           key={a.id}
                           type="button"
                           onClick={() => chooseAgent(a.id)}
-                          className="w-full rounded border border-neutral-200 px-2 py-1 text-left transition-colors hover:border-green-500 hover:bg-green-50 hover:text-green-700 dark:border-neutral-800 dark:hover:border-green-500 dark:hover:bg-green-900/30 dark:hover:text-green-300"
+                          className="flex w-full items-center justify-between gap-2 rounded border border-neutral-200 px-2 py-1 text-left transition-colors hover:border-green-500 hover:bg-green-50 hover:text-green-700 dark:border-neutral-800 dark:hover:border-green-500 dark:hover:bg-green-900/30 dark:hover:text-green-300"
+                          title={isPending ? "Account created but the agent has not completed the invite flow yet." : undefined}
                         >
-                          {label}
+                          <span className="min-w-0 truncate">{label}</span>
+                          {isPending && (
+                            <span className="inline-flex shrink-0 items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                              Setup Pending
+                            </span>
+                          )}
                         </button>
                       );
                     })
