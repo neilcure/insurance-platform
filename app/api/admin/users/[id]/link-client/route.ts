@@ -110,6 +110,20 @@ export async function POST(
       clientDisplayName = clientRow.displayName;
     }
 
+    // Guard against one user being linked to multiple client rows.
+    // direct_client should be a 1:1 mapping with a single client record.
+    const [existingLinkedClient] = await db
+      .select({ id: clients.id, clientNumber: clients.clientNumber })
+      .from(clients)
+      .where(eq(clients.userId, targetUserId))
+      .limit(1);
+    if (existingLinkedClient && existingLinkedClient.id !== resolvedClientId) {
+      return NextResponse.json(
+        { error: `User already linked to client ${existingLinkedClient.clientNumber}.` },
+        { status: 409 }
+      );
+    }
+
     // Update user type to direct_client if not already
     if (targetUser.userType !== "direct_client") {
       await db.update(users).set({ userType: "direct_client" }).where(eq(users.id, targetUserId));

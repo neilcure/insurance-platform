@@ -1,6 +1,9 @@
 import { db } from "@/db/client";
 import { users, clients } from "@/db/schema/core";
 import { requireUser } from "@/lib/auth/require-user";
+import { desc, eq, inArray } from "drizzle-orm";
+import { policies, cars } from "@/db/schema/insurance";
+import { getInsuredPrimaryId, getInsuredType } from "@/lib/field-resolver";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import InviteForm from "@/components/admin/invite-form";
 import { UserRowActions } from "@/components/admin/user-row-actions";
@@ -84,16 +87,53 @@ export default async function AdminUsersPage() {
   // Load linked client names and client numbers for direct_client users
   let clientLinks: Record<number, string> = {};
   let clientNumbers: Record<number, string> = {};
+  let profilePolicyNumbers: Record<number, string> = {};
   try {
     const clientUserIds = rows.filter((r) => r.userType === "direct_client").map((r) => r.id);
     if (clientUserIds.length > 0) {
+      const directClientUserIdSet = new Set(clientUserIds);
+      const profileRows = await db
+        .select({
+          policyNumber: policies.policyNumber,
+          extraAttributes: cars.extraAttributes,
+        })
+        .from(policies)
+        .leftJoin(cars, eq(cars.policyId, policies.id))
+        .where(eq(policies.flowKey, "clientSet"));
+      const profileMap = new Map<string, string>();
+      for (const p of profileRows) {
+        const extra = (p.extraAttributes ?? {}) as Record<string, unknown>;
+        const insured = (extra.insuredSnapshot ?? {}) as Record<string, unknown>;
+        const category = (getInsuredType(insured) || "").trim().toLowerCase();
+        const primaryId = (getInsuredPrimaryId(insured) || "").trim();
+        if (!category || !primaryId) continue;
+        if (!profileMap.has(`${category}::${primaryId}`)) {
+          profileMap.set(`${category}::${primaryId}`, p.policyNumber);
+        }
+      }
       const linkRows = await db
-        .select({ userId: clients.userId, displayName: clients.displayName, clientNumber: clients.clientNumber })
-        .from(clients);
+        .select({
+          id: clients.id,
+          userId: clients.userId,
+          displayName: clients.displayName,
+          clientNumber: clients.clientNumber,
+          category: clients.category,
+          primaryId: clients.primaryId,
+          createdAt: clients.createdAt,
+        })
+        .from(clients)
+        .where(inArray(clients.userId, clientUserIds))
+        .orderBy(desc(clients.createdAt), desc(clients.id));
       for (const lr of linkRows) {
-        if (lr.userId && clientUserIds.includes(lr.userId)) {
+        if (
+          lr.userId &&
+          directClientUserIdSet.has(lr.userId) &&
+          !clientNumbers[lr.userId]
+        ) {
           clientLinks[lr.userId] = lr.displayName;
           clientNumbers[lr.userId] = lr.clientNumber;
+          profilePolicyNumbers[lr.userId] =
+            profileMap.get(`${String(lr.category).trim().toLowerCase()}::${String(lr.primaryId).trim()}`) ?? "";
         }
       }
     }
@@ -103,6 +143,15 @@ export default async function AdminUsersPage() {
   const makeSortKey = (r: UserRow) =>
     `${(r.userNumber ?? "").toString()}|${(r.email || "").toLowerCase()}|${String(r.id).padStart(10, "0")}`;
   rows = rows.slice().sort((a, b) => makeSortKey(a).localeCompare(makeSortKey(b)));
+  const getDirectClientPrimaryNumber = (userId: number): string =>
+    profilePolicyNumbers[userId] || clientNumbers[userId] || "";
+  const getDirectClientSecondaryNumber = (userId: number): string => {
+    const primary = profilePolicyNumbers[userId] || "";
+    const secondary = clientNumbers[userId] || "";
+    if (!secondary) return "";
+    if (primary && primary === secondary) return "";
+    return secondary;
+  };
 
   return (
     <main className="mx-auto max-w-6xl space-y-6">
@@ -132,22 +181,43 @@ export default async function AdminUsersPage() {
                 {rows.map((u) => (
                   <TableRow key={u.id}>
                     <TableCell
-                      title={(u.userType === "direct_client" ? clientNumbers[u.id] : u.userNumber) ?? ""}
+                      title={
+                        u.userType === "direct_client"
+                          ? [getDirectClientPrimaryNumber(u.id), getDirectClientSecondaryNumber(u.id)].filter(Boolean).join(" / ")
+                          : (u.userNumber ?? "")
+                      }
                       className={`hidden md:table-cell font-mono text-xs ${
                         u.isActive ? "text-green-600 dark:text-green-400" : "text-neutral-600 dark:text-neutral-400"
                       }`}
                     >
-                      {(u.userType === "direct_client" ? clientNumbers[u.id] : u.userNumber) ?? "—"}
+                      {u.userType === "direct_client" ? (
+                        <div className="space-y-0.5">
+                          <div>{getDirectClientPrimaryNumber(u.id) || "—"}</div>
+                          {getDirectClientSecondaryNumber(u.id) ? (
+                            <div className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                              {getDirectClientSecondaryNumber(u.id)}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        u.userNumber ?? "—"
+                      )}
                     </TableCell>
                     <TableCell className="block w-full md:table-cell">
                       <div className="flex items-center gap-2 md:block">
                         <span
-                          title={(u.userType === "direct_client" ? clientNumbers[u.id] : u.userNumber) ?? ""}
+                          title={
+                            u.userType === "direct_client"
+                              ? [getDirectClientPrimaryNumber(u.id), getDirectClientSecondaryNumber(u.id)].filter(Boolean).join(" / ")
+                              : (u.userNumber ?? "")
+                          }
                           className={`md:hidden font-mono text-xs ${
                             u.isActive ? "text-green-600 dark:text-green-400" : "text-neutral-600 dark:text-neutral-400"
                           }`}
                         >
-                          {(u.userType === "direct_client" ? clientNumbers[u.id] : u.userNumber) ?? "—"}
+                          {u.userType === "direct_client"
+                            ? getDirectClientPrimaryNumber(u.id) || "—"
+                            : (u.userNumber ?? "—")}
                         </span>
                         <span className="font-mono text-sm">{u.email}</span>
                       </div>
