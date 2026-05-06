@@ -28,8 +28,24 @@ async function loadFirstMembershipOrgId(userId: number): Promise<number | undefi
   }
 }
 
+/**
+ * Hard backstop for the JWT cookie lifetime. The in-app idle-timeout
+ * dialog (see `lib/idle-timeout/`) is the user-visible part — but if
+ * a user disables JS, leaves a browser running for days, or the
+ * client-side timer never fires for any reason, this `maxAge` makes
+ * the cookie expire on its own.
+ *
+ * 12 hours is comfortably longer than the longest configurable
+ * idle-timeout (12h) plus its warning window, so it never kicks
+ * users off mid-warning.
+ */
+const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
+
 export const authOptions: NextAuthOptions = {
-  session: { strategy: "jwt" },
+  session: {
+    strategy: "jwt",
+    maxAge: SESSION_MAX_AGE_SECONDS,
+  },
   providers: [
     ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
       ? [

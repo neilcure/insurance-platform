@@ -2090,6 +2090,7 @@ export default function FlowNewPage() {
                       pkg={p}
                       allowedCategories={finalCats}
                       isAdmin={userType === "admin"}
+                      viewerUserType={userType ?? undefined}
                       hideGroupLabels={!!pkgGrpHidden[p]}
                       onAutoScrollGroup={handleAutoScrollGroup}/>
                   );

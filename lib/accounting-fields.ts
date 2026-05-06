@@ -1,32 +1,33 @@
 /**
  * Accounting field management.
- * Reads field definitions from the admin-configured "premiumRecord" package in form_options.
- * No hardcoded field names — everything comes from the package config.
+ *
+ * Reads field definitions from the admin-configured "premiumRecord" package in
+ * form_options. No hardcoded field names — everything comes from the package
+ * config. Provides two filters consumers compose in order:
+ *
+ *  1. `filterFieldsByContext` — admin's "Show in Premium Tabs" config (which
+ *     tab does this field belong on?).
+ *  2. `filterFieldsByUserType` — admin's "Visible to user types" config (which
+ *     logged-in user can see this field?). Admin-like users always bypass.
+ *
+ * Client-safe helpers (`mapFormOptionRowToAccountingFieldDef`, `filterFieldsByUserType`)
+ * live in `accounting-fields-shared.ts` so UI bundles never import `db/client`.
  */
 import { db } from "@/db/client";
 import { formOptions } from "@/db/schema/form_options";
 import { and, eq } from "drizzle-orm";
+import {
+  mapFormOptionRowToAccountingFieldDef,
+  type AccountingFieldDef,
+  type ColumnType,
+  type PremiumContext,
+  type PremiumRole,
+} from "@/lib/accounting-fields-shared";
+
+export type { ColumnType, PremiumContext, PremiumRole, AccountingFieldDef };
+export { mapFormOptionRowToAccountingFieldDef, filterFieldsByUserType } from "@/lib/accounting-fields-shared";
 
 const ACCOUNTING_PKG = "premiumRecord";
-
-export type ColumnType = "cents" | "rate" | "string";
-
-export type PremiumContext = "policy" | "collaborator" | "insurer" | "client" | "agent" | "self";
-
-export type PremiumRole = "client" | "agent" | "net" | "commission";
-
-export type AccountingFieldDef = {
-  key: string;
-  label: string;
-  inputType: string;
-  sortOrder: number;
-  groupOrder?: number;
-  groupName?: string;
-  options?: Array<{ value: string; label: string }>;
-  premiumColumn?: string;
-  premiumContexts?: PremiumContext[];
-  premiumRole?: PremiumRole;
-};
 
 /**
  * Derives column type from the column name convention.
@@ -51,35 +52,8 @@ export async function loadAccountingFields(): Promise<AccountingFieldDef[]> {
     .orderBy(formOptions.sortOrder);
 
   return rows
-    .map((r) => {
-      const m = (r.meta ?? {}) as Record<string, unknown>;
-      const opts = Array.isArray(m?.options)
-        ? (m.options as Array<{ value?: unknown; label?: unknown }>).map((o) => ({
-            value: String(o?.value ?? o?.label ?? ""),
-            label: String(o?.label ?? o?.value ?? ""),
-          }))
-        : [];
-      return {
-        key: String(r.value ?? ""),
-        label: String(r.label ?? r.value ?? ""),
-        inputType: String(m?.inputType ?? "text"),
-        sortOrder: Number(r.sortOrder ?? 0),
-        groupOrder: Number(m?.groupOrder ?? 0),
-        groupName: typeof m?.group === "string" ? m.group : "",
-        options: opts.length > 0 ? opts : undefined,
-        premiumColumn: typeof m?.premiumColumn === "string"
-          ? m.premiumColumn.replace(/^"|"$/g, "")
-          : undefined,
-        premiumContexts: Array.isArray(m?.premiumContexts)
-          ? (m.premiumContexts as PremiumContext[])
-          : undefined,
-        premiumRole: typeof m?.premiumRole === "string" &&
-          ["client", "agent", "net", "commission"].includes(m.premiumRole)
-          ? (m.premiumRole as PremiumRole)
-          : undefined,
-      };
-    })
-    .filter((f) => f.key);
+    .map((r) => mapFormOptionRowToAccountingFieldDef(r))
+    .filter((f): f is AccountingFieldDef => f !== null);
 }
 
 /**
@@ -154,14 +128,27 @@ export function resolvePremiumTypeColumn(
 
 /**
  * Filters fields to only those visible in a given premium context.
- * "policy" context always returns all fields (master view).
- * Fields with no `premiumContexts` set are visible everywhere.
+ *
+ * Rules:
+ *  - Fields with no `premiumContexts` (or an empty array) are visible
+ *    everywhere — preserves backwards compatibility for fields that were
+ *    configured before the "Show in Premium Tabs" filter existed, and
+ *    matches the admin UI hint "Empty = show everywhere".
+ *  - Fields with explicit `premiumContexts` are filtered by the admin's
+ *    checkboxes — including "Policy". Previously the "policy" context
+ *    short-circuited and returned every field regardless of the admin's
+ *    setting, which made the "Policy" checkbox in the field editor a
+ *    no-op (and surprised admins who had explicitly unchecked it).
+ *  - "self" is the record's own overview page (e.g. an endorsement's own
+ *    Premium tab). It is NOT exposed as a checkbox in the admin UI
+ *    (`PREMIUM_CONTEXT_OPTIONS` has no "self" entry), so we keep treating
+ *    it as a master view that always shows every field.
  */
 export function filterFieldsByContext(
   fields: AccountingFieldDef[],
   context: PremiumContext,
 ): AccountingFieldDef[] {
-  if (context === "policy" || context === "self") return fields;
+  if (context === "self") return fields;
   return fields.filter((f) => {
     if (!f.premiumContexts || f.premiumContexts.length === 0) return true;
     return f.premiumContexts.includes(context);

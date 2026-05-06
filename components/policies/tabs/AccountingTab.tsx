@@ -27,6 +27,11 @@ type FieldDef = {
   groupName?: string;
   options?: Array<{ value: string; label: string }>;
   premiumColumn?: string;
+  // Optional currency formatting hints from the admin field config.
+  // Used so a formula field whose result is a monetary amount (e.g. Agent
+  // Commission) renders as currency rather than a bare number.
+  currencyCode?: string;
+  decimals?: number;
 };
 
 type LineTemplate = { key: string; label: string };
@@ -51,15 +56,25 @@ type LineData = {
   collaboratorName: string | null;
 };
 
-const fmtCurrency = (val: unknown, currency: string): string => {
+const fmtCurrency = (val: unknown, currency: string, decimals = 2): string => {
   const n = Number(val);
   if (!Number.isFinite(n)) return "—";
-  return `${currency} ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${currency} ${n.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`;
 };
 
 function formatDisplayValue(val: unknown, field: FieldDef, currency: string): string {
   if (val === null || val === undefined || val === "") return "—";
   if (field.inputType === "currency" || field.inputType === "negative_currency") return fmtCurrency(val, currency);
+  // Formula fields whose admin config sets `currencyCode` render as
+  // currency. The DB column (e.g. agentCommissionCents) already stores
+  // the value in the line's currency, so we keep the line's currency
+  // unless the field overrides it explicitly. Decimals fall back to the
+  // standard 2 when not specified.
+  if (field.inputType === "formula" && field.currencyCode) {
+    const code = (field.currencyCode || currency || "HKD").toUpperCase();
+    const decimals = typeof field.decimals === "number" ? field.decimals : 2;
+    return fmtCurrency(val, code, decimals);
+  }
   if (field.inputType === "percent") {
     const n = Number(val);
     return Number.isFinite(n) ? `${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%` : String(val);

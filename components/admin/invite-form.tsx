@@ -8,8 +8,9 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Copy, Loader2, Search, UserPlus } from "lucide-react";
+import type { UserType } from "@/lib/user-types";
+import { useUserTypes } from "@/hooks/use-user-types";
 
-type UserType = "admin" | "agent" | "accounting" | "internal_staff" | "direct_client";
 type CreationMode = "invite" | "account_only";
 type AgentAccountType = "personal" | "company";
 
@@ -22,11 +23,18 @@ type UnlinkedClient = {
   source?: "table" | "flow";
 };
 
-export default function InviteForm({ allowedTypes = ["admin", "agent", "accounting", "internal_staff", "direct_client"] }: { allowedTypes?: UserType[] }) {
-  const safeTypes = React.useMemo<UserType[]>(
-    () => (Array.isArray(allowedTypes) && allowedTypes.length > 0 ? allowedTypes : ["accounting", "internal_staff"]),
-    [allowedTypes]
-  );
+export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[] }) {
+  const { options: configuredTypes, getLabel: getUserTypeLabel } = useUserTypes();
+  const safeTypes = React.useMemo<UserType[]>(() => {
+    const fromConfig = configuredTypes.map((t) => t.value as UserType);
+    if (Array.isArray(allowedTypes) && allowedTypes.length > 0) {
+      const allow = new Set(allowedTypes);
+      const filtered = fromConfig.filter((v) => allow.has(v));
+      if (filtered.length > 0) return filtered;
+      return allowedTypes;
+    }
+    return fromConfig;
+  }, [allowedTypes, configuredTypes]);
   const [email, setEmail] = React.useState("");
   const [mobile, setMobile] = React.useState("");
   const [name, setName] = React.useState("");
@@ -192,9 +200,7 @@ export default function InviteForm({ allowedTypes = ["admin", "agent", "accounti
             {safeTypes.map((t) => (
               <label key={t} className="flex items-center gap-2 text-sm">
                 <RadioGroupItem value={t} id={`t-${t}`} />
-                <span className="capitalize">
-                  {t === "internal_staff" ? "Internal Staff" : t === "direct_client" ? "Direct Client" : t.replace("_", " ")}
-                </span>
+                <span>{getUserTypeLabel(t)}</span>
               </label>
             ))}
           </RadioGroup>

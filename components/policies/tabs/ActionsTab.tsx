@@ -9,6 +9,11 @@ import { getIcon } from "@/lib/icons";
 import type { WorkflowActionRow, WorkflowActionMeta } from "@/lib/types/workflow-action";
 import type { PolicyDetail } from "@/lib/types/policy";
 import {
+  AgentPickerDrawer,
+  type AgentPickerSelection,
+} from "@/components/policies/AgentPickerDrawer";
+import { cn } from "@/lib/utils";
+import {
   readPdfSelectionMarkFromStorage,
   readPdfSelectionMarkScaleFromStorage,
 } from "@/lib/pdf/form-selections-preferences";
@@ -49,10 +54,24 @@ function ActionCard({
   const meta = action.meta!;
   const Icon = getIcon(meta.icon);
   const [inputVal, setInputVal] = React.useState("");
+  const [selectedAgent, setSelectedAgent] = React.useState<AgentPickerSelection | null>(null);
+  const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [showManualLookup, setShowManualLookup] = React.useState(false);
+  const [assignPanelOpen, setAssignPanelOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
 
+  const isReassignAgent =
+    meta.type === "custom" && action.value === "reassign_agent";
+
   async function execute() {
-    if (meta.requiresInput && !inputVal.trim()) {
+    if (isReassignAgent) {
+      if (!selectedAgent && !inputVal.trim()) {
+        toast.error(
+          "Pick an agent or enter email, agent number, or user ID.",
+        );
+        return;
+      }
+    } else if (meta.requiresInput && !inputVal.trim()) {
       toast.error(`Please enter ${meta.inputLabel?.toLowerCase() || "a value"}`);
       return;
     }
@@ -156,14 +175,29 @@ function ActionCard({
 
         case "custom": {
           if (action.value === "reassign_agent") {
+            const payload =
+              selectedAgent
+                ? { agentId: selectedAgent.id }
+                : { agentLookup: inputVal.trim() };
             const res = await fetch(`/api/policies/${policyId}/reassign`, {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ agentEmail: inputVal.trim() }),
+              body: JSON.stringify(payload),
             });
-            if (!res.ok) throw new Error(await res.text());
+            if (!res.ok) {
+              let msg = await res.text();
+              try {
+                const j = JSON.parse(msg) as { error?: string };
+                if (j?.error) msg = j.error;
+              } catch {
+                /* keep raw */
+              }
+              throw new Error(msg);
+            }
             toast.success("Agent reassigned");
             setInputVal("");
+            setSelectedAgent(null);
+            setShowManualLookup(false);
           } else if (meta.webhookUrl) {
             const res = await fetch(meta.webhookUrl, {
               method: "POST",
@@ -240,28 +274,128 @@ function ActionCard({
           {meta.description.replace("{{policyNumber}}", policyNumber)}
         </p>
       )}
-      <div className="flex items-center gap-2">
-        {meta.requiresInput && (
-          <Input
-            placeholder={meta.inputPlaceholder ?? ""}
-            value={inputVal}
-            onChange={(e) => setInputVal(e.target.value)}
-            className="h-8 text-xs"
-          />
-        )}
-        <Button
-          size="sm"
-          onClick={execute}
-          disabled={busy}
-          className="shrink-0"
-        >
-          {busy ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            (meta.buttonLabel ?? "Run")
-          )}
-        </Button>
-      </div>
+      {isReassignAgent ? (
+        <div className="space-y-2">
+          <div className="flex items-center justify-end">
+            <Button
+              size="sm"
+              variant="outline"
+              type="button"
+              onClick={() => setAssignPanelOpen((v) => !v)}
+              aria-expanded={assignPanelOpen}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              <span>{assignPanelOpen ? "Hide" : "Assign Agent"}</span>
+            </Button>
+          </div>
+          <div
+            className={cn(
+              "overflow-hidden transition-all duration-500 ease-in-out",
+              assignPanelOpen ? "max-h-[260px] opacity-100" : "max-h-0 opacity-0",
+            )}
+          >
+            <div className="space-y-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-800 dark:bg-neutral-900/40">
+              {showManualLookup ? (
+                <Input
+                  placeholder="Email, agent #, or user ID"
+                  value={inputVal}
+                  onChange={(e) => setInputVal(e.target.value)}
+                  className="h-8 text-xs"
+                  aria-label="Agent email, number, or user id"
+                />
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    type="button"
+                    className="shrink-0"
+                    onClick={() => setPickerOpen(true)}
+                  >
+                    {selectedAgent ? "Change" : "Select agent"}
+                  </Button>
+                  <span className="flex-1 min-w-0 truncate text-xs text-neutral-500 dark:text-neutral-400">
+                    {selectedAgent
+                      ? `${selectedAgent.userNumber ? `${selectedAgent.userNumber} - ` : ""}${selectedAgent.name ?? ""} <${selectedAgent.email}>`
+                      : "No agent selected"}
+                  </span>
+                </div>
+              )}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  className="text-[11px] font-medium text-blue-600 underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-blue-400"
+                  onClick={() => setShowManualLookup((v) => !v)}
+                >
+                  {showManualLookup ? "Use agent picker instead" : "Use manual lookup instead"}
+                </button>
+                <div className="ml-auto flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    type="button"
+                    onClick={() => {
+                      setSelectedAgent(null);
+                      setInputVal("");
+                      setShowManualLookup(false);
+                      setAssignPanelOpen(false);
+                    }}
+                    disabled={busy}
+                    className="shrink-0"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={execute}
+                    disabled={busy}
+                    className="shrink-0"
+                  >
+                    {busy ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      (meta.buttonLabel ?? "Reassign")
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          {meta.requiresInput ? (
+            <Input
+              placeholder={meta.inputPlaceholder ?? ""}
+              value={inputVal}
+              onChange={(e) => setInputVal(e.target.value)}
+              className="h-8 flex-1 text-xs"
+            />
+          ) : null}
+          <Button
+            size="sm"
+            onClick={execute}
+            disabled={busy}
+            className="shrink-0 sm:ml-auto"
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              (meta.buttonLabel ?? "Run")
+            )}
+          </Button>
+        </div>
+      )}
+      {isReassignAgent ? (
+        <AgentPickerDrawer
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          onSelect={(agent) => {
+            setSelectedAgent(agent);
+            setInputVal("");
+          }}
+        />
+      ) : null}
     </div>
   );
 }

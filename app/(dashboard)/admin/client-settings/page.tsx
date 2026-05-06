@@ -11,6 +11,7 @@ import { ClearQueryParam } from "@/components/ui/ClearQueryParam";
 import { serverFetch } from "@/lib/auth/server-fetch";
 import { ClientPrefixDialog, FlowPrefixDialog } from "@/components/admin/ClientPrefixDialog";
 import { PasswordPolicyCard } from "@/components/admin/PasswordPolicyCard";
+import { IdleTimeoutPolicyCard } from "@/components/admin/IdleTimeoutPolicyCard";
 
 type UserTypePrefixes = {
   admin: string;
@@ -258,6 +259,9 @@ export default async function ClientSettingsPage({ searchParams }: { searchParam
       </Card>
       <div className="mt-6">
         <PasswordPolicyCard />
+      </div>
+      <div className="mt-6">
+        <IdleTimeoutPolicyCard />
       </div>
     </main>
   );

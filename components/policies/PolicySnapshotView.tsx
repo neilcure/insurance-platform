@@ -323,6 +323,30 @@ function formatFieldValue(
     const d = typeof fmtMeta?.decimals === "number" ? fmtMeta.decimals : 2;
     return `${n.toFixed(d)}%`;
   }
+  // Formula fields whose admin config sets a `currencyCode` should render as
+  // currency (e.g. Agent Commission = `{cpremium} - {apremium}`). Without
+  // this branch the formula result fell through to the plain-text path and
+  // showed as `1234.5` instead of `HKD 1,234.50`. Formulas that don't have a
+  // currencyCode (counts, ratios, dates) keep their existing plain output.
+  if (type === "formula") {
+    const code = typeof fmtMeta?.currencyCode === "string" ? fmtMeta.currencyCode.trim() : "";
+    if (code) {
+      const n = typeof value === "number" ? value : Number(value as any);
+      if (Number.isFinite(n)) {
+        const decimals = typeof fmtMeta?.decimals === "number" ? fmtMeta.decimals : undefined;
+        if (typeof decimals === "number") {
+          try {
+            return new Intl.NumberFormat(undefined, {
+              style: "currency", currency: code.toUpperCase(),
+              minimumFractionDigits: decimals, maximumFractionDigits: decimals,
+            }).format(n);
+          } catch { return n.toFixed(decimals); }
+        }
+        return formatCurrency(n, code.toUpperCase());
+      }
+    }
+  }
+
   if (type === "currency" || type === "negative_currency" || type === "number") {
     const n = typeof value === "number" ? value : Number(value as any);
     if (!Number.isFinite(n)) return String(value ?? "");

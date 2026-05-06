@@ -33,6 +33,7 @@ function SignInContent() {
   const callbackUrl = searchParams.get("callbackUrl") ?? "/dashboard";
   const emailFromLink = searchParams.get("email") ?? undefined;
   const errorFromUrl = searchParams.get("error") ?? "";
+  const reasonFromUrl = searchParams.get("reason") ?? "";
   const { status } = useSession();
 
   const [email, setEmail] = useState(emailFromLink ?? "");
@@ -83,6 +84,11 @@ function SignInContent() {
     }
     setError(`Sign in error: ${errorFromUrl}`);
   }, [errorFromUrl]);
+
+  useEffect(() => {
+    if (reasonFromUrl !== "idle") return;
+    setError("You were signed out automatically due to inactivity. Please sign in again.");
+  }, [reasonFromUrl]);
 
   async function handleGoogleSignIn() {
     setLoading(true);

@@ -1163,17 +1163,23 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
               </div>
             ) : null}
 
-            {/* Currency config */}
+            {/* Currency config — also exposed for formula fields whose result is a monetary amount */}
             {(form.meta as FieldMeta | undefined)?.inputType === "currency" ||
-            (form.meta as FieldMeta | undefined)?.inputType === "negative_currency" ? (
+            (form.meta as FieldMeta | undefined)?.inputType === "negative_currency" ||
+            (form.meta as FieldMeta | undefined)?.inputType === "formula" ? (
               <div className="grid gap-2 sm:grid-cols-2">
                 <div className="grid gap-1">
                   <Label>Currency Code</Label>
                   <Input
-                    placeholder="e.g. HKD, USD"
+                    placeholder={(form.meta as FieldMeta | undefined)?.inputType === "formula" ? "e.g. HKD (leave blank for plain number)" : "e.g. HKD, USD"}
                     value={String(((form.meta as FieldMeta | undefined)?.currencyCode ?? "") || "")}
                     onChange={(e) => updateMeta("currencyCode", e.target.value)}
                   />
+                  {(form.meta as FieldMeta | undefined)?.inputType === "formula" ? (
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                      Set when the formula returns a monetary amount (e.g. commission, premium). Leave blank for non-currency results (counts, ratios, dates).
+                    </p>
+                  ) : null}
                 </div>
                 <div className="grid gap-1">
                   <Label>Decimal Places</Label>

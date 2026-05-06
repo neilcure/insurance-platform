@@ -9,7 +9,7 @@ import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { appendPolicyAudit } from "@/lib/audit";
 import { sql } from "drizzle-orm";
-import { loadAccountingFields, buildFieldColumnMap, getColumnType, filterFieldsByContext, type AccountingFieldDef, type PremiumContext } from "@/lib/accounting-fields";
+import { loadAccountingFields, buildFieldColumnMap, getColumnType, filterFieldsByContext, filterFieldsByUserType, type AccountingFieldDef, type PremiumContext } from "@/lib/accounting-fields";
 import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
 import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
 import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
@@ -290,41 +290,13 @@ async function findAgentPolicies(agentRecordId: number): Promise<{ policyId: num
   } catch { return []; }
 }
 
-/**
- * Maps user type to a premium context for role-based field filtering.
- * Admin / internal_staff / accounting see everything (returns null = no extra filter).
- * Clients only see fields tagged with "client".
- * Agents only see fields tagged with "agent".
- */
-function userTypeToContext(userType: string): PremiumContext | null {
-  if (["admin", "internal_staff", "accounting"].includes(userType)) return null;
-  if (userType === "agent") return "agent";
-  return "client";
-}
-
-/**
- * Default role-based filter when admin has not configured premiumContexts on any field.
- * - Clients only see fields with "client" in key/label.
- * - Agents see gross, agent, and client fields — but NOT net premium (admin only).
- * - Currency field is always included for formatting purposes.
- */
-function applyDefaultRoleFilter(fields: AccountingFieldDef[], role: PremiumContext): AccountingFieldDef[] {
-  return fields.filter((f) => {
-    const k = f.key.toLowerCase();
-    const l = f.label.toLowerCase();
-    if (k === "currency" || l === "currency") return true;
-    if (role === "client") {
-      if (f.premiumRole) return f.premiumRole === "client";
-      return k.includes("client") || l.includes("client");
-    }
-    if (role === "agent") {
-      if (f.premiumRole) return f.premiumRole !== "net";
-      const isNet = (k.includes("net") || l.includes("net")) && !k.includes("agent") && !l.includes("agent");
-      return !isNet;
-    }
-    return true;
-  });
-}
+// Per-user-type field visibility now lives on the field itself —
+// `meta.visibleToUserTypes`, applied via `filterFieldsByUserType`. The
+// previous hardcoded `userTypeToContext` + `applyDefaultRoleFilter`
+// helpers were retired in favour of the admin-configurable control.
+// Legacy fallback semantics (so old fields without `visibleToUserTypes`
+// still hide net premium from clients out-of-the-box) live inside
+// `filterFieldsByUserType` itself.
 
 /**
  * Fast path for context="self" — the record IS the premium record.
@@ -548,16 +520,16 @@ export async function GET(request: Request, ctx: Ctx) {
     ]);
     if (!hasAccess) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    const roleContext = userTypeToContext(user.userType);
+    // Two-pass filter:
+    //   1. Tab/context filter — admin's "Show in Premium Tabs" config
+    //      decides which fields appear on which tab.
+    //   2. User-type filter — admin's "Visible to user types" config
+    //      decides which user types can see each field. Admin-like
+    //      users always pass through. Fields that don't have
+    //      visibleToUserTypes set fall back to legacy role defaults
+    //      (see `legacyRoleAllow` in `lib/accounting-fields.ts`).
     let fields = filterFieldsByContext(allFields, context);
-    if (roleContext) {
-      const anyFieldHasContexts = allFields.some((f) => f.premiumContexts && f.premiumContexts.length > 0);
-      if (anyFieldHasContexts) {
-        fields = filterFieldsByContext(fields, roleContext);
-      } else {
-        fields = applyDefaultRoleFilter(fields, roleContext);
-      }
-    }
+    fields = filterFieldsByUserType(fields, user.userType);
 
     if (context === "self") {
       return await handleSelfContext(policyId, fields, user);

@@ -15,19 +15,8 @@ import { TopLevelSelectEditor, TopLevelRepeatableEditor } from "@/components/adm
 import { GroupAssignmentSection } from "@/components/admin/generic/GroupAssignmentSection";
 import { AutoFillConfigEditor, type AutoFillConfig } from "@/components/admin/generic/AutoFillConfig";
 import { EntityPickerConfigEditor, type EntityPickerConfig } from "@/components/admin/generic/EntityPickerConfig";
-const DB_COLUMN_OPTIONS = [
-  { value: "grossPremiumCents", label: "Gross Premium", type: "cents" },
-  { value: "netPremiumCents", label: "Net Premium", type: "cents" },
-  { value: "clientPremiumCents", label: "Client Premium", type: "cents" },
-  { value: "agentPremiumCents", label: "Agent Premium", type: "cents" },
-  { value: "agentCommissionCents", label: "Agent Commission", type: "cents" },
-  { value: "creditPremiumCents", label: "Credit Premium", type: "cents" },
-  { value: "levyCents", label: "Levy", type: "cents" },
-  { value: "stampDutyCents", label: "Stamp Duty", type: "cents" },
-  { value: "discountCents", label: "Discount", type: "cents" },
-  { value: "commissionRate", label: "Commission Rate", type: "rate" },
-  { value: "currency", label: "Currency", type: "string" },
-];
+import { columnForRole } from "@/lib/accounting-columns";
+import { useUserTypes } from "@/hooks/use-user-types";
 const PREMIUM_CONTEXT_OPTIONS = [
   { value: "policy", label: "Policy" },
   { value: "collaborator", label: "Collaborator (Premium Payable)" },
@@ -42,13 +31,6 @@ const PREMIUM_ROLE_OPTIONS = [
   { value: "net", label: "Net Premium (base insurer cost)" },
   { value: "commission", label: "Commission (what agent keeps)" },
 ];
-const COLUMN_TO_SUGGESTED_ROLE: Record<string, string> = {
-  grossPremiumCents: "client",
-  clientPremiumCents: "client",
-  netPremiumCents: "net",
-  agentPremiumCents: "agent",
-  agentCommissionCents: "commission",
-};
 const isPremiumPkg = (p: string) => p === "premiumRecord" || p === "accounting";
 import { InputTypeSelect, type InputType } from "@/components/admin/generic/InputTypeSelect";
 
@@ -89,6 +71,11 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
       groupShowWhenMap?: Record<string, { field: string; values: string[]; childKey?: string; childValues?: string[] }[] | null>;
       autoFill?: AutoFillConfig;
       entityPicker?: EntityPickerConfig;
+      premiumRole?: string;
+      premiumColumn?: string;
+      premiumContexts?: string[];
+      visibleToUserTypes?: string[];
+      requiresAgent?: boolean;
     };
   }>({
     label: "",
@@ -99,6 +86,7 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
     meta: { inputType: "string", required: false, categories: [] },
   });
   const [applyToAll, setApplyToAll] = React.useState(true);
+  const { options: userTypeOptions, getLabel: getUserTypeLabel } = useUserTypes();
 
   React.useEffect(() => {
     async function loadCats() {
@@ -324,15 +312,20 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
             </div>
           ) : null}
 
-          {(form.meta?.inputType === "currency" || form.meta?.inputType === "negative_currency") ? (
+          {(form.meta?.inputType === "currency" || form.meta?.inputType === "negative_currency" || form.meta?.inputType === "formula") ? (
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label>Currency Code</Label>
                 <Input
-                  placeholder="e.g. HKD, USD"
+                  placeholder={form.meta?.inputType === "formula" ? "e.g. HKD (leave blank for plain number)" : "e.g. HKD, USD"}
                   value={String(((form.meta as any)?.currencyCode ?? "") || "")}
                   onChange={(e) => updateMeta("currencyCode" as any, e.target.value as any)}
                 />
+                {form.meta?.inputType === "formula" ? (
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                    Set when the formula returns a monetary amount (e.g. commission, premium). Leave blank for non-currency results (counts, ratios, dates).
+                  </p>
+                ) : null}
               </div>
               <div className="grid gap-1">
                 <Label>Decimal Places</Label>
@@ -350,58 +343,28 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
           {isPremiumPkg(pkg) && (
             <>
               <div className="grid gap-1">
-                <Label>DB Column Mapping</Label>
-                <select
-                  className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                  value={String((form.meta as any)?.premiumColumn ?? "")}
-                  onChange={(e) => {
-                    const col = e.target.value || undefined;
-                    updateMeta("premiumColumn" as any, col as any);
-                    if (col && COLUMN_TO_SUGGESTED_ROLE[col] && !(form.meta as any)?.premiumRole) {
-                      updateMeta("premiumRole" as any, COLUMN_TO_SUGGESTED_ROLE[col] as any);
-                    }
-                  }}
-                >
-                  <option value="">None (stored in extra values)</option>
-                  {DB_COLUMN_OPTIONS.map((opt) => {
-                    const suggested = COLUMN_TO_SUGGESTED_ROLE[opt.value];
-                    return (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label} ({opt.type === "cents" ? "cents" : opt.type === "rate" ? "decimal" : "text"})
-                        {suggested ? ` → suggested role: ${suggested}` : ""}
-                      </option>
-                    );
-                  })}
-                </select>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                  Maps this field to a dedicated database column for accounting calculations, invoicing, and sync. Currency fields use cents conversion automatically.
-                </p>
-              </div>
-              <div className="grid gap-1">
                 <Label>Premium Role</Label>
-                {(() => {
-                  const col = (form.meta as any)?.premiumColumn;
-                  const currentRole = (form.meta as any)?.premiumRole || "";
-                  const suggested = col ? COLUMN_TO_SUGGESTED_ROLE[col] : undefined;
-                  const mismatch = suggested && currentRole && currentRole !== suggested;
-                  return mismatch ? (
-                    <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-                      <strong>Warning:</strong> Column <code>{col}</code> is typically role &ldquo;{suggested}&rdquo; but is set to &ldquo;{currentRole}&rdquo;.
-                      Incorrect role mapping will produce wrong premium calculations.
-                    </div>
-                  ) : null;
-                })()}
                 <select
                   className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                   value={String((form.meta as any)?.premiumRole ?? "")}
-                  onChange={(e) => updateMeta("premiumRole" as any, (e.target.value || undefined) as any)}
+                  onChange={(e) => {
+                    const role = e.target.value || undefined;
+                    updateMeta("premiumRole" as any, role as any);
+                    // Auto-derive the DB column from the chosen role.
+                    // Roles with a canonical column overwrite premiumColumn; clearing the role
+                    // also clears the auto-derived column. Fields with no canonical role
+                    // (Levy / Stamp Duty / Discount / etc.) keep their existing premiumColumn
+                    // untouched here — those values land in extra_values JSON if no column is set.
+                    const derived = columnForRole(role);
+                    updateMeta("premiumColumn" as any, derived as any);
+                  }}
                 >
                   {PREMIUM_ROLE_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
                   ))}
                 </select>
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                  Identifies this field's semantic role for invoicing, commission, and cross-settlement logic. Only one field per role.
+                  Identifies this field&apos;s semantic role for invoicing, commission, and cross-settlement logic. Only one field per role. The DB column is auto-derived from the role; fields with no role are stored in <code>extra_values</code> JSON.
                 </p>
               </div>
               <div className="grid gap-1">
@@ -438,6 +401,80 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
                 </div>
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
                   Choose which Premium tabs display this field. Empty = show everywhere.
+                </p>
+              </div>
+              <div className="grid gap-1">
+                <Label>Visible to user types</Label>
+                <div className="space-y-1.5 rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
+                  {userTypeOptions.length === 0 ? (
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400">Loading user types…</p>
+                  ) : (
+                    userTypeOptions.map((ut) => {
+                      const current: string[] = Array.isArray((form.meta as any)?.visibleToUserTypes)
+                        ? ((form.meta as any).visibleToUserTypes as string[])
+                        : [];
+                      const checked = current.length === 0 || current.includes(ut.value);
+                      return (
+                        <label key={ut.value} className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 rounded border-neutral-300 dark:border-neutral-600"
+                            checked={checked}
+                            onChange={() => {
+                              let next: string[];
+                              if (current.length === 0) {
+                                next = userTypeOptions.map((o) => o.value).filter((v) => v !== ut.value);
+                              } else if (checked) {
+                                next = current.filter((v) => v !== ut.value);
+                              } else {
+                                next = [...current, ut.value];
+                              }
+                              if (next.length === userTypeOptions.length) next = [];
+                              updateMeta("visibleToUserTypes" as any, (next.length > 0 ? next : undefined) as any);
+                            }}
+                          />
+                          <span className="text-neutral-700 dark:text-neutral-300">{getUserTypeLabel(ut.value)}</span>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Pick which logged-in user types can see this field on the Premium tab. Empty = visible to everyone. Admin-like users (admin / internal staff / accounting) always see every field.
+                </p>
+              </div>
+              <div className="grid gap-1">
+                <Label>Policy wizard (create flow)</Label>
+                <select
+                  className="h-9 w-full max-w-xl rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  value={
+                    form.meta?.requiresAgent === true
+                      ? "wait"
+                      : form.meta?.requiresAgent === false
+                        ? "always"
+                        : "auto"
+                  }
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "wait") {
+                      updateMeta("requiresAgent", true);
+                    } else if (v === "always") {
+                      updateMeta("requiresAgent", false);
+                    } else {
+                      setForm((f) => {
+                        const nextMeta = { ...(f.meta ?? {}) };
+                        delete nextMeta.requiresAgent;
+                        return { ...f, meta: nextMeta };
+                      });
+                    }
+                  }}
+                >
+                  <option value="auto">Default — agent and commission roles wait for agent pick</option>
+                  <option value="wait">Hide until an agent is selected</option>
+                  <option value="always">Always show (even before agent)</option>
+                </select>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Applies to the create-policy wizard. Admin-like users bypass user-type filtering but still respect wait-for-agent when this field or its role default requires it.
                 </p>
               </div>
             </>

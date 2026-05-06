@@ -4510,6 +4510,7 @@ export default function NewPolicyStep1Page() {
                         pkg={p}
                         allowedCategories={finalAllowedCats}
                         isAdmin={currentUserType === "admin"}
+                        viewerUserType={currentUserType ?? undefined}
                         hideGroupLabels={!!pkgGrpHidden[p]}
                       />
                     );

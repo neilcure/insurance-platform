@@ -1,0 +1,66 @@
+---
+description: Tripwire that forbids hand-typed admin-facing lists, dropdowns, role rules, premium-context arrays, DB-column maps, or any other "what options exist" choice in component / route / lib code. Everything an admin could conceivably edit MUST come from `form_options` (or a single schema-derived registry). Must read the dynamic-config-first skill before editing any admin editor or any role/visibility filter.
+alwaysApply: true
+---
+
+# Dynamic Config First — no hardcoded admin lists
+
+This codebase has accumulated multiple violations where a React
+component hand-types a list of options that an admin should be able
+to edit (premium roles, premium contexts, DB column suggestions,
+role-visibility rules, package-is-premium checks, user-type labels,
+PDF synthetic fields, etc.). The skill at
+[`.cursor/skills/dynamic-config-first/SKILL.md`](mdc:.cursor/skills/dynamic-config-first/SKILL.md)
+catalogues every known violation and the migration path for each.
+
+If your task touches **any** of the following, STOP and read the
+skill **before** writing code:
+
+- Adding ANY new dropdown / checkbox group / radio group in an
+  admin editor (`components/admin/**`)
+- Adding a new value to `PREMIUM_ROLE_OPTIONS`, `PREMIUM_CONTEXT_OPTIONS`,
+  `DB_COLUMN_OPTIONS`, `COLUMN_TO_SUGGESTED_ROLE`, or any sibling
+  array in `EditPackageFieldClient.tsx` / `NewPackageFieldClient.tsx`
+- Editing `applyDefaultRoleFilter` or `userTypeToContext` in
+  `app/api/policies/[id]/premiums/route.ts`
+- Editing `isPremiumPkg` in any field editor
+- Editing `USER_TYPE_LABELS` (`AuditLogPanel.tsx`),
+  `SYNTHETIC_FIELDS_BY_SOURCE` / `PACKAGE_COLOR_MAP` /
+  `BUILT_IN_SECTION_TEMPLATES` (`PdfTemplateEditor.tsx`),
+  `SOURCES` / `FORMATS` / `SOURCE_COLORS` (`FieldResolverDiagPanel.tsx`)
+- Adding a new schema column in `db/schema/premiums.ts` (Levy,
+  Stamp Duty, Discount, etc.) — these are HK-only; the proper
+  pattern is a tenant-scoped registry, not a global column
+- Reviewing a PR that introduces a new `const FOO_OPTIONS = [ ... ]`
+  or `const FOO_BY_X: Record<string, string> = { ... }` in
+  `components/admin/**`, `app/api/**`, or `lib/**`
+- Adding a new `user.userType === "X"` branch where the rule should
+  be admin-configurable
+- Diagnosing "admin can't add a new role / context / column" /
+  "tenant X needs a different list of premium roles" / "Levy column
+  shouldn't be there for non-HK tenant"
+
+## The 30-second cheatsheet
+
+| Concern | Pattern | Don't do |
+|---|---|---|
+| New dropdown in an admin editor | Read from `form_options` group | `const FOO_OPTIONS = [ ... ]` in the component |
+| New role / context / status / package type | New `form_options` group_key + admin UI to edit it | Hardcode in code; admins can't change it |
+| Branch on a config value | Use `meta.<semanticTag>` (e.g. `meta.premiumRole`, `meta.isPremium`) | `label.includes("client")` / `key === "main"` |
+| Map DB column → suggested role | `meta.suggestedColumns[]` on the role row in `form_options.premium_roles` | `Record<string, string>` duplicated across files |
+| "Is this a premium package?" | `package.meta.isPremium` | `key === "premiumRecord" \|\| key === "accounting"` |
+| Role-based visibility | `form_options.user_type_visibility.meta.allowedPremiumRoles` + per-field `meta.visibleToRoles` override | Hardcoded `if (userType === "client" && role === "net")` |
+| HK-specific columns (Levy / Stamp Duty / Discount) | Tag locale in registry; tenant-scoped `form_options` decide visibility | Schema-level columns assumed to apply to every tenant |
+| Adding "one more" entry to an existing hardcoded list | Migrate the list to `form_options` first, THEN add the entry | Grow the violation |
+
+## Existing violations (audit trail in skill §4)
+
+These are tracked, not silently accepted. The skill lists all of
+them with the migration target. Do NOT add to the list — pick one,
+fix it, delete the row from the skill in the same PR.
+
+If anything above is unclear, the skill has the full contract,
+the §4 audit table, the proposed `form_options` group_key shapes
+(`premium_roles`, `premium_contexts`, `user_type_visibility`,
+`accounting_columns`), and a verification recipe (`rg` greps that
+catch new violations in CI).

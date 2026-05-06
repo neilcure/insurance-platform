@@ -18,6 +18,8 @@ import { AgentPickerDrawer, type AgentPickerSelection } from "@/components/polic
 import { LinkedPolicyCard } from "@/components/policies/LinkedPolicyCard";
 import { Search } from "lucide-react";
 import { getInsuredDisplayName, getInsuredType } from "@/lib/field-resolver";
+import { isPremiumPkg } from "@/lib/premium-options";
+import { filterFieldsByUserType, mapFormOptionRowToAccountingFieldDef } from "@/lib/accounting-fields-shared";
 
 type EntityPickerFieldMapping = {
   sourceField: string;
@@ -640,31 +642,56 @@ function FormulaField({
   );
 }
 
+function formHasSelectedAgent(formValues: Record<string, unknown>): boolean {
+  const raw = formValues._agentId;
+  const n = typeof raw === "string" ? Number.parseFloat(raw) : typeof raw === "number" ? raw : Number.NaN;
+  return Number.isFinite(n) && n > 0;
+}
+
+/** Wizard-only: hide premium fields until an agent is picked (see `meta.requiresAgent` + default for agent/commission roles). */
+function wizardPremiumFieldNeedsAgent(meta: Record<string, unknown>): boolean {
+  if (meta.requiresAgent === false) return false;
+  if (meta.requiresAgent === true) return true;
+  const role = meta.premiumRole;
+  if (role === "agent" || role === "commission") return true;
+  return false;
+}
+
 function evaluateShowWhen(
   showWhen: { package: string; category: string | string[]; field?: string; fieldValues?: string[]; childKey?: string; childValues?: string[] }[] | undefined,
   formValues: Record<string, unknown>,
 ): boolean {
   if (!showWhen || !Array.isArray(showWhen) || showWhen.length === 0) return true;
   return showWhen.every((rule) => {
-    const otherPkg = String(rule.package ?? "").trim();
+    const r = rule as {
+      package?: string;
+      category?: string | string[];
+      field?: string;
+      fieldValues?: string[];
+      childKey?: string;
+      childValues?: string[];
+      requiresAgent?: boolean;
+    };
+    if (r.requiresAgent === true && !formHasSelectedAgent(formValues)) return false;
+    const otherPkg = String(r.package ?? "").trim();
     if (!otherPkg) return true;
     const otherCatVal = String(formValues[`${otherPkg}__category`] ?? "").trim().toLowerCase();
-    const allowed = (Array.isArray(rule.category) ? rule.category : [rule.category])
+    const allowed = (Array.isArray(r.category) ? r.category : [r.category])
       .map((c) => String(c ?? "").trim().toLowerCase())
       .filter(Boolean);
     if (allowed.length > 0 && !allowed.includes(otherCatVal)) return false;
-    if (rule.field) {
-      const fv = String(formValues[`${otherPkg}__${rule.field}`] ?? "").trim().toLowerCase();
-      const allowedVals = (rule.fieldValues ?? []).map((v) => String(v).trim().toLowerCase()).filter(Boolean);
+    if (r.field) {
+      const fv = String(formValues[`${otherPkg}__${r.field}`] ?? "").trim().toLowerCase();
+      const allowedVals = (r.fieldValues ?? []).map((v) => String(v).trim().toLowerCase()).filter(Boolean);
       if (allowedVals.length > 0 && !allowedVals.includes(fv)) return false;
     }
-    if (rule.childKey && rule.field) {
-      const parentVal = String(formValues[`${otherPkg}__${rule.field}`] ?? "").trim();
-      const idxMatch = rule.childKey.match(/[cs]c?(\d+)$/);
+    if (r.childKey && r.field) {
+      const parentVal = String(formValues[`${otherPkg}__${r.field}`] ?? "").trim();
+      const idxMatch = r.childKey.match(/[cs]c?(\d+)$/);
       if (idxMatch && parentVal) {
-        const childFormKey = `${otherPkg}__${rule.field}__opt_${parentVal}__c${idxMatch[1]}`;
+        const childFormKey = `${otherPkg}__${r.field}__opt_${parentVal}__c${idxMatch[1]}`;
         const cv = String(formValues[childFormKey] ?? "").trim().toLowerCase();
-        const allowedChildVals = (rule.childValues ?? []).map((v) => String(v).trim().toLowerCase()).filter(Boolean);
+        const allowedChildVals = (r.childValues ?? []).map((v) => String(v).trim().toLowerCase()).filter(Boolean);
         if (allowedChildVals.length > 0 && !allowedChildVals.includes(cv)) return false;
       } else if (!parentVal) {
         return false;
@@ -1012,6 +1039,7 @@ export function PackageBlock({
   isAdmin,
   hideGroupLabels,
   onAutoScrollGroup,
+  viewerUserType,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   pkg: string;
@@ -1019,6 +1047,8 @@ export function PackageBlock({
   isAdmin?: boolean;
   hideGroupLabels?: boolean;
   onAutoScrollGroup?: (groupName: string, pkg: string) => void;
+  /** When set on premium packages, applies the same `filterFieldsByUserType` rules as the Premium tab (admins still bypass user-type filtering). */
+  viewerUserType?: string | null;
 }) {
   const [categories, setCategories] = React.useState<{ id: number; label: string; value: string; sortOrder: number; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }[]>([]);
   const catFieldName = `${pkg}__category`;
@@ -1199,6 +1229,19 @@ export function PackageBlock({
       cancelled = true;
     };
   }, [pkg]);
+
+  /** Premium package: same user-type allow-list as Premium tab (`filterFieldsByUserType`). Omits prop → no extra filter. */
+  const fieldsForWizard = React.useMemo(() => {
+    if (!isPremiumPkg(pkg)) return pkgFields;
+    const ut = viewerUserType != null && String(viewerUserType).trim() !== "" ? String(viewerUserType).trim() : null;
+    if (!ut) return pkgFields;
+    const defs = pkgFields
+      .map((row) => mapFormOptionRowToAccountingFieldDef(row))
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+    const filtered = filterFieldsByUserType(defs, ut);
+    const allow = new Set(filtered.map((fd) => fd.key));
+    return pkgFields.filter((row) => allow.has(String(row.value ?? "").trim()));
+  }, [pkg, pkgFields, viewerUserType]);
 
   // Auto-fill: when a boolean field with autoFill config matches the trigger
   // value, copy values from source package fields into this package's fields.
@@ -1451,7 +1494,7 @@ export function PackageBlock({
       <div className="space-y-6">
         {(() => {
           const debugRows: { label: string; value: string; group: string; catPass: boolean; catDetail: string; swPass: boolean; swDetail: string; visible: boolean }[] = [];
-          const visible = pkgFields.filter((f) => {
+          const visible = fieldsForWizard.filter((f) => {
             const meta = (f.meta ?? {}) as {
               inputType?: string;
               required?: boolean;
@@ -1464,6 +1507,8 @@ export function PackageBlock({
               group?: string;
               groupOrder?: number;
               showWhen?: { package: string; category: string | string[]; field?: string; fieldValues?: string[]; childKey?: string; childValues?: string[] } | { package: string; category: string | string[]; field?: string; fieldValues?: string[]; childKey?: string; childValues?: string[] }[];
+              requiresAgent?: boolean;
+              premiumRole?: string;
             };
             const cats = (meta.categories ?? []) as string[];
             const canonCats = cats.map((c) => String(c ?? "").trim().toLowerCase()).filter(Boolean);
@@ -1477,8 +1522,19 @@ export function PackageBlock({
             const swPass = evaluateShowWhen(swRules, allFormValues);
             let swDetail = "none";
             if (swRules && swRules.length > 0) {
-              swDetail = swRules.map((r) => {
-                const p = r.package;
+              swDetail = swRules.map((ruleItem) => {
+                if (typeof ruleItem === "object" && ruleItem !== null && "requiresAgent" in ruleItem && (ruleItem as { requiresAgent?: boolean }).requiresAgent === true) {
+                  return "requiresAgent: policy must have selected agent (_agentId)";
+                }
+                const r = ruleItem as {
+                  package: string;
+                  category: string | string[];
+                  field?: string;
+                  fieldValues?: string[];
+                  childKey?: string;
+                  childValues?: string[];
+                };
+                const p = r.package ?? "";
                 const catVal = String(allFormValues[`${p}__category`] ?? "").trim();
                 const allowed = (Array.isArray(r.category) ? r.category : [r.category]).filter(Boolean);
                 let detail = `pkg="${p}" cat="${catVal}" allowed=[${allowed.join(",")}]`;
@@ -1497,6 +1553,12 @@ export function PackageBlock({
               }).join(" | ");
             }
 
+            const metaRec = meta as Record<string, unknown>;
+            const agentPass =
+              !isPremiumPkg(pkg)
+              || !wizardPremiumFieldNeedsAgent(metaRec)
+              || formHasSelectedAgent(allFormValues);
+
             debugRows.push({
               label: (f as { label?: string }).label ?? "?",
               value: (f as { value?: string }).value ?? "?",
@@ -1505,11 +1567,12 @@ export function PackageBlock({
               catDetail,
               swPass,
               swDetail,
-              visible: catPass && swPass,
+              visible: catPass && swPass && agentPass,
             });
 
             if (!catPass) return false;
             if (!swPass) return false;
+            if (!agentPass) return false;
 
             return true;
           });

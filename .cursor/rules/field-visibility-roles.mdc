@@ -1,0 +1,68 @@
+---
+description: Tripwire for any change that touches role-based field/tab/record visibility — premium tabs, accounting fields, RBAC helpers, the user_type enum, or any "Show in X tabs" admin config. Must read the field-visibility-roles skill before editing any of the listed files.
+alwaysApply: true
+---
+
+# Field Visibility & Role-Based Access
+
+This codebase decides who sees what data through the AND of three
+independent axes: **role** (user_type), **scope** (org/policy/agent),
+and **field config** (meta). The full contract is spread across four
+files and is NOT obvious from reading any single one. Get it wrong
+and either an end-user sees something they must not (Net Premium
+leaking to a client) or an admin loses a column they need (a Premium
+tab going blank).
+
+If your task touches **any** of the following, STOP and read
+[`.cursor/skills/field-visibility-roles/SKILL.md`](mdc:.cursor/skills/field-visibility-roles/SKILL.md)
+**before** writing code:
+
+- Adding or renaming a value in `userTypeEnum` (`db/schema/core.ts`)
+- Editing `lib/auth/rbac.ts` (`canCreatePolicy`, `policyScopeWhere`,
+  `userHasOrgAccess`, `assertOrgAccess`)
+- Editing `lib/policy-access.ts` `canAccessPolicy`
+- Editing `lib/auth/active-org.ts` (`resolveActiveOrgId`,
+  `isAdminLike`)
+- Editing `lib/accounting-fields.ts` `filterFieldsByContext`,
+  `AccountingFieldDef`, or `loadAccountingFields`
+- Editing `app/api/policies/[id]/premiums/route.ts` `userTypeToContext`
+  / `applyDefaultRoleFilter` / the two-pass filter call site
+- Editing `PREMIUM_CONTEXT_OPTIONS` in `EditPackageFieldClient.tsx`
+  / `NewPackageFieldClient.tsx` / `GenericFieldsManager.tsx`
+- Adding a new "Show in X tabs" or "Visible to" config to any
+  `form_options.meta` shape
+- Adding a new role-gated UI surface (sidebar entry, dashboard tile,
+  per-action button)
+- Diagnosing "user X sees a field they shouldn't" / "user Y can't
+  see a field they should" / "client logged in and saw Net Premium" /
+  "Premium tab is blank for admin after configuring contexts"
+
+## The 30-second cheatsheet
+
+| Concern | Pattern | Don't do |
+|---|---|---|
+| Org-scope on a list endpoint | `policyScopeWhere(user)` from `lib/auth/rbac.ts` | Inline membership join |
+| Per-policy access in any policy endpoint | `canAccessPolicy(user, policyId)` from `lib/policy-access.ts` | Re-derive agent / membership rules per route |
+| Resolve which org a request acts on | `resolveActiveOrgId` from `lib/auth/active-org.ts` | Trust `body.organisationId` blindly |
+| Map `user_type` to "admin-like" | `isAdminLike(user)` from `lib/auth/active-org.ts` | Check `user.userType === "admin"` only — forgets `internal_staff` |
+| Premium tab visibility | `filterFieldsByContext` + second-pass `userTypeToContext` (see route lines 551–560) | Hard-code role checks in the component |
+| Net Premium hidden from clients | Today: keep `applyDefaultRoleFilter` running (don't set `premiumContexts`), OR uncheck `Client` on Net Premium. **Proper fix is config-driven, NOT hardcoded** — see skill §6.1 + the [`dynamic-config-first` skill](mdc:.cursor/skills/dynamic-config-first/SKILL.md) §3.2 (`form_options.user_type_visibility`). | Hardcode `if (userType === "client" && role === "net") hide()` — that's the same anti-pattern the dynamic-config-first skill forbids |
+| Documents (audience rules) | Defer to the `document-user-rights` skill | Reinvent audience rules inline |
+| `direct_client` policy list / linked endorsements | Defer to the `client-policy-scope` skill | Reuse plain `/api/policies` for `?linkedPolicyId=` |
+| New `user_type` value | Update `userTypeEnum` + `userTypeToContext` + `applyDefaultRoleFilter` + `audiencesForRole` + the matrix in the skill | Add the enum value and assume defaults work |
+
+## Known gaps (read the skill before "fixing")
+
+These are documented in the skill and are NOT silent bugs:
+
+- **Net Premium leaks to clients** when any field has
+  `premiumContexts` set (the legacy fallback stops running). Skill §6.1.
+- **"Our commission" / broker margin** is not modeled — the formula
+  engine has no `IF` and there's no `brokerCommissionCents` column.
+  Skill §6.2.
+- **Endorsement agentId** falls back to parent — never drop that
+  fallback in `canAccessPolicy`. Skill §6.4.
+
+If anything above is unclear, the skill has the full contract, the
+matrix, and an executable verification recipe (SQL + manual UI smoke
+test) you can run to confirm correctness.

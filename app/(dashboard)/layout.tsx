@@ -10,6 +10,7 @@ import { PresenceProvider } from "@/lib/presence/presence-context";
 import { OnlineUsersWidget } from "@/components/presence/online-users-widget";
 import { DocumentDeliveryProvider } from "@/lib/document-delivery";
 import { DocumentDeliveryHost } from "@/components/document-delivery/DocumentDeliveryHost";
+import { IdleTimeoutHost } from "@/components/idle-timeout/IdleTimeoutHost";
 import { Suspense } from "react";
 
 export default async function DashboardGroupLayout({
@@ -77,6 +78,16 @@ export default async function DashboardGroupLayout({
               }>{children}</Suspense>
             </div>
             <DocumentDeliveryHost />
+            {/*
+              Idle-timeout host: shows a "Are you still there?"
+              lightbox after the user has been inactive for the
+              configured period and signs them out automatically
+              when the warning countdown reaches zero. Thresholds
+              are stored in `app_settings.idle_timeout_policy` and
+              are configurable per user_type via Admin → User
+              Settings (see lib/idle-timeout/policy.ts).
+            */}
+            <IdleTimeoutHost />
           </DocumentDeliveryProvider>
         </PresenceProvider>
       </SidebarInset>

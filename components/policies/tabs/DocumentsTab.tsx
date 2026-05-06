@@ -5523,9 +5523,10 @@ export function DocumentsTab({
     return decision.allowedAudiences.length > 0;
   });
   const policyHasAgent = !!detail.agent;
-  // Admin/internal staff should always see both audience copies for a
-  // template, regardless of per-audience status gates. Those gates are
-  // for operational flow control on non-admin viewers.
+  // Admin/internal staff bypass per-status template gates (below) so work
+  // isn’t blocked by workflow state — but the two-column Client / Agent
+  // layout only makes sense once a policy has an agent. Without one, the
+  // agent copy is empty and the orange “Agent Documents” group is misleading.
   const privilegedDocumentViewer =
     isPrivilegedViewer === true
     || effectiveUserType === "admin"
@@ -5534,7 +5535,6 @@ export function DocumentsTab({
   const canRenderAgentAudienceForPolicy =
     canSeeAgentAudience && (
       policyHasAgent
-      || privilegedDocumentViewer
       || renderMode === "agent_statement"
     );
 

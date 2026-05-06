@@ -30,6 +30,8 @@ export type ShowWhenRule = {
   fieldValues?: string[];
   childKey?: string;
   childValues?: string[];
+  /** Optional: when true without cross-package deps, hide until `_agentId` is set (advanced / JSON). Prefer `meta.requiresAgent` on the field. */
+  requiresAgent?: boolean;
 };
 
 export type SelectChild = {
