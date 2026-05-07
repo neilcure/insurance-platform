@@ -854,9 +854,29 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEdit
       {detail.agent && detail.agent.id ? (() => {
         const a = detail.agent!;
         const line1 = (a.userNumber?.trim() ? `${a.userNumber} — ` : "") + (a.name?.trim() ?? "");
+        const isPending = a.hasCompletedSetup === false;
+        const isInactive = a.isActive === false && !isPending;
         return (
           <div className="rounded-md border border-neutral-200 p-2 dark:border-neutral-800">
-            <div className="mb-1 text-sm font-medium">Agent</div>
+            <div className="mb-1 flex flex-wrap items-center gap-1.5">
+              <span className="text-sm font-medium">Agent</span>
+              {isPending && (
+                <span
+                  className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                  title="Account created but the agent has not completed the invite flow yet."
+                >
+                  Setup Pending
+                </span>
+              )}
+              {isInactive && (
+                <span
+                  className="inline-flex items-center rounded-full bg-neutral-200 px-2 py-0.5 text-[10px] font-medium text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+                  title="Agent account is disabled."
+                >
+                  Inactive
+                </span>
+              )}
+            </div>
             <div className="text-xs">
               {line1 ? <div className="mb-0.5">{line1}</div> : null}
               <div className="font-mono">{a.email}</div>

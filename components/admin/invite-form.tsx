@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Copy, Loader2, Search, UserPlus, X } from "lucide-react";
 import type { UserType } from "@/lib/user-types";
 import { useUserTypes } from "@/hooks/use-user-types";
+import { useRouter } from "next/navigation";
 
 type CreationMode = "invite" | "account_only";
 type AgentAccountType = "personal" | "company";
@@ -24,6 +25,7 @@ type UnlinkedClient = {
 };
 
 export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[] }) {
+  const router = useRouter();
   const { options: configuredTypes, getLabel: getUserTypeLabel } = useUserTypes();
   const safeTypes = React.useMemo<UserType[]>(() => {
     const fromConfig = configuredTypes.map((t) => t.value as UserType);
@@ -168,6 +170,7 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
       } else {
         toast.success("Invite created");
       }
+      router.refresh();
       setEmail("");
       setMobile("");
       setName("");

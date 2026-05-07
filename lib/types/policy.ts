@@ -22,5 +22,12 @@ export type PolicyDetail = {
     [key: string]: unknown;
   } | null;
   client?: { id: number; clientNumber?: string; createdAt?: string } | null;
-  agent?: { id: number; userNumber?: string | null; name?: string | null; email?: string } | null;
+  agent?: {
+    id: number;
+    userNumber?: string | null;
+    name?: string | null;
+    email?: string;
+    isActive?: boolean;
+    hasCompletedSetup?: boolean;
+  } | null;
 };

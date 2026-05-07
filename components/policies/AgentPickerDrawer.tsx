@@ -93,9 +93,18 @@ export function AgentPickerDrawer({
     });
     if (r.hasCompletedSetup === false) {
       toast.warning(
-        `Agent assigned, but ${r.name ?? r.email ?? "they"} hasn't activated their account yet.`,
+        `${r.name ?? r.email ?? "Agent"} hasn't activated their account yet.`,
         {
-          description: "They'll see this work once they accept the invite.",
+          description:
+            "Selected — click the action button to apply. They'll see this work once they accept the invite.",
+        },
+      );
+    } else if (r.isActive === false) {
+      toast.warning(
+        `${r.name ?? r.email ?? "Agent"}'s account is disabled.`,
+        {
+          description:
+            "Selected — click the action button to apply. They won't see assignments until reactivated.",
         },
       );
     }

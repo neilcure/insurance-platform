@@ -14,6 +14,8 @@ import { isPlaceholderEmail } from "@/lib/auth/placeholder-email";
 import type { ViewPreset, ViewPresetColumnGroup } from "@/lib/view-presets/types";
 import { TableViewPresetBar } from "@/components/ui/table-view-preset-bar";
 import { TableViewPresetEditor } from "@/components/ui/table-view-preset-editor";
+import { Pagination } from "@/components/ui/pagination";
+import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS } from "@/lib/pagination/types";
 
 type UserType = "admin" | "agent" | "accounting" | "internal_staff" | "direct_client" | "service_provider";
 
@@ -128,7 +130,32 @@ export default function UserSettingsTableClient({
   const [draftColumns, setDraftColumns] = React.useState<string[]>(DEFAULT_COLUMNS as string[]);
   const [draftIsDefault, setDraftIsDefault] = React.useState(false);
 
+  const PAGE_SIZE_STORAGE_KEY = "pagination:size:admin-user-settings";
+  const [page, setPage] = React.useState(0);
+  const [pageSize, setPageSize] = React.useState<number>(DEFAULT_PAGE_SIZE);
+
   React.useEffect(() => setMounted(true), []);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY);
+      const n = raw ? Number(raw) : NaN;
+      if (Number.isFinite(n) && (PAGE_SIZE_OPTIONS as readonly number[]).includes(n)) {
+        setPageSize(n);
+      }
+    } catch {}
+  }, []);
+
+  const handlePageSizeChange = React.useCallback((n: number) => {
+    setPageSize(n);
+    setPage(0);
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(n));
+      }
+    } catch {}
+  }, []);
 
   React.useEffect(() => {
     if (!activePreset) return;
@@ -309,18 +336,18 @@ export default function UserSettingsTableClient({
         return <TableCell key={col} className="hidden sm:table-cell">{u.mobile || "—"}</TableCell>;
       case "name":
         return (
-          <TableCell key={col} className="hidden md:table-cell max-w-[180px] truncate whitespace-nowrap" title={u.name?.trim() || ""}>
-            {u.name?.trim() || "—"}
+          <TableCell key={col} className="hidden md:table-cell max-w-[180px] align-top" title={u.name?.trim() || ""}>
+            <span className="line-clamp-2 wrap-break-word whitespace-normal">{u.name?.trim() || "—"}</span>
           </TableCell>
         );
       case "companyName":
         return (
           <TableCell
             key={col}
-            className="hidden lg:table-cell max-w-[220px] truncate whitespace-nowrap"
+            className="hidden lg:table-cell max-w-[220px] align-top"
             title={u.companyName?.trim() || ""}
           >
-            {u.companyName?.trim() || "—"}
+            <span className="line-clamp-2 wrap-break-word whitespace-normal">{u.companyName?.trim() || "—"}</span>
           </TableCell>
         );
       case "userType":
@@ -395,6 +422,20 @@ export default function UserSettingsTableClient({
     });
   }, [initialRows, query, sortKey, sortDir, getDirectClientPrimaryNumber, getDirectClientSecondaryNumber]);
 
+  React.useEffect(() => {
+    setPage(0);
+  }, [query, sortKey, sortDir]);
+
+  React.useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(rows.length / pageSize) - 1);
+    if (page > maxPage) setPage(maxPage);
+  }, [rows.length, pageSize, page]);
+
+  const pagedRows = React.useMemo(
+    () => rows.slice(page * pageSize, page * pageSize + pageSize),
+    [rows, page, pageSize],
+  );
+
   return (
     <div className="space-y-3">
       <div className="space-y-2">
@@ -459,7 +500,7 @@ export default function UserSettingsTableClient({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((u) => (
+            {pagedRows.map((u) => (
               <TableRow key={u.id}>
                 {activeColumns.map((col) => renderDataCell(u, col))}
                 <TableCell className="block w-full md:table-cell md:w-[140px] md:whitespace-nowrap text-left">
@@ -486,6 +527,16 @@ export default function UserSettingsTableClient({
           </TableBody>
         </Table>
       </div>
+
+      <Pagination
+        page={page}
+        pageSize={pageSize}
+        total={rows.length}
+        onPageChange={setPage}
+        onPageSizeChange={handlePageSizeChange}
+        itemNoun="users"
+      />
+
 
       <TableViewPresetEditor
         open={configOpen}

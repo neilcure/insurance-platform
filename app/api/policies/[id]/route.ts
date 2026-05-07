@@ -8,6 +8,7 @@ import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
 import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
+import { hasCompletedSetup } from "@/lib/auth/user-setup-status";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -147,7 +148,14 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
     // Client resolution and agent resolution are fully independent —
     // run them in parallel so they share a single network round-trip window.
     type ResolvedClient = { id: number; clientNumber: string; createdAt?: string } | null;
-    type ResolvedAgent = { id: number; userNumber: string | null; name: string | null; email: string } | null;
+    type ResolvedAgent = {
+      id: number;
+      userNumber: string | null;
+      name: string | null;
+      email: string;
+      isActive: boolean;
+      hasCompletedSetup: boolean;
+    } | null;
 
     const clientResolutionPromise: Promise<{ policyClientId: number | null; resolvedClient: ResolvedClient }> = (async () => {
       let policyClientId: number | null = null;
@@ -339,7 +347,7 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       if (!polCols.hasAgentId) return null;
       try {
         const res = await db.execute(sql`
-          select u.id, u.user_number as "userNumber", u.name, u.email
+          select u.id, u.user_number as "userNumber", u.name, u.email, u.is_active as "isActive"
           from "policies" p
           left join "users" u on u.id = p.agent_id
           where p.id = ${id}
@@ -347,11 +355,15 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
         `);
         const r = Array.isArray(res) ? (res as any)[0] : (res as any)?.rows?.[0];
         if (r && r.id) {
+          const agentId = Number(r.id);
+          const completed = await hasCompletedSetup(agentId).catch(() => false);
           return {
-            id: Number(r.id),
+            id: agentId,
             userNumber: r.userNumber !== undefined ? (r.userNumber as any) : (r.user_number as any) ?? null,
             name: (r.name as any) ?? null,
             email: String(r.email),
+            isActive: r.isActive !== false,
+            hasCompletedSetup: completed,
           };
         }
         return null;

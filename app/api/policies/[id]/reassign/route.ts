@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db/client";
-import { policies, cars } from "@/db/schema/insurance";
+import { policies } from "@/db/schema/insurance";
 import { users, memberships } from "@/db/schema/core";
 import { and, eq, sql } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
@@ -8,12 +8,18 @@ import { getPolicyColumns } from "@/lib/db/column-check";
 
 export const dynamic = "force-dynamic";
 
-const REASSIGNABLE_STATUSES = new Set([
-  "draft",
-  "pending",
-  /** Early client workflow — agent often assigned after initial quotation */
-  "quotation_prepared",
-]);
+/**
+ * NOTE: there is intentionally NO hardcoded status gate here.
+ *
+ * Admins configure when the "Reassign Agent" workflow action is visible
+ * via `form_options.workflow_actions[*].meta.showWhenStatus`. That's the
+ * single source of truth — the API must not second-guess it. Adding an
+ * inline `REASSIGNABLE_STATUSES = [...]` list here would silently 409
+ * reassigns the admin already approved (the user sees the picker's
+ * warning toast and assumes it succeeded). Per the
+ * `dynamic-config-first` skill: branching off a hardcoded status list
+ * in a server route is exactly the antipattern this rule forbids.
+ */
 
 type ResolvedAgent = { id: number; name: string | null; email: string };
 
@@ -227,24 +233,6 @@ export async function POST(
       .limit(1);
     if (!policy) {
       return NextResponse.json({ error: "Policy not found" }, { status: 404 });
-    }
-
-    const [carRow] = await db
-      .select({ extraAttributes: cars.extraAttributes })
-      .from(cars)
-      .where(eq(cars.policyId, id))
-      .limit(1);
-    const policyStatus = String(
-      (carRow?.extraAttributes as Record<string, unknown> | null)?.status ??
-        "quotation_prepared",
-    );
-    if (!REASSIGNABLE_STATUSES.has(policyStatus)) {
-      return NextResponse.json(
-        {
-          error: `Cannot reassign agent on a policy with status "${policyStatus}". Allowed statuses: ${[...REASSIGNABLE_STATUSES].join(", ")}.`,
-        },
-        { status: 409 },
-      );
     }
 
     const resolved = await resolveAgent(orgId, body);
