@@ -141,7 +141,27 @@ export function useIdleTimeout(opts: UseIdleTimeoutOptions): UseIdleTimeoutRetur
 
     // Seed from localStorage so a freshly-mounted tab inherits the
     // "last activity" of the rest of the session.
-    lastActivityRef.current = readLastActivity();
+    //
+    // BUT: if the stored timestamp is already older than the idle
+    // window, it's stale — typically left over from a previous
+    // session that was just timed-out and signed back in. Adopting
+    // it would make the very first tick fire `onTimeout` immediately
+    // and sign the freshly-authenticated user right back out.
+    //
+    // In that case treat "becoming enabled" as user activity (the
+    // user just signed in / loaded the dashboard) and stamp NOW —
+    // which also broadcasts the fresh timestamp to any other tabs
+    // via the `storage` event listener below.
+    const stored = readLastActivity();
+    const now = Date.now();
+    const isStale = now - stored >= idleSeconds * 1000;
+    if (isStale) {
+      lastActivityRef.current = now;
+      lastWriteRef.current = now;
+      writeLastActivity(now);
+    } else {
+      lastActivityRef.current = stored;
+    }
 
     const handler = () => stampActivity();
     for (const evt of ACTIVITY_EVENTS) {
@@ -171,7 +191,7 @@ export function useIdleTimeout(opts: UseIdleTimeoutOptions): UseIdleTimeoutRetur
       window.removeEventListener("focus", handler);
       window.removeEventListener("storage", onStorage);
     };
-  }, [enabled, stampActivity, warnSeconds]);
+  }, [enabled, stampActivity, warnSeconds, idleSeconds]);
 
   // Single per-second tick that drives both the idle check and the
   // warning countdown.

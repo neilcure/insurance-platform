@@ -41,6 +41,25 @@ import {
 } from "@/lib/idle-timeout/policy";
 
 const SIGNED_OUT_REASON_KEY = "idle:signedOutReason";
+const LAST_ACTIVITY_KEY = "idle:lastActivity";
+
+/**
+ * Clear the cross-tab "last activity" timestamp. Called right
+ * before any sign-out so the next sign-in on this browser starts
+ * with a fresh idle window — without this, the stale value would
+ * make the freshly-authenticated user immediately face another
+ * timeout (since `now - stored` is already past the idle limit).
+ *
+ * The hook also has a stale-detection guard, this is a belt-and-
+ * braces clear so the contract is obvious from this side too.
+ */
+function clearStoredActivity(): void {
+  try {
+    window.localStorage.removeItem(LAST_ACTIVITY_KEY);
+  } catch {
+    /* ignore: localStorage may be unavailable */
+  }
+}
 
 export function IdleTimeoutHost() {
   const session = useSession();
@@ -83,6 +102,7 @@ export function IdleTimeoutHost() {
     } catch {
       /* ignore: sessionStorage may be unavailable */
     }
+    clearStoredActivity();
     void signOut({ callbackUrl: "/auth/signin?reason=idle" });
   }, []);
 
@@ -145,6 +165,7 @@ export function IdleTimeoutHost() {
               } catch {
                 /* ignore */
               }
+              clearStoredActivity();
               void signOut({ callbackUrl: "/" });
             }}
           >
