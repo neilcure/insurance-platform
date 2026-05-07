@@ -69,11 +69,14 @@ type PostBody = {
   clientId?: number;
   flowCarId?: number;
   creationMode?: "invite" | "account_only";
+  /** Agent-specific profile (account type, company name, ID). */
   agentProfile?: {
     accountType?: "personal" | "company";
     companyName?: string;
     primaryId?: string;
   };
+  /** Primary ID (HKID etc.) for non-agent, non-direct-client users. Stored in profileMeta. */
+  userPrimaryId?: string;
 };
 
 export async function POST(request: Request) {
@@ -140,14 +143,17 @@ export async function POST(request: Request) {
     if (body.userType === "direct_client" && creationMode === "account_only") {
       return NextResponse.json({ error: "Direct client accounts must be created via invite flow." }, { status: 400 });
     }
-    const profileMeta =
+    const userPrimaryId = typeof body.userPrimaryId === "string" ? body.userPrimaryId.trim() : "";
+    const profileMeta: Record<string, unknown> | null =
       body.userType === "agent"
         ? {
             accountType,
             companyName: companyName || null,
             primaryId: primaryId || null,
           }
-        : null;
+        : userPrimaryId
+          ? { primaryId: userPrimaryId }
+          : null;
 
     // Create a random strong passphrase hash so the account can't be used
     const tempPassword = crypto.randomBytes(32).toString("hex");

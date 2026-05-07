@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Copy, Loader2, Search, UserPlus } from "lucide-react";
+import { Copy, Loader2, Search, UserPlus, X } from "lucide-react";
 import type { UserType } from "@/lib/user-types";
 import { useUserTypes } from "@/hooks/use-user-types";
 
@@ -44,7 +44,9 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
   const [creationMode, setCreationMode] = React.useState<CreationMode>("account_only");
   const [agentAccountType, setAgentAccountType] = React.useState<AgentAccountType>("personal");
   const [agentCompanyName, setAgentCompanyName] = React.useState("");
-  const [agentPrimaryId, setAgentPrimaryId] = React.useState("");
+  const [lastName, setLastName] = React.useState("");
+  const [firstName, setFirstName] = React.useState("");
+  const [primaryId, setPrimaryId] = React.useState("");
 
   // Client linking state
   const [unlinkedClients, setUnlinkedClients] = React.useState<UnlinkedClient[]>([]);
@@ -108,15 +110,25 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
     }
   }, [selectedClient]);
 
+  function buildDisplayName() {
+    return [lastName.trim(), firstName.trim()].filter(Boolean).join(" ").trim();
+  }
+
   async function submit() {
     if (isClientType && !selectedClientId) {
       toast.error("Please select a client record to link");
       return;
     }
+    const resolvedName = isClientType ? name.trim() : buildDisplayName();
     setSubmitting(true);
     setInviteLink(null);
     try {
-      const payload: Record<string, unknown> = { email, mobile, name, userType };
+      const payload: Record<string, unknown> = {
+        email,
+        mobile,
+        name: resolvedName || undefined,
+        userType,
+      };
       if (!isClientType) {
         payload.creationMode = creationMode;
       }
@@ -124,8 +136,10 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
         payload.agentProfile = {
           accountType: agentAccountType,
           companyName: agentAccountType === "company" ? agentCompanyName : undefined,
-          primaryId: agentPrimaryId || undefined,
+          primaryId: primaryId || undefined,
         };
+      } else if (!isClientType && primaryId.trim()) {
+        payload.userPrimaryId = primaryId.trim();
       }
       if (isClientType && selectedClientId) {
         const sel = unlinkedClients.find((c) => c.id === selectedClientId);
@@ -159,7 +173,9 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
       setName("");
       setAgentAccountType("personal");
       setAgentCompanyName("");
-      setAgentPrimaryId("");
+      setLastName("");
+      setFirstName("");
+      setPrimaryId("");
       setSelectedClientId(null);
       setUserType(safeTypes[0]!);
     } catch (err: unknown) {
@@ -216,26 +232,80 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
                 />
               </div>
             ) : null}
-            <div className="grid gap-2">
-              <Label>{agentAccountType === "company" ? "BR / CI Number" : "ID Number"}</Label>
-              <Input
-                value={agentPrimaryId}
-                onChange={(e) => setAgentPrimaryId(e.target.value)}
-                placeholder={agentAccountType === "company" ? "Business registration or CI number" : "HKID or personal ID"}
-              />
-            </div>
           </>
         )}
-        <div className="grid gap-2">
-          <Label>{isClientType && selectedClient ? (selectedClient.category === "company" ? "Company Name" : "Client Name") : "Name"}</Label>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={isClientType ? "Auto-filled from client record" : "Full name"}
-            readOnly={isClientType && !!selectedClient}
-            className={isClientType && selectedClient ? "bg-neutral-100 dark:bg-neutral-800" : ""}
-          />
-        </div>
+        {/* Last name / First name for all non-direct-client types */}
+        {!isClientType ? (
+          <div className="grid gap-2">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+              <Label className="mb-0">Name</Label>
+              {isAgentType && agentAccountType === "company" ? (
+                <span className="text-[11px] font-normal text-neutral-500 dark:text-neutral-400">
+                  Contact person who will use this login
+                </span>
+              ) : null}
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="last-name" className="text-xs font-normal text-neutral-500 dark:text-neutral-400">
+                  Last name
+                </Label>
+                <Input
+                  id="last-name"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  placeholder="Last name"
+                  autoComplete="family-name"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="first-name" className="text-xs font-normal text-neutral-500 dark:text-neutral-400">
+                  First name
+                </Label>
+                <Input
+                  id="first-name"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  placeholder="First name"
+                  autoComplete="given-name"
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-2">
+            <Label>{selectedClient ? (selectedClient.category === "company" ? "Company Name" : "Client Name") : "Name"}</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Auto-filled from client record"
+              readOnly={!!selectedClient}
+              className={selectedClient ? "bg-neutral-100 dark:bg-neutral-800" : ""}
+            />
+          </div>
+        )}
+        {/* ID Number for all non-direct-client, non-agent types (agent uses its own block above) */}
+        {!isClientType && !isAgentType ? (
+          <div className="grid gap-2">
+            <Label>ID Number</Label>
+            <Input
+              value={primaryId}
+              onChange={(e) => setPrimaryId(e.target.value)}
+              placeholder="HKID or personal ID"
+            />
+          </div>
+        ) : null}
+        {/* Agent ID block (label changes with account type) */}
+        {isAgentType ? (
+          <div className="grid gap-2">
+            <Label>{agentAccountType === "company" ? "BR / CI Number" : "ID Number"}</Label>
+            <Input
+              value={primaryId}
+              onChange={(e) => setPrimaryId(e.target.value)}
+              placeholder={agentAccountType === "company" ? "Business registration or CI number" : "HKID or personal ID"}
+            />
+          </div>
+        ) : null}
         <div className="grid gap-2">
           <Label>Mobile</Label>
           <Input value={mobile} onChange={(e) => setMobile(e.target.value)} placeholder="mobile number" />
@@ -320,9 +390,19 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
                   )}
                 </div>
                 {selectedClient && (
-                  <p className="text-sm text-green-600 dark:text-green-400">
-                    Selected: <strong>{selectedClient.displayName}</strong> ({selectedClient.clientNumber})
-                  </p>
+                  <div className="flex items-center justify-between gap-2 rounded-md bg-green-50 px-3 py-1.5 dark:bg-green-900/20">
+                    <p className="text-sm text-green-700 dark:text-green-400">
+                      Selected: <strong>{selectedClient.displayName}</strong> ({selectedClient.clientNumber})
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedClientId(null); setName(""); }}
+                      className="shrink-0 text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-200"
+                      title="Deselect"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
                 )}
               </>
             )}

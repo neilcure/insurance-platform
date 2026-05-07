@@ -53,31 +53,31 @@ function SignInContent() {
     return () => window.cancelAnimationFrame(id);
   }, []);
 
-  // Defensive auto-fill defeat.
+  // Defensive auto-fill defeat — ONLY on the idle-timeout sign-in.
   //
-  // The browser's password manager will happily autofill a previously
-  // saved account into this form — most painfully right after an
-  // idle-timeout sign-out, where the user typically wants to sign
-  // back into the SAME account they were just kicked out of, but the
-  // browser may pre-fill a DIFFERENT saved account (e.g. an admin
-  // they signed in as days ago on the same machine). The user then
-  // clicks "Sign in" without noticing the wrong email/password and
-  // ends up logged in as the WRONG user.
+  // Why scoped to `?reason=idle`
+  // ----------------------------
+  // Browser / password-manager autofill is a feature most users
+  // legitimately want on a normal sign-in (single-user laptops,
+  // remembered passwords, etc.). Disabling it everywhere is annoying.
   //
-  // We defeat autofill in two layers:
+  // BUT after an idle-timeout sign-out the situation is different:
+  // - The user already had a session a moment ago, so they're trying
+  //   to sign back into the SAME account they were just kicked out of.
+  // - On shared / multi-account machines, the browser may pre-fill a
+  //   DIFFERENT saved account (e.g. an admin they signed in as days
+  //   ago) into this form. A quick click on "Sign in" submits those
+  //   wrong credentials and authenticates them as the wrong user.
   //
-  //   1. The inputs themselves carry `autoComplete="off"` /
-  //      "new-password" + `data-1p-ignore` / `data-lpignore` to ask
-  //      browsers AND password managers (1Password, LastPass, etc.)
-  //      to skip them — see the Input/PasswordInput rendering below.
+  // So we only force-clear pre-filled values when arriving via the
+  // idle-timeout redirect (`/auth/signin?reason=idle`). Normal first-
+  // time sign-ins keep the convenient autofill behaviour.
   //
-  //   2. Browsers (notably Chrome) routinely IGNORE autocomplete=off
-  //      on known login fields. So we also force-clear any pre-filled
-  //      values shortly after mount: anything the browser pasted in
-  //      between mount and the first paint we wipe back to empty.
-  //      The `?email=` invite-link case is preserved — we only clear
-  //      when there's no explicit invite email in the URL.
+  // The `?email=` invite-link case is also preserved — we only clear
+  // when there's no explicit invite email in the URL.
+  const isIdleRedirect = reasonFromUrl === "idle";
   useEffect(() => {
+    if (!isIdleRedirect) return;
     if (emailFromLink) return;
     const id = window.setTimeout(() => {
       const emailEl = emailRef.current;
@@ -191,16 +191,16 @@ function SignInContent() {
         <Card className="border-neutral-200 dark:border-neutral-800">
           <CardContent className="pt-6">
             {/*
-              autoComplete="off" on the form is the standard hint to
-              browsers + password managers to skip autofill. See the
-              long comment in the component above for why this is
-              important on the sign-in page (preventing the wrong saved
-              account from auto-logging in after an idle-timeout).
+              On normal sign-ins we let the browser / password manager
+              autofill as usual (convenient single-user UX).
+              On the post-timeout sign-in (`?reason=idle`) we switch the
+              attributes to actively SUPPRESS autofill — see the long
+              comment on `isIdleRedirect` above for why.
             */}
             <form
               onSubmit={handleSubmit}
               className="grid gap-4"
-              autoComplete="off"
+              autoComplete={isIdleRedirect ? "off" : "on"}
             >
               <div className="grid gap-2">
                 <Label htmlFor="email">Email</Label>
@@ -210,19 +210,22 @@ function SignInContent() {
                   placeholder="you@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  autoComplete="off"
-                  // Defeat password-manager extensions that ignore
-                  // autocomplete="off" but respect their own opt-out
-                  // attributes (1Password, LastPass, Bitwarden).
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  data-bwignore="true"
-                  // Random-ish name + readOnly-then-removed trick:
-                  // Chrome ignores autocomplete=off on `name="email"`
-                  // / `type="email"`, but is far less aggressive when
-                  // the field name doesn't match a known credential
-                  // pattern.
-                  name="signin-identifier"
+                  // Normal sign-in: keep `autoComplete="email"` so saved
+                  // accounts populate. Post-timeout: `off` + a non-
+                  // standard `name` (Chrome ignores `off` on a field
+                  // named "email" / `type="email"`).
+                  autoComplete={isIdleRedirect ? "off" : "email"}
+                  name={isIdleRedirect ? "signin-identifier" : "email"}
+                  // Password-manager-extension opt-outs (1Password,
+                  // LastPass, Bitwarden). These attributes are no-ops
+                  // on a normal sign-in (no extension reads them) so
+                  // it's safe to leave them off in that branch and
+                  // ONLY apply during the idle-suppression mode.
+                  {...(isIdleRedirect && {
+                    "data-1p-ignore": "true",
+                    "data-lpignore": "true",
+                    "data-bwignore": "true",
+                  })}
                   ref={emailRef}
                 />
               </div>
@@ -241,14 +244,17 @@ function SignInContent() {
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  // "new-password" is the most reliable signal across
-                  // Chrome / Firefox / Safari to NOT autofill a saved
-                  // password into this field.
-                  autoComplete="new-password"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  data-bwignore="true"
-                  name="signin-secret"
+                  // Normal sign-in: `current-password` so the password
+                  // manager fills in the saved password. Post-timeout:
+                  // `new-password` (the most reliable browser signal
+                  // to NOT autofill a saved password).
+                  autoComplete={isIdleRedirect ? "new-password" : "current-password"}
+                  name={isIdleRedirect ? "signin-secret" : "password"}
+                  {...(isIdleRedirect && {
+                    "data-1p-ignore": "true",
+                    "data-lpignore": "true",
+                    "data-bwignore": "true",
+                  })}
                   ref={passwordRef}
                 />
               </div>

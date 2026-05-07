@@ -135,7 +135,7 @@ export default function UserSettingsTableClient({
     if (activePreset.sortKey) setSortKey(activePreset.sortKey as SortKey);
     if (activePreset.sortDir) setSortDir(activePreset.sortDir);
     setDraftColumns(activePreset.columns);
-  }, [activePreset?.id]);
+  }, [activePreset]);
 
   function openNewPreset() {
     setEditingPreset(null);
