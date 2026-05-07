@@ -42,6 +42,7 @@ function SignInContent() {
   const [error, setError] = useState<string>("");
   const [hasGoogle, setHasGoogle] = useState<boolean>(false);
   const emailRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const el = emailRef.current;
@@ -50,6 +51,50 @@ function SignInContent() {
       el.focus();
     });
     return () => window.cancelAnimationFrame(id);
+  }, []);
+
+  // Defensive auto-fill defeat.
+  //
+  // The browser's password manager will happily autofill a previously
+  // saved account into this form — most painfully right after an
+  // idle-timeout sign-out, where the user typically wants to sign
+  // back into the SAME account they were just kicked out of, but the
+  // browser may pre-fill a DIFFERENT saved account (e.g. an admin
+  // they signed in as days ago on the same machine). The user then
+  // clicks "Sign in" without noticing the wrong email/password and
+  // ends up logged in as the WRONG user.
+  //
+  // We defeat autofill in two layers:
+  //
+  //   1. The inputs themselves carry `autoComplete="off"` /
+  //      "new-password" + `data-1p-ignore` / `data-lpignore` to ask
+  //      browsers AND password managers (1Password, LastPass, etc.)
+  //      to skip them — see the Input/PasswordInput rendering below.
+  //
+  //   2. Browsers (notably Chrome) routinely IGNORE autocomplete=off
+  //      on known login fields. So we also force-clear any pre-filled
+  //      values shortly after mount: anything the browser pasted in
+  //      between mount and the first paint we wipe back to empty.
+  //      The `?email=` invite-link case is preserved — we only clear
+  //      when there's no explicit invite email in the URL.
+  useEffect(() => {
+    if (emailFromLink) return;
+    const id = window.setTimeout(() => {
+      const emailEl = emailRef.current;
+      const pwEl = passwordRef.current;
+      if (emailEl && emailEl.value && emailEl.value !== email) {
+        emailEl.value = "";
+        setEmail("");
+      }
+      if (pwEl && pwEl.value && pwEl.value !== password) {
+        pwEl.value = "";
+        setPassword("");
+      }
+    }, 100);
+    return () => window.clearTimeout(id);
+    // Run once on mount only — re-running on every keystroke would
+    // wipe the user's typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -145,7 +190,18 @@ function SignInContent() {
 
         <Card className="border-neutral-200 dark:border-neutral-800">
           <CardContent className="pt-6">
-            <form onSubmit={handleSubmit} className="grid gap-4">
+            {/*
+              autoComplete="off" on the form is the standard hint to
+              browsers + password managers to skip autofill. See the
+              long comment in the component above for why this is
+              important on the sign-in page (preventing the wrong saved
+              account from auto-logging in after an idle-timeout).
+            */}
+            <form
+              onSubmit={handleSubmit}
+              className="grid gap-4"
+              autoComplete="off"
+            >
               <div className="grid gap-2">
                 <Label htmlFor="email">Email</Label>
                 <Input
@@ -154,7 +210,19 @@ function SignInContent() {
                   placeholder="you@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  autoComplete="email"
+                  autoComplete="off"
+                  // Defeat password-manager extensions that ignore
+                  // autocomplete="off" but respect their own opt-out
+                  // attributes (1Password, LastPass, Bitwarden).
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-bwignore="true"
+                  // Random-ish name + readOnly-then-removed trick:
+                  // Chrome ignores autocomplete=off on `name="email"`
+                  // / `type="email"`, but is far less aggressive when
+                  // the field name doesn't match a known credential
+                  // pattern.
+                  name="signin-identifier"
                   ref={emailRef}
                 />
               </div>
@@ -173,7 +241,15 @@ function SignInContent() {
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  autoComplete="current-password"
+                  // "new-password" is the most reliable signal across
+                  // Chrome / Firefox / Safari to NOT autofill a saved
+                  // password into this field.
+                  autoComplete="new-password"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-bwignore="true"
+                  name="signin-secret"
+                  ref={passwordRef}
                 />
               </div>
 

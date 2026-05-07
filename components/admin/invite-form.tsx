@@ -41,7 +41,7 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
   const [userType, setUserType] = React.useState<UserType>(safeTypes[0]!);
   const [inviteLink, setInviteLink] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
-  const [creationMode, setCreationMode] = React.useState<CreationMode>("invite");
+  const [creationMode, setCreationMode] = React.useState<CreationMode>("account_only");
   const [agentAccountType, setAgentAccountType] = React.useState<AgentAccountType>("personal");
   const [agentCompanyName, setAgentCompanyName] = React.useState("");
   const [agentPrimaryId, setAgentPrimaryId] = React.useState("");
@@ -177,24 +177,6 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-2">
-          <Label>Email</Label>
-          <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@example.com" />
-        </div>
-        <div className="grid gap-2">
-          <Label>Mobile</Label>
-          <Input value={mobile} onChange={(e) => setMobile(e.target.value)} placeholder="Optional mobile number" />
-        </div>
-        <div className="grid gap-2">
-          <Label>{isClientType && selectedClient ? (selectedClient.category === "company" ? "Company Name" : "Client Name") : "Name"}</Label>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={isClientType ? "Auto-filled from client record" : "Full name"}
-            readOnly={isClientType && !!selectedClient}
-            className={isClientType && selectedClient ? "bg-neutral-100 dark:bg-neutral-800" : ""}
-          />
-        </div>
-        <div className="grid gap-2">
           <Label>User Type</Label>
           <RadioGroup value={userType} onValueChange={(v: string) => setUserType(v as UserType)} className="flex flex-wrap gap-4">
             {safeTypes.map((t) => (
@@ -244,6 +226,35 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
             </div>
           </>
         )}
+        <div className="grid gap-2">
+          <Label>{isClientType && selectedClient ? (selectedClient.category === "company" ? "Company Name" : "Client Name") : "Name"}</Label>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={isClientType ? "Auto-filled from client record" : "Full name"}
+            readOnly={isClientType && !!selectedClient}
+            className={isClientType && selectedClient ? "bg-neutral-100 dark:bg-neutral-800" : ""}
+          />
+        </div>
+        <div className="grid gap-2">
+          <Label>Mobile</Label>
+          <Input value={mobile} onChange={(e) => setMobile(e.target.value)} placeholder="mobile number" />
+        </div>
+        <div className="grid gap-2">
+          <Label>
+            Email{!isClientType && creationMode === "account_only" ? <span className="ml-1 text-xs font-normal text-neutral-500 dark:text-neutral-400">(optional)</span> : null}
+          </Label>
+          <Input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={!isClientType && creationMode === "account_only" ? "Leave blank to skip — admin can set it later" : "user@example.com"}
+          />
+          {!isClientType && creationMode === "account_only" ? (
+            <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+              Required only when sending an invite. Skipping it now creates the account without a login email; you can add one later via Edit.
+            </p>
+          ) : null}
+        </div>
         {!isClientType && (
           <div className="grid gap-2">
             <Label>Creation Mode</Label>
@@ -253,12 +264,12 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
               className="flex flex-wrap gap-4"
             >
               <label className="flex items-center gap-2 text-sm">
-                <RadioGroupItem value="invite" id="creation-invite" />
-                <span>Create + Invite Now</span>
-              </label>
-              <label className="flex items-center gap-2 text-sm">
                 <RadioGroupItem value="account_only" id="creation-account-only" />
                 <span>Create Account Only</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <RadioGroupItem value="invite" id="creation-invite" />
+                <span>Create + Invite Now</span>
               </label>
             </RadioGroup>
           </div>

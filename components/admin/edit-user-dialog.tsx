@@ -27,6 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { isPlaceholderEmail } from "@/lib/auth/placeholder-email";
 
 export type EditableUser = {
   id: number;
@@ -84,9 +85,11 @@ export function EditUserDialog({
     ? saving ? "Working..." : "Save & Send Invite"
     : saving ? "Saving..." : "Save Changes";
 
+  const hadPlaceholderEmail = isPlaceholderEmail(user?.email);
+
   React.useEffect(() => {
     if (!open || !user) return;
-    setEmail(user.email ?? "");
+    setEmail(isPlaceholderEmail(user.email) ? "" : (user.email ?? ""));
     setMobile(user.mobile ?? "");
     setName(user.name ?? "");
     setAccountType(user.accountType === "company" ? "company" : "personal");
@@ -251,6 +254,11 @@ export function EditUserDialog({
             <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
               {isInviteMode ? "The invite link will be sent to this address." : "The user will sign in with this email."}
             </p>
+            {hadPlaceholderEmail ? (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                No email is currently on file — enter a real address to enable login or invites.
+              </p>
+            ) : null}
           </div>
           <div className="grid gap-2">
             <Label htmlFor="edit-user-mobile">Mobile</Label>

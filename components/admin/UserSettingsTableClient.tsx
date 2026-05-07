@@ -10,6 +10,7 @@ import { UserRowActions } from "@/components/admin/user-row-actions";
 import BackfillUserNumbersButton from "@/components/admin/backfill-user-numbers-button";
 import { toast } from "sonner";
 import { useTableViewPresets } from "@/lib/view-presets/use-table-view-presets";
+import { isPlaceholderEmail } from "@/lib/auth/placeholder-email";
 import type { ViewPreset, ViewPresetColumnGroup } from "@/lib/view-presets/types";
 import { TableViewPresetBar } from "@/components/ui/table-view-preset-bar";
 import { TableViewPresetEditor } from "@/components/ui/table-view-preset-editor";
@@ -290,7 +291,20 @@ export default function UserSettingsTableClient({
           </TableCell>
         );
       case "email":
-        return <TableCell key={col} className="font-mono text-sm">{u.email}</TableCell>;
+        return (
+          <TableCell key={col} className="font-mono text-sm">
+            {isPlaceholderEmail(u.email) ? (
+              <span
+                className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                title="No email on file. Use Edit to set one before sending an invite."
+              >
+                Email not set
+              </span>
+            ) : (
+              u.email
+            )}
+          </TableCell>
+        );
       case "mobile":
         return <TableCell key={col} className="hidden sm:table-cell">{u.mobile || "—"}</TableCell>;
       case "name":
@@ -352,7 +366,7 @@ export default function UserSettingsTableClient({
     const filtered = initialRows.filter((u) => {
       if (!q) return true;
       const hay = [
-        u.email,
+        isPlaceholderEmail(u.email) ? "" : u.email,
         u.mobile ?? "",
         u.name ?? "",
         u.companyName ?? "",

@@ -9,6 +9,7 @@ import crypto from "crypto";
 import { sendEmail, getBaseUrlFromRequestUrl } from "@/lib/email";
 import { generateNextUserNumber } from "@/lib/user-number";
 import { getInsuredDisplayName, getInsuredType, getInsuredPrimaryId, getContactField } from "@/lib/field-resolver";
+import { generatePlaceholderEmail } from "@/lib/auth/placeholder-email";
 
 /**
  * Creates a clients table entry from a clientSet flow record (cars row).
@@ -83,11 +84,20 @@ export async function POST(request: Request) {
     }
 
     const body = (await request.json()) as PostBody;
-    const email = (body.email ?? "").trim().toLowerCase();
+    const rawEmail = (body.email ?? "").trim().toLowerCase();
     const mobile = typeof body.mobile === "string" ? body.mobile.trim() : "";
     const accountType = body.agentProfile?.accountType === "company" ? "company" : "personal";
     const companyName = typeof body.agentProfile?.companyName === "string" ? body.agentProfile.companyName.trim() : "";
     const primaryId = typeof body.agentProfile?.primaryId === "string" ? body.agentProfile.primaryId.trim() : "";
+
+    // "Create Account Only" lets admin pre-create a user without knowing the
+    // email yet (e.g. they're still collecting it). We store a placeholder on
+    // a non-routable domain so the unique-NOT-NULL `email` column stays valid
+    // and the row is easy to find later (`WHERE email LIKE '%@placeholder.local'`).
+    // For invite mode and direct_client (always invite-driven) we still
+    // require a real email.
+    const isAccountOnly = body.creationMode === "account_only" && body.userType !== "direct_client";
+    const email = rawEmail || (isAccountOnly ? generatePlaceholderEmail() : "");
     if (!email) {
       return NextResponse.json({ error: "Email required" }, { status: 400 });
     }
