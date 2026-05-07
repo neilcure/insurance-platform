@@ -44,6 +44,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveActiveOrgId, ActiveOrgError } from "@/lib/auth/active-org";
+import { pgTimestampToIsoUtc } from "@/lib/format/date";
 
 const STALE_AFTER_SECONDS = 180;
 
@@ -168,7 +169,11 @@ export const GET = withAuth(async (_request, { user }) => {
     name: r.name,
     email: r.email,
     userType: r.user_type,
-    lastSeenAt: r.last_seen_at,
+    // Normalise the postgres `timestamp` (no tz) value into an ISO-UTC
+    // string ending in `Z`. Without this the client's `timeAgo()` would
+    // treat the timestamp as local time and display a constant N-hour
+    // offset (e.g. "8h ago" for every just-heartbeated HK user).
+    lastSeenAt: pgTimestampToIsoUtc(r.last_seen_at),
     resourceKey: r.resource_key,
     phone: r.phone,
     isSelf: Number(r.id) === viewerId,

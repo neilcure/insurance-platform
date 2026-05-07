@@ -1,4 +1,55 @@
 /**
+ * Normalise a PostgreSQL `timestamp` (without time zone) value into a
+ * proper ISO-UTC string ending in `Z`.
+ *
+ * Why this exists
+ * ---------------
+ * Almost every `timestamp` column in this codebase is declared as
+ * `timestamp("...", { mode: "string" })` — i.e. WITHOUT a time zone.
+ * PostgreSQL stamps `now()` in the DB server's local clock (UTC for
+ * Neon / most cloud Postgres) and stores it without any tz marker.
+ *
+ * When a raw `db.execute(sql`SELECT ts FROM ...`)` round-trips that
+ * value through postgres-js, the wire format is a plain string like
+ * `"2026-05-07 01:47:23.456"` — no `Z`, no `+00:00`.
+ *
+ * Sending that raw string to the client breaks `Date.parse` in
+ * non-trivial ways: per ECMAScript 2017+, an ISO-shaped string with
+ * NO offset is interpreted as **local** time. So a viewer in Hong
+ * Kong (UTC+8) treats the value as HKT, then subtracts the *real*
+ * UTC `Date.now()` — and gets a constant 8-hour offset (the
+ * "everyone online 8h ago, forever" symptom in the presence widget).
+ *
+ * This helper:
+ *   - returns ISO unchanged if it already has Z or a +HH:MM suffix;
+ *   - converts the postgres-js space-separated form into ISO + `Z`;
+ *   - falls back to "now" for null/invalid input so callers never
+ *     accidentally send `undefined` to the client.
+ *
+ * Use this in any API route that surfaces a `timestamp` column to
+ * the browser for display (presence, audit logs, recent activity,
+ * etc). Drizzle-mode select(), which also uses `mode: "string"`,
+ * has the same issue — pipe the value through this helper before
+ * `JSON.stringify`.
+ */
+export function pgTimestampToIsoUtc(
+  value: string | Date | null | undefined,
+): string {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime())
+      ? new Date().toISOString()
+      : value.toISOString();
+  }
+  if (typeof value !== "string" || value.length === 0) {
+    return new Date().toISOString();
+  }
+  if (/[Zz]$|[+-]\d{2}:?\d{2}$/.test(value)) return value;
+  const normalised = (value.includes("T") ? value : value.replace(" ", "T")) + "Z";
+  const d = new Date(normalised);
+  return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+}
+
+/**
  * Format an ISO date string as DD-MM-YYYY for display.
  */
 export function formatDDMMYYYY(iso: string): string {

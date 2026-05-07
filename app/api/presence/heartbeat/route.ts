@@ -35,6 +35,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveActiveOrgId, ActiveOrgError } from "@/lib/auth/active-org";
+import { pgTimestampToIsoUtc } from "@/lib/format/date";
 
 const Body = z
   .object({
@@ -90,10 +91,11 @@ export const POST = withAuth(async (request, { user }) => {
 
   // drizzle's `db.execute` returns either an array or a wrapper —
   // postgres-js returns the array directly so this works for both.
-  const lastSeenAt =
-    Array.isArray(rows) && rows[0]?.last_seen_at
-      ? rows[0].last_seen_at
-      : new Date().toISOString();
+  // Normalise to an ISO-UTC string so clients that compare against
+  // their own `Date.now()` (e.g. `timeAgo()` in the presence widget)
+  // don't double-apply their local timezone offset.
+  const raw = Array.isArray(rows) ? rows[0]?.last_seen_at : undefined;
+  const lastSeenAt = pgTimestampToIsoUtc(raw);
 
   return NextResponse.json({ ok: true, lastSeenAt });
 });
