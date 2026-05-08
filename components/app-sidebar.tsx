@@ -27,6 +27,7 @@ import {
   ListOrdered,
   Bug,
   Activity,
+  Globe,
   type LucideIcon,
 } from "lucide-react";
 import { getIcon } from "@/lib/icons";
@@ -456,6 +457,13 @@ export function AppSidebar(
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                     <SidebarMenuItem>
+                      <SidebarMenuButton tooltip="Landing Page" asChild>
+                        <Link href="/admin/landing-page">
+                          <Globe className="h-3.5 w-3.5 shrink-0" />
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
                       <SidebarMenuButton tooltip="Payment Schedules" asChild>
                         <Link href="/admin/payment-schedules">
                           <ClipboardList className="h-3.5 w-3.5 shrink-0" />
@@ -611,6 +619,14 @@ export function AppSidebar(
                               <Link href="/admin/client-settings">
                                 <Hash className="h-4 w-4 shrink-0" />
                                 <span>Client Number Settings</span>
+                              </Link>
+                            </SidebarMenuButton>
+                          </li>
+                          <li>
+                            <SidebarMenuButton tooltip="Landing Page" asChild>
+                              <Link href="/admin/landing-page">
+                                <Globe className="h-4 w-4 shrink-0" />
+                                <span>Landing Page</span>
                               </Link>
                             </SidebarMenuButton>
                           </li>

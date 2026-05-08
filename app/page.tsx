@@ -10,6 +10,50 @@ import {
   ArrowRight,
   CheckCircle2,
 } from "lucide-react";
+import {
+  DEFAULT_LANDING,
+  type LandingPageSettings,
+} from "@/app/api/admin/landing-page/route";
+import { db } from "@/db/client";
+import { appSettings } from "@/db/schema/core";
+import { eq } from "drizzle-orm";
+import { ModeToggle } from "@/components/ui/mode-toggle";
+
+async function getLandingContent(): Promise<LandingPageSettings> {
+  try {
+    const [row] = await db
+      .select()
+      .from(appSettings)
+      .where(eq(appSettings.key, "landing_page"))
+      .limit(1);
+
+    const stored = row?.value ? (row.value as Partial<LandingPageSettings>) : {};
+    const base: LandingPageSettings = { ...DEFAULT_LANDING, ...stored };
+
+    // Check on-disk whether logo files actually exist
+    const { promises: fs } = await import("node:fs");
+    const path = await import("node:path");
+    const assetsDir = path.join(process.cwd(), ".uploads", "assets");
+    try {
+      const files = await fs.readdir(assetsDir);
+      base.logoUrl = files.some((f) => f.startsWith("logo-light."))
+        ? "/api/admin/assets/logo?variant=light"
+        : "";
+      base.logoUrlDark = files.some((f) => f.startsWith("logo-dark."))
+        ? "/api/admin/assets/logo?variant=dark"
+        : "";
+    } catch {
+      base.logoUrl = "";
+      base.logoUrlDark = "";
+    }
+
+    return base;
+  } catch {
+    return DEFAULT_LANDING;
+  }
+}
+
+const FEATURE_ICONS = [FileText, Users, BarChart3];
 
 export default async function Home() {
   const session = await getServerSession(authOptions);
@@ -17,44 +61,87 @@ export default async function Home() {
     redirect("/dashboard");
   }
 
+  const c = await getLandingContent();
+
   return (
-    <main className="min-h-screen bg-neutral-50 dark:bg-neutral-950">
+    <main className="min-h-screen bg-neutral-50 transition-colors duration-500 dark:bg-neutral-950">
       {/* Nav */}
       <nav className="flex items-center justify-between px-6 py-4 sm:px-10">
-        <div className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-neutral-900 dark:bg-neutral-100">
-            <ShieldCheck className="h-5 w-5 text-white dark:text-neutral-900" />
-          </div>
-          <span className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-            GInsurance
+        <div className="flex items-center gap-3">
+          {(c.logoUrl || c.logoUrlDark) ? (
+            // Both variants share the same slot. When BOTH are uploaded we
+            // cross-fade between them as `.dark` toggles on <html>. When only
+            // ONE is uploaded we show that one in both modes (no fade), so the
+            // navbar never goes blank.
+            <div className="relative inline-flex h-12 items-center">
+              {c.logoUrl && c.logoUrlDark ? (
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={c.logoUrl}
+                    alt={c.brandName}
+                    className="block h-12 max-w-[208px] object-contain object-left transition-opacity duration-500 ease-in-out dark:opacity-0"
+                  />
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={c.logoUrlDark}
+                    alt=""
+                    aria-hidden="true"
+                    className="pointer-events-none absolute left-0 top-0 h-12 max-w-[208px] object-contain object-left opacity-0 transition-opacity duration-500 ease-in-out dark:opacity-100"
+                  />
+                </>
+              ) : (
+                // Only one variant uploaded — show it in both modes.
+                // dark:invert flips a black-on-transparent logo to white
+                // in dark mode so it stays visible without a second file.
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={c.logoUrl || c.logoUrlDark}
+                  alt={c.brandName}
+                  className="block h-12 max-w-[208px] object-contain object-left transition-[filter] duration-500 dark:invert"
+                />
+              )}
+            </div>
+          ) : (
+            <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-neutral-900 transition-colors duration-500 dark:bg-neutral-100">
+              <ShieldCheck className="h-6 w-6 text-white transition-colors duration-500 dark:text-neutral-900" />
+            </div>
+          )}
+          <span className="text-lg font-semibold text-neutral-900 transition-colors duration-500 dark:text-neutral-100">
+            {c.brandName}
           </span>
         </div>
-        <Link
-          href="/auth/signin"
-          className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
-        >
-          Sign in
-        </Link>
+        <div className="flex items-center gap-2">
+          <ModeToggle />
+          <Link
+            href="/auth/signin"
+            className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
+          >
+            Sign in
+          </Link>
+        </div>
       </nav>
 
       {/* Hero */}
       <section className="mx-auto max-w-4xl px-6 pb-20 pt-16 text-center sm:px-10 sm:pt-24">
         <h1 className="text-4xl font-bold tracking-tight text-neutral-900 sm:text-5xl dark:text-neutral-100">
-          Insurance management,
-          <br />
-          <span className="text-neutral-500 dark:text-neutral-400">simplified.</span>
+          {c.heroHeading}
+          {c.heroHeadingAccent && (
+            <>
+              <br />
+              <span className="text-neutral-500 dark:text-neutral-400">{c.heroHeadingAccent}</span>
+            </>
+          )}
         </h1>
         <p className="mx-auto mt-6 max-w-2xl text-lg text-neutral-600 dark:text-neutral-400">
-          GInsurance is a modern platform for managing policies, clients, agents,
-          and documents — all in one place. Built for teams that need clarity and
-          speed.
+          {c.heroDescription}
         </p>
         <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
           <Link
             href="/auth/signin"
             className="inline-flex items-center gap-2 rounded-md bg-neutral-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
           >
-            Get started
+            {c.heroCta}
             <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
@@ -64,29 +151,24 @@ export default async function Home() {
       <section className="border-t border-neutral-200 bg-white px-6 py-20 sm:px-10 dark:border-neutral-800 dark:bg-neutral-900">
         <div className="mx-auto max-w-5xl">
           <h2 className="text-center text-2xl font-semibold text-neutral-900 dark:text-neutral-100">
-            Everything you need to run your book of business
+            {c.featuresHeading}
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-center text-neutral-500 dark:text-neutral-400">
-            From quoting to renewals, GInsurance keeps your workflows
-            organized and your data accessible.
+            {c.featuresSubheading}
           </p>
 
           <div className="mt-14 grid gap-10 sm:grid-cols-2 lg:grid-cols-3">
-            <FeatureCard
-              icon={FileText}
-              title="Policy Management"
-              description="Create, track, and manage policies across every line of business with configurable workflows."
-            />
-            <FeatureCard
-              icon={Users}
-              title="Client & Agent Portal"
-              description="Keep client records, agent assignments, and communication history in one central hub."
-            />
-            <FeatureCard
-              icon={BarChart3}
-              title="Documents & Reporting"
-              description="Generate policy documents from templates and get visibility into your portfolio at a glance."
-            />
+            {c.featureCards.map((card, i) => {
+              const Icon = FEATURE_ICONS[i % FEATURE_ICONS.length]!;
+              return (
+                <FeatureCard
+                  key={i}
+                  icon={Icon}
+                  title={card.title}
+                  description={card.description}
+                />
+              );
+            })}
           </div>
         </div>
       </section>
@@ -95,21 +177,13 @@ export default async function Home() {
       <section className="px-6 py-20 sm:px-10">
         <div className="mx-auto max-w-3xl">
           <h2 className="text-center text-2xl font-semibold text-neutral-900 dark:text-neutral-100">
-            Built for modern insurance teams
+            {c.highlightsHeading}
           </h2>
           <ul className="mt-10 space-y-5">
-            {[
-              "Configurable policy flows and form fields — no code changes needed",
-              "Role-based access for admins, agents, and internal staff",
-              "PDF template generation with dynamic data binding",
-              "Automated reminders and workflow actions",
-              "Dark mode and responsive design for work from anywhere",
-            ].map((text) => (
-              <li key={text} className="flex items-start gap-3">
+            {c.highlights.map((text, i) => (
+              <li key={i} className="flex items-start gap-3">
                 <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
-                <span className="text-neutral-700 dark:text-neutral-300">
-                  {text}
-                </span>
+                <span className="text-neutral-700 dark:text-neutral-300">{text}</span>
               </li>
             ))}
           </ul>
@@ -119,10 +193,10 @@ export default async function Home() {
       {/* CTA */}
       <section className="border-t border-neutral-200 bg-white px-6 py-16 text-center sm:px-10 dark:border-neutral-800 dark:bg-neutral-900">
         <h2 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
-          Ready to get started?
+          {c.ctaHeading}
         </h2>
         <p className="mt-2 text-neutral-500 dark:text-neutral-400">
-          Sign in to your account or contact your administrator for access.
+          {c.ctaSubheading}
         </p>
         <Link
           href="/auth/signin"
@@ -139,7 +213,7 @@ export default async function Home() {
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-neutral-400" />
             <span className="text-sm text-neutral-500 dark:text-neutral-400">
-              &copy; {new Date().getFullYear()} GInsurance. All rights reserved.
+              &copy; {new Date().getFullYear()} {c.footerName}. All rights reserved.
             </span>
           </div>
           <div className="flex gap-6 text-sm text-neutral-500 dark:text-neutral-400">

@@ -29,10 +29,16 @@
  * Inside `/api/*` we additionally skip these prefixes — they handle
  * their own auth or are intentionally public:
  *
- *   - /api/auth/*   — NextAuth + invite / forgot / reset / change password
- *   - /api/sign/*   — public document signing flow (token-based)
- *   - /api/share/*  — public document download flow (token-based)
- *   - /api/cron/*   — uses CRON_SECRET header, not session
+ *   - /api/auth/*           — NextAuth + invite / forgot / reset / change password
+ *   - /api/sign/*           — public document signing flow (token-based)
+ *   - /api/share/*          — public document download flow (token-based)
+ *   - /api/cron/*           — uses CRON_SECRET header, not session
+ *   - /api/admin/assets/*   — public branding assets (logo) used by the
+ *                             unauthenticated landing page; POST/DELETE
+ *                             on this surface still call requireUser
+ *                             internally so admin-only mutations stay safe.
+ *   - /api/admin/landing-page — public read of admin-edited landing page
+ *                             content; POST still calls requireUser.
  *
  * Kill switch
  * -----------
@@ -50,6 +56,12 @@ const PUBLIC_API_PREFIXES = [
   "/api/sign/",
   "/api/share/",
   "/api/cron/",
+  // Branding assets (light/dark logo) loaded by the public landing page.
+  // POST/DELETE on this prefix still call requireUser inside the handler.
+  "/api/admin/assets/",
+  // Public read of admin-edited landing-page content. POST still calls
+  // requireUser inside the handler.
+  "/api/admin/landing-page",
 ];
 
 function isPublicApi(pathname: string): boolean {
