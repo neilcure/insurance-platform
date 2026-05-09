@@ -247,7 +247,7 @@ export async function POST(request: Request) {
     // Send invite email (best-effort)
     const emailResult = await sendEmail({
       to: createdUser.email,
-      subject: "You're invited to GInsurance Platform",
+      subject: "You're invited to Bravo General Insurance Interface",
       html: `<p>Hello${createdUser.name ? ` ${createdUser.name}` : ""},</p>
 <p>You have been invited to join the platform. Click the link below to set your password and activate your account:</p>
 <p><a href="${inviteLink}">${inviteLink}</a></p>

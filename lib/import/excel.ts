@@ -290,7 +290,7 @@ function buildLabelNote(f: ImportFieldDef): ExcelJS.Comment {
 /** Generates the import template workbook for a flow. */
 export async function buildImportTemplate(schema: ImportFlowSchema): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
-  wb.creator = "GInsurance Platform";
+  wb.creator = "Bravo General Insurance Interface";
   wb.created = new Date();
 
   // Build the column layout, package-by-package, in step order.

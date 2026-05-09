@@ -1,4 +1,3 @@
-/* eslint-disable @next/next/no-img-element */
 "use client";
 
 import * as React from "react";
@@ -42,8 +41,8 @@ export default function HomeActions({
       const data = (await res.json()) as DemoCreds;
       setCreds(data);
       toast.success("Demo data ready");
-    } catch (err: any) {
-      toast.error(err?.message ?? "Seed failed");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Seed failed");
     } finally {
       setLoading(false);
     }

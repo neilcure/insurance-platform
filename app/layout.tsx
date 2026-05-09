@@ -5,28 +5,30 @@ import { ThemeProvider } from "@/components/ui/theme-provider";
 import { AuthSessionProvider } from "@/components/auth/session-provider";
 import { GlobalDialogHost } from "@/components/ui/global-dialogs";
 
+const SITE_NAME = "Bravo General Insurance Interface";
+
 export const metadata: Metadata = {
   title: {
-    default: "GInsurance Platform | Insurance Management Made Simple",
-    template: "%s | GInsurance",
+    default: `${SITE_NAME} | Insurance Management Made Simple`,
+    template: `%s | ${SITE_NAME}`,
   },
   description:
-    "Streamline your insurance operations with GInsurance — manage policies, clients, agents, and documents all in one modern platform.",
+    "Bravo General Insurance Interface — manage policies, clients, agents, and documents — all in one place.",
   metadataBase: new URL("https://bravogi.com"),
   openGraph: {
-    title: "GInsurance Platform",
+    title: `${SITE_NAME} | Insurance Management Made Simple`,
     description:
-      "Streamline your insurance operations with GInsurance — manage policies, clients, agents, and documents all in one modern platform.",
+      "Bravo General Insurance Interface — manage policies, clients, agents, and documents — all in one place.",
     url: "https://bravogi.com",
-    siteName: "GInsurance",
+    siteName: SITE_NAME,
     locale: "en_US",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "GInsurance Platform",
+    title: `${SITE_NAME} | Insurance Management Made Simple`,
     description:
-      "Streamline your insurance operations with GInsurance — manage policies, clients, agents, and documents all in one modern platform.",
+      "Bravo General Insurance Interface — manage policies, clients, agents, and documents — all in one place.",
   },
   robots: {
     index: true,

@@ -64,7 +64,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
 
     const emailResult = await sendEmail({
       to: user.email,
-      subject: "Set up your GInsurance account",
+      subject: "Set up your Bravo General Insurance Interface account",
       html: `<p>Hello${user.name ? ` ${user.name}` : ""},</p>
 <p>Your account is ready. Click the link below to set your password and activate your account:</p>
 <p><a href="${setupLink}">${setupLink}</a></p>

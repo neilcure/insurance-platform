@@ -55,15 +55,15 @@ export type LandingPageSettings = {
 export const DEFAULT_LANDING: LandingPageSettings = {
   logoUrl: "",
   logoUrlDark: "",
-  brandName: "GInsurance",
+  brandName: "Bravo General Insurance Interface",
   heroHeading: "Insurance management,",
   heroHeadingAccent: "simplified.",
   heroDescription:
-    "GInsurance is a modern platform for managing policies, clients, agents, and documents — all in one place. Built for teams that need clarity and speed.",
+    "Bravo General Insurance Interface is a modern platform for managing policies, clients, agents, and documents — all in one place. Built for teams that need clarity and speed.",
   heroCta: "Get started",
   featuresHeading: "Everything you need to run your book of business",
   featuresSubheading:
-    "From quoting to renewals, GInsurance keeps your workflows organized and your data accessible.",
+    "From quoting to renewals, Bravo General Insurance Interface keeps your workflows organized and your data accessible.",
   featureCards: [
     {
       title: "Policy Management",
@@ -92,7 +92,7 @@ export const DEFAULT_LANDING: LandingPageSettings = {
   ctaHeading: "Ready to get started?",
   ctaSubheading:
     "Sign in to your account or contact your administrator for access.",
-  footerName: "GInsurance",
+  footerName: "Bravo General Insurance Interface",
 };
 
 export async function GET() {

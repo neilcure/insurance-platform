@@ -10,12 +10,6 @@ import { toast } from "sonner";
 import { Loader2, Moon, Plus, Save, Sun, Trash2, Upload, X } from "lucide-react";
 import type { LandingPageSettings } from "@/app/api/admin/landing-page/route";
 
-const DEFAULT_CARDS = [
-  { title: "Policy Management", description: "Create, track, and manage policies across every line of business with configurable workflows." },
-  { title: "Client & Agent Portal", description: "Keep client records, agent assignments, and communication history in one central hub." },
-  { title: "Documents & Reporting", description: "Generate policy documents from templates and get visibility into your portfolio at a glance." },
-];
-
 type LogoVariant = "light" | "dark";
 
 interface LogoUploadBlockProps {
@@ -259,7 +253,7 @@ export default function LandingPageSettingsPage() {
           </div>
           <div className="grid gap-1.5">
             <Label>Footer company name</Label>
-            <Input value={form.footerName} onChange={(e) => set("footerName", e.target.value)} placeholder="e.g. GInsurance" />
+            <Input value={form.footerName} onChange={(e) => set("footerName", e.target.value)} placeholder="e.g. Bravo General Insurance Interface" />
           </div>
         </CardContent>
       </Card>
