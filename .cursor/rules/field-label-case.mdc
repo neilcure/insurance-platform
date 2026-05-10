@@ -1,0 +1,25 @@
+# Field Label Case (`meta.labelCase`)
+
+Admin-configured `labelCase` on `form_options` fields controls **both** the label text AND the displayed value for every field in every table, wizard, and package block. The implementation is non-obvious and has one critical bug trap.
+
+If your task touches **any** of the following, STOP and read
+[`.cursor/skills/field-label-case/SKILL.md`](mdc:.cursor/skills/field-label-case/SKILL.md)
+**before** writing code:
+
+- Adding any table, list, or card that displays field labels or values from `form_options`
+- Adding or editing `applyLabelCase` / `applyCaseToText` in any file
+- Editing the `fieldLabelCases` build loop in `PoliciesTableClient.tsx`
+- Adding a new column type to `PoliciesTableClient` that renders text from snapshots
+- Debugging "Name shows UPPER CASE / wrong case / title case not working"
+- Adding `labelCase` support to a new surface (endorsements table, agents table, etc.)
+
+## The 30-second cheatsheet
+
+| Concern | Pattern | Don't do |
+|---|---|---|
+| Title-case transform | `text.toLowerCase().replace(/\b\w/g, c => c.toUpperCase())` | `text.replace(/\b\w/g, c => c.toUpperCase())` — leaves ALL-CAPS unchanged |
+| Load `labelCase` from API | Include `meta` in the fetch type; build a `cases: Record<string, labelCase>` map | Ignore `meta`; use raw label only |
+| Apply to cell value | `applyCase(String(v), fieldLabelCases[path])` | Inline ternary per-cell |
+| `_builtin.displayName` case | `getDisplayNameCase()` scans `fieldLabelCases` for `lastName`/`firstName`/`companyName` | Hard-code "title" or leave raw |
+| Mutate stored data | ❌ Never — display-only transform | Writing transformed text to DB |
+| Sorting / filtering | Use raw stored value | Sort/filter on transformed display string |

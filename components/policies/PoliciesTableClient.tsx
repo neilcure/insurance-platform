@@ -276,6 +276,7 @@ export default function PoliciesTableClient({
 
   const [fieldLabels, setFieldLabels] = React.useState<Record<string, string>>({});
   const [fieldSortOrders, setFieldSortOrders] = React.useState<Record<string, number>>({});
+  const [fieldLabelCases, setFieldLabelCases] = React.useState<Record<string, "original" | "upper" | "lower" | "title">>({});
   const [packageLabels, setPackageLabels] = React.useState<Record<string, string>>({});
   const [packageSortOrders, setPackageSortOrders] = React.useState<Record<string, number>>({});
 
@@ -289,7 +290,7 @@ export default function PoliciesTableClient({
       ...pkgNames.map((pkg) =>
         fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}&_t=${ts}`, { cache: "no-store" })
           .then((r) => (r.ok ? r.json() : [])).catch(() => [])
-          .then((fRows: Array<{ value?: string; label?: string; sortOrder?: number }>) => ({ pkg, fRows }))
+          .then((fRows: Array<{ value?: string; label?: string; sortOrder?: number; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }>) => ({ pkg, fRows }))
       ),
     ]).then(([pkgRows, ...fieldResults]) => {
       if (cancelled) return;
@@ -310,14 +311,21 @@ export default function PoliciesTableClient({
       setPackageSortOrders(pOrders);
       const labels: Record<string, string> = {};
       const orders: Record<string, number> = {};
-      for (const { pkg, fRows } of fieldResults as Array<{ pkg: string; fRows: Array<{ value?: string; label?: string; sortOrder?: number }> }>) {
+      const cases: Record<string, "original" | "upper" | "lower" | "title"> = {};
+      for (const { pkg, fRows } of fieldResults as Array<{ pkg: string; fRows: Array<{ value?: string; label?: string; sortOrder?: number; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }> }>) {
         if (!Array.isArray(fRows)) continue;
         for (const row of fRows) {
           const key = String(row?.value ?? "").trim();
-          const lbl = String(row?.label ?? "").trim();
-          if (!key || !lbl) continue;
+          const rawLbl = String(row?.label ?? "").trim();
+          if (!key || !rawLbl) continue;
+          const labelCase = row?.meta?.labelCase;
+          const lbl = !labelCase || labelCase === "original" ? rawLbl
+            : labelCase === "upper" ? rawLbl.toUpperCase()
+            : labelCase === "lower" ? rawLbl.toLowerCase()
+            : rawLbl.replace(/\b\w/g, (c) => c.toUpperCase());
           const so = Number(row?.sortOrder);
           const order = Number.isFinite(so) ? so : 0;
+          const effectiveCase = (labelCase ?? "original") as "original" | "upper" | "lower" | "title";
           const prefixes = pkg === "insured" ? ["insured"] : [`pkg.${pkg}`];
           for (const pfx of prefixes) {
             labels[`${pfx}.${key}`] = lbl;
@@ -326,11 +334,15 @@ export default function PoliciesTableClient({
             orders[`${pfx}.${key}`] = order;
             orders[`${pfx}.${pkg}__${key}`] = order;
             orders[`${pfx}.${pkg}_${key}`] = order;
+            cases[`${pfx}.${key}`] = effectiveCase;
+            cases[`${pfx}.${pkg}__${key}`] = effectiveCase;
+            cases[`${pfx}.${pkg}_${key}`] = effectiveCase;
           }
         }
       }
       setFieldLabels(labels);
       setFieldSortOrders(orders);
+      setFieldLabelCases(cases);
     });
     return () => { cancelled = true; };
   }, [pkgNames.join(",")]);
@@ -468,11 +480,39 @@ export default function PoliciesTableClient({
     setConfigOpen(false);
   }
 
+  function applyCaseToText(text: string, mode?: "original" | "upper" | "lower" | "title"): string {
+    if (!mode || mode === "original") return text;
+    if (mode === "upper") return text.toUpperCase();
+    if (mode === "lower") return text.toLowerCase();
+    // Title: lowercase everything first, then capitalise the first letter of each word.
+    // Without the lowercase step, "KWAN SIU MAN" stays all-caps because the
+    // regex only touches the first character of each word — the rest are unchanged.
+    return text.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  // For the built-in displayName column, derive the case from the most
+  // representative insured name field — try lastName → firstName → companyName.
+  function getDisplayNameCase(): "original" | "upper" | "lower" | "title" {
+    const candidates = [
+      "insured.lastName", "insured.lastname", "insured.last_name",
+      "insured.firstName", "insured.firstname", "insured.first_name",
+      "insured.companyName", "insured.companyname", "insured.company_name",
+    ];
+    for (const k of candidates) {
+      const c = fieldLabelCases[k];
+      if (c && c !== "original") return c;
+    }
+    return "original";
+  }
+
   function getColumnValue(row: Row, path: string): React.ReactNode {
     if (path === "_builtin.policyNumber") {
       return <span className="font-mono">{row.policyNumber}</span>;
     }
-    if (path === "_builtin.displayName") return row.displayName || <span className="text-neutral-400">—</span>;
+    if (path === "_builtin.displayName") {
+      if (!row.displayName) return <span className="text-neutral-400">—</span>;
+      return applyCaseToText(row.displayName, getDisplayNameCase());
+    }
     if (path === "_builtin.createdAt") return formatDDMMYYYYHHMM(row.createdAt);
     if (path === "_builtin.isActive") {
       return (
@@ -491,7 +531,9 @@ export default function PoliciesTableClient({
     if (v === null || v === undefined) return <span className="text-neutral-400">—</span>;
     if (Array.isArray(v)) return v.map(String).join(", ");
     if (typeof v === "boolean") return v ? "Yes" : "No";
-    return String(v);
+    const text = String(v);
+    const fieldCase = fieldLabelCases[path];
+    return applyCaseToText(text, fieldCase);
   }
 
   // Sorting — dynamic based on active view columns

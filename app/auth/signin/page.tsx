@@ -41,6 +41,8 @@ function SignInContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [hasGoogle, setHasGoogle] = useState<boolean>(false);
+  const [logoFailed, setLogoFailed] = useState(false);
+  const [logoVariant, setLogoVariant] = useState<"light" | "dark">("light");
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
 
@@ -95,6 +97,12 @@ function SignInContent() {
     // Run once on mount only — re-running on every keystroke would
     // wipe the user's typing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Detect the actual theme applied by next-themes (class strategy: `.dark` on <html>).
+    const prefersDark = document.documentElement.classList.contains("dark");
+    setLogoVariant(prefersDark ? "dark" : "light");
   }, []);
 
   useEffect(() => {
@@ -181,9 +189,26 @@ function SignInContent() {
     <main className="flex min-h-screen items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-2">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-neutral-900 dark:bg-neutral-100">
-            <ShieldCheck className="h-6 w-6 text-white dark:text-neutral-900" />
-          </div>
+          {logoFailed ? (
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-neutral-900 dark:bg-neutral-100">
+              <ShieldCheck className="h-6 w-6 text-white dark:text-neutral-900" />
+            </div>
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={`/api/admin/assets/logo?variant=${logoVariant}`}
+              alt="Logo"
+              className="h-24 w-auto max-w-[360px] object-contain object-center"
+              onError={() => {
+                // Try the other variant before giving up
+                if (logoVariant === "light") {
+                  setLogoVariant("dark");
+                } else {
+                  setLogoFailed(true);
+                }
+              }}
+            />
+          )}
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Welcome back</h1>
           <p className="text-sm text-neutral-500 dark:text-neutral-400">Sign in to your account to continue</p>
         </div>

@@ -112,7 +112,7 @@ function applyLabelCase(text: string, mode?: "original" | "upper" | "lower" | "t
   if (!mode || mode === "original") return text;
   if (mode === "upper") return text.toUpperCase();
   if (mode === "lower") return text.toLowerCase();
-  if (mode === "title") return text.replace(/\b\w/g, (c) => c.toUpperCase());
+  if (mode === "title") return text.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
   return text;
 }
 
