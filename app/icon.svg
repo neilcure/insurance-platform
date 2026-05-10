@@ -1,15 +1,42 @@
 <svg xmlns="http://www.w3.org/2000/svg"
-     width="512" height="512" viewBox="0 0 512 512"
+     width="512" height="512" viewBox="0 0 1448 1448"
      role="img" aria-label="BGII logo">
-  <rect width="512" height="512" fill="#171717" rx="80"/>
-  <text
-    x="256"
-    y="256"
-    font-family="Arial Black, Arial, Helvetica, sans-serif"
-    font-size="180"
-    font-weight="900"
-    letter-spacing="-10"
-    fill="#ffffff"
-    dominant-baseline="central"
-    text-anchor="middle">BGII</text>
+  <defs>
+    <style><![CDATA[
+      .logoText {
+        font-family: "Arial Black", "Arial Bold", Arial, Helvetica, sans-serif;
+        font-size: 420px;
+        font-weight: 900;
+        letter-spacing: -34px;
+        dominant-baseline: central;
+        text-anchor: middle;
+      }
+      .ghost { fill: #000000; }
+      .solid { fill: #000000; opacity: 1; }
+    ]]></style>
+  </defs>
+
+  <!-- White background -->
+  <rect width="1448" height="1448" fill="#ffffff"/>
+
+  <!-- Horizontal vibration echoes -->
+  <text class="logoText ghost" x="724" y="724" opacity="0.08" transform="translate(-70 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.12" transform="translate(-52 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.17" transform="translate(-36 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.23" transform="translate(-22 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.17" transform="translate(22 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.12" transform="translate(38 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.08" transform="translate(56 0)">BGII</text>
+
+  <!-- Vertical echoes -->
+  <text class="logoText ghost" x="724" y="724" opacity="0.10" transform="translate(0 -92)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.14" transform="translate(0 -70)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.20" transform="translate(0 -48)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.25" transform="translate(0 -28)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.18" transform="translate(0 28)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.13" transform="translate(0 52)">BGII</text>
+  <text class="logoText ghost" x="724" y="724" opacity="0.08" transform="translate(0 78)">BGII</text>
+
+  <!-- Main solid text -->
+  <text class="logoText solid" x="724" y="724">BGII</text>
 </svg>
