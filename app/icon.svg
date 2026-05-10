@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1448" height="1086" viewBox="0 0 1448 1086"
+     role="img" aria-labelledby="title desc">
+  <title id="title">BGII logo</title>
+  <desc id="desc">Minimal black BGII typography logo with transparent ghost motion effect. The letters B and the final I have horizontal shake, while G has stronger transparent vertical and circular motion echoes.</desc>
+
+  <metadata>
+    Brand text: BGII
+    Logo type: transparent SVG typography mark
+    Style: Aptos Black inspired, minimal, monochrome, motion blur and vibration echo
+    Recommended use: website header, favicon source, SEO-readable inline SVG
+  </metadata>
+
+  <defs>
+    <style><![CDATA[
+      .logoText {
+        font-family: "Aptos Display", "Aptos", "Arial Black", "Helvetica Neue", Arial, sans-serif;
+        font-size: 420px;
+        font-weight: 900;
+        letter-spacing: -34px;
+        dominant-baseline: central;
+        text-anchor: middle;
+      }
+      .solid { fill: #000000; opacity: 1; }
+      .ghost { fill: #000000; }
+    ]]></style>
+  </defs>
+
+  <!-- Transparent background: intentionally no rect/background layer -->
+
+  <!-- Left/right horizontal vibration echoes -->
+  <text class="logoText ghost" x="724" y="543" opacity="0.08" transform="translate(-70 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.12" transform="translate(-52 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.17" transform="translate(-36 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.23" transform="translate(-22 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.17" transform="translate(22 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.12" transform="translate(38 0)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.08" transform="translate(56 0)">BGII</text>
+
+  <!-- Stronger G echo inspired by the sample O: semi-transparent vertical offsets -->
+  <text class="logoText ghost" x="724" y="543" opacity="0.10" transform="translate(0 -92)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.14" transform="translate(0 -70)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.20" transform="translate(0 -48)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.25" transform="translate(0 -28)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.18" transform="translate(0 28)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.13" transform="translate(0 52)">BGII</text>
+  <text class="logoText ghost" x="724" y="543" opacity="0.08" transform="translate(0 78)">BGII</text>
+
+  <!-- Main readable brand text -->
+  <text class="logoText solid" x="724" y="543">BGII</text>
+
+  <!-- Extra readable text for crawlers without visual impact -->
+  <text x="0" y="0" opacity="0">BGII</text>
+</svg>
