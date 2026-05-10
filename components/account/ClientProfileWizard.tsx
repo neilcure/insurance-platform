@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { Loader2, MapPin, Save } from "lucide-react";
 import { PackageBlock } from "@/components/policies/PackageBlock";
 import { AddressTool, type AddressFieldMap } from "@/components/policies/address-tool";
+import { discoverAddressFields } from "@/lib/address/discover-fields";
 import { getInsuredDisplayName, getInsuredType, getInsuredPrimaryId, getContactField } from "@/lib/field-resolver";
 
 type ClientData = {
@@ -136,44 +137,19 @@ export function ClientProfileWizard({ userName, userEmail, userTimezone }: Props
           setPackageCategories(allCats);
           setGroupLabelsHidden(allHidden);
 
-          // Discover address fields for the AddressTool
-          const ADDRESS_TOKENS: Record<string, string[]> = {
-            flatNumber: ["flat", "unit", "room", "rm"],
-            floorNumber: ["floor", "flr", "level", "lvl", "foor"],
-            blockNumber: ["blockno", "block number", "blkno"],
-            blockName: ["blockname", "block name", "building name", "estate name", "tower name"],
-            streetNumber: ["streetno", "street no", "streetnumber"],
-            streetName: ["street", "road", "rd", "avenue", "ave", "lane"],
-            propertyName: ["property", "building", "estate", "mansion", "court"],
-            districtName: ["district"],
-            area: ["area", "areacode"],
-          };
           const mergedMap: Record<string, string> = {};
           let mergedAreaOpts: { label?: string; value?: string }[] = [];
+          const usedFieldValues = new Set<string>();
           for (const pkg of allPkgs) {
             try {
               const fRes = await fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}`, { cache: "no-store" });
               if (!fRes.ok) continue;
-              const rows = (await fRes.json()) as { value: string; label: string; meta?: { options?: { label?: string; value?: string }[] } }[];
-              const norm = (s?: string) => String(s ?? "").toLowerCase();
-              for (const [addrKey, tokens] of Object.entries(ADDRESS_TOKENS)) {
-                if (mergedMap[addrKey]) continue;
-                for (const r of rows) {
-                  const fv = String(r.value ?? "");
-                  const l = norm(r.label);
-                  const v = norm(fv);
-                  if (tokens.some((t) => l.includes(t) || v.includes(t))) {
-                    mergedMap[addrKey] = `${pkg}__${fv}`;
-                    if (addrKey === "area" && Array.isArray(r.meta?.options) && r.meta!.options.length > 0) {
-                      mergedAreaOpts = r.meta!.options.map((o: any) => ({
-                        label: String(o?.label ?? ""),
-                        value: String(o?.value ?? ""),
-                      }));
-                    }
-                    break;
-                  }
-                }
+              const rows = (await fRes.json()) as { value?: string; label?: string; meta?: { options?: { label?: string; value?: string }[] } }[];
+              const { fieldMap, areaOptions: ao } = discoverAddressFields(rows, pkg, { usedFieldValues });
+              for (const [k, v] of Object.entries(fieldMap)) {
+                if (v && !mergedMap[k]) mergedMap[k] = v;
               }
+              if (ao.length > 0 && mergedAreaOpts.length === 0) mergedAreaOpts = ao;
             } catch {}
           }
           if (!cancelled) {

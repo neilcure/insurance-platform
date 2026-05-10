@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { PackageBlock } from "@/components/policies/PackageBlock";
 import { AddressTool, type AddressFieldMap } from "@/components/policies/address-tool";
+import { discoverAddressFields } from "@/lib/address/discover-fields";
 import {
   Drawer,
   DrawerContent,
@@ -114,59 +115,6 @@ function StepDot({
       {n}
     </button>
   );
-}
-
-// ----- Address field discovery helpers -----
-
-const ADDRESS_TOKENS: Record<string, string[]> = {
-  flatNumber: ["flat", "unit", "room", "rm"],
-  floorNumber: ["floor", "flr", "level", "lvl"],
-  blockNumber: ["blockno", "block number", "blkno"],
-  blockName: ["blockname", "block name", "building name", "estate name", "tower name"],
-  streetNumber: ["streetno", "street no", "streetnumber"],
-  streetName: ["street", "road", "rd", "avenue", "ave", "lane"],
-  propertyName: ["property", "building", "estate", "mansion", "court"],
-  districtName: ["district"],
-  area: ["area", "areacode"],
-  verifiedAddress: ["formatted address", "formattedaddress", "full address", "verified address"],
-  latitude: ["latitude", "lat"],
-  longitude: ["longitude", "lng", "lon"],
-  placeId: ["place id", "placeid"],
-};
-
-function discoverAddressFields(
-  rows: { label?: string; value?: string; meta?: { options?: { label?: string; value?: string }[] } }[],
-  prefix: string,
-  usedFieldValues: Set<string>,
-): { fieldMap: AddressFieldMap; areaOptions: { label?: string; value?: string }[] } {
-  const map: Record<string, string> = {};
-  let areaOpts: { label?: string; value?: string }[] = [];
-  const norm = (s?: string) => String(s ?? "").toLowerCase();
-  const includesAny = (hay: string, subs: string[]) => subs.some((sub) => hay.includes(sub));
-
-  for (const [addrKey, tokens] of Object.entries(ADDRESS_TOKENS)) {
-    if (map[addrKey]) continue;
-    for (const r of rows) {
-      const fv = String(r.value ?? "");
-      const compositeKey = `${prefix}:${fv}`;
-      if (usedFieldValues.has(compositeKey)) continue;
-      const l = norm(r.label);
-      const v = norm(fv);
-      if (includesAny(l, tokens) || includesAny(v, tokens)) {
-        usedFieldValues.add(compositeKey);
-        map[addrKey] = `${prefix}__${fv}`;
-        if (addrKey === "area" && Array.isArray(r.meta?.options) && r.meta!.options.length > 0) {
-          areaOpts = r.meta!.options
-            .filter((o): o is { label: string; value: string } =>
-              Boolean(o && typeof o === "object"),
-            )
-            .map((o) => ({ label: String((o as any).label ?? ""), value: String((o as any).value ?? "") }));
-        }
-        break;
-      }
-    }
-  }
-  return { fieldMap: map as AddressFieldMap, areaOptions: areaOpts };
 }
 
 // ----- Client fill helpers -----
@@ -525,7 +473,7 @@ export default function FlowNewPage() {
             value?: string;
             meta?: { options?: { label?: string; value?: string }[] };
           }[];
-          const { fieldMap, areaOptions: ao } = discoverAddressFields(rows, pkg, usedFieldValues);
+          const { fieldMap, areaOptions: ao } = discoverAddressFields(rows, pkg, { usedFieldValues });
           for (const [k, v] of Object.entries(fieldMap)) {
             if (v && !mergedMap[k]) mergedMap[k] = v;
           }
