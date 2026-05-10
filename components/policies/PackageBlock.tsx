@@ -20,6 +20,7 @@ import { Search } from "lucide-react";
 import { getInsuredDisplayName, getInsuredType } from "@/lib/field-resolver";
 import { isPremiumPkg } from "@/lib/premium-options";
 import { filterFieldsByUserType, mapFormOptionRowToAccountingFieldDef } from "@/lib/accounting-fields-shared";
+import { dedupeBadgeFromMeta } from "@/components/ui/dedupe-field-badge";
 
 type EntityPickerFieldMapping = {
   sourceField: string;
@@ -124,6 +125,7 @@ function SubFieldRepeatable({
   required,
   repeatable: rawRep,
   entityPicker,
+  labelExtra,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   name: string;
@@ -131,6 +133,7 @@ function SubFieldRepeatable({
   required?: boolean;
   repeatable?: unknown;
   entityPicker?: EntityPickerMeta;
+  labelExtra?: React.ReactNode;
 }) {
   const rep = getRepeatable(rawRep);
   const itemLabel = String(rep.itemLabel ?? "Item");
@@ -192,7 +195,7 @@ function SubFieldRepeatable({
   return (
     <div className="col-span-2 space-y-2">
       <div className="flex items-center justify-between">
-        <Label>{label ?? itemLabel} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}</Label>
+        <Label>{label ?? itemLabel} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}{labelExtra}</Label>
         <Button type="button" size="sm" variant="secondary" onClick={() => form.setValue(name as never, [...items, {}] as never, { shouldDirty: true })} disabled={!canAdd}>
           Add {itemLabel}
         </Button>
@@ -519,6 +522,7 @@ function BooleanRadioGroup({
   noLabel,
   required,
   booleanChildren,
+  labelExtra,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   name: string;
@@ -527,13 +531,14 @@ function BooleanRadioGroup({
   noLabel: string;
   required?: boolean;
   booleanChildren?: { true?: unknown[]; false?: unknown[] };
+  labelExtra?: React.ReactNode;
 }) {
   const curr = form.watch(name as never) as unknown;
   const isYes = String(curr ?? "") === "true";
   const isNo = String(curr ?? "") === "false";
   return (
     <div className="space-y-1">
-      <Label>{label ?? "Details"}</Label>
+      <Label>{label ?? "Details"}{labelExtra}</Label>
       <div className="flex items-center gap-6">
         <label className="inline-flex items-center gap-2 text-sm">
           <input
@@ -580,6 +585,7 @@ function FormulaField({
   label,
   required,
   pkg,
+  labelExtra,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   name: string;
@@ -587,6 +593,7 @@ function FormulaField({
   label: string;
   required?: boolean;
   pkg: string;
+  labelExtra?: React.ReactNode;
 }) {
   const lastFormula = React.useRef("");
   const isDateResult = React.useRef(false);
@@ -633,6 +640,7 @@ function FormulaField({
     <div className="space-y-1">
       <Label>
         {label} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+        {labelExtra}
       </Label>
       <Input
         type="text"
@@ -757,11 +765,13 @@ function ListField({
   name,
   label,
   required,
+  labelExtra,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   name: string;
   label: string;
   required?: boolean;
+  labelExtra?: React.ReactNode;
 }) {
   const [inputValue, setInputValue] = React.useState("");
   const raw = useWatch({ control: form.control, name: name as string });
@@ -789,6 +799,7 @@ function ListField({
     <div className="col-span-2 space-y-2">
       <Label>
         {label} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+        {labelExtra}
       </Label>
       <div className="flex items-center gap-1.5">
         <Input
@@ -1726,6 +1737,7 @@ export function PackageBlock({
                     entityPicker?: EntityPickerMeta;
                   };
                   const displayLabel = applyLabelCase(f.label, meta.labelCase);
+                  const dedupeBadge = dedupeBadgeFromMeta(meta as Record<string, unknown>, pkg);
                   const inputType = meta.inputType ?? "string";
                   const isCurrency = inputType === "currency" || inputType === "negative_currency";
                   const isNegativeCurrency = inputType === "negative_currency";
@@ -1755,6 +1767,7 @@ export function PackageBlock({
                         required={Boolean(meta.required)}
                         repeatable={meta.repeatable}
                         entityPicker={epMeta}
+                        labelExtra={dedupeBadge}
                       />
                     );
                   }
@@ -1784,6 +1797,7 @@ export function PackageBlock({
                             setPkgFields(updated);
                           }
                         }}
+                        labelExtra={dedupeBadge}
                       />
                     );
                     if (meta.entityPicker?.flow) {
@@ -1824,6 +1838,7 @@ export function PackageBlock({
                         <div className="space-y-1">
                           <Label>
                             {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                            {dedupeBadge}
                           </Label>
                           <div className="space-y-4 pt-1">
                             {options.map((o, oIdx) => {
@@ -1989,6 +2004,7 @@ export function PackageBlock({
                         <div className="space-y-1">
                           <Label>
                             {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                            {dedupeBadge}
                           </Label>
                           {(meta?.booleanDisplay ?? "radio") === "dropdown" ? (
                             <select
@@ -2413,7 +2429,7 @@ export function PackageBlock({
                         label={displayLabel}
                         required={Boolean(meta.required)}
                         pkg={pkg}
-
+                        labelExtra={dedupeBadge}
                       />
                     );
                   }
@@ -2425,6 +2441,7 @@ export function PackageBlock({
                         name={nameBase}
                         label={displayLabel}
                         required={Boolean(meta.required)}
+                        labelExtra={dedupeBadge}
                       />
                     );
                   }
@@ -2618,6 +2635,7 @@ export function PackageBlock({
                       key={nameBase}
                       label={displayLabel}
                       required={Boolean(meta.required)}
+                      labelExtra={dedupeBadge}
                       type={isNumber ? "number" : isDate ? "text" : "text"}
                       placeholder={isDate ? "DD-MM-YYYY" : (isCurrency || isPercent) ? "0.00" : undefined}
                       inputMode={isDate ? "numeric" : undefined}

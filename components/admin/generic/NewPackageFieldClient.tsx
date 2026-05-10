@@ -76,6 +76,14 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
       premiumContexts?: string[];
       visibleToUserTypes?: string[];
       requiresAgent?: boolean;
+      /**
+       * When true, this field's value participates in the duplicate-
+       * client check on POST /api/policies (clientSet flow). See
+       * `lib/import/client-resolver.ts` for the matching rule.
+       */
+      dedupeIdentifier?: boolean;
+      /** Category scope for the dedupe match: "any" (or omitted), "company", "personal", or any admin-configured category. */
+      dedupeCategory?: string;
     };
   }>({
     label: "",
@@ -542,6 +550,60 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
               Required
             </label>
           </div>
+
+          {/* Duplicate-client check — see EditPackageFieldClient.tsx for
+              the full rationale. Mirrored here so admins creating a NEW
+              identifier field (e.g. Mainland Unified Social Credit Code,
+              Singapore NRIC, passport number) can opt in immediately
+              without a save → reload → edit cycle. */}
+          {pkg === "insured" ? (
+            <div className="grid gap-1 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+              <Label className="text-amber-800 dark:text-amber-200">Duplicate-client check</Label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.meta?.dedupeIdentifier)}
+                  onChange={(e) =>
+                    updateMeta("dedupeIdentifier", e.target.checked ? true : undefined)
+                  }
+                />
+                Use this field to detect duplicate clients
+              </label>
+              {form.meta?.dedupeIdentifier ? (
+                <div className="mt-2 grid gap-1">
+                  <Label className="text-xs text-amber-800 dark:text-amber-200">
+                    Applies to category
+                  </Label>
+                  <select
+                    className="h-9 max-w-xs rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                    value={String(form.meta?.dedupeCategory ?? "any")}
+                    onChange={(e) =>
+                      updateMeta(
+                        "dedupeCategory",
+                        e.target.value === "any" ? undefined : e.target.value,
+                      )
+                    }
+                  >
+                    <option value="any">Any category</option>
+                    {categoryOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                When ticked, the policy wizard hard-blocks creation of a new
+                client whose value for this field matches an existing client
+                (case-insensitive, whitespace-collapsed). Use for STRONG
+                identifiers like CI Number / BR Number (company) or HKID
+                (personal). Avoid for weak identifiers like names or phone
+                numbers — they can collide legitimately.
+              </p>
+            </div>
+          ) : null}
+
           <div className="grid gap-1">
             <Label>Categories</Label>
             <label className="mb-1 flex items-center gap-2 text-sm">

@@ -392,6 +392,7 @@ export type InlineSelectWithChildrenProps = {
   isAdmin?: boolean;
   fieldId?: number;
   onFieldUpdated?: (updatedField: { meta?: unknown }) => void;
+  labelExtra?: React.ReactNode;
 };
 
 export const InlineSelectWithChildren = React.memo(function InlineSelectWithChildren({
@@ -404,6 +405,7 @@ export const InlineSelectWithChildren = React.memo(function InlineSelectWithChil
   isAdmin,
   fieldId,
   onFieldUpdated,
+  labelExtra,
 }: InlineSelectWithChildrenProps) {
   const current = useWatch({ control: form.control, name: nameBase as string }) as string | undefined;
   const allFormValues = useWatch({ control: form.control }) as Record<string, unknown>;
@@ -463,6 +465,7 @@ export const InlineSelectWithChildren = React.memo(function InlineSelectWithChil
       <div className="space-y-1">
         <Label>
           {label} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+          {labelExtra}
         </Label>
         {displayMode === "dropdown" && isAdmin && fieldId ? (
           <CreatableSelect

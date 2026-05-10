@@ -12,6 +12,7 @@ import { ShowWhenConfig } from "@/components/admin/generic/ShowWhenConfig";
 import { GroupShowWhenConfig } from "@/components/admin/generic/GroupShowWhenConfig";
 import { columnForRole } from "@/lib/accounting-columns";
 import { useUserTypes } from "@/hooks/use-user-types";
+import { confirmDialog } from "@/components/ui/global-dialogs";
 const PREMIUM_CONTEXT_OPTIONS = [
   { value: "policy", label: "Policy" },
   { value: "collaborator", label: "Collaborator (Premium Payable)" },
@@ -84,6 +85,29 @@ type FieldMeta = {
    * When undefined, premium fields with `premiumRole` agent or commission default to waiting for agent.
    */
   requiresAgent?: boolean;
+  /**
+   * When true, this field's value participates in the duplicate-client
+   * check on POST /api/policies for clientSet flows. The server hard-
+   * blocks the create and pops the wizard's "Duplicate Client Found"
+   * dialog when an existing client matches on this key.
+   *
+   * The full match list is loaded from form_options at request time
+   * (see `lib/import/client-resolver.ts` `loadDedupeFields`) so admins
+   * can add a new identifier (Mainland Unified Social Credit Code,
+   * Singapore NRIC, passport number, …) by tagging that field, or
+   * remove one by un-tagging — never via a code change.
+   */
+  dedupeIdentifier?: boolean;
+  /**
+   * Category scope for `dedupeIdentifier`. When set, the match only
+   * fires when both the new and existing client are in this category
+   * (e.g. CI Number → "company"; HKID → "personal"). When omitted or
+   * "any", the field matches across all categories.
+   *
+   * Should be one of the values declared in `${pkg}_category` form_options
+   * (commonly "company" / "personal") plus the special value "any".
+   */
+  dedupeCategory?: string;
 };
 
 type ApiFieldRow = {
@@ -307,6 +331,24 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
       ) {
         toast.info("No changes to save");
         return;
+      }
+      // Warn before disabling a field's dedupe-identifier flag — same
+      // effect as deleting the field from the duplicate-client check's
+      // perspective. The user's "untick" answer to question 4 of the
+      // initial design dialog: "Yes — untick produces the same effect
+      // as delete from the dedupe system's perspective".
+      const editedMeta = (editSnapshot.current as { meta?: { dedupeIdentifier?: boolean } } | null)?.meta;
+      const wasDedupe = Boolean(editedMeta?.dedupeIdentifier);
+      const nowDedupe = Boolean((payload.meta as { dedupeIdentifier?: boolean })?.dedupeIdentifier);
+      if (wasDedupe && !nowDedupe) {
+        const ok = await confirmDialog({
+          title: "Disable duplicate-client check?",
+          description:
+            "You are removing this field from duplicate-client detection. After saving, the policy wizard will no longer block new clients whose value for this field matches an existing client.\n\nIf this was the last identifier configured, dedupe falls back to the built-in defaults (CI Number, BR Number, ID Number).",
+          confirmLabel: "Disable check",
+          destructive: true,
+        });
+        if (!ok) return;
       }
       const res = await fetch(`/api/admin/form-options/${id}`, {
         method: "PATCH",
@@ -648,6 +690,64 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
               Required
             </label>
           </div>
+
+          {/* Duplicate-client check — only meaningful for fields on the
+              `insured` package because the check runs on insured snapshots.
+              The full match list is loaded from form_options at request
+              time (lib/import/client-resolver.ts loadDedupeFields), so
+              admins can add a new identifier (Mainland Unified Social
+              Credit Code, Singapore NRIC, passport number, ...) by
+              tagging that field, or remove one by un-tagging — without
+              any code change. Falls back to built-in defaults
+              (ciNumber / brNumber / idNumber) when nothing is tagged. */}
+          {pkg === "insured" ? (
+            <div className="grid gap-1 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+              <Label className="text-amber-800 dark:text-amber-200">Duplicate-client check</Label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.meta?.dedupeIdentifier)}
+                  onChange={(e) =>
+                    updateMeta("dedupeIdentifier", e.target.checked ? true : undefined)
+                  }
+                />
+                Use this field to detect duplicate clients
+              </label>
+              {form.meta?.dedupeIdentifier ? (
+                <div className="mt-2 grid gap-1">
+                  <Label className="text-xs text-amber-800 dark:text-amber-200">
+                    Applies to category
+                  </Label>
+                  <select
+                    className="h-9 max-w-xs rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                    value={String(form.meta?.dedupeCategory ?? "any")}
+                    onChange={(e) =>
+                      updateMeta(
+                        "dedupeCategory",
+                        e.target.value === "any" ? undefined : e.target.value,
+                      )
+                    }
+                  >
+                    <option value="any">Any category</option>
+                    {categoryOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                When ticked, the policy wizard hard-blocks creation of a new
+                client whose value for this field matches an existing client
+                (case-insensitive, whitespace-collapsed). Use for STRONG
+                identifiers like CI Number / BR Number (company) or HKID
+                (personal). Avoid for weak identifiers like names or phone
+                numbers — they can collide legitimately.
+              </p>
+            </div>
+          ) : null}
+
           <div className="grid gap-1">
             <Label>Categories</Label>
             <label className="mb-1 flex items-center gap-2 text-sm">

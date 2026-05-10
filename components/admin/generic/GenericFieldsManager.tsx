@@ -16,6 +16,8 @@ import { AutoFillConfigEditor, type AutoFillConfig } from "@/components/admin/ge
 import type { InputType } from "@/lib/types/form";
 import { InputTypeSelect } from "@/components/admin/generic/InputTypeSelect";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
+import { confirmDialog } from "@/components/ui/global-dialogs";
+import { dedupeBadgeFromMeta } from "@/components/ui/dedupe-field-badge";
 
 type BooleanBranchChild = {
   label?: string;
@@ -77,6 +79,21 @@ type FieldMeta = {
   currencyCode?: string; // when numberFormat === "currency"
   decimals?: number; // for number formatting
   entityPicker?: EntityPickerConfig;
+  /**
+   * When true, this field's value participates in the duplicate-client
+   * check on POST /api/policies for clientSet flows. The match list is
+   * loaded from form_options at request time (see
+   * `lib/import/client-resolver.ts` `loadDedupeFields`) so admins can
+   * add or remove identifiers without a code change.
+   */
+  dedupeIdentifier?: boolean;
+  /**
+   * Category scope for `dedupeIdentifier`. Set to a category value
+   * declared in `${pkg}_category` (commonly "company" / "personal")
+   * to restrict the match. Use "any" or omit to match across all
+   * categories.
+   */
+  dedupeCategory?: string;
 };
 
 type FieldRow = {
@@ -437,6 +454,23 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
           setOpen(false);
           return;
         }
+        // Same un-tick warning as the full edit page — see
+        // EditPackageFieldClient.tsx for the rationale. Mirrored here
+        // so admins editing through the inline dialog get the same
+        // safety net.
+        const editedMeta = (editSnapshot.current as { meta?: { dedupeIdentifier?: boolean } } | null)?.meta;
+        const wasDedupe = Boolean(editedMeta?.dedupeIdentifier);
+        const nowDedupe = Boolean((payload.meta as { dedupeIdentifier?: boolean } | undefined)?.dedupeIdentifier);
+        if (wasDedupe && !nowDedupe) {
+          const ok = await confirmDialog({
+            title: "Disable duplicate-client check?",
+            description:
+              "You are removing this field from duplicate-client detection. After saving, the policy wizard will no longer block new clients whose value for this field matches an existing client.\n\nIf this was the last identifier configured, dedupe falls back to the built-in defaults (CI Number, BR Number, ID Number).",
+            confirmLabel: "Disable check",
+            destructive: true,
+          });
+          if (!ok) return;
+        }
         const res = await fetch(`/api/admin/form-options/${editing.id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
@@ -476,7 +510,24 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
 
   async function remove(row: FieldRow) {
     try {
-      const proceed = window.confirm(`Delete field "${row.label}"? This cannot be undone.`);
+      // Stronger warning when this field is tagged as a duplicate-client
+      // identifier — deleting it removes the value from the match list,
+      // which weakens the duplicate-client check (or, if it was the
+      // last tagged identifier, pushes the dedupe back to the built-in
+      // defaults). The user explicitly chose "strong warning" for this
+      // case in the design dialog, so the title flags it visually
+      // and the description spells out the side-effect.
+      const isDedupeField = Boolean((row.meta as FieldMeta | null)?.dedupeIdentifier);
+      const proceed = await confirmDialog({
+        title: isDedupeField
+          ? `Delete duplicate-check identifier "${row.label}"?`
+          : `Delete field "${row.label}"?`,
+        description: isDedupeField
+          ? "This field is configured as a duplicate-client identifier. Deleting it removes its value from duplicate detection — new clients with the same value as an existing client will NO LONGER be blocked by this rule.\n\nIf this is the last tagged identifier, the system falls back to the built-in defaults (CI Number, BR Number, ID Number).\n\nThis cannot be undone."
+          : "This cannot be undone.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
       if (!proceed) return;
       const res = await fetch(`/api/admin/form-options/${row.id}`, { method: "DELETE" });
       if (!res.ok) {
@@ -1025,6 +1076,7 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
             <TableRow key={r.id}>
               <TableCell className={`${r.isActive ? "text-green-600 dark:text-green-400" : ""} p-2 sm:p-4`}>
                 {r.label}
+                {dedupeBadgeFromMeta(r.meta as Record<string, unknown> | null, pkg)}
                 <div className="mt-1 text-xs text-neutral-500 sm:hidden">
                   <span>{((r.meta ?? {}) as FieldMeta).group || "(no group)"}</span>
                   <span className="px-2">•</span>
@@ -3338,6 +3390,59 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
                 Required
               </label>
             </div>
+
+            {/* Duplicate-client check — mirrored in the inline editor so
+                admins editing fields on the table view (without opening
+                the full edit page) see the same toggle. Only shown for
+                the `insured` package because that's where dedupe runs.
+                See lib/import/client-resolver.ts for the matching rule. */}
+            {pkg === "insured" ? (
+              <div className="grid gap-1 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+                <Label className="text-amber-800 dark:text-amber-200">Duplicate-client check</Label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={Boolean((form.meta as FieldMeta | undefined)?.dedupeIdentifier)}
+                    onChange={(e) =>
+                      updateMeta("dedupeIdentifier", e.target.checked ? true : undefined)
+                    }
+                  />
+                  Use this field to detect duplicate clients
+                </label>
+                {(form.meta as FieldMeta | undefined)?.dedupeIdentifier ? (
+                  <div className="mt-2 grid gap-1">
+                    <Label className="text-xs text-amber-800 dark:text-amber-200">
+                      Applies to category
+                    </Label>
+                    <select
+                      className="h-9 max-w-xs rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                      value={String((form.meta as FieldMeta | undefined)?.dedupeCategory ?? "any")}
+                      onChange={(e) =>
+                        updateMeta(
+                          "dedupeCategory",
+                          e.target.value === "any" ? undefined : e.target.value,
+                        )
+                      }
+                    >
+                      <option value="any">Any category</option>
+                      {categoryOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  When ticked, the policy wizard hard-blocks creation of a new
+                  client whose value for this field matches an existing client.
+                  Use for STRONG identifiers like CI Number / BR Number
+                  (company) or HKID (personal). Avoid for weak identifiers
+                  like names or phone numbers — they can collide legitimately.
+                </p>
+              </div>
+            ) : null}
+
             <div className="grid gap-1">
               <Label>Categories</Label>
               <label className="mb-1 flex items-center gap-2 text-sm">

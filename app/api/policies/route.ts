@@ -12,6 +12,7 @@ import { resolveActiveOrgId, ActiveOrgError } from "@/lib/auth/active-org";
 import { generatePolicyNumber, isPolicyNumberUniqueViolation } from "@/lib/policy-number";
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { loadAccountingFields, buildFieldColumnMap, getColumnType } from "@/lib/accounting-fields";
+import { findClientByIdentity } from "@/lib/import/client-resolver";
 
 type FinalPolicyPayload = {
   insured?: any;
@@ -151,6 +152,73 @@ export async function POST(request: Request) {
                 : prefixes.personalPrefix;
             if (chosen && chosen.trim()) recordPrefix = chosen.trim();
           } catch { /* fall back to flow prefix */ }
+        }
+      }
+
+      // Duplicate-client guard for client-creation flows (clientSet, etc.).
+      //
+      // Reuses the same identity-matching helper that powers import dedupe
+      // (lib/import/client-resolver.ts) so the matching rules — CI Number /
+      // BR Number for companies, HKID for personal, with whitespace
+      // normalisation — live in ONE place and don't drift between the
+      // import path and the wizard.
+      //
+      // Skipped when:
+      //   - This is not a client flow (policy creation snapshots the
+      //     insured info but doesn't create a Client record)
+      //   - linkedPolicyId is set (endorsement-style POST that snapshots
+      //     existing data — not a fresh client create)
+      //   - body.insured is missing (legacy callers using `packages` only;
+      //     they predate the dedupe feature and the import path that uses
+      //     them already pre-checks via resolveOrCreateClient)
+      //
+      // Org-scoped to prevent cross-tenant identity leaks (tenant A
+      // discovering tenant B has a client with the same CI number).
+      //
+      // Returns 409 with `code: "DUPLICATE_CLIENT"` and the matched
+      // record's id / number / display name so the wizard can offer a
+      // one-click "Use Existing Client" without a follow-up round-trip.
+      if (
+        isClientFlow &&
+        !(json as any)?.linkedPolicyId &&
+        body.insured &&
+        typeof body.insured === "object"
+      ) {
+        try {
+          const dup = await findClientByIdentity(
+            body.insured as Record<string, unknown>,
+            flowKey,
+            organisationId,
+          );
+          if (dup) {
+            const fieldLabel =
+              dup.matchedOn === "idNumber"
+                ? "ID Number"
+                : dup.matchedOn === "brNumber"
+                  ? "BR Number"
+                  : "CI Number";
+            return NextResponse.json(
+              {
+                error: `A client with this ${fieldLabel} already exists.`,
+                code: "DUPLICATE_CLIENT",
+                existingClient: {
+                  id: dup.id,
+                  policyNumber: dup.policyNumber,
+                  displayName: dup.displayName,
+                  matchedOn: dup.matchedOn,
+                  matchedField: fieldLabel,
+                  matchedValue: dup.matchedValue,
+                },
+              },
+              { status: 409 },
+            );
+          }
+        } catch {
+          // Defensive: never let the dedupe lookup itself break a create.
+          // The DB still has the policies.policy_number UNIQUE constraint
+          // as a final guarantee against true collisions; this guard is
+          // only protecting against weak-key duplicates (same insured,
+          // different policy numbers) and is best-effort by design.
         }
       }
 

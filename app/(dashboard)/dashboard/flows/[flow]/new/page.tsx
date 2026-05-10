@@ -293,6 +293,18 @@ export default function FlowNewPage() {
   const [confirmClientSaveOpen, setConfirmClientSaveOpen] = React.useState(false);
   const [confirmNewClientOpen, setConfirmNewClientOpen] = React.useState(false);
   const [savingClient, setSavingClient] = React.useState(false);
+  // Duplicate-client guard: populated when /api/policies POST returns
+  // 409 (code: "DUPLICATE_CLIENT"). The dialog offers a one-click
+  // "Use Existing Client" that reuses the same chooseExistingClient
+  // path the picker uses, so the user lands in the same state as if
+  // they had selected the client from the drawer in the first place.
+  const [duplicateClient, setDuplicateClient] = React.useState<{
+    id: number;
+    policyNumber: string;
+    displayName: string;
+    matchedField: string;
+    matchedValue: string;
+  } | null>(null);
   const loadedSnapshotRef = React.useRef<string | null>(null);
   const pendingSubmitRef = React.useRef<(() => void) | null>(null);
   const pendingContinueRef = React.useRef<(() => void) | null>(null);
@@ -971,6 +983,25 @@ export default function FlowNewPage() {
         body: JSON.stringify({ insured: insuredOut, flowKey: targetFlow }),
       });
       const jClient = (await resClient.json().catch(() => ({}))) as Record<string, unknown>;
+      // 409 + DUPLICATE_CLIENT → server-side dedupe matched an existing
+      // client by CI Number / BR Number / HKID. Open the dialog so the
+      // user can switch to the existing record with one click instead
+      // of typing the data again or hunting through the picker.
+      if (resClient.status === 409 && jClient?.code === "DUPLICATE_CLIENT") {
+        const existing = jClient.existingClient as
+          | { id?: number; policyNumber?: string; displayName?: string; matchedField?: string; matchedValue?: string }
+          | undefined;
+        if (existing && Number.isFinite(Number(existing.id)) && Number(existing.id) > 0) {
+          setDuplicateClient({
+            id: Number(existing.id),
+            policyNumber: String(existing.policyNumber ?? ""),
+            displayName: String(existing.displayName ?? ""),
+            matchedField: String(existing.matchedField ?? "ID"),
+            matchedValue: String(existing.matchedValue ?? ""),
+          });
+          return;
+        }
+      }
       const newRecordId = Number(jClient?.recordId ?? jClient?.policyId ?? jClient?.id ?? 0);
       if (resClient.ok && newRecordId > 0) {
         setSelectedClientId(newRecordId);
@@ -1284,7 +1315,14 @@ export default function FlowNewPage() {
     return () => clearTimeout(timer);
   }, [wizardStep, scrollToTarget]);
 
-  const doCreateClientFromForm = async () => {
+  // Returns true when the client was created (or already exists and was
+  // resolved here via setSelectedClientId), false when the duplicate
+  // dialog was opened OR an error toast was shown. Callers use the
+  // return value to decide whether to advance to the next wizard step
+  // — without this gate, the duplicate dialog would open and the
+  // wizard would simultaneously navigate forward, leaving the user
+  // on the wrong step with the dialog still mounted.
+  const doCreateClientFromForm = async (): Promise<boolean> => {
     const values = form.getValues() as Record<string, unknown>;
     const getVal = (key: string): unknown => {
       const direct = values[key];
@@ -1350,17 +1388,40 @@ export default function FlowNewPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ insured: insuredOut, flowKey: targetFlow }),
       });
-      const jClient = await resClient.json().catch(() => ({}));
+      const jClient = (await resClient.json().catch(() => ({}))) as Record<string, unknown>;
+      // Same DUPLICATE_CLIENT guard as handleCreateClient — see that
+      // function for the rationale. We share the dialog state so the
+      // user gets the same UX whether they triggered the create from
+      // the explicit "Create Client" button or from the implicit
+      // "Continue" path that auto-creates when no existing client is
+      // selected (handleContinue → doCreateClientFromForm).
+      if (resClient.status === 409 && jClient?.code === "DUPLICATE_CLIENT") {
+        const existing = jClient.existingClient as
+          | { id?: number; policyNumber?: string; displayName?: string; matchedField?: string; matchedValue?: string }
+          | undefined;
+        if (existing && Number.isFinite(Number(existing.id)) && Number(existing.id) > 0) {
+          setDuplicateClient({
+            id: Number(existing.id),
+            policyNumber: String(existing.policyNumber ?? ""),
+            displayName: String(existing.displayName ?? ""),
+            matchedField: String(existing.matchedField ?? "ID"),
+            matchedValue: String(existing.matchedValue ?? ""),
+          });
+          return false;
+        }
+      }
       const newRecordId = Number((jClient as any)?.recordId ?? (jClient as any)?.policyId ?? (jClient as any)?.id ?? 0);
       if (resClient.ok && newRecordId > 0) {
         setSelectedClientId(newRecordId);
         setSelectedClientNumber(String((jClient as any).recordNumber ?? (jClient as any).policyNumber ?? newRecordId));
         toast.success(`Client created: ${(jClient as any).recordNumber ?? (jClient as any).policyNumber ?? newRecordId}`);
-      } else {
-        toast.error((jClient as any)?.error ?? "Failed to create client");
+        return true;
       }
+      toast.error((jClient as any)?.error ?? "Failed to create client");
+      return false;
     } catch {
       toast.error("Failed to create/find client");
+      return false;
     }
   };
 
@@ -1401,8 +1462,8 @@ export default function FlowNewPage() {
     }
 
     if (shouldCreateClient) {
-      await doCreateClientFromForm();
-      proceedToNextStep();
+      const ok = await doCreateClientFromForm();
+      if (ok) proceedToNextStep();
       return;
     }
 
@@ -2348,11 +2409,75 @@ export default function FlowNewPage() {
             <Button
               onClick={async () => {
                 setConfirmNewClientOpen(false);
-                await doCreateClientFromForm();
-                proceedToNextStep();
+                const ok = await doCreateClientFromForm();
+                if (ok) proceedToNextStep();
               }}
             >
               Create New Client
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Duplicate-client guard dialog — opened when /api/policies POST
+          returns 409 (server-side dedupe matched an existing client by
+          CI/BR for companies, HKID for personal). Hard-block per
+          product spec: the user MUST either pick the existing client
+          or cancel and edit the form — they cannot create a duplicate.
+          The "Use Existing Client" path reuses chooseExistingClient so
+          the form is rehydrated from the matched record exactly as if
+          the user had picked it from the drawer. */}
+      <Dialog
+        open={!!duplicateClient}
+        onOpenChange={(open) => {
+          if (!open) setDuplicateClient(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Duplicate Client Found</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 text-sm text-neutral-600 dark:text-neutral-400">
+            <p>
+              A client with this <strong>{duplicateClient?.matchedField}</strong>
+              {duplicateClient?.matchedValue ? (
+                <>
+                  {" "}(<span className="font-mono uppercase">{duplicateClient.matchedValue}</span>)
+                </>
+              ) : null}{" "}
+              already exists.
+            </p>
+            <div className="rounded-md border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-900">
+              <div className="font-medium text-neutral-900 dark:text-neutral-100">
+                {duplicateClient?.displayName || "(no name)"}
+              </div>
+              <div className="font-mono text-xs text-neutral-500 dark:text-neutral-400">
+                {duplicateClient?.policyNumber}
+              </div>
+            </div>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              To prevent duplicate client records, please use the existing client
+              instead of creating a new one.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDuplicateClient(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={async () => {
+                const id = duplicateClient?.id;
+                setDuplicateClient(null);
+                if (id) {
+                  await chooseExistingClient(id);
+                }
+              }}
+            >
+              <UserSearch className="h-4 w-4 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Use Existing Client</span>
             </Button>
           </DialogFooter>
         </DialogContent>
