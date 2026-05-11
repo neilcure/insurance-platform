@@ -275,16 +275,30 @@ const InlineSelectWithChildrenMemo = React.memo(function InlineSelectWithChildre
           label?: string;
           value?: string;
         }[];
+        const _msRaw284 = form.watch(name as never) as unknown;
+        const _msCur284: unknown[] = Array.isArray(_msRaw284) ? _msRaw284 : typeof _msRaw284 === "string" && _msRaw284 ? [_msRaw284] : [];
         nodes.push(
           <div key={name} className="space-y-1">
             <Label>{child?.label ?? "Details"}</Label>
             <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-              {opts.map((o) => (
-                <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                  <input type="checkbox" value={o.value} {...form.register(name as never)} />
-                  {o.label}
-                </label>
-              ))}
+              {opts.map((o) => {
+                const _isChk = _msCur284.includes(o.value as unknown);
+                return (
+                  <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      value={o.value}
+                      checked={_isChk}
+                      onChange={(e) => {
+                        const optVal = o.value as string;
+                        const next = e.target.checked ? [..._msCur284.filter((v) => v !== optVal), optVal] : _msCur284.filter((v) => v !== optVal);
+                        form.setValue(name as never, next as never, { shouldDirty: true });
+                      }}
+                    />
+                    {o.label}
+                  </label>
+                );
+              })}
               {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
             </div>
           </div>
@@ -618,16 +632,30 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                     }
                                     if (cType === "multi_select") {
                                       const opts = (Array.isArray(cf.options) ? cf.options : []) as { label?: string; value?: string }[];
+                                      const _msCnRaw = form.watch(childName as never) as unknown;
+                                      const _msCnCur: unknown[] = Array.isArray(_msCnRaw) ? _msCnRaw : typeof _msCnRaw === "string" && _msCnRaw ? [_msCnRaw] : [];
                                       return (
                                         <div key={`${childName}__ms`} className="space-y-1">
                                           <Label>{cf.label ?? "Select"}</Label>
                                           <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                            {opts.map((o) => (
-                                              <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                                <input type="checkbox" value={o.value} {...form.register(childName as never)} />
-                                                {o.label}
-                                              </label>
-                                            ))}
+                                            {opts.map((o) => {
+                                              const _cnChk = _msCnCur.includes(o.value as unknown);
+                                              return (
+                                                <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                                  <input
+                                                    type="checkbox"
+                                                    value={o.value}
+                                                    checked={_cnChk}
+                                                    onChange={(e) => {
+                                                      const optVal = o.value as string;
+                                                      const next = e.target.checked ? [..._msCnCur.filter((v) => v !== optVal), optVal] : _msCnCur.filter((v) => v !== optVal);
+                                                      form.setValue(childName as never, next as never, { shouldDirty: true });
+                                                    }}
+                                                  />
+                                                  {o.label}
+                                                </label>
+                                              );
+                                            })}
                                             {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                           </div>
                                         </div>
@@ -787,16 +815,30 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                       label?: string;
                                       value?: string;
                                     }[];
+                                    const _msNRaw = form.watch(name as never) as unknown;
+                                    const _msNCur: unknown[] = Array.isArray(_msNRaw) ? _msNRaw : typeof _msNRaw === "string" && _msNRaw ? [_msNRaw] : [];
                                     return (
                                       <div key={name} className="space-y-1">
                                         <Label>{child?.label ?? "Details"}</Label>
                                         <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                          {opts.map((o) => (
-                                            <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                              <input type="checkbox" value={o.value} {...form.register(name as never)} />
-                                              {o.label}
-                                            </label>
-                                          ))}
+                                          {opts.map((o) => {
+                                            const _nChk = _msNCur.includes(o.value as unknown);
+                                            return (
+                                              <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                                <input
+                                                  type="checkbox"
+                                                  value={o.value}
+                                                  checked={_nChk}
+                                                  onChange={(e) => {
+                                                    const optVal = o.value as string;
+                                                    const next = e.target.checked ? [..._msNCur.filter((v) => v !== optVal), optVal] : _msNCur.filter((v) => v !== optVal);
+                                                    form.setValue(name as never, next as never, { shouldDirty: true });
+                                                  }}
+                                                />
+                                                {o.label}
+                                              </label>
+                                            );
+                                          })}
                                           {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                         </div>
                                       </div>
@@ -1000,16 +1042,30 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                   const cfOptsMs =
                                                     (cf as { options?: { label?: string; value?: string }[] } | undefined)?.options ?? [];
                                                   const opts = (Array.isArray(cfOptsMs) ? cfOptsMs : []) as { label?: string; value?: string }[];
+                                                  const _msCcRaw = form.watch(childName as never) as unknown;
+                                                  const _msCcCur: unknown[] = Array.isArray(_msCcRaw) ? _msCcRaw : typeof _msCcRaw === "string" && _msCcRaw ? [_msCcRaw] : [];
                                                   return (
                                                     <div key={`${childName}__ms`} className="space-y-1">
                                                       <Label>{cf?.label ?? "Select"}</Label>
                                                       <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                                        {opts.map((o) => (
-                                                          <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                                            <input type="checkbox" value={o.value} {...form.register(childName as never)} />
-                                                            {o.label}
-                                                          </label>
-                                                        ))}
+                                                        {opts.map((o) => {
+                                                          const _ccChk = _msCcCur.includes(o.value as unknown);
+                                                          return (
+                                                            <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                                              <input
+                                                                type="checkbox"
+                                                                value={o.value}
+                                                                checked={_ccChk}
+                                                                onChange={(e) => {
+                                                                  const optVal = o.value as string;
+                                                                  const next = e.target.checked ? [..._msCcCur.filter((v) => v !== optVal), optVal] : _msCcCur.filter((v) => v !== optVal);
+                                                                  form.setValue(childName as never, next as never, { shouldDirty: true });
+                                                                }}
+                                                              />
+                                                              {o.label}
+                                                            </label>
+                                                          );
+                                                        })}
                                                         {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                                       </div>
                                                     </div>
@@ -1212,16 +1268,30 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                                                   const cfOptsMs =
                                                     (cf as { options?: { label?: string; value?: string }[] } | undefined)?.options ?? [];
                                                   const opts = (Array.isArray(cfOptsMs) ? cfOptsMs : []) as { label?: string; value?: string }[];
+                                                  const _msCcRaw = form.watch(childName as never) as unknown;
+                                                  const _msCcCur: unknown[] = Array.isArray(_msCcRaw) ? _msCcRaw : typeof _msCcRaw === "string" && _msCcRaw ? [_msCcRaw] : [];
                                                   return (
                                                     <div key={`${childName}__ms`} className="space-y-1">
                                                       <Label>{cf?.label ?? "Select"}</Label>
                                                       <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                                        {opts.map((o) => (
-                                                          <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                                            <input type="checkbox" value={o.value} {...form.register(childName as never)} />
-                                                            {o.label}
-                                                          </label>
-                                                        ))}
+                                                        {opts.map((o) => {
+                                                          const _ccChk = _msCcCur.includes(o.value as unknown);
+                                                          return (
+                                                            <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                                              <input
+                                                                type="checkbox"
+                                                                value={o.value}
+                                                                checked={_ccChk}
+                                                                onChange={(e) => {
+                                                                  const optVal = o.value as string;
+                                                                  const next = e.target.checked ? [..._msCcCur.filter((v) => v !== optVal), optVal] : _msCcCur.filter((v) => v !== optVal);
+                                                                  form.setValue(childName as never, next as never, { shouldDirty: true });
+                                                                }}
+                                                              />
+                                                              {o.label}
+                                                            </label>
+                                                          );
+                                                        })}
                                                         {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                                       </div>
                                                     </div>
@@ -2995,16 +3065,30 @@ export default function NewPolicyStep1Page() {
                                   label?: string;
                                   value?: string;
                                 }[];
+                                const _msN2Raw = form.watch(name as never) as unknown;
+                                const _msN2Cur: unknown[] = Array.isArray(_msN2Raw) ? _msN2Raw : typeof _msN2Raw === "string" && _msN2Raw ? [_msN2Raw] : [];
                                 return (
                                   <div key={name} className="space-y-1">
                                     <Label>{child?.label ?? "Details"}</Label>
                                     <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                      {opts.map((o) => (
-                                        <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                          <input type="checkbox" value={o.value} {...form.register(name as never)} />
-                                          {o.label}
-                                        </label>
-                                      ))}
+                                      {opts.map((o) => {
+                                        const _n2Chk = _msN2Cur.includes(o.value as unknown);
+                                        return (
+                                          <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                            <input
+                                              type="checkbox"
+                                              value={o.value}
+                                              checked={_n2Chk}
+                                              onChange={(e) => {
+                                                const optVal = o.value as string;
+                                                const next = e.target.checked ? [..._msN2Cur.filter((v) => v !== optVal), optVal] : _msN2Cur.filter((v) => v !== optVal);
+                                                form.setValue(name as never, next as never, { shouldDirty: true });
+                                              }}
+                                            />
+                                            {o.label}
+                                          </label>
+                                        );
+                                      })}
                                       {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                     </div>
                                   </div>
@@ -3160,16 +3244,30 @@ export default function NewPolicyStep1Page() {
                                             }
                                             if (ccType === "multi_select") {
                                               const opts = (Array.isArray(cf.options) ? cf.options : []) as { label?: string; value?: string }[];
+                                              const _msRpRaw = form.watch(childName as never) as unknown;
+                                              const _msRpCur: unknown[] = Array.isArray(_msRpRaw) ? _msRpRaw : typeof _msRpRaw === "string" && _msRpRaw ? [_msRpRaw] : [];
                                               return (
                                                 <div key={`${childName}__ms`} className="space-y-1">
                                                   <Label>{cf.label ?? "Select"}</Label>
                                                   <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                                    {opts.map((o) => (
-                                                      <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                                        <input type="checkbox" value={o.value} {...form.register(childName as never)} />
-                                                        {o.label}
-                                                      </label>
-                                                    ))}
+                                                    {opts.map((o) => {
+                                                      const _rpChk = _msRpCur.includes(o.value as unknown);
+                                                      return (
+                                                        <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                                          <input
+                                                            type="checkbox"
+                                                            value={o.value}
+                                                            checked={_rpChk}
+                                                            onChange={(e) => {
+                                                              const optVal = o.value as string;
+                                                              const next = e.target.checked ? [..._msRpCur.filter((v) => v !== optVal), optVal] : _msRpCur.filter((v) => v !== optVal);
+                                                              form.setValue(childName as never, next as never, { shouldDirty: true });
+                                                            }}
+                                                          />
+                                                          {o.label}
+                                                        </label>
+                                                      );
+                                                    })}
                                                     {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                                   </div>
                                                 </div>
@@ -3364,16 +3462,30 @@ export default function NewPolicyStep1Page() {
                                             }
                                             if (ccType === "multi_select") {
                                               const opts = (Array.isArray(cf.options) ? cf.options : []) as { label?: string; value?: string }[];
+                                              const _msRpRaw = form.watch(childName as never) as unknown;
+                                              const _msRpCur: unknown[] = Array.isArray(_msRpRaw) ? _msRpRaw : typeof _msRpRaw === "string" && _msRpRaw ? [_msRpRaw] : [];
                                               return (
                                                 <div key={`${childName}__ms`} className="space-y-1">
                                                   <Label>{cf.label ?? "Select"}</Label>
                                                   <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                                    {opts.map((o) => (
-                                                      <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                                        <input type="checkbox" value={o.value} {...form.register(childName as never)} />
-                                                        {o.label}
-                                                      </label>
-                                                    ))}
+                                                    {opts.map((o) => {
+                                                      const _rpChk = _msRpCur.includes(o.value as unknown);
+                                                      return (
+                                                        <label key={o.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                                          <input
+                                                            type="checkbox"
+                                                            value={o.value}
+                                                            checked={_rpChk}
+                                                            onChange={(e) => {
+                                                              const optVal = o.value as string;
+                                                              const next = e.target.checked ? [..._msRpCur.filter((v) => v !== optVal), optVal] : _msRpCur.filter((v) => v !== optVal);
+                                                              form.setValue(childName as never, next as never, { shouldDirty: true });
+                                                            }}
+                                                          />
+                                                          {o.label}
+                                                        </label>
+                                                      );
+                                                    })}
                                                     {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                                   </div>
                                                 </div>

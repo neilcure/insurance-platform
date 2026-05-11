@@ -497,14 +497,60 @@ function DefaultValueSetter({ form, name, defaultValue }: { form: UseFormReturn<
 }
 
 function MultiSelectDefaultSetter({ form, name, defaultValues }: { form: UseFormReturn<Record<string, unknown>>; name: string; defaultValues: string[] }) {
+  // Use a ref to ensure defaults are applied exactly once per mount, regardless
+  // of how many times `defaultValues` array reference changes during render.
+  const appliedRef = React.useRef(false);
   React.useEffect(() => {
+    if (appliedRef.current) return;
     if (defaultValues.length === 0) return;
     const cur: unknown = form.getValues(name as never);
-    const isEmpty = cur === undefined || cur === null || (Array.isArray(cur) && (cur as unknown[]).length === 0);
-    if (isEmpty) {
+    // A multi-select stores its value as an array. ANY non-array value (undefined,
+    // null, empty string from a stray hidden input registration, or a single string
+    // left over from a legacy single-select snapshot) means "no real selection yet"
+    // — so apply the admin-configured defaults.
+    const hasRealSelection = Array.isArray(cur) && (cur as unknown[]).length > 0;
+    if (!hasRealSelection) {
       form.setValue(name as never, defaultValues as never, { shouldDirty: false });
     }
+    appliedRef.current = true;
   }, [form, name, defaultValues]);
+  return null;
+}
+
+/**
+ * Registers a multi_select field with RHF for validation purposes only.
+ * We can't use `<input type="hidden" {...form.register(name)} />` because
+ * a hidden input has `value=""` by default — RHF reads that on mount and
+ * stomps the field state to `""`, which breaks both
+ * `MultiSelectDefaultSetter` (the default-selected logic) and the
+ * controlled checkbox `checked` derivation (which requires an array).
+ *
+ * Calling `form.register(name, { validate })` programmatically registers
+ * the validation rule WITHOUT mounting a DOM element, so the existing
+ * form state (set by setValue or by fillFormFromRecord) is preserved.
+ */
+function MultiSelectValidationRegistrar({
+  form,
+  name,
+  required,
+  label,
+}: {
+  form: UseFormReturn<Record<string, unknown>>;
+  name: string;
+  required: boolean;
+  label: string;
+}) {
+  React.useEffect(() => {
+    if (!required) return;
+    form.register(name as never, {
+      validate: (v: unknown) =>
+        (Array.isArray(v) && (v as unknown[]).length > 0) ||
+        `${label} is required`,
+    });
+    return () => {
+      form.unregister(name as never, { keepValue: true });
+    };
+  }, [form, name, required, label]);
   return null;
 }
 
@@ -1852,6 +1898,12 @@ export function PackageBlock({
                         {multiSelectDefaults.length > 0 && (
                           <MultiSelectDefaultSetter form={form} name={nameBase} defaultValues={multiSelectDefaults} />
                         )}
+                        <MultiSelectValidationRegistrar
+                          form={form}
+                          name={nameBase}
+                          required={Boolean(meta.required)}
+                          label={displayLabel}
+                        />
                         <div className="space-y-1">
                           <Label>
                             {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
@@ -1867,13 +1919,15 @@ export function PackageBlock({
                                     <input
                                       type="checkbox"
                                       value={o.value}
+                                      checked={isChecked}
                                       className="mt-0.5 shrink-0"
-                                      {...form.register(nameBase as never, {
-                                        validate: (v) =>
-                                          !Boolean(meta.required) ||
-                                          (Array.isArray(v) && (v as unknown[]).length > 0) ||
-                                          `${displayLabel} is required`,
-                                      })}
+                                      onChange={(e) => {
+                                        const optVal = o.value as string;
+                                        const next = e.target.checked
+                                          ? [...current.filter((v) => v !== optVal), optVal]
+                                          : current.filter((v) => v !== optVal);
+                                        form.setValue(nameBase as never, next as never, { shouldDirty: true });
+                                      }}
                                     />
                                     <span>{o.label}</span>
                                   </label>
@@ -1937,16 +1991,37 @@ export function PackageBlock({
                                             label?: string;
                                             value?: string;
                                           }[];
+                                          const childRaw = form.watch(name as never) as unknown;
+                                          const childCurrent: unknown[] = Array.isArray(childRaw)
+                                            ? childRaw
+                                            : typeof childRaw === "string" && childRaw
+                                              ? [childRaw]
+                                              : [];
                                           return (
                                             <div key={name} className="col-span-2 space-y-2">
                                               <Label>{child?.label ?? "Details"}</Label>
                                               <div className="space-y-3">
-                                                {opts.map((so, soIdx) => (
-                                                  <label key={`${so.value ?? ""}_${soIdx}`} className="flex items-start gap-2 text-sm leading-snug">
-                                                    <input type="checkbox" value={so.value} className="mt-0.5 shrink-0" {...form.register(name as never)} />
-                                                    <span>{so.label}</span>
-                                                  </label>
-                                                ))}
+                                                {opts.map((so, soIdx) => {
+                                                  const soChecked = childCurrent.includes(so.value as unknown);
+                                                  return (
+                                                    <label key={`${so.value ?? ""}_${soIdx}`} className="flex items-start gap-2 text-sm leading-snug">
+                                                      <input
+                                                        type="checkbox"
+                                                        value={so.value}
+                                                        checked={soChecked}
+                                                        className="mt-0.5 shrink-0"
+                                                        onChange={(e) => {
+                                                          const optVal = so.value as string;
+                                                          const next = e.target.checked
+                                                            ? [...childCurrent.filter((v) => v !== optVal), optVal]
+                                                            : childCurrent.filter((v) => v !== optVal);
+                                                          form.setValue(name as never, next as never, { shouldDirty: true });
+                                                        }}
+                                                      />
+                                                      <span>{so.label}</span>
+                                                    </label>
+                                                  );
+                                                })}
                                                 {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                               </div>
                                             </div>
@@ -2201,17 +2276,37 @@ export function PackageBlock({
                               if (cType === "multi_select") {
                                 const allOpts = (Array.isArray(child?.options) ? child.options : []) as { label?: string; value?: string; showWhen?: unknown }[];
                                 const opts = allOpts.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
+                                const boolMsRaw = form.watch(name as never) as unknown;
+                                const boolMsCurrent: unknown[] = Array.isArray(boolMsRaw)
+                                  ? boolMsRaw
+                                  : typeof boolMsRaw === "string" && boolMsRaw
+                                    ? [boolMsRaw]
+                                    : [];
                                 return (
                                   <div key={name} className="space-y-1">
                                     {dvNode}
                                     <Label>{child?.label ?? "Select"}</Label>
                                     <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                      {opts.map((o, oIdx) => (
-                                        <label key={`${o.value ?? ""}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                          <input type="checkbox" value={o.value} {...form.register(name as never)} />
-                                          {o.label}
-                                        </label>
-                                      ))}
+                                      {opts.map((o, oIdx) => {
+                                        const boolMsChecked = boolMsCurrent.includes(o.value as unknown);
+                                        return (
+                                          <label key={`${o.value ?? ""}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                            <input
+                                              type="checkbox"
+                                              value={o.value}
+                                              checked={boolMsChecked}
+                                              onChange={(e) => {
+                                                const optVal = o.value as string;
+                                                const next = e.target.checked
+                                                  ? [...boolMsCurrent.filter((v) => v !== optVal), optVal]
+                                                  : boolMsCurrent.filter((v) => v !== optVal);
+                                                form.setValue(name as never, next as never, { shouldDirty: true });
+                                              }}
+                                            />
+                                            {o.label}
+                                          </label>
+                                        );
+                                      })}
                                       {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                     </div>
                                   </div>
@@ -2384,17 +2479,37 @@ export function PackageBlock({
                               if (cType === "multi_select") {
                                 const allOpts = (Array.isArray(child?.options) ? child.options : []) as { label?: string; value?: string; showWhen?: unknown }[];
                                 const opts = allOpts.filter((o) => evaluateShowWhen((o as any)?.showWhen, allFormValues));
+                                const boolMsRaw = form.watch(name as never) as unknown;
+                                const boolMsCurrent: unknown[] = Array.isArray(boolMsRaw)
+                                  ? boolMsRaw
+                                  : typeof boolMsRaw === "string" && boolMsRaw
+                                    ? [boolMsRaw]
+                                    : [];
                                 return (
                                   <div key={name} className="space-y-1">
                                     {dvNode}
                                     <Label>{child?.label ?? "Select"}</Label>
                                     <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
-                                      {opts.map((o, oIdx) => (
-                                        <label key={`${o.value ?? ""}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
-                                          <input type="checkbox" value={o.value} {...form.register(name as never)} />
-                                          {o.label}
-                                        </label>
-                                      ))}
+                                      {opts.map((o, oIdx) => {
+                                        const boolMsChecked = boolMsCurrent.includes(o.value as unknown);
+                                        return (
+                                          <label key={`${o.value ?? ""}_${oIdx}`} className="mr-4 inline-flex items-center gap-2 text-sm">
+                                            <input
+                                              type="checkbox"
+                                              value={o.value}
+                                              checked={boolMsChecked}
+                                              onChange={(e) => {
+                                                const optVal = o.value as string;
+                                                const next = e.target.checked
+                                                  ? [...boolMsCurrent.filter((v) => v !== optVal), optVal]
+                                                  : boolMsCurrent.filter((v) => v !== optVal);
+                                                form.setValue(name as never, next as never, { shouldDirty: true });
+                                              }}
+                                            />
+                                            {o.label}
+                                          </label>
+                                        );
+                                      })}
                                       {opts.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
                                     </div>
                                   </div>
