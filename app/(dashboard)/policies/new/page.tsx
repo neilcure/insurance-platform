@@ -423,6 +423,24 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
     };
   }, [pkg]);
 
+  // Apply default selections for multi_select package fields when they first load
+  React.useEffect(() => {
+    if (!Array.isArray(pkgFields) || pkgFields.length === 0) return;
+    for (const f of pkgFields) {
+      const meta = (f.meta ?? {}) as Record<string, unknown>;
+      if (meta.inputType !== "multi_select") continue;
+      const opts = Array.isArray(meta.options) ? (meta.options as { value?: string; default?: boolean }[]) : [];
+      const defaultVals = opts.filter((o) => o.default).map((o) => o.value).filter(Boolean) as string[];
+      if (defaultVals.length === 0) continue;
+      const nameBase = `${pkg}__${f.value}`;
+      const curr = (form.getValues() as Record<string, unknown>)[nameBase];
+      if (curr === undefined || curr === null || (Array.isArray(curr) && (curr as unknown[]).length === 0)) {
+        form.setValue(nameBase as never, defaultVals as never, { shouldDirty: false });
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pkgFields]);
+
   return (
     <section className="space-y-4">
       <div className="space-y-2">
@@ -2787,6 +2805,24 @@ export default function NewPolicyStep1Page() {
         cancelled = true;
       };
     }, [pkg, selectedCategory]);
+
+    // Apply default selections for multi_select package fields when they first load
+    React.useEffect(() => {
+      if (!Array.isArray(pkgFields) || pkgFields.length === 0) return;
+      for (const f of pkgFields) {
+        const meta = (f.meta ?? {}) as Record<string, unknown>;
+        if (meta.inputType !== "multi_select") continue;
+        const opts = Array.isArray(meta.options) ? (meta.options as { value?: string; default?: boolean }[]) : [];
+        const defaultVals = opts.filter((o) => o.default).map((o) => o.value).filter(Boolean) as string[];
+        if (defaultVals.length === 0) continue;
+        const nameBase = `${pkg}__${f.value}`;
+        const curr = (form.getValues() as Record<string, unknown>)[nameBase];
+        if (curr === undefined || curr === null || (Array.isArray(curr) && (curr as unknown[]).length === 0)) {
+          form.setValue(nameBase as never, defaultVals as never, { shouldDirty: false });
+        }
+      }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pkgFields]);
 
     return (
       <section className="space-y-4">

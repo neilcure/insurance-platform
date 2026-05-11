@@ -29,6 +29,7 @@ export type BoolChild = {
 export type OptionRow = {
   label?: string;
   value?: string;
+  default?: boolean;
   showWhen?: ShowWhenRule[];
   scrollToGroup?: string;
   scrollToPackage?: string;

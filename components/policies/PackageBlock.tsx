@@ -496,6 +496,18 @@ function DefaultValueSetter({ form, name, defaultValue }: { form: UseFormReturn<
   return null;
 }
 
+function MultiSelectDefaultSetter({ form, name, defaultValues }: { form: UseFormReturn<Record<string, unknown>>; name: string; defaultValues: string[] }) {
+  React.useEffect(() => {
+    if (defaultValues.length === 0) return;
+    const cur: unknown = form.getValues(name as never);
+    const isEmpty = cur === undefined || cur === null || (Array.isArray(cur) && (cur as unknown[]).length === 0);
+    if (isEmpty) {
+      form.setValue(name as never, defaultValues as never, { shouldDirty: false });
+    }
+  }, [form, name, defaultValues]);
+  return null;
+}
+
 /**
  * Boolean Yes/No radio group bound to RHF.
  *
@@ -1824,6 +1836,7 @@ export function PackageBlock({
                     const options = (Array.isArray(meta.options) ? (meta.options as unknown[]) : []) as {
                       label?: string;
                       value?: string;
+                      default?: boolean;
                       children?: { label?: string; inputType?: string; options?: { label?: string; value?: string }[]; currencyCode?: string; decimals?: number }[];
                     }[];
                     const fieldId = (f as any).id as number | undefined;
@@ -1833,8 +1846,12 @@ export function PackageBlock({
                       : typeof currentRaw === "string" && currentRaw
                         ? [currentRaw]
                         : [];
+                    const multiSelectDefaults = options.filter((o) => o.default && o.value).map((o) => o.value as string);
                     return (
                       <div key={nameBase} className="col-span-2 space-y-2">
+                        {multiSelectDefaults.length > 0 && (
+                          <MultiSelectDefaultSetter form={form} name={nameBase} defaultValues={multiSelectDefaults} />
+                        )}
                         <div className="space-y-1">
                           <Label>
                             {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}

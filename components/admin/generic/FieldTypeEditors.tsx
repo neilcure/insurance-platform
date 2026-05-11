@@ -208,6 +208,23 @@ export function TopLevelSelectEditor({
                   </Button>
                 </div>
               </div>
+              {inputType === "multi_select" && (
+                <div className="mt-1 flex items-center gap-2">
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-neutral-600 dark:text-neutral-400">
+                    <input
+                      type="checkbox"
+                      className="accent-neutral-900 dark:accent-white"
+                      checked={Boolean(opt.default)}
+                      onChange={(e) => {
+                        const next = [...options];
+                        next[idx] = { ...next[idx], default: e.target.checked || undefined };
+                        onOptionsChange(next);
+                      }}
+                    />
+                    Default selected
+                  </label>
+                </div>
+              )}
               {shared.allPackages && shared.allPackages.length > 0 && (
                 <div className="mt-1 flex flex-col gap-1">
                   <div className="flex items-center gap-2">

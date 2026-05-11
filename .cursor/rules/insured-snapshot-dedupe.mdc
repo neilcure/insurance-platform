@@ -1,0 +1,65 @@
+---
+description: Tripwire for the duplicate `insuredSnapshot` keys problem. Any PATCH-builder that constructs an `insured: {...}` payload, any wizard form-fill helper, and any new caller of `app/api/policies/[id]` PATCH must dedupe through `lib/policies/insured-snapshot-dedupe.ts`. Read the skill first.
+alwaysApply: true
+---
+
+# `insuredSnapshot` key deduplication
+
+`cars.extraAttributes.insuredSnapshot` is a flat key/value object
+that is **full-replaced** (not merged) every time `app/api/policies/[id]`
+PATCH receives a non-null `body.insured`. Any clone keys present in
+the outgoing payload (`insured__ciNumber` AND `insured__cinumber`,
+or `insured__category` AND `insured_category`) get persisted as
+real fields, recorded in `_audit` as "changed from null", and
+surface to the user as a phantom "you edited insured data" event
+they didn't trigger.
+
+If your task touches **any** of the following, STOP and read
+[`.cursor/skills/insured-snapshot-dedupe/SKILL.md`](mdc:.cursor/skills/insured-snapshot-dedupe/SKILL.md)
+**before** writing code:
+
+- Editing `app/(dashboard)/dashboard/flows/[flow]/new/page.tsx`
+  — especially `fillFormFromClient`, `fillFormFromRecord`,
+  `saveClientChanges`, `doSubmit`, or the body of the React Hook
+  Form pre-population effect
+- Editing `lib/policies/insured-snapshot-dedupe.ts` (the helper)
+- Editing the PATCH handler in `app/api/policies/[id]/route.ts`
+  — the `body.insured ?? existing.insuredSnapshot` line and the
+  insured cross-sync into `packagesSnapshot`
+- Adding any **new** caller that constructs an `insured: {...}`
+  payload and PATCHes `/api/policies/:id` (e.g. bulk-edit tools,
+  cron-driven syncs, admin scripts)
+- Adding a new field naming convention beyond `pkg__field` /
+  `pkg_field` — the dedupe normalisation rules will need updating
+- Diagnosing "audit log says insured changed but the user didn't
+  type anything" / "the same value appears twice in the policy
+  details view" / "I see both `insured__ciNumber` AND
+  `insured__cinumber` in the DB"
+
+## The 30-second cheatsheet
+
+| Concern | Pattern | Don't do |
+|---|---|---|
+| Build outgoing `insured: {...}` payload | `JSON.stringify({ insured: dedupeInsuredSnapshot(snap) })` | Send `form.getValues()` straight through |
+| Pre-populate wizard from existing record/client | Only set normalised key variants if the key is **already registered** in `form.getValues()` | Unconditionally `setVal("insured__" + lower(tail), v)` |
+| Detect duplicates | `norm(k) = k.toLowerCase().replace(/^(insured\|contactinfo)_{1,2}/, "").replace(/_/g, "")` | Compare with `===` or prefix-only stripping |
+| Pick which duplicate to keep | `__` beats `_`; then non-lowercase beats all-lowercase | First-seen / alphabetical / arbitrary |
+| Cleanup legacy rows | `npx tsx scripts/cleanup-insured-snapshot-dupes.ts --apply` | Hand-edit JSONB via SQL |
+| New dedupe in any file | `import { dedupeInsuredSnapshot } from "@/lib/policies/insured-snapshot-dedupe"` | Re-implement the rules inline |
+
+## Three layers of defence (skill §2)
+
+1. **Helper** at `lib/policies/insured-snapshot-dedupe.ts` — single
+   source of truth for the normalisation rule.
+2. **Form-fill guard** in the wizard — refuse to write a normalised
+   key variant unless it's a registered form field.
+3. **Save-time guard** — every wizard write path calls
+   `dedupeInsuredSnapshot` on the outgoing payload.
+
+Removing any one of these can re-introduce the bug. Removing the
+helper guarantees it.
+
+If anything above is unclear, the skill has the full contract, the
+file index, the symptom-to-cause matrix, the cleanup recipe, and
+the verification commands (rg greps + dry-run script + UI smoke
+test) to confirm correctness.

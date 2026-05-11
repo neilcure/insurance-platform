@@ -26,6 +26,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { X, UserPlus, UserSearch, ArrowRight, ArrowLeft, Check, Loader2 } from "lucide-react";
 import { extractDisplayName } from "@/lib/import/entity-display-name";
+import { dedupeInsuredSnapshot } from "@/lib/policies/insured-snapshot-dedupe";
 
 type FlowOption = {
   id: number;
@@ -153,14 +154,17 @@ function fillFormFromClient(
     if (lower.startsWith("insured_") || lower.startsWith("insured__")) {
       const tail = lower.replace(/^insured__?/, "");
       setIfEmpty(`insured__${tail}`, v);
-      setIfEmpty(`insured_${tail}`, v);
+      // Only set single-underscore variant if it is already registered as a form field —
+      // avoids creating duplicate snapshot keys when submitting.
+      if (registeredByLower.has(`insured_${tail}`)) setIfEmpty(`insured_${tail}`, v);
       setIfEmpty(k, v);
       const regMatch = registeredByLower.get(`insured__${tail}`);
       if (regMatch && regMatch !== `insured__${tail}`) setIfEmpty(regMatch, v);
     } else if (lower.startsWith("contactinfo_") || lower.startsWith("contactinfo__")) {
       const tail = lower.replace(/^contactinfo__?/, "");
       setIfEmpty(`contactinfo__${tail}`, v);
-      setIfEmpty(`contactinfo_${tail}`, v);
+      // Only set single-underscore variant if already registered.
+      if (registeredByLower.has(`contactinfo_${tail}`)) setIfEmpty(`contactinfo_${tail}`, v);
       setIfEmpty(k, v);
       const regMatch = registeredByLower.get(`contactinfo__${tail}`);
       if (regMatch && regMatch !== `contactinfo__${tail}`) setIfEmpty(regMatch, v);
@@ -209,16 +213,27 @@ function fillFormFromRecord(
   }
 
   const insured = (extraAttributes.insuredSnapshot ?? {}) as Record<string, unknown>;
+  // Build a set of keys already present in the form (registered by PackageBlock) so we can
+  // target-fill normalized variants without creating spurious duplicate snapshot keys.
+  const formKeySet = new Set(Object.keys(form.getValues() as Record<string, unknown>));
   for (const [k, v] of Object.entries(insured)) {
     if (isEmpty(v)) continue;
     setVal(k, v);
     const lower = k.toLowerCase();
     if (lower.startsWith("insured_") || lower.startsWith("insured__")) {
       const tail = lower.replace(/^insured__?/, "");
-      setVal(`insured__${tail}`, v);
+      const normalized = `insured__${tail}`;
+      // Only set the normalized lowercase variant if it differs from the original key
+      // AND it is already registered as a form field — avoids creating duplicate snapshot keys.
+      if (normalized !== k && formKeySet.has(normalized)) {
+        setVal(normalized, v);
+      }
     } else if (lower.startsWith("contactinfo_") || lower.startsWith("contactinfo__")) {
       const tail = lower.replace(/^contactinfo__?/, "");
-      setVal(`contactinfo__${tail}`, v);
+      const normalized = `contactinfo__${tail}`;
+      if (normalized !== k && formKeySet.has(normalized)) {
+        setVal(normalized, v);
+      }
     }
   }
 }
@@ -1219,7 +1234,7 @@ export default function FlowNewPage() {
       const res = await fetch(`/api/policies/${selectedClientId}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ insured: insuredOut }),
+        body: JSON.stringify({ insured: dedupeInsuredSnapshot(insuredOut) }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -1485,6 +1500,12 @@ export default function FlowNewPage() {
         insuredSnapshot.clientPolicyId = selectedClientId;
         if (selectedClientNumber) insuredSnapshot.clientPolicyNumber = selectedClientNumber;
       }
+
+      // Remove duplicate keys that differ only in casing / underscore style.
+      // e.g. insured__ciNumber and insured__cinumber should not both be stored.
+      const deduped = dedupeInsuredSnapshot(insuredSnapshot);
+      Object.keys(insuredSnapshot).forEach(k => delete insuredSnapshot[k]);
+      Object.assign(insuredSnapshot, deduped);
 
       const selectedAgentId = Number(values._agentId);
       const agentIdPayload = Number.isFinite(selectedAgentId) && selectedAgentId > 0
