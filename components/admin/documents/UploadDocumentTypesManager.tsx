@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { confirmDialog } from "@/components/ui/global-dialogs";
 import { toast } from "sonner";
 import type {
   UploadDocumentTypeMeta,
@@ -34,17 +35,40 @@ const ACCEPTED_TYPE_PRESETS: { label: string; value: string }[] = [
   { label: "Excel (.xls, .xlsx)", value: "application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
 ];
 
-function defaultMeta(): UploadDocumentTypeMeta {
+export type UploadDocumentSource = "customer" | "admin";
+
+/**
+ * Treat any meta with `uploadSource !== "admin"` as a customer-uploaded type
+ * (the historical default — every existing row is implicitly "customer").
+ */
+function isAdminSource(meta: UploadDocumentTypeMeta | null | undefined): boolean {
+  return meta?.uploadSource === "admin";
+}
+
+function defaultMeta(source: UploadDocumentSource): UploadDocumentTypeMeta {
   return {
     description: "",
     acceptedTypes: ["image/*", "application/pdf"],
     maxSizeMB: 10,
     required: false,
     flows: [],
+    uploadSource: source,
   };
 }
 
-export default function UploadDocumentTypesManager() {
+export default function UploadDocumentTypesManager({
+  uploadSource = "customer",
+}: {
+  /**
+   * Scopes the manager to one source.
+   * - "customer" (default): documents the client / agent uploads.
+   * - "admin": documents the admin uploads to provide to the client / agent.
+   * Both sources share the same `form_options` group; the manager filters by
+   * `meta.uploadSource` so each admin page only ever shows its own rows.
+   */
+  uploadSource?: UploadDocumentSource;
+} = {}) {
+  const isAdminScope = uploadSource === "admin";
   const [rows, setRows] = React.useState<UploadDocumentTypeRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [open, setOpen] = React.useState(false);
@@ -53,7 +77,7 @@ export default function UploadDocumentTypesManager() {
   const [formLabel, setFormLabel] = React.useState("");
   const [formValue, setFormValue] = React.useState("");
   const [formSort, setFormSort] = React.useState(0);
-  const [meta, setMeta] = React.useState<UploadDocumentTypeMeta>(defaultMeta());
+  const [meta, setMeta] = React.useState<UploadDocumentTypeMeta>(defaultMeta(uploadSource));
 
   const [flows, setFlows] = React.useState<{ label: string; value: string }[]>([]);
   const [statusOptions, setStatusOptions] = React.useState<{ label: string; value: string }[]>([]);
@@ -69,7 +93,14 @@ export default function UploadDocumentTypesManager() {
       );
       if (!res.ok) { setRows([]); return; }
       const json = await res.json();
-      setRows(Array.isArray(json) ? json : []);
+      const all = Array.isArray(json) ? (json as UploadDocumentTypeRow[]) : [];
+      // Filter to this manager's scope. Rows missing `uploadSource` are
+      // treated as "customer" (the historical default), so existing data
+      // stays on the existing page after this change.
+      const scoped = all.filter((r) =>
+        isAdminScope ? isAdminSource(r.meta) : !isAdminSource(r.meta),
+      );
+      setRows(scoped);
     } finally {
       setLoading(false);
     }
@@ -108,7 +139,7 @@ export default function UploadDocumentTypesManager() {
     setFormLabel("");
     setFormValue("");
     setFormSort(0);
-    setMeta(defaultMeta());
+    setMeta(defaultMeta(uploadSource));
     setOpen(true);
   }
 
@@ -117,7 +148,9 @@ export default function UploadDocumentTypesManager() {
     setFormLabel(row.label);
     setFormValue(row.value);
     setFormSort(row.sortOrder);
-    setMeta(row.meta ?? defaultMeta());
+    // Preserve the row's existing source; never silently flip a row's source
+    // when an admin clicks Edit from the wrong scope.
+    setMeta({ ...(row.meta ?? defaultMeta(uploadSource)), uploadSource: row.meta?.uploadSource ?? uploadSource });
     setOpen(true);
   }
 
@@ -126,6 +159,20 @@ export default function UploadDocumentTypesManager() {
       toast.error("Label and key are required");
       return;
     }
+    // Always tag the saved row with this manager's scope so it shows up on
+    // the correct admin page after a save (and so a row created from the
+    // "Admin Provided Documents" page can never be missing the flag).
+    const scopedMeta: UploadDocumentTypeMeta = {
+      ...meta,
+      uploadSource: editing?.meta?.uploadSource ?? uploadSource,
+    };
+    // Strip fields that don't apply to admin-provided docs so we don't
+    // persist stale config that would confuse the runtime later.
+    if (scopedMeta.uploadSource === "admin") {
+      delete scopedMeta.requirePaymentDetails;
+      delete scopedMeta.accountingLineKey;
+      delete scopedMeta.requireNcb;
+    }
     const payload = {
       groupKey: GROUP_KEY,
       label: formLabel.trim(),
@@ -133,24 +180,32 @@ export default function UploadDocumentTypesManager() {
       sortOrder: formSort,
       isActive: true,
       valueType: "json",
-      meta,
+      meta: scopedMeta,
     };
+    async function fetchOrThrow(url: string, init: RequestInit) {
+      const res = await fetch(url, init);
+      if (!res.ok) {
+        const body = await res.text();
+        let msg = body;
+        try { msg = (JSON.parse(body) as { error?: string }).error ?? body; } catch { /* raw text */ }
+        throw new Error(msg);
+      }
+      return res;
+    }
     try {
       if (editing) {
-        const res = await fetch(`/api/admin/form-options/${editing.id}`, {
+        await fetchOrThrow(`/api/admin/form-options/${editing.id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error(await res.text());
         toast.success("Document type updated");
       } else {
-        const res = await fetch("/api/admin/form-options", {
+        await fetchOrThrow("/api/admin/form-options", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error(await res.text());
         toast.success("Document type created");
       }
       setOpen(false);
@@ -175,8 +230,13 @@ export default function UploadDocumentTypesManager() {
   }
 
   async function remove(row: UploadDocumentTypeRow) {
-    if (!window.confirm(`Delete document type "${row.label}"? Existing uploads for this type will remain.`))
-      return;
+    const ok = await confirmDialog({
+      title: `Delete "${row.label}"?`,
+      description: "Existing uploads for this type will remain on each policy.\nThis cannot be undone.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/admin/form-options/${row.id}`, {
         method: "DELETE",
@@ -238,6 +298,11 @@ export default function UploadDocumentTypesManager() {
                     </div>
                   )}
                   <div className="flex flex-wrap gap-1 mt-0.5">
+                    {isAdminSource(r.meta) && (
+                      <span className="inline-block rounded bg-yellow-100 px-1.5 py-0.5 text-[10px] font-semibold text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300">
+                        Backend
+                      </span>
+                    )}
                     {r.meta?.insuredTypes && r.meta.insuredTypes.length > 0 && (
                       <span className="inline-block rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
                         {r.meta.insuredTypes.join(", ")}
@@ -295,7 +360,9 @@ export default function UploadDocumentTypesManager() {
                   colSpan={4}
                   className="py-8 text-center text-sm text-neutral-500 dark:text-neutral-400"
                 >
-                  No document types configured. Add one to get started.
+                  {isAdminScope
+                    ? "No backend document types configured. Add one to get started."
+                    : "No document types configured. Add one to get started."}
                 </TableCell>
               </TableRow>
             )}
@@ -309,6 +376,11 @@ export default function UploadDocumentTypesManager() {
             <DialogTitle>
               {editing ? "Edit Document Type" : "Add Document Type"}
             </DialogTitle>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              {isAdminScope
+                ? "Backend document: admin uploads and provides to the agent / client. No reminders."
+                : "Agent or client uploads this document. Admin verifies. Reminders available."}
+            </p>
           </DialogHeader>
 
           <div className="grid gap-4">
@@ -512,24 +584,29 @@ export default function UploadDocumentTypesManager() {
               </div>
             )}
 
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={meta.requireNcb ?? false}
-                onChange={(e) => setMeta((m) => ({ ...m, requireNcb: e.target.checked }))}
-              />
-              Only when policy has NCB (No Claims Bonus)
-            </label>
+            {!isAdminScope && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={meta.requireNcb ?? false}
+                  onChange={(e) => setMeta((m) => ({ ...m, requireNcb: e.target.checked }))}
+                />
+                Only when policy has NCB (No Claims Bonus)
+              </label>
+            )}
 
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={meta.requirePaymentDetails ?? false}
-                onChange={(e) => setMeta((m) => ({ ...m, requirePaymentDetails: e.target.checked }))}
-              />
-              Require payment details (method, amount, reference) on upload
-            </label>
+            {!isAdminScope && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={meta.requirePaymentDetails ?? false}
+                  onChange={(e) => setMeta((m) => ({ ...m, requirePaymentDetails: e.target.checked }))}
+                />
+                Require payment details (method, amount, reference) on upload
+              </label>
+            )}
 
+            {!isAdminScope && (
             <div className="grid gap-1">
               <Label>Cover Type (Accounting Line Key)</Label>
               <Input
@@ -546,6 +623,7 @@ export default function UploadDocumentTypesManager() {
                 Leave empty for all policies.
               </p>
             </div>
+            )}
           </div>
 
           <DialogFooter>

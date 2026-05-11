@@ -56,6 +56,12 @@ export default async function PolicySettingsPage() {
           >
             Upload Document Types
           </Link>
+          <Link
+            href="/admin/policy-settings/backend-documents"
+            className="rounded-md border border-neutral-200 px-3 py-2 text-sm hover:bg-neutral-100 dark:border-neutral-800 dark:hover:bg-neutral-900"
+          >
+            Backend Documents
+          </Link>
         </CardContent>
       </Card>
     </main>

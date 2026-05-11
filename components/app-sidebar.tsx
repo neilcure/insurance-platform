@@ -22,6 +22,7 @@ import {
   UserPlus,
   User,
   Upload,
+  FileDown,
   Stamp,
   ClipboardList,
   ListOrdered,
@@ -541,6 +542,13 @@ export function AppSidebar(
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>
+                          <SidebarMenuButton tooltip="Backend Documents" asChild>
+                            <Link href="/admin/policy-settings/backend-documents">
+                              <FileDown className="h-3.5 w-3.5 shrink-0" />
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                        <SidebarMenuItem>
                           <SidebarMenuButton tooltip="PDF Mail Merge" asChild>
                             <Link href="/admin/policy-settings/pdf-templates">
                               <Stamp className="h-3.5 w-3.5 shrink-0" />
@@ -714,6 +722,14 @@ export function AppSidebar(
                                           <Link href="/admin/policy-settings/upload-documents">
                                             <Upload className="h-4 w-4 shrink-0" />
                                             <span>Upload Documents</span>
+                                          </Link>
+                                        </SidebarMenuButton>
+                                      </li>
+                                      <li>
+                                        <SidebarMenuButton tooltip="Backend Documents" asChild>
+                                          <Link href="/admin/policy-settings/backend-documents">
+                                            <FileDown className="h-4 w-4 shrink-0" />
+                                            <span>Backend Documents</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>

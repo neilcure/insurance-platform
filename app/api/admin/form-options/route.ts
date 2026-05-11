@@ -179,11 +179,17 @@ export async function POST(request: Request) {
       .returning();
     return NextResponse.json(opt, { status: 201 });
   } catch (err: unknown) {
-    const message = (err as any)?.message ?? "Create failed";
-    // Unique violation on (group_key, value)
-    if (typeof message === "string" && message.toLowerCase().includes("unique")) {
+    // Drizzle wraps native pg errors inside `cause` — check both levels.
+    const pgCode =
+      (err as { code?: string }).code ??
+      (err as { cause?: { code?: string } }).cause?.code;
+    if (pgCode === "23505") {
       return NextResponse.json({ error: "A field with this key already exists in this group." }, { status: 409 });
     }
+    const message =
+      (err as { cause?: { message?: string } }).cause?.message ??
+      (err as { message?: string }).message ??
+      "Create failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

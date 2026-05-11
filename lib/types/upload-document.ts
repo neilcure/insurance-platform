@@ -1,5 +1,12 @@
 export type UploadDocumentTypeMeta = {
   description?: string;
+  /**
+   * Who provides the document.
+   * - "customer" (default): client / agent uploads, admin verifies. Reminders apply.
+   * - "admin": admin uploads to provide the file to the client / agent.
+   *   Clients / agents can only view and download. No reminder.
+   */
+  uploadSource?: "customer" | "admin";
   /** Accepted MIME patterns, e.g. ["image/*", "application/pdf"] */
   acceptedTypes?: string[];
   /** Max file size in megabytes */

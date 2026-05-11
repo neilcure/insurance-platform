@@ -2,7 +2,7 @@ import { requireUser } from "@/lib/auth/require-user";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import UploadDocumentTypesManager from "@/components/admin/documents/UploadDocumentTypesManager";
 
-export default async function UploadDocumentsPage() {
+export default async function BackofficeDocumentsPage() {
   const me = await requireUser();
   if (me.userType !== "admin") {
     throw new Error("Forbidden");
@@ -12,22 +12,13 @@ export default async function UploadDocumentsPage() {
     <main className="mx-auto max-w-6xl space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
-          Upload Document Types
+          Backend Documents
         </h1>
         <p className="text-sm text-neutral-600 dark:text-neutral-400">
-          Configure the types of documents that agents or clients need to upload
-          for each policy. Admin uploads on their behalf are auto-verified;
-          agent / client uploads require admin verification.
-        </p>
-        <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-500">
-          For documents the admin <em>provides to</em> the agent / client, use{" "}
-          <a
-            href="/admin/policy-settings/backend-documents"
-            className="underline hover:text-neutral-700 dark:hover:text-neutral-300"
-          >
-            Backend Documents
-          </a>{" "}
-          instead.
+          Configure the types of documents the admin uploads to provide to the
+          agent or client (e.g. signed policy documents, certificates). Clients
+          and agents can view and download these files but cannot upload them.
+          Reminders do not apply.
         </p>
       </div>
 
@@ -36,7 +27,7 @@ export default async function UploadDocumentsPage() {
           <CardTitle>Document Types</CardTitle>
         </CardHeader>
         <CardContent>
-          <UploadDocumentTypesManager />
+          <UploadDocumentTypesManager uploadSource="admin" />
         </CardContent>
       </Card>
     </main>

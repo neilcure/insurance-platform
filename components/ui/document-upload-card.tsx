@@ -1166,8 +1166,20 @@ export function DocumentUploadCard({
         {/* Actions row: upload + reminder */}
         {(() => {
           const st = displayStatus as string;
-          const showUpload = (canUpload || (st === "uploaded" && isAdmin)) && (!needsPayment || !premiumBreakdown);
-          const showReminder = isAdmin && (st === "outstanding" || st === "rejected" || st === "uploaded");
+          // Documents the admin provides to the client / agent: only the
+          // admin can upload, and reminders don't apply (admin isn't
+          // waiting on anyone — it's their own action). Clients still
+          // see the file in view + download once admin uploads it.
+          const isAdminProvided = meta?.uploadSource === "admin";
+          const uploadAllowed = isAdminProvided ? isAdmin : true;
+          const showUpload =
+            uploadAllowed
+            && (canUpload || (st === "uploaded" && isAdmin))
+            && (!needsPayment || !premiumBreakdown);
+          const showReminder =
+            !isAdminProvided
+            && isAdmin
+            && (st === "outstanding" || st === "rejected" || st === "uploaded");
           if (!showUpload && !showReminder) return null;
           return (
             <div className="flex items-center justify-end gap-1.5 pt-1">
