@@ -1,9 +1,32 @@
 ---
 name: insured-snapshot-dedupe
-description: Owns the full contract for keeping `cars.extraAttributes.insuredSnapshot` free of duplicate keys that describe the same logical field but differ only in casing (`insured__ciNumber` vs `insured__cinumber`) or underscore style (`insured__category` vs `insured_category`). Covers the `dedupeInsuredSnapshot` helper at `lib/policies/insured-snapshot-dedupe.ts`, the three defensive layers in the policy wizard, the audit-log symptom (every duplicate appears as "changed from null"), and the one-time cleanup script. Use when editing `app/(dashboard)/dashboard/flows/[flow]/new/page.tsx` (especially `fillFormFromClient`, `fillFormFromRecord`, `saveClientChanges`, `doSubmit`), the policy PATCH route at `app/api/policies/[id]/route.ts`, any code that builds an `insured: {...}` payload, or when debugging "I edited a policy but didn't change insured data, why does the audit say insured changed?".
+description: Owns the full contract for keeping the policy audit log honest — both (a) duplicate keys in `cars.extraAttributes.insuredSnapshot` / `packagesSnapshot.{insured,contactinfo}.values` that differ only in casing (`insured__ciNumber` vs `insured__cinumber`) or underscore style (`insured__category` vs `insured_category`), and (b) type-coercion noise where the wizard re-saves a boolean / numeric field whose JS type changed between versions (string `"true"` vs boolean `true`, string `"123"` vs number `123`). Covers the `dedupeInsuredSnapshot` helper at `lib/policies/insured-snapshot-dedupe.ts`, the server's `normalizeForCompare` audit comparator inside `app/api/policies/[id]/route.ts`, the three defensive client layers in the wizard, and the three one-time cleanup scripts. Use when editing `app/(dashboard)/dashboard/flows/[flow]/new/page.tsx` (especially `fillFormFromClient`, `fillFormFromRecord`, `saveClientChanges`, `doSubmit`), the policy PATCH route, any code that builds an `insured: {...}` or `packagesSnapshot` payload, the audit-log diff comparator, or when debugging "I edited a policy but the audit log shows insured / boolean / numeric fields changed when I didn't touch them" or "the yellow recent-changes highlight in PolicySnapshotView is lit up on fields I didn't edit".
 ---
 
-# Preventing duplicate keys in `insuredSnapshot`
+# Keeping the policy audit log honest
+
+Two distinct classes of false "this changed" entries are owned by
+this skill. They share a single symptom — the user re-saves a
+policy, the audit log records changes the user didn't make, and the
+"Recent changes in the last 7 days are highlighted in yellow"
+banner lights up the policy details drawer:
+
+1. **Duplicate-key noise** (§1–§3) — `insuredSnapshot` /
+   `packagesSnapshot` accumulating both `insured__ciNumber` and
+   `insured__cinumber` (or `insured__category` and
+   `insured_category`). Each save persists both, the audit logs the
+   "addition" of the clone as `null → value`.
+
+2. **Type-coercion noise** (§3a) — the wizard re-saves a field
+   whose JS type drifted between versions: string `"true"` becomes
+   boolean `true`, or string `"2019"` becomes number `2019`. The
+   value is semantically identical, but the old comparator did
+   naive `JSON.stringify` and logged it as a change.
+
+Both classes are fixed in code AND scrubbed from existing rows via
+one-time scripts. The skill below covers both end-to-end.
+
+## Preventing duplicate keys in `insuredSnapshot`
 
 A policy's insured data lives at
 `cars.extraAttributes.insuredSnapshot` as a flat object whose keys
@@ -316,8 +339,10 @@ remove real ones).
 | Pre-populating the wizard from an existing record/client | Only set normalised key variants if they are **already registered** in `form.getValues()` | Unconditionally `setVal("insured__" + lower(tail), v)` — that's exactly what created the bug |
 | Detecting whether two keys are "the same" insured field | `norm(k) = k.toLowerCase().replace(/^(insured|contactinfo)_{1,2}/, "").replace(/_/g, "")` | Compare with `===` or with prefix-only stripping |
 | Picking which of two duplicate keys to keep | `__` beats `_`, then non-lowercase beats all-lowercase | Pick whichever comes first alphabetically — that loses the canonical CamelCase form |
-| Cleaning up legacy rows | `scripts/cleanup-insured-snapshot-dupes.ts --apply` | Hand-edit `cars.extra_attributes` SQL — easy to drop a real field by mistake |
+| Cleaning up legacy rows | `scripts/cleanup-insured-snapshot-dupes.ts --apply` then `scripts/cleanup-packages-snapshot-dupes.cjs --apply` then `scripts/cleanup-false-coercion-audits.cjs --apply` | Hand-edit `cars.extra_attributes` SQL — easy to drop a real field by mistake |
 | Removing duplicates inline in a new code path | `import { dedupeInsuredSnapshot } from "@/lib/policies/insured-snapshot-dedupe"` | Re-implement the normalisation rules — they must stay in lock-step with the cleanup script |
+| Audit shows a field as "changed" when the user typed nothing — `from="true" to=true` etc. | Make sure `normalizeForCompare` in `app/api/policies/[id]/route.ts` collapses the equivalence (see §3a). Then run `scripts/cleanup-false-coercion-audits.cjs --apply` to scrub historic entries. | Patch the symptom in `PolicySnapshotView.tsx` by hiding specific keys from the yellow highlight — that's cosmetic only and leaves the audit log lying |
+| Adding a new equivalence to `normalizeForCompare` | Update BOTH the route function AND `scripts/cleanup-false-coercion-audits.cjs`'s mirror of it in the same PR | Update only one — the script will silently drift and miss (or over-prune) entries |
 
 ---
 
@@ -327,8 +352,11 @@ remove real ones).
 |---|---|
 | `lib/policies/insured-snapshot-dedupe.ts` | Source of truth for `dedupeInsuredSnapshot` and `findDuplicateInsuredKeys`. **Do not duplicate** in other files. |
 | `app/(dashboard)/dashboard/flows/[flow]/new/page.tsx` | `fillFormFromRecord`, `fillFormFromClient`, `saveClientChanges`, `doSubmit` — all four read or call dedupe |
-| `app/api/policies/[id]/route.ts` | PATCH handler — full-replaces `insuredSnapshot` with whatever the client sent. Audit log writes here. |
-| `scripts/cleanup-insured-snapshot-dupes.ts` | One-time data migration. Safe to re-run; idempotent. |
+| `app/api/policies/[id]/route.ts` | PATCH handler — full-replaces `insuredSnapshot` with whatever the client sent. Audit log writes here. Hosts `normalizeForCompare` (see §3a). |
+| `scripts/cleanup-insured-snapshot-dupes.ts` | One-time data migration. Cleans `insuredSnapshot` duplicates. Idempotent. |
+| `scripts/cleanup-packages-snapshot-dupes.cjs` | One-time data migration. Cleans `packagesSnapshot.{insured,contactinfo}.values` duplicates + prunes false `null → value` audit entries. Idempotent. |
+| `scripts/cleanup-false-coercion-audits.cjs` | One-time data migration. Mirrors `normalizeForCompare` to drop audit entries where `from` ≡ `to` semantically (string `"true"` ≡ boolean `true`, etc.). Idempotent. **Must stay in lock-step with §3a.** |
+| `components/policies/PolicySnapshotView.tsx` | Computes `recentKeys` from `_audit[].changes[].key`. Drives the yellow "recent changes" highlight — every false audit entry shows up here. Don't filter symptoms here; fix the audit upstream. |
 
 The PATCH route does NOT call `dedupeInsuredSnapshot` itself. The
 contract is: the client (the wizard) sends a clean payload. If a
@@ -350,38 +378,79 @@ hitting PATCH, or the issue will return.
 |---|---|
 | Audit shows `insured__cinumber: null → "X"` (lowercase clone of a CamelCase key) **and** the user swears they only clicked "Save" | `fillFormFromRecord` (Layer 2) regression OR a save path bypassing `dedupeInsuredSnapshot` (Layer 3) |
 | Audit shows BOTH `insured__category` and `insured_category` flipping from null | `fillFormFromClient` (Layer 2) regression — single-underscore clone written without checking the form key registry |
+| Audit shows `driver__moreDriver: "true" → true` (or similar `string ↔ boolean` / `string ↔ number`) after a save where the user didn't change that field | `normalizeForCompare` (§3a) is missing an equivalence case OR the equivalence was added but historic audit entries haven't been cleaned — run `scripts/cleanup-false-coercion-audits.cjs --apply` |
+| Yellow "recent changes" highlight in `PolicySnapshotView` is lit up on fields the user never touched | The `recentKeys` set is built from `_audit[].changes[].key`. ANY false audit entry — duplicate-key OR type-coercion — lights up its key. Fix the audit log, don't filter the highlight. |
 | Same value appears twice in `PolicySnapshotView` (e.g. CI Number row shown twice) | Layer 1 (`dedupeInsuredSnapshot`) is not running on display path — that's intentional; only the persistence path dedupes. View should call dedupe too, or rely on cleanup script having run. |
-| `_audit` has dozens of "changes" for a record after one save | Likely from BEFORE the fix; rerun `scripts/cleanup-insured-snapshot-dupes.ts --apply` to confirm no new dupes are being created |
+| `_audit` has dozens of "changes" for a record after one save | Likely from BEFORE the fix; rerun all three cleanup scripts to scrub historic noise and confirm no new noise is being created |
 
 ---
 
 ## 7. Verification recipe
 
-After any change to the four files in §5, run this in one go:
+After any change to the files in §5, run this in one go.
+
+The checks below distinguish the **dedupe normalisation rule** (full
+form: lowercase → strip `insured|contactinfo` prefix → remove ALL
+underscores) from **read-side prefix stripping** (just removes the
+prefix for lookup/display — used legitimately in many places). Only
+the former is the source-of-truth check; the latter is fine and even
+encouraged (see §8).
 
 ```bash
-# 1. Static check: helper is the only place that knows the normalisation rule
-rg "replace\(\/\^\(insured\|contactinfo\)" --type ts
-#    Expected: exactly ONE match, in lib/policies/insured-snapshot-dedupe.ts
+# 1. Static check: dedupe RULE signature exists only in the helper
+#    and its one allowed mirror in the cleanup script.
+#    The signature is the distinctive `_{1,2}` quantifier (the prefix
+#    eats either single OR double underscore in one shot — that's what
+#    makes `insured_X` and `insured__X` collapse). No other file in
+#    the codebase has a reason to use that quantifier on this prefix.
+rg "replace\(\/\^\(insured\|contactinfo\)_\{1,2\}"
+#    Expected: exactly TWO non-skill matches:
+#      - lib/policies/insured-snapshot-dedupe.ts (source of truth)
+#      - scripts/cleanup-packages-snapshot-dupes.cjs (the legitimate mirror)
+#    (The SKILL file itself will also match — that's documentation,
+#    fine. Anything else → re-implementation; consolidate.)
 
-# 2. Static check: no caller defines its own dedupe map
-rg "function dedupeInsuredSnapshot" --type ts
-#    Expected: exactly ONE match, in the helper file
+# 2. Static check: dedupe function definition exists only in the
+#    helper (TS source-of-truth) and the one allowed mirror in the
+#    cleanup script.
+rg "function dedupeInsuredSnapshot"
+#    Expected: exactly TWO non-skill matches:
+#      - lib/policies/insured-snapshot-dedupe.ts (the EXPORTED definition)
+#      - scripts/cleanup-packages-snapshot-dupes.cjs (inlined, no import)
+#    A third match means a caller wrote its own copy — replace it
+#    with `import { dedupeInsuredSnapshot } from "@/lib/policies/insured-snapshot-dedupe"`.
 
-# 3. DB check: dry-run reports zero duplicates
+# 3. Static check: normalizeForCompare lives in exactly the route + the
+#    coercion cleanup script.
+rg "normalizeForCompare\b"
+#    Expected: TWO matches across all file types:
+#      - app/api/policies/[id]/route.ts (source of truth, PATCH handler)
+#      - scripts/cleanup-false-coercion-audits.cjs (the legitimate mirror)
+#    The two implementations MUST be byte-for-byte equivalent for the
+#    rules they share. If you just edited either side, eyeball the diff.
+
+# 4. DB check: each cleanup script's dry-run reports zero rows to update
 npx tsx scripts/cleanup-insured-snapshot-dupes.ts
-#    Expected: "Rows with duplicate keys: 0"
+node    scripts/cleanup-packages-snapshot-dupes.cjs
+node    scripts/cleanup-false-coercion-audits.cjs
+#    Expected: each prints "Cars affected: 0" (or equivalent).
+#    If a script reports >0 in a steady-state codebase, EITHER the
+#    rule has drifted, OR a new save path bypassed the dedupe layer.
 
-# 4. Smoke test in the UI
+# 5. Smoke test in the UI
 # - Open any policy via /dashboard/flows/<flow>?open=<id>
-# - In the wizard, click "Save" without typing anything
-# - Open the audit log; the new entry should have 0 changes
-#   (NOT "insured__cinumber: null → ...")
+# - In the wizard, click "Save" / "Update" without typing anything
+# - Re-open the audit drawer; the new entry should have 0 changes
+#   (NOT "insured__cinumber: null → ...", NOT "driver__moreDriver: \"true\" → true")
+# - The "Recent changes in the last 7 days are highlighted in yellow"
+#   banner on the policy details drawer should NOT light up any new fields.
 ```
 
-If step 1 or 2 returns more than one match, someone has re-implemented
-the normalisation rule — consolidate it back into the helper before
-shipping.
+If step 1, 2, or 3 returns the wrong count, someone has re-implemented
+the rule — consolidate it back into the single source of truth before
+shipping. If step 3's two `normalizeForCompare` impls have diverged,
+they MUST be brought back in lock-step (the script will silently miss
+or over-prune entries otherwise).
 
 ---
 
