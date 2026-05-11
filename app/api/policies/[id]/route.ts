@@ -649,8 +649,29 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
     }
 
     const changes: { key: string; from: unknown; to: unknown }[] = [];
+    // Audit-diff comparator: coerces values that are SEMANTICALLY equal
+    // but stored in different JS shapes (string "true" vs boolean true,
+    // string "123" vs number 123, etc.) to the same canonical form so
+    // they don't show up as phantom "changes" in the audit log every
+    // time the wizard re-saves a record. This was a major source of
+    // user complaints — the policy detail panel highlights "recent
+    // changes" yellow, and every save was creating spurious yellow
+    // highlights for boolean fields whose UI control changed between
+    // versions (e.g. checkbox value="true" → radio with `setValueAs`
+    // coercing to a real boolean).
     const normalizeForCompare = (v: unknown): string => {
       if (v === null || v === undefined || v === "") return JSON.stringify(null);
+      // String/boolean equivalents: "true" === true, "false" === false
+      if (v === true || v === "true") return JSON.stringify(true);
+      if (v === false || v === "false") return JSON.stringify(false);
+      // String/number equivalents (only when the string is a clean numeric
+      // literal — preserve e.g. "08" leading-zero strings as DIFFERENT
+      // from 8, since the leading zero is semantically meaningful in
+      // policy / flat / floor numbers).
+      if (typeof v === "string" && v !== "" && /^-?\d+(\.\d+)?$/.test(v) && !/^-?0\d/.test(v)) {
+        const n = Number(v);
+        if (Number.isFinite(n) && String(n) === v) return JSON.stringify(n);
+      }
       return JSON.stringify(v);
     };
     const flattenPkg = (pkgs: Record<string, unknown>): Record<string, unknown> => {

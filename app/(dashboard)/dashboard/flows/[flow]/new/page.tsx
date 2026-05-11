@@ -1507,6 +1507,19 @@ export default function FlowNewPage() {
       Object.keys(insuredSnapshot).forEach(k => delete insuredSnapshot[k]);
       Object.assign(insuredSnapshot, deduped);
 
+      // Same dedupe MUST also run on packagesPayload's insured/contactinfo
+      // packages — otherwise the wizard's lowercase-variant pollution leaks
+      // into packagesSnapshot and the server's audit diff sees those
+      // lowercase keys as "added from null", producing false "insured data
+      // changed" entries on every save. See `.cursor/skills/insured-snapshot-dedupe`.
+      for (const pkgName of ["insured", "contactinfo"] as const) {
+        const pkg = packagesPayload[pkgName];
+        if (!pkg || !pkg.values) continue;
+        const dedupedPkgValues = dedupeInsuredSnapshot(pkg.values);
+        Object.keys(pkg.values).forEach(k => delete pkg.values[k]);
+        Object.assign(pkg.values, dedupedPkgValues);
+      }
+
       const selectedAgentId = Number(values._agentId);
       const agentIdPayload = Number.isFinite(selectedAgentId) && selectedAgentId > 0
         ? { policy: { agentId: selectedAgentId } }
