@@ -296,6 +296,25 @@ function openPolicyHref(row: ExpiringRow): string {
   return `${base}?policyId=${row.policyId}`;
 }
 
+// ── Persistent settings ────────────────────────────────────────────────────
+// Defined OUTSIDE the component so the constant is never recreated and,
+// critically, so `loadSettings` cannot accidentally run on the server during
+// SSR. In Next.js, client-component `useState(initialiserFn)` calls the
+// initialiser during the *server-side* render too — `localStorage` doesn't
+// exist there, the try/catch catches the ReferenceError, and React reuses
+// the empty-defaults state during hydration without ever re-running the
+// initialiser on the client. The fix is to start with plain defaults and
+// hydrate from localStorage inside a `useEffect` that only runs client-side.
+const SETTINGS_KEY = "policy-calendar-settings-v1";
+
+type CalendarSettings = {
+  hiddenStatuses: string[];
+  visibleFields: string[];
+};
+
+const DEFAULT_SETTINGS: CalendarSettings = { hiddenStatuses: [], visibleFields: [] };
+// ──────────────────────────────────────────────────────────────────────────
+
 export function PolicyExpiryCalendar({
   lookbackDays = 90,
   lookaheadDays = 540,
@@ -341,23 +360,22 @@ export function PolicyExpiryCalendar({
   // user toggles checkboxes against `draftSettings` (purely local to
   // the open panel); only Save copies it onto `settings` AND
   // persists to localStorage. Cancel discards the draft.
+  //
+  // IMPORTANT: we start with DEFAULT_SETTINGS and hydrate from
+  // localStorage inside a useEffect. Do NOT use localStorage inside
+  // useState() — it runs on the server during SSR and the value is
+  // silently discarded during hydration (Next.js client-component
+  // behaviour). See the module-level comment above for details.
 
-  const SETTINGS_KEY = "policy-calendar-settings-v1";
+  const [settings, setSettings] = React.useState<CalendarSettings>(DEFAULT_SETTINGS);
 
-  type CalendarSettings = {
-    hiddenStatuses: string[];
-    visibleFields: string[];
-  };
-
-  const loadSettings = (): CalendarSettings => {
+  // Load from localStorage once after the component mounts on the client.
+  React.useEffect(() => {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY);
-      if (raw) return JSON.parse(raw) as CalendarSettings;
+      if (raw) setSettings(JSON.parse(raw) as CalendarSettings);
     } catch { /* ignore */ }
-    return { hiddenStatuses: [], visibleFields: [] };
-  };
-
-  const [settings, setSettings] = React.useState<CalendarSettings>(loadSettings);
+  }, []);
 
   // Draft state, edited inside the open panel. Reset to `settings`
   // every time the panel opens so a previous Cancel doesn't leak.
