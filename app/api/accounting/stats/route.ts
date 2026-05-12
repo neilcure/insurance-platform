@@ -2,67 +2,196 @@ import { NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { accountingInvoices, accountingPayments } from "@/db/schema/accounting";
 import { memberships } from "@/db/schema/core";
-import { eq, ne, sql, and, inArray } from "drizzle-orm";
+import { eq, sql, and, inArray, type SQL } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Accounting dashboard stats.
+ *
+ * Each metric is computed so the SAME accounting record is never counted
+ * twice across its lifecycle (quotation → invoice → debit note → receipt
+ * are ONE row in `accounting_invoices`; only `invoice_number` rotates).
+ *
+ * Direction is split — receivable (money in) and payable (money out)
+ * are separate concerns and never share a card.
+ *
+ * Statement-bundled individuals (`status = 'statement_created'`) are
+ * EXCLUDED from the per-row computation, because their `paid_amount_cents`
+ * stays at 0 while the parent statement holds the truth. The parent
+ * statement row is included instead, so each contribution is counted
+ * exactly once.
+ *
+ * Per-row paid amounts are CAPPED at the row's total to prevent overpaid
+ * rows from inflating the "Collected" or deflating the "Outstanding"
+ * number. Overpayments are surfaced separately as `overpaidCents` so the
+ * data integrity issue is visible instead of silently distorting totals.
+ */
 export async function GET() {
   try {
     const user = await requireUser();
 
-    const conditions: ReturnType<typeof eq>[] = [];
+    // Admin-like users see tenant-wide totals; everyone else is scoped
+    // to their org memberships. Mirrors `lib/auth/active-org.ts` `isAdminLike`
+    // plus `accounting` (which the field-visibility-roles skill places in
+    // the same elevated bucket — see SKILL §2 "sees everything").
+    const isAdminLike =
+      user.userType === "admin" ||
+      user.userType === "internal_staff" ||
+      user.userType === "accounting";
 
-    if (!(user.userType === "admin" || user.userType === "internal_staff" || user.userType === "accounting")) {
+    const orgConditions: SQL[] = [];
+    if (!isAdminLike) {
       const userMemberships = await db
         .select({ orgId: memberships.organisationId })
         .from(memberships)
         .where(eq(memberships.userId, Number(user.id)));
       const orgIds = userMemberships.map((m) => m.orgId);
       if (orgIds.length === 0) {
-        return NextResponse.json({
-          pendingVerification: 0, overdue: 0,
-          totalReceivableCents: 0, totalPaidCents: 0, totalOutstandingCents: 0,
-          pendingPaymentCount: 0, invoicesByStatus: {},
-        });
+        return NextResponse.json(emptyStats());
       }
-      conditions.push(inArray(accountingInvoices.organisationId, orgIds));
+      orgConditions.push(inArray(accountingInvoices.organisationId, orgIds));
     }
 
-    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    // Status buckets we explicitly drop from money totals — they don't
+    // represent open obligations or completed cash flow.
+    const closedStatuses = sql`('cancelled', 'refunded')`;
 
-    const [pendingResult, overdueResult, receivableSummary, pendingPayments, statusCounts] = await Promise.all([
-      db.select({ count: sql<number>`count(*)::int` })
+    // Receivable summary — combine "individuals not bundled into a
+    // statement" with "statement parents", so every contribution is
+    // counted exactly once and the lifecycle (quotation → debit note →
+    // receipt) collapses into the one underlying row.
+    const receivableConditions = [
+      eq(accountingInvoices.direction, "receivable"),
+      sql`${accountingInvoices.status} NOT IN ${closedStatuses}`,
+      // Bundled individuals: their `paid_amount_cents` stays at 0 while
+      // the parent statement carries the money. Excluding here +
+      // including the statement parent below avoids double-count.
+      sql`NOT (${accountingInvoices.invoiceType} = 'individual' AND ${accountingInvoices.status} = 'statement_created')`,
+      // Credit notes flow through their own card so they never
+      // negate or inflate the regular receivable cards.
+      sql`${accountingInvoices.invoiceType} <> 'credit_note'`,
+      ...orgConditions,
+    ];
+
+    // Payable summary — same shape as receivable, mirrored for the
+    // money-out side (agent commission, refunds payable).
+    const payableConditions = [
+      eq(accountingInvoices.direction, "payable"),
+      sql`${accountingInvoices.status} NOT IN ${closedStatuses}`,
+      sql`NOT (${accountingInvoices.invoiceType} = 'individual' AND ${accountingInvoices.status} = 'statement_created')`,
+      sql`${accountingInvoices.invoiceType} <> 'credit_note'`,
+      ...orgConditions,
+    ];
+
+    // Credit notes (refunds owed back to client) — surfaced as their own
+    // card so the user can see "money we owe back" without it
+    // distorting receivable totals.
+    const creditNoteConditions = [
+      eq(accountingInvoices.invoiceType, "credit_note"),
+      sql`${accountingInvoices.status} NOT IN ${closedStatuses}`,
+      ...orgConditions,
+    ];
+
+    // SUM(LEAST(paid, total)) caps overpayments so they don't inflate
+    // collected. SUM(GREATEST(total - paid, 0)) clamps outstanding to
+    // non-negative so an overpaid row can't silently offset a different
+    // row's real outstanding.
+    //
+    // The "overpaid" flag intentionally EXCLUDES rows where the client
+    // paid admin directly. Per `.cursor/rules/insurance-platform-architecture.mdc`
+    // "Payment paths (who pays admin)": when the client pays directly,
+    // the receivable's total is `agentPremium` (net) and the payment
+    // amount is `clientPremium` (full), so paid > total is BY DESIGN.
+    // The architecture explicitly says "NEVER use invoice `entityType`
+    // to determine who made a payment — use `accounting_payments.payer`",
+    // which is what the NOT EXISTS subquery checks. Rejected/submitted
+    // payments don't count — only verified/confirmed/recorded ones —
+    // mirroring `accounting/invoices` row-level warning logic.
+    const overpaidExcludingClientDirect = sql<number>`coalesce(sum(
+      case
+        when exists (
+          select 1 from accounting_payments ap
+          where ap.invoice_id = ${accountingInvoices.id}
+            and ap.payer = 'client'
+            and ap.status in ('verified', 'confirmed', 'recorded')
+        ) then 0
+        else greatest(${accountingInvoices.paidAmountCents} - ${accountingInvoices.totalAmountCents}, 0)
+      end
+    ), 0)::int`;
+
+    const moneyAggregates = {
+      billed: sql<number>`coalesce(sum(${accountingInvoices.totalAmountCents}), 0)::int`,
+      collected: sql<number>`coalesce(sum(LEAST(${accountingInvoices.paidAmountCents}, ${accountingInvoices.totalAmountCents})), 0)::int`,
+      outstanding: sql<number>`coalesce(sum(GREATEST(${accountingInvoices.totalAmountCents} - ${accountingInvoices.paidAmountCents}, 0)), 0)::int`,
+      overpaid: overpaidExcludingClientDirect,
+      count: sql<number>`count(*)::int`,
+    };
+
+    const [
+      receivableRows,
+      payableRows,
+      creditNoteRows,
+      pendingPayments,
+      submittedInvoices,
+      overdueInvoices,
+      statusCounts,
+    ] = await Promise.all([
+      db
+        .select(moneyAggregates)
         .from(accountingInvoices)
-        .where(and(eq(accountingInvoices.status, "submitted"), ...(conditions.length > 0 ? conditions : []))),
+        .where(and(...receivableConditions)),
 
-      db.select({ count: sql<number>`count(*)::int` })
+      db
+        .select(moneyAggregates)
         .from(accountingInvoices)
-        .where(and(eq(accountingInvoices.status, "overdue"), ...(conditions.length > 0 ? conditions : []))),
+        .where(and(...payableConditions)),
 
-      db.select({
-        totalAmount: sql<number>`coalesce(sum(${accountingInvoices.totalAmountCents}), 0)::int`,
-        totalPaid: sql<number>`coalesce(sum(${accountingInvoices.paidAmountCents}), 0)::int`,
-        count: sql<number>`count(*)::int`,
-      })
+      db
+        .select(moneyAggregates)
         .from(accountingInvoices)
-        .where(and(
-          eq(accountingInvoices.direction, "receivable"),
-          ne(accountingInvoices.invoiceType, "statement"),
-          ...(conditions.length > 0 ? conditions : []),
-        )),
+        .where(and(...creditNoteConditions)),
 
-      db.select({ count: sql<number>`count(*)::int` })
+      // Pending payments — JOIN to invoices so we can scope by org and
+      // exclude payments on cancelled/refunded invoices (which the user
+      // can't action from this page anyway).
+      db
+        .select({ count: sql<number>`count(*)::int` })
         .from(accountingPayments)
-        .where(eq(accountingPayments.status, "submitted")),
+        .innerJoin(
+          accountingInvoices,
+          eq(accountingInvoices.id, accountingPayments.invoiceId),
+        )
+        .where(
+          and(
+            eq(accountingPayments.status, "submitted"),
+            sql`${accountingInvoices.status} NOT IN ${closedStatuses}`,
+            ...orgConditions,
+          ),
+        ),
 
-      db.select({
-        status: accountingInvoices.status,
-        count: sql<number>`count(*)::int`,
-        totalCents: sql<number>`coalesce(sum(${accountingInvoices.totalAmountCents}), 0)::int`,
-      })
+      db
+        .select({ count: sql<number>`count(*)::int` })
         .from(accountingInvoices)
-        .where(whereClause)
+        .where(and(eq(accountingInvoices.status, "submitted"), ...orgConditions)),
+
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(accountingInvoices)
+        .where(and(eq(accountingInvoices.status, "overdue"), ...orgConditions)),
+
+      // Status counts cover the full picture (including statement_created
+      // and credit_note) since this map is informational, not used in
+      // the headline money math.
+      db
+        .select({
+          status: accountingInvoices.status,
+          count: sql<number>`count(*)::int`,
+          totalCents: sql<number>`coalesce(sum(${accountingInvoices.totalAmountCents}), 0)::int`,
+        })
+        .from(accountingInvoices)
+        .where(orgConditions.length > 0 ? and(...orgConditions) : undefined)
         .groupBy(accountingInvoices.status),
     ]);
 
@@ -71,24 +200,67 @@ export async function GET() {
       invoicesByStatus[row.status] = { count: row.count, totalCents: row.totalCents };
     }
 
-    const receivable = receivableSummary[0];
+    const receivable = receivableRows[0] ?? zeroMoney();
+    const payable = payableRows[0] ?? zeroMoney();
+    const creditNote = creditNoteRows[0] ?? zeroMoney();
 
     return NextResponse.json({
-      pendingVerification: pendingResult[0]?.count ?? 0,
-      overdue: overdueResult[0]?.count ?? 0,
-      totalReceivableCents: receivable?.totalAmount ?? 0,
-      totalPaidCents: receivable?.totalPaid ?? 0,
-      totalOutstandingCents: (receivable?.totalAmount ?? 0) - (receivable?.totalPaid ?? 0),
-      receivableCount: receivable?.count ?? 0,
+      receivable: {
+        billedCents: receivable.billed,
+        collectedCents: receivable.collected,
+        outstandingCents: receivable.outstanding,
+        overpaidCents: receivable.overpaid,
+        recordCount: receivable.count,
+      },
+      payable: {
+        billedCents: payable.billed,
+        collectedCents: payable.collected,
+        outstandingCents: payable.outstanding,
+        overpaidCents: payable.overpaid,
+        recordCount: payable.count,
+      },
+      creditNote: {
+        billedCents: creditNote.billed,
+        collectedCents: creditNote.collected,
+        outstandingCents: creditNote.outstanding,
+        recordCount: creditNote.count,
+      },
       pendingPaymentCount: pendingPayments[0]?.count ?? 0,
+      pendingVerification: submittedInvoices[0]?.count ?? 0,
+      overdue: overdueInvoices[0]?.count ?? 0,
       invoicesByStatus,
+
+      // Legacy fields kept for callers that haven't migrated. These
+      // mirror the new receivable bucket so existing UI isn't broken
+      // mid-migration. New code should read from `receivable.*`.
+      totalReceivableCents: receivable.billed,
+      totalPaidCents: receivable.collected,
+      totalOutstandingCents: receivable.outstanding,
+      receivableCount: receivable.count,
     });
   } catch (err) {
     console.error("GET /api/accounting/stats error:", err);
-    return NextResponse.json({
-      pendingVerification: 0, overdue: 0,
-      totalReceivableCents: 0, totalPaidCents: 0, totalOutstandingCents: 0,
-      pendingPaymentCount: 0, invoicesByStatus: {},
-    });
+    return NextResponse.json(emptyStats());
   }
+}
+
+function zeroMoney() {
+  return { billed: 0, collected: 0, outstanding: 0, overpaid: 0, count: 0 };
+}
+
+function emptyStats() {
+  const zero = { billedCents: 0, collectedCents: 0, outstandingCents: 0, overpaidCents: 0, recordCount: 0 };
+  return {
+    receivable: zero,
+    payable: zero,
+    creditNote: { billedCents: 0, collectedCents: 0, outstandingCents: 0, recordCount: 0 },
+    pendingPaymentCount: 0,
+    pendingVerification: 0,
+    overdue: 0,
+    invoicesByStatus: {},
+    totalReceivableCents: 0,
+    totalPaidCents: 0,
+    totalOutstandingCents: 0,
+    receivableCount: 0,
+  };
 }
