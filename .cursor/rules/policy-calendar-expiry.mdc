@@ -1,0 +1,42 @@
+# Policy Calendar — Expiry & Overdue Logic
+
+The dashboard Policy Calendar has a precise contract for what counts
+as **overdue**, **in progress**, and **expired** (renewal due). The
+full contract — including the two canonical scenarios, the status
+boundary sets, the day-before threshold, and the date extraction
+strategy — lives in the skill.
+
+If your task touches **any** of the following, STOP and read
+[`.cursor/skills/policy-calendar-expiry/SKILL.md`](mdc:.cursor/skills/policy-calendar-expiry/SKILL.md)
+**before** writing code:
+
+- Editing `app/api/policies/expiring/route.ts`
+  (`TERMINAL_STATUSES`, `isIncompleteStatus`, `extractDateField`,
+  the window filter, `daysFromToday`, `extraFields` population)
+- Editing `components/dashboard/policy-expiry-calendar.tsx`
+  (`EARLY_STAGE_STATUSES`, `BUCKET_DEFS`, `bucketForRow`,
+  bucket labels, the relative badge, the settings panel)
+- Editing `lib/pdf/synthetic-fields.ts`
+  (shared Display Name / Primary ID / Full Address catalog)
+- Adding a new `policy_statuses` value to `form_options`
+  that should change how the calendar buckets a policy
+- Diagnosing "policy shows in wrong bucket" / "overdue badge
+  missing" / "completed policy not on calendar" / "invoice-sent
+  policy shows as overdue"
+
+## The 30-second cheatsheet
+
+| Scenario | Condition | Bucket |
+|---|---|---|
+| Quotation Prepared/Sent, start date tomorrow or past | `EARLY_STAGE_STATUSES` + `daysFromToday <= 1` | **Overdue** (red) |
+| Any other incomplete status | everything else `kind = incomplete` | **In Progress** (blue, no badge) |
+| Issued / completed policy, past end date | `TERMINAL_STATUSES` + `daysFromToday <= 0` | **Expired** (orange) |
+| Issued / completed policy, end date upcoming | `TERMINAL_STATUSES` + `daysFromToday > 0` | This week / month / later |
+
+## Adding a new status
+
+1. Terminal (fully closed)? → add to `TERMINAL_STATUSES` in `route.ts`.
+2. Early stage (quotation-level)? → add to `EARLY_STAGE_STATUSES` in `policy-expiry-calendar.tsx`.
+3. Mid-workflow (invoice, payment)? → add nothing; auto-routes to **In Progress**.
+
+Update the skill table whenever the sets change.

@@ -9,7 +9,8 @@ import { db } from "@/db/client";
 import { memberships, organisations, users } from "@/db/schema/core";
 import { eq } from "drizzle-orm";
 import { LocalUpdatedBadge } from "@/components/LocalUpdatedBadge";
-import { GitBranch } from "lucide-react";
+import { FilePlus2 } from "lucide-react";
+import { PolicyExpiryCalendar } from "@/components/dashboard/policy-expiry-calendar";
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
@@ -59,17 +60,27 @@ export default async function DashboardPage() {
   const isAdmin = user?.userType === "admin";
 
   return (
-    <main className="mx-auto max-w-5xl">
-      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    /*
+      Dashboard layout
+      ----------------
+      The page header + Welcome card are preserved as the user's
+      profile / sign-in / account-status surface. The big calendar
+      below is the work-focused centrepiece — it deliberately
+      stretches to the full available width inside `<SidebarInset>`
+      (the layout already adds `p-3 sm:p-6` padding around children),
+      so we DON'T constrain `<main>` with a `max-w-*`. The Welcome
+      card naturally fills the same width — both surfaces stay
+      aligned and the calendar dominates the visible viewport.
+    */
+    <main className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Dashboard</h1>
-        {isAdmin && (
-          <Button asChild size="sm" title="Create Flow">
-            <Link href="/admin/policy-settings/flows?create=1">
-              <GitBranch className="h-4 w-4 shrink-0 sm:hidden lg:inline" />
-              <span className="hidden sm:inline">Create Flow</span>
-            </Link>
-          </Button>
-        )}
+        <Button asChild size="sm">
+          <Link href="/policies/new">
+            <FilePlus2 className="h-4 w-4 shrink-0 sm:hidden lg:inline" />
+            <span className="hidden sm:inline">Create Policy</span>
+          </Link>
+        </Button>
       </div>
       <Card>
         <CardHeader>
@@ -87,6 +98,17 @@ export default async function DashboardPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/*
+        Policy renewals widget — shows a full-width month calendar
+        plus a grouped list of upcoming and overdue expiries. The
+        calendar always renders, even when there are no expiring
+        policies in the window. Visibility is RBAC-scoped inside
+        `/api/policies/expiring`, so admins see all org policies,
+        agents see their assignments, and direct_clients see only
+        their own.
+      */}
+      <PolicyExpiryCalendar userType={user?.userType} />
     </main>
   );
 }
