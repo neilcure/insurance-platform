@@ -435,6 +435,9 @@ export function PolicyExpiryCalendar({
   // we don't keep yanking the user back to the data month every time
   // they paginate to a different month.
   const autoNavigatedRef = React.useRef<boolean>(false);
+  // "Show all months" toggle — when true the list is unfiltered by month
+  // so the user can see the full 17-policy dataset without paging.
+  const [showAllMonths, setShowAllMonths] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -750,16 +753,17 @@ export function PolicyExpiryCalendar({
         statusFilter.has((r.status ?? "").trim() || "quotation_prepared"),
       );
     }
-    // Narrow to the day or month the user is looking at.
+    // Narrow to the day or month the user is looking at, unless
+    // "Show all months" is active.
     if (selectedDay) {
       filtered = filtered.filter((r) =>
         isSameLocalDay(new Date(r.date), selectedDay),
       );
-    } else {
+    } else if (!showAllMonths) {
       filtered = filtered.filter((r) => isInActiveMonth(r.date));
     }
     return filtered;
-  }, [rows, selectedDay, isInActiveMonth, statusFilter, settings.hiddenStatuses]);
+  }, [rows, selectedDay, isInActiveMonth, statusFilter, settings.hiddenStatuses, showAllMonths]);
 
   const visibleBuckets = React.useMemo(() => {
     const grouped: Record<BucketKey, ExpiringRow[]> = {
@@ -774,7 +778,7 @@ export function PolicyExpiryCalendar({
     return BUCKET_DEFS.map((def) => ({ ...def, rows: grouped[def.key] }));
   }, [visibleRows]);
 
-  const monthDisplay = activeMonth.toLocaleDateString(undefined, {
+  const monthDisplay = activeMonth.toLocaleDateString("en-US", {
     month: "long",
     year: "numeric",
   });
@@ -1190,6 +1194,13 @@ export function PolicyExpiryCalendar({
                     );
                   },
                 }}
+                formatters={{
+                  formatCaption: (date) =>
+                    date.toLocaleDateString("en-US", {
+                      month: "long",
+                      year: "numeric",
+                    }),
+                }}
                 className="mx-auto p-2 sm:p-4"
                 classNames={{
                   months: "flex flex-col items-center gap-4",
@@ -1312,13 +1323,18 @@ export function PolicyExpiryCalendar({
                       Showing {visibleRows.length} polic
                       {visibleRows.length === 1 ? "y" : "ies"} on{" "}
                       <span className="font-medium text-neutral-800 dark:text-neutral-200">
-                        {selectedDay.toLocaleDateString(undefined, {
+                        {selectedDay.toLocaleDateString("en-US", {
                           day: "2-digit",
                           month: "long",
                           year: "numeric",
                         })}
                       </span>
                       .
+                    </>
+                  ) : showAllMonths ? (
+                    <>
+                      Showing all {visibleRows.length} polic
+                      {visibleRows.length === 1 ? "y" : "ies"}.
                     </>
                   ) : (
                     <>
@@ -1327,20 +1343,34 @@ export function PolicyExpiryCalendar({
                       <span className="font-medium text-neutral-800 dark:text-neutral-200">
                         {monthDisplay}
                       </span>
-                      {" "}of {totalCount} total.
+                      {totalCount > visibleRows.length ? (
+                        <> of {totalCount} total</>
+                      ) : null}.
                     </>
                   )}
                 </div>
-                {selectedDay ? (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setSelectedDay(undefined)}
-                    className="h-6 text-xs"
-                  >
-                    Show whole month
-                  </Button>
-                ) : null}
+                <div className="flex items-center gap-2">
+                  {selectedDay ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setSelectedDay(undefined)}
+                      className="h-6 text-xs"
+                    >
+                      Show whole month
+                    </Button>
+                  ) : null}
+                  {!selectedDay && totalCount > 0 ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setShowAllMonths((v) => !v)}
+                      className="h-6 text-xs"
+                    >
+                      {showAllMonths ? "Show by month" : `Show all ${totalCount}`}
+                    </Button>
+                  ) : null}
+                </div>
               </div>
 
               {totalCount === 0 ? (

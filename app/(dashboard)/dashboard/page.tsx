@@ -2,15 +2,13 @@ import { getServerSession } from "next-auth";
 import type { Session } from "next-auth";
 import Link from "next/link";
 import { authOptions } from "@/lib/auth/options";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { db } from "@/db/client";
 import { memberships, organisations, users } from "@/db/schema/core";
 import { eq } from "drizzle-orm";
-import { LocalUpdatedBadge } from "@/components/LocalUpdatedBadge";
 import { FilePlus2 } from "lucide-react";
 import { PolicyExpiryCalendar } from "@/components/dashboard/policy-expiry-calendar";
+import { WelcomeCard } from "@/components/dashboard/welcome-card";
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
@@ -57,8 +55,6 @@ export default async function DashboardPage() {
     // ignore
   }
 
-  const isAdmin = user?.userType === "admin";
-
   return (
     /*
       Dashboard layout
@@ -82,22 +78,14 @@ export default async function DashboardPage() {
           </Link>
         </Button>
       </div>
-      <Card>
-        <CardHeader>
-          <CardTitle>Welcome</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-2">
-          <div className="text-sm text-neutral-600 dark:text-neutral-400">
-            Signed in as <span className="font-medium">{user?.name ?? user?.email}</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm text-neutral-600 dark:text-neutral-400">Role</span>
-            <Badge>{user?.userType ?? "user"}</Badge>
-            {accountComplete ? <Badge variant="success">Account setup complete</Badge> : null}
-            {updatedAtIso ? <LocalUpdatedBadge ts={updatedAtIso} timeZone={userTimeZone} /> : null}
-          </div>
-        </CardContent>
-      </Card>
+      <WelcomeCard
+        name={user?.name}
+        email={user?.email}
+        userType={user?.userType}
+        accountComplete={accountComplete}
+        updatedAtIso={updatedAtIso}
+        userTimeZone={userTimeZone}
+      />
 
       {/*
         Policy renewals widget — shows a full-width month calendar
