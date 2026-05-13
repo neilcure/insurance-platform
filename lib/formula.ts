@@ -192,6 +192,15 @@ export function evaluateFormula(
         }
         return "";
       }
+
+      // Single-variable string passthrough: `{someField}` with no arithmetic.
+      // Allows formula fields to mirror any text value (e.g. ID numbers, names)
+      // from another field without needing a separate text input.
+      const singleVarMatch = /^\{([^}]+)\}$/.exec(trimmed);
+      if (singleVarMatch) {
+        const v = refs[singleVarMatch[1].trim()];
+        if (v) return v;
+      }
     }
 
     // Numeric pipeline: substitute date functions → numbers, then refs → numbers,

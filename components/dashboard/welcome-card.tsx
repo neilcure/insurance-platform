@@ -14,7 +14,7 @@ interface WelcomeCardProps {
   userTimeZone?: string;
 }
 
-const FADE_DELAY_MS = 20_000;
+const FADE_DELAY_MS = 3_000;
 const FADE_DURATION_MS = 800;
 
 export function WelcomeCard({

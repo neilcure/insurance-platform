@@ -449,7 +449,7 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
                   onChange={(e) => updateMeta("formula", e.target.value)}
                 />
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                  Reference other fields using {"{field_key}"} syntax. Supports numeric math (+, -, *, /), date arithmetic (e.g. {"{start_date}"} + 364), and <strong>TODAY</strong> for the current date (e.g. TODAY, TODAY + 30).
+                  Reference other fields using {"{field_key}"} syntax. A single reference like <strong>{"{insured_idNumber}"}</strong> copies the value as-is (text, numbers, dates). Supports numeric math (+, -, *, /), date arithmetic (e.g. {"{start_date}"} + 364), and <strong>TODAY</strong> for the current date (e.g. TODAY, TODAY + 30).
                 </p>
               </div>
             </div>

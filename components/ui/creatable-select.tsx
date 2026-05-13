@@ -64,7 +64,12 @@ export function CreatableSelect({
 
   const selectedLabel = React.useMemo(() => {
     if (!value) return "";
-    const match = options.find((o) => o.value === value);
+    // Try exact match first, then case-insensitive fallback so stored codes like
+    // "C" (uppercase) still resolve to the label of option {value: "c"}.
+    const lowerValue = value.toLowerCase();
+    const match =
+      options.find((o) => o.value === value) ??
+      options.find((o) => (o.value ?? "").toLowerCase() === lowerValue);
     return match?.label ?? value;
   }, [options, value]);
 

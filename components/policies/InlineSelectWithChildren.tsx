@@ -479,8 +479,8 @@ export const InlineSelectWithChildren = React.memo(function InlineSelectWithChil
         ) : displayMode === "dropdown" ? (
           <select
             className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none ring-0 transition-colors dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+            value={current ?? ""}
             {...form.register(nameBase as never, { required: Boolean(required) })}
-            defaultValue={current ?? ""}
           >
             <option value="">-- Select --</option>
             {visibleOptions.map((o) => (
