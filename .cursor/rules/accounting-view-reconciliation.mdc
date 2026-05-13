@@ -1,0 +1,68 @@
+---
+description: Tripwire for code that displays accounting totals, paid/unpaid state, "Total Due", "Outstanding", "Client Paid Directly", "Agent Paid", "Commission", or "Credit to Agent". Must read the accounting-view-reconciliation skill before editing any of the listed files.
+alwaysApply: true
+---
+
+# Accounting View Reconciliation
+
+The platform records every accounting event as a row in
+`accounting_invoices` + `accounting_payments`, but the **policy
+obligation** is NOT the sum of those rows. Client-direct payments and
+agent settlements are **alternative payment paths** for the SAME
+obligation, not two independent debts. The canonical reconciled view
+is produced by `/api/accounting/statements/by-policy/:policyId` and
+rendered by `<StatementPaymentCard>`.
+
+The full contract — how each surface (agent details page, Agent
+Premium drawer, Client Premium drawer, statement PDF,
+`/dashboard/accounting`) must agree, what `wasClientPaidDirectly`
+means, why orphans must not contribute to totals, and the
+implementation patterns — lives in the skill.
+
+If your task touches **any** of the following, STOP and read
+[`.cursor/skills/accounting-view-reconciliation/SKILL.md`](mdc:.cursor/skills/accounting-view-reconciliation/SKILL.md)
+**before** writing code:
+
+- `app/(dashboard)/dashboard/accounting/page.tsx` — anything that
+  groups rows, displays per-group totals, or computes paid/unpaid
+- `app/(dashboard)/dashboard/accounting/_lib/invoice-row-meta.ts`
+- `app/api/accounting/invoices/route.ts` GET aggregation
+- `app/api/accounting/stats/route.ts`
+- `app/api/accounting/statements/by-policy/[policyId]/route.ts`
+- `components/policies/tabs/PaymentSection.tsx` (per-policy summary)
+- `components/policies/tabs/AccountingTab.tsx`
+- `components/shared/StatementPaymentCard.tsx`
+- `lib/accounting-invoices.ts`
+- Anything on `/dashboard/agents/[id]` that shows "Total Due",
+  "Commission", "Outstanding"
+- Adding any new dashboard surface that displays per-policy
+  receivables / payables totals
+- Diagnosing "Agent Settlement row says UNPAID but client paid
+  admin directly" / "group banner totals don't match the statement
+  drawer" / "outstanding is double-counted on policies with both
+  client and agent receivables" / "the Accounting page disagrees
+  with the Agent Premium drawer"
+
+## The 30-second cheatsheet
+
+| Concern | Pattern | Don't do |
+|---|---|---|
+| Per-policy reconciled summary | Fetch `/api/accounting/statements/by-policy/:pid?audience=agent` + render `<StatementPaymentCard>` | Sum `row.totalAmountCents` and `row.paidAmountCents` across categories |
+| Per-row "is paid?" badge | Check `wasClientPaidDirectly` / `hasClientDirectSubmitted` BEFORE comparing paid vs total | Map `status==='pending'` → "UNPAID" without consulting those flags |
+| Group total / outstanding in a list banner | Either fetch the statement OR explicitly label as "Document totals (not reconciled)" | Show a naive sum as if it's the policy total |
+| Orphan rows (no `policyId`) | Hide by default; never include in group reconciliation | Show as UNPAID receivables that need attention |
+| New dashboard surface showing per-policy state | Point at the statement endpoint OR the agent-detail summary card | Reinvent the math |
+
+## Bedrock rule (from `insurance-platform-architecture.mdc`)
+
+> NEVER sum client + agent payments as if they're separate debts —
+> they settle ONE policy obligation.
+>
+> Either payer settling their amount = policy fully paid. They are
+> alternative paths, NOT additive debts.
+
+If anything above is unclear, the skill has the full contract, the
+data model in 5 lines, the badge priority order, the implementation
+patterns, the "what NOT to do" list, and a verification recipe (open
+the four canonical surfaces for the same policy and confirm the
+numbers match).

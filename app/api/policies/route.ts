@@ -13,6 +13,8 @@ import { generatePolicyNumber, isPolicyNumberUniqueViolation } from "@/lib/polic
 import { getPolicyColumns } from "@/lib/db/column-check";
 import { loadAccountingFields, buildFieldColumnMap, getColumnType } from "@/lib/accounting-fields";
 import { findClientByIdentity } from "@/lib/import/client-resolver";
+import { extractDateField } from "@/lib/policies/date-extract";
+import { parseAnyDate } from "@/lib/format/date";
 
 type FinalPolicyPayload = {
   insured?: any;
@@ -937,6 +939,24 @@ export async function GET(request: Request) {
     const DEFAULT_LIMIT = 200;
     const qLimit = Math.min(Math.max(Number(url.searchParams.get("limit")) || DEFAULT_LIMIT, 1), MAX_LIMIT);
     const qOffset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
+
+    // Month-tab filter: when present, fetch a larger batch JS-side filtered
+    // (mirrors what /api/policies/expiring does for date-based filtering).
+    const startYearParam = url.searchParams.get("startYear");
+    const startMonthParam = url.searchParams.get("startMonth");
+    const hasMonthFilter =
+      startYearParam !== null &&
+      startMonthParam !== null &&
+      Number.isFinite(Number(startYearParam)) &&
+      Number.isFinite(Number(startMonthParam));
+    const filterYear = hasMonthFilter ? Number(startYearParam) : null;
+    const filterMonth = hasMonthFilter ? Number(startMonthParam) : null; // 1-based
+
+    // When month-filtering, fetch a hard cap of rows then paginate in JS.
+    // Otherwise use the user-requested limit/offset directly in SQL.
+    const MONTH_FETCH_CAP = 2000;
+    const sqlLimit = hasMonthFilter ? MONTH_FETCH_CAP : qLimit;
+    const sqlOffset = hasMonthFilter ? 0 : qOffset;
     // Scope: admin/internal_staff see all; others limited to their memberships
     const baseSelect = db
       .select({
@@ -1013,7 +1033,7 @@ export async function GET(request: Request) {
         if (hasClientNumberFilter) q = q.where(clientNumberFilterExpr!);
         if (hasFlowFilter) q = q.where(flowFilterExpr!);
         if (hasLinkedPolicyFilter) q = q.where(linkedPolicyFilterExpr!);
-        q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
+        q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(sqlLimit).offset(sqlOffset);
         rows = await q;
       } else if (user.userType === "agent") {
         const agentId = Number(user.id);
@@ -1044,7 +1064,7 @@ export async function GET(request: Request) {
               ${hasFlowFilter ? (polCols.hasFlowKey ? sql`and p.flow_key = ${flowParam}` : sql`and ((c.extra_attributes)::jsonb ->> 'flowKey') = ${flowParam}`) : sql``}
               ${hasLinkedPolicyFilter ? sql`and (((c.extra_attributes)::jsonb ->> 'linkedPolicyId')::int = ${linkedPolicyIdFilter})` : sql``}
             order by p.created_at desc, p.id desc
-            limit ${qLimit} offset ${qOffset}
+            limit ${sqlLimit} offset ${sqlOffset}
           `);
           rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
         }
@@ -1088,7 +1108,7 @@ export async function GET(request: Request) {
                 )
               )
             order by p.created_at desc, p.id desc
-            limit ${qLimit} offset ${qOffset}
+            limit ${sqlLimit} offset ${sqlOffset}
           `);
           rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
         } else {
@@ -1120,7 +1140,7 @@ export async function GET(request: Request) {
               )
             )
             order by p.created_at desc, p.id desc
-            limit ${qLimit} offset ${qOffset}
+            limit ${sqlLimit} offset ${sqlOffset}
           `);
           rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
         }
@@ -1134,7 +1154,7 @@ export async function GET(request: Request) {
         if (hasClientNumberFilter) scoped = scoped.where(clientNumberFilterExpr!);
         if (hasFlowFilter) scoped = scoped.where(flowFilterExpr!);
         if (hasLinkedPolicyFilter) scoped = scoped.where(linkedPolicyFilterExpr!);
-        scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
+        scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(sqlLimit).offset(sqlOffset);
         rows = await scoped;
       }
     } catch {
@@ -1145,7 +1165,7 @@ export async function GET(request: Request) {
         if (hasClientNumberFilter) q = q.where(clientNumberFilterExpr!);
         if (hasFlowFilter) q = q.where(flowFilterExpr!);
         if (hasLinkedPolicyFilter) q = q.where(linkedPolicyFilterExpr!);
-        q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
+        q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(sqlLimit).offset(sqlOffset);
         rows = await q;
       } else if (user.userType === "agent" || user.userType === "direct_client") {
         rows = [];
@@ -1159,16 +1179,32 @@ export async function GET(request: Request) {
         if (hasClientNumberFilter) scoped = scoped.where(clientNumberFilterExpr!);
         if (hasFlowFilter) scoped = scoped.where(flowFilterExpr!);
         if (hasLinkedPolicyFilter) scoped = scoped.where(linkedPolicyFilterExpr!);
-        scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(qLimit).offset(qOffset);
+        scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(sqlLimit).offset(sqlOffset);
         rows = await scoped;
       }
     }
 
-    const total =
-      rows.length > 0
-        ? Number((rows[0] as { totalCount?: number }).totalCount ?? 0)
-        : 0;
-    const enrichedRows = rows.map((r: any) => {
+    // Month-tab filter: JS-side date matching after fetching the larger batch.
+    // When active, we own the total and pagination instead of relying on the
+    // SQL window function (which counts ALL rows, not just the filtered month).
+    let total: number;
+    let finalRows: any[];
+    if (hasMonthFilter && filterYear !== null && filterMonth !== null) {
+      const filtered = (rows as any[]).filter((r) => {
+        const rawDate = extractDateField(r.carExtra as Record<string, unknown> | null, "startDate");
+        if (!rawDate) return false;
+        const parsed = parseAnyDate(rawDate);
+        if (!parsed) return false;
+        return parsed.getFullYear() === filterYear && parsed.getMonth() + 1 === filterMonth;
+      });
+      total = filtered.length;
+      finalRows = filtered.slice(qOffset, qOffset + qLimit);
+    } else {
+      total = rows.length > 0 ? Number((rows[0] as { totalCount?: number }).totalCount ?? 0) : 0;
+      finalRows = rows as any[];
+    }
+
+    const enrichedRows = finalRows.map((r: any) => {
       const resolvedFlowKey = r.flowKey || (r.carExtra as any)?.flowKey || null;
       const rest = { ...r };
       delete (rest as { totalCount?: number }).totalCount;

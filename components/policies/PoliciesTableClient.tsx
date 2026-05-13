@@ -4,7 +4,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
-import { Trash2, Ban, CheckCircle2, Info, Loader2 } from "lucide-react";
+import { Trash2, Ban, CheckCircle2, Info, Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -27,6 +27,7 @@ import { TableViewPresetBar } from "@/components/ui/table-view-preset-bar";
 import { TableViewPresetEditor } from "@/components/ui/table-view-preset-editor";
 import { usePagination } from "@/lib/pagination/use-pagination";
 import { Pagination } from "@/components/ui/pagination";
+import { confirmDialog } from "@/components/ui/global-dialogs";
 
 const PolicySnapshotView = dynamic(
   () => import("@/components/policies/PolicySnapshotView").then((m) => m.PolicySnapshotView),
@@ -140,6 +141,7 @@ export default function PoliciesTableClient({
   entityLabel,
   flowKey,
   currentUserType,
+  showMonthTabs,
 }: {
   initialRows: Row[];
   /** Total row count for the SSR-seeded first page. Required when
@@ -153,21 +155,36 @@ export default function PoliciesTableClient({
    *  server used for the first page. */
   flowKey?: string;
   currentUserType?: string;
+  /** Whether to show the year + month tab strip above the table.
+   *  Defaults to `true`. Pass `false` on pages where start-date
+   *  filtering is not relevant (e.g. endorsements, client views). */
+  showMonthTabs?: boolean;
 }) {
   const label = entityLabel || "Policy";
+  const showMonthTabsEffective = showMonthTabs !== false;
   const session = useSession();
   const sessionUserType = (session.data?.user as any)?.userType as string | undefined;
   const effectiveUserType = currentUserType ?? sessionUserType;
   const isAdmin = effectiveUserType === "admin" || effectiveUserType === "internal_staff";
   const isClientUser = effectiveUserType === "direct_client";
 
+  // Month-year tab filter
+  const currentYear = new Date().getFullYear();
+  const [selectedYear, setSelectedYear] = React.useState<number>(currentYear);
+  const [selectedMonth, setSelectedMonth] = React.useState<number | null>(null); // null = All
+
   // Pagination: hook owns rows / total / page state. Optimistic updates
   // (toggle active, soft-delete, rename) go through the hook helpers so
   // they survive a refetch correctly.
-  const paginationParams = React.useMemo(
-    () => (flowKey ? { flow: flowKey } : undefined),
-    [flowKey],
-  );
+  const paginationParams = React.useMemo(() => {
+    const base: Record<string, string | number | boolean | null | undefined> = {};
+    if (flowKey) base.flow = flowKey;
+    if (selectedMonth !== null) {
+      base.startYear = selectedYear;
+      base.startMonth = selectedMonth;
+    }
+    return Object.keys(base).length > 0 ? base : undefined;
+  }, [flowKey, selectedYear, selectedMonth]);
   const {
     rows,
     total,
@@ -197,6 +214,11 @@ export default function PoliciesTableClient({
   const [deepLinkSection, setDeepLinkSection] = React.useState<string | undefined>(undefined);
   const [deepLinkDocTemplate, setDeepLinkDocTemplate] = React.useState<string | undefined>(undefined);
   const [deepLinkDocAudience, setDeepLinkDocAudience] = React.useState<"client" | "agent" | undefined>(undefined);
+  // `?openTab=accounting` jumps straight to the Accounting tab so links
+  // from the Accounting dashboard (and the new "View statement" button)
+  // land on the reconciled per-policy view — see the skill at
+  // `.cursor/skills/accounting-view-reconciliation/SKILL.md`.
+  const [deepLinkTabId, setDeepLinkTabId] = React.useState<string | undefined>(undefined);
   const [detail, setDetail] = React.useState<PolicyDetail | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
@@ -510,8 +532,12 @@ export default function PoliciesTableClient({
       return <span className="font-mono">{row.policyNumber}</span>;
     }
     if (path === "_builtin.displayName") {
-      if (!row.displayName) return <span className="text-neutral-400">—</span>;
-      return applyCaseToText(row.displayName, getDisplayNameCase());
+      // displayName is pre-computed for SSR rows; fall back to extractNameFromExtra
+      // for rows fetched client-side (e.g. after changing page size) where the API
+      // only returns carExtra, not a pre-computed displayName.
+      const name = row.displayName || extractNameFromExtra(row.carExtra);
+      if (!name) return <span className="text-neutral-400">—</span>;
+      return applyCaseToText(name, getDisplayNameCase());
     }
     if (path === "_builtin.createdAt") return formatDDMMYYYYHHMM(row.createdAt);
     if (path === "_builtin.isActive") {
@@ -849,11 +875,13 @@ export default function PoliciesTableClient({
       const docAudience = docAudienceRaw === "agent" || docAudienceRaw === "client"
         ? docAudienceRaw
         : undefined;
+      const openTab = sp.get("openTab") ?? undefined;
       const id = Number(raw);
       if (Number.isFinite(id) && id > 0) {
         setDeepLinkSection(openSection);
         setDeepLinkDocTemplate(docTemplate);
         setDeepLinkDocAudience(docAudience);
+        setDeepLinkTabId(openTab);
         void openDetails(id);
       }
     } catch {
@@ -888,7 +916,12 @@ export default function PoliciesTableClient({
   }
 
   async function remove(id: number) {
-    const ok = window.confirm(`Delete this record? This cannot be undone.`);
+    const ok = await confirmDialog({
+      title: "Delete this record?",
+      description: "This cannot be undone.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
     if (!ok) return;
     try {
       const res = await fetch(`/api/policies/${id}`, { method: "DELETE" });
@@ -909,8 +942,64 @@ export default function PoliciesTableClient({
     }
   }
 
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
+      {/* Month / year tab strip — hidden when showMonthTabs={false} */}
+      {showMonthTabsEffective && (
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 dark:border-neutral-800 dark:bg-neutral-900/50">
+          {/* Year selector */}
+          <div className="flex items-center gap-0.5 mr-1">
+            <button
+              onClick={() => setSelectedYear((y) => y - 1)}
+              className="rounded p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700"
+              title="Previous year"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <span className="min-w-[42px] text-center text-xs font-semibold tabular-nums">{selectedYear}</span>
+            <button
+              onClick={() => setSelectedYear((y) => y + 1)}
+              className="rounded p-1 hover:bg-neutral-200 dark:hover:bg-neutral-700"
+              title="Next year"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          {/* "All" tab */}
+          <button
+            onClick={() => setSelectedMonth(null)}
+            className={cn(
+              "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+              selectedMonth === null
+                ? "bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-100"
+                : "text-neutral-500 hover:bg-neutral-200 dark:text-neutral-400 dark:hover:bg-neutral-800",
+            )}
+          >
+            All
+          </button>
+          {/* Month tabs */}
+          {MONTHS.map((m, i) => {
+            const monthNum = i + 1;
+            return (
+              <button
+                key={m}
+                onClick={() => { setSelectedMonth(monthNum); setSelectedYear(selectedYear); }}
+                className={cn(
+                  "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                  selectedMonth === monthNum
+                    ? "bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-100"
+                    : "text-neutral-500 hover:bg-neutral-200 dark:text-neutral-400 dark:hover:bg-neutral-800",
+                )}
+              >
+                {m}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <Input placeholder={`Search...`} value={query} onChange={(e) => setQuery(e.target.value)} />
         <Button variant="secondary" onClick={() => setQuery((q) => q)}>
@@ -1032,7 +1121,10 @@ export default function PoliciesTableClient({
         drawerOpen={drawerOpen}
         onClose={closeDrawer}
         title={`${label} Details`}
-        initialTabId={deepLinkSection || deepLinkDocTemplate ? "workflow" : undefined}
+        initialTabId={
+          deepLinkTabId
+            ?? (deepLinkSection || deepLinkDocTemplate ? "workflow" : undefined)
+        }
         loading={loading}
         extraAttributes={detail?.extraAttributes as Record<string, unknown> | undefined}
         onRefresh={refreshCurrent}

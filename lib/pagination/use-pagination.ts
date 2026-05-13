@@ -183,6 +183,12 @@ export function usePagination<T>(
     }
     if (lastParamsRef.current !== paramsFingerprint) {
       lastParamsRef.current = paramsFingerprint;
+      // Invalidate the SSR snapshot so it never skips a fetch again once the
+      // user has changed params away from the initial state. Without this,
+      // switching back to the original params (e.g. month-tab All → Jun → All)
+      // would match the SSR snapshot and skip the fetch, leaving stale rows
+      // from the Jun fetch on screen.
+      ssrSnapshotRef.current = { ...ssrSnapshotRef.current, rows: undefined };
       setPageState(0);
     }
   }, [paramsFingerprint]);

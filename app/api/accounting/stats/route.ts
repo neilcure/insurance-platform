@@ -4,6 +4,11 @@ import { accountingInvoices, accountingPayments } from "@/db/schema/accounting";
 import { memberships } from "@/db/schema/core";
 import { eq, sql, and, inArray, type SQL } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
+import {
+  findPolicyIdsInStartMonth,
+  buildInvoiceInPolicyIdsSql,
+} from "@/lib/policies/policies-in-period";
+import { excludeQuotationOnlyRows } from "@/lib/accounting-invoices";
 
 export const dynamic = "force-dynamic";
 
@@ -28,9 +33,21 @@ export const dynamic = "force-dynamic";
  * number. Overpayments are surfaced separately as `overpaidCents` so the
  * data integrity issue is visible instead of silently distorting totals.
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const user = await requireUser();
+    const url = new URL(request.url);
+
+    // Month-tab filter: stat cards reflect ONLY records whose
+    // underlying policy's start date falls in (startYear, startMonth).
+    // Mirrors the same param contract used by /api/accounting/invoices.
+    const startYearParam = url.searchParams.get("startYear");
+    const startMonthParam = url.searchParams.get("startMonth");
+    const hasMonthFilter =
+      startYearParam !== null &&
+      startMonthParam !== null &&
+      Number.isFinite(Number(startYearParam)) &&
+      Number.isFinite(Number(startMonthParam));
 
     // Admin-like users see tenant-wide totals; everyone else is scoped
     // to their org memberships. Mirrors `lib/auth/active-org.ts` `isAdminLike`
@@ -54,6 +71,18 @@ export async function GET() {
       orgConditions.push(inArray(accountingInvoices.organisationId, orgIds));
     }
 
+    // Resolve the month-filter policy IDs ONCE and reuse for every
+    // aggregation below so we hit the DB once for the policy scan.
+    const monthFilterConditions: SQL[] = [];
+    if (hasMonthFilter) {
+      const policyIds = await findPolicyIdsInStartMonth(
+        user,
+        Number(startYearParam),
+        Number(startMonthParam),
+      );
+      monthFilterConditions.push(buildInvoiceInPolicyIdsSql(policyIds));
+    }
+
     // Status buckets we explicitly drop from money totals — they don't
     // represent open obligations or completed cash flow.
     const closedStatuses = sql`('cancelled', 'refunded')`;
@@ -72,7 +101,10 @@ export async function GET() {
       // Credit notes flow through their own card so they never
       // negate or inflate the regular receivable cards.
       sql`${accountingInvoices.invoiceType} <> 'credit_note'`,
+      // Quotation-only rows are pre-sale, not real receivables.
+      excludeQuotationOnlyRows,
       ...orgConditions,
+      ...monthFilterConditions,
     ];
 
     // Payable summary — same shape as receivable, mirrored for the
@@ -82,7 +114,9 @@ export async function GET() {
       sql`${accountingInvoices.status} NOT IN ${closedStatuses}`,
       sql`NOT (${accountingInvoices.invoiceType} = 'individual' AND ${accountingInvoices.status} = 'statement_created')`,
       sql`${accountingInvoices.invoiceType} <> 'credit_note'`,
+      excludeQuotationOnlyRows,
       ...orgConditions,
+      ...monthFilterConditions,
     ];
 
     // Credit notes (refunds owed back to client) — surfaced as their own
@@ -91,7 +125,9 @@ export async function GET() {
     const creditNoteConditions = [
       eq(accountingInvoices.invoiceType, "credit_note"),
       sql`${accountingInvoices.status} NOT IN ${closedStatuses}`,
+      excludeQuotationOnlyRows,
       ...orgConditions,
+      ...monthFilterConditions,
     ];
 
     // SUM(LEAST(paid, total)) caps overpayments so they don't inflate
@@ -155,7 +191,8 @@ export async function GET() {
 
       // Pending payments — JOIN to invoices so we can scope by org and
       // exclude payments on cancelled/refunded invoices (which the user
-      // can't action from this page anyway).
+      // can't action from this page anyway). Quotation-only invoices
+      // are also excluded — pre-sale rows don't get payments anyway.
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(accountingPayments)
@@ -167,23 +204,36 @@ export async function GET() {
           and(
             eq(accountingPayments.status, "submitted"),
             sql`${accountingInvoices.status} NOT IN ${closedStatuses}`,
+            excludeQuotationOnlyRows,
             ...orgConditions,
+            ...monthFilterConditions,
           ),
         ),
 
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(accountingInvoices)
-        .where(and(eq(accountingInvoices.status, "submitted"), ...orgConditions)),
+        .where(and(
+          eq(accountingInvoices.status, "submitted"),
+          excludeQuotationOnlyRows,
+          ...orgConditions,
+          ...monthFilterConditions,
+        )),
 
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(accountingInvoices)
-        .where(and(eq(accountingInvoices.status, "overdue"), ...orgConditions)),
+        .where(and(
+          eq(accountingInvoices.status, "overdue"),
+          excludeQuotationOnlyRows,
+          ...orgConditions,
+          ...monthFilterConditions,
+        )),
 
       // Status counts cover the full picture (including statement_created
       // and credit_note) since this map is informational, not used in
-      // the headline money math.
+      // the headline money math. Quotation-only rows are excluded so
+      // these counts stay consistent with the list and money cards.
       db
         .select({
           status: accountingInvoices.status,
@@ -191,7 +241,11 @@ export async function GET() {
           totalCents: sql<number>`coalesce(sum(${accountingInvoices.totalAmountCents}), 0)::int`,
         })
         .from(accountingInvoices)
-        .where(orgConditions.length > 0 ? and(...orgConditions) : undefined)
+        .where(and(
+          excludeQuotationOnlyRows,
+          ...orgConditions,
+          ...monthFilterConditions,
+        ))
         .groupBy(accountingInvoices.status),
     ]);
 

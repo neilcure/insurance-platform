@@ -19,6 +19,7 @@ type FlowMeta = {
   dashboardLabel?: string;
   recordPickerFlow?: string;
   recordPickerLabel?: string;
+  showMonthTabs?: boolean;
 } | null;
 
 type OptionRow = {
@@ -98,6 +99,7 @@ export default function FlowsManager() {
         dashboardLabel: row.meta?.dashboardLabel || undefined,
         recordPickerFlow: row.meta?.recordPickerFlow || undefined,
         recordPickerLabel: row.meta?.recordPickerLabel || undefined,
+        showMonthTabs: !!row.meta?.showMonthTabs,
       },
     });
   }
@@ -114,6 +116,7 @@ export default function FlowsManager() {
           dashboardLabel: form.meta?.dashboardLabel || undefined,
           recordPickerFlow: form.meta?.recordPickerFlow || undefined,
           recordPickerLabel: form.meta?.recordPickerLabel || undefined,
+          showMonthTabs: !!form.meta?.showMonthTabs,
         };
         const current = formSnapshot({
           label: form.label,
@@ -134,6 +137,7 @@ export default function FlowsManager() {
         dashboardLabel: form.meta?.dashboardLabel || undefined,
         recordPickerFlow: form.meta?.recordPickerFlow || undefined,
         recordPickerLabel: form.meta?.recordPickerLabel || undefined,
+        showMonthTabs: !!form.meta?.showMonthTabs,
       };
       if (editing) {
         const res = await fetch(`/api/admin/form-options/${editing.id}`, {
@@ -338,6 +342,19 @@ export default function FlowsManager() {
                     }
                   />
                   Show in Dashboard sidebar
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={!!form.meta?.showMonthTabs}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        meta: { ...f.meta, showMonthTabs: e.target.checked },
+                      }))
+                    }
+                  />
+                  Show month-tab filter on this flow&apos;s list page
                 </label>
                 {form.meta?.showInDashboard && (
                   <>

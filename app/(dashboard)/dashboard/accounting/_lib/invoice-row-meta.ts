@@ -84,6 +84,13 @@ export type InvoiceRow = {
   setCode: string | null;
   parentPolicyId: number | null;
   parentPolicyNumber: string | null;
+  /** Insured display name from the policy snapshot (this row's policy). */
+  insuredDisplayName: string | null;
+  /** Vehicle registration / plate number (this row's policy). */
+  vehicleRegistration: string | null;
+  /** Same fields for the parent policy when this row is an endorsement. */
+  parentInsuredDisplayName: string | null;
+  parentVehicleRegistration: string | null;
   /** Group-by key the UI uses to cluster a parent + endorsements. */
   groupPolicyId: number | null;
   isEndorsement: boolean;
@@ -174,12 +181,20 @@ export function classifyInvoice(row: InvoiceRow): InvoiceCategory {
 
 /**
  * Stable display identifier for this record. Prefers the lifecycle
- * setCode (e.g. `2026-3389`) so the same record keeps the same
+ * setCode (e.g. `R-2026-3389`) so the same record keeps the same
  * headline through quotation → invoice → debit note → receipt — the
  * documents are listed BELOW as the record's history, not used as
  * the record's identity. Falls back to the row's invoiceNumber if
  * no setCode is available (e.g. `AP-…` rows that don't follow the
  * group-code scheme yet).
+ *
+ * The `R-` prefix exists because the bare `${year}-${setCode}` (e.g.
+ * `2026-6345`) is visually indistinguishable from the trailing part
+ * of a real document number (e.g. `DN-2026-6345`). Every document
+ * type already carries an unambiguous prefix (QUO, INV, DN, RE, AP);
+ * the record ID needs one too so users can tell them apart at a
+ * glance. `R-` is reserved for this purpose — no document template
+ * uses it.
  */
 export function getStableRecordId(row: InvoiceRow): {
   primary: string;
@@ -189,7 +204,7 @@ export function getStableRecordId(row: InvoiceRow): {
   if (row.setCode) {
     const yearMatch = row.invoiceNumber.match(/-(\d{4})-/);
     const year = yearMatch?.[1] ?? new Date(row.createdAt).getFullYear();
-    return { primary: `${year}-${row.setCode}`, isFallback: false };
+    return { primary: `R-${year}-${row.setCode}`, isFallback: false };
   }
   return { primary: row.invoiceNumber, isFallback: true };
 }

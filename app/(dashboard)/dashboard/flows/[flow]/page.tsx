@@ -25,7 +25,7 @@ type FlowOption = {
   id: number;
   label: string;
   value: string;
-  meta?: { showInDashboard?: boolean; icon?: string; dashboardLabel?: string } | null;
+  meta?: { showInDashboard?: boolean; icon?: string; dashboardLabel?: string; showMonthTabs?: boolean } | null;
 };
 
 function extractDisplayName(extra: Record<string, unknown> | null | undefined): string {
@@ -118,6 +118,7 @@ export default async function FlowDashboardPage({
               entityLabel={title}
               flowKey={flow}
               currentUserType={currentUser?.userType}
+              showMonthTabs={!!flowInfo?.meta?.showMonthTabs}
             />
           )}
         </CardContent>

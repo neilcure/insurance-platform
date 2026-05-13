@@ -5,6 +5,78 @@ import { resolvePolicyPremiumSummary } from "@/lib/resolve-policy-agent";
 
 const COUNTED_PAYMENT_STATUSES = ["recorded", "verified", "confirmed"] as const;
 
+/**
+ * Pure helper: returns TRUE if the lifecycle for a row is
+ * "quotation-only" — i.e. only QUOTATION documents have been
+ * issued, no invoice / debit note / credit note / receipt yet.
+ *
+ * Mirrors `lifecycleTagFromKey()` in the accounting page: a
+ * trackingKey is treated as a QUOTATION when its name contains
+ * `quotation` or `quote` (case-insensitive). A non-empty lifecycle
+ * with at least one non-quotation key means the row IS a real
+ * accounting record and must be kept.
+ *
+ * An empty lifecycle is NOT considered quotation-only (orphan /
+ * legacy rows stay visible by default — safer).
+ *
+ * Used by `/api/accounting/invoices` to drop quotation-only rows
+ * from the records list AFTER lifecycle has been built per row.
+ */
+export function isQuotationOnlyLifecycle(
+  lifecycle: ReadonlyArray<{ trackingKey: string }>,
+): boolean {
+  if (lifecycle.length === 0) return false;
+  return lifecycle.every((e) => {
+    const k = e.trackingKey.toLowerCase();
+    return k.includes("quotation") || k.includes("quote");
+  });
+}
+
+/**
+ * SQL fragment used by `/api/accounting/stats` to exclude the same
+ * quotation-only rows from receivable / payable / credit-note money
+ * totals, so the stat cards always agree with the records list.
+ *
+ * Detection rule: scan `policies.document_tracking` for the row's
+ * set-code (the trailing `-<digits>(<letter>)?` group of
+ * `invoice_number`). A row is dropped when:
+ *   (a) at least one tracking entry with that set-code is a
+ *       QUOTATION key (contains "quotation" / "quote"), AND
+ *   (b) NO tracking entry with that set-code is a non-quotation key.
+ *
+ * Orphan rows (no tracking entry matching their set-code) are KEPT.
+ *
+ * The set-code regex `'-(\d+)(?:\([a-z]\))?$'` mirrors the
+ * `extractSetCode()` JS helper used by the invoices route, so the
+ * SQL filter agrees with the JS filter on what counts as a match.
+ */
+export const excludeQuotationOnlyRows = sql`(
+  -- Keep if at least one non-quotation entry exists for this row's set-code
+  EXISTS (
+    SELECT 1
+    FROM ${accountingInvoiceItems} ii
+    JOIN policies p ON p.id = ii.policy_id
+    CROSS JOIN LATERAL jsonb_each(coalesce(p.document_tracking, '{}'::jsonb)) AS kv(k, v)
+    WHERE ii.invoice_id = ${accountingInvoices.id}
+      AND left(kv.k, 1) <> '_'
+      AND lower(kv.k) NOT LIKE '%quotation%'
+      AND lower(kv.k) NOT LIKE '%quote%'
+      AND substring(kv.v->>'documentNumber' from '-(\\d+)(?:\\([a-z]\\))?\\s*$')
+        = substring(${accountingInvoices.invoiceNumber} from '-(\\d+)(?:\\([a-z]\\))?\\s*$')
+  )
+  -- ...or no entry for this set-code at all (orphan / legacy: keep)
+  OR NOT EXISTS (
+    SELECT 1
+    FROM ${accountingInvoiceItems} ii
+    JOIN policies p ON p.id = ii.policy_id
+    CROSS JOIN LATERAL jsonb_each(coalesce(p.document_tracking, '{}'::jsonb)) AS kv(k, v)
+    WHERE ii.invoice_id = ${accountingInvoices.id}
+      AND left(kv.k, 1) <> '_'
+      AND substring(kv.v->>'documentNumber' from '-(\\d+)(?:\\([a-z]\\))?\\s*$')
+        = substring(${accountingInvoices.invoiceNumber} from '-(\\d+)(?:\\([a-z]\\))?\\s*$')
+  )
+)`;
+
 export async function syncInvoicePaymentStatus(invoiceId: number) {
   const [invoice] = await db
     .select({

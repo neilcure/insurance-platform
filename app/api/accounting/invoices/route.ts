@@ -8,6 +8,13 @@ import { and, desc, eq, sql, inArray, type SQL } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { resolveInvoicePrefix } from "@/lib/resolve-prefix";
 import { parsePaginationParams } from "@/lib/pagination/types";
+import {
+  findPolicyIdsInStartMonth,
+  buildInvoiceInPolicyIdsSql,
+} from "@/lib/policies/policies-in-period";
+import { isQuotationOnlyLifecycle } from "@/lib/accounting-invoices";
+import { getDisplayNameFromSnapshot } from "@/lib/field-resolver";
+import { readVehicleRegistrationFromCar } from "@/lib/policies/vehicle-registration";
 export const dynamic = "force-dynamic";
 
 /**
@@ -148,6 +155,16 @@ export async function GET(request: Request) {
     const premiumTypeFilter = url.searchParams.get("premiumType");
     const flowFilter = url.searchParams.get("flow");
     const excludeStatementType = url.searchParams.get("excludeStatementType") === "1";
+    // Month-tab filter: invoices whose underlying policy's start date
+    // falls in the given (year, month). Resolves to a set of policy
+    // IDs via the shared helper.
+    const startYearParam = url.searchParams.get("startYear");
+    const startMonthParam = url.searchParams.get("startMonth");
+    const hasMonthFilter =
+      startYearParam !== null &&
+      startMonthParam !== null &&
+      Number.isFinite(Number(startYearParam)) &&
+      Number.isFinite(Number(startMonthParam));
     const { limit: qLimit, offset: qOffset } = parsePaginationParams(url.searchParams, {
       defaultLimit: 50,
       maxLimit: 500,
@@ -201,6 +218,17 @@ export async function GET(request: Request) {
           WHERE (c.extra_attributes)::jsonb ->> 'flowKey' = ${flowFilter}
         )`
       );
+    }
+
+    // Month-tab filter: resolve which policies fall in (startYear, startMonth)
+    // then constrain the invoice list to those linked to one of them.
+    if (hasMonthFilter) {
+      const policyIds = await findPolicyIdsInStartMonth(
+        user,
+        Number(startYearParam),
+        Number(startMonthParam),
+      );
+      conditions.push(buildInvoiceInPolicyIdsSql(policyIds));
     }
 
     const includePayments = url.searchParams.get("includePayments") === "1";
@@ -344,12 +372,57 @@ export async function GET(request: Request) {
         // can render "Endorsement of POL-2026-…" without forcing the
         // frontend to do another roundtrip.
         const parentPolicyIdMap = new Map<number, number>();
+        // Per-policy snapshot lookups for the human-friendly group
+        // header on the dashboard: the insured display name + the
+        // vehicle registration / plate. Sourced from `cars` so the
+        // accounting list reads the same way as the policies list.
+        const policyDisplayNameMap = new Map<number, string>();
+        const policyVehicleRegMap = new Map<number, string>();
+        // Cars are loaded for every policy in `allPolicyIds`, but
+        // the `plateNumber` column is on `cars` itself — fetched
+        // separately so the existing slim cars query doesn't have
+        // to grow further.
+        const carPlateMap = new Map<number, string | null>();
         for (const car of carRows) {
           const linked = (car.extraAttributes as Record<string, unknown> | null)?.linkedPolicyId;
           const linkedNum = Number(linked);
           if (Number.isFinite(linkedNum) && linkedNum > 0) {
             parentPolicyIdMap.set(car.policyId, linkedNum);
           }
+          const extra = (car.extraAttributes as Record<string, unknown> | null) ?? null;
+          if (extra) {
+            const insuredSnapshot = extra.insuredSnapshot as Record<string, unknown> | null;
+            const packagesSnapshot = extra.packagesSnapshot as Record<string, unknown> | null;
+            const name = getDisplayNameFromSnapshot({
+              insuredSnapshot,
+              packagesSnapshot,
+            });
+            if (name) policyDisplayNameMap.set(car.policyId, name);
+          }
+        }
+        // Fetch plate numbers in a tiny second query so we don't
+        // bloat the cars SELECT used everywhere else in this route.
+        if (allPolicyIds.length > 0) {
+          const platesRows = await db
+            .select({
+              policyId: cars.policyId,
+              plateNumber: cars.plateNumber,
+            })
+            .from(cars)
+            .where(inArray(cars.policyId, allPolicyIds));
+          for (const row of platesRows) {
+            carPlateMap.set(row.policyId, row.plateNumber);
+          }
+        }
+        // Combine cars.plateNumber + packagesSnapshot fallback per
+        // the shared helper so we resolve the registration the same
+        // way the policy list / statements do.
+        for (const car of carRows) {
+          const reg = readVehicleRegistrationFromCar(
+            carPlateMap.get(car.policyId) ?? null,
+            (car.extraAttributes as Record<string, unknown> | null) ?? null,
+          );
+          if (reg) policyVehicleRegMap.set(car.policyId, reg);
         }
 
         const parentIdsToFetch = Array.from(
@@ -369,6 +442,36 @@ export async function GET(request: Request) {
               .from(policies)
               .where(inArray(policies.id, parentIdsToFetch))
           : [];
+
+        // Also resolve insured display name + registration for any
+        // PARENT policy that wasn't already in `allPolicyIds` — the
+        // group header on the frontend reads from the group root
+        // (parent policy), so without this an endorsement-only set
+        // would show an empty banner.
+        if (parentIdsToFetch.length > 0) {
+          const parentCars = await db
+            .select({
+              policyId: cars.policyId,
+              plateNumber: cars.plateNumber,
+              extraAttributes: cars.extraAttributes,
+            })
+            .from(cars)
+            .where(inArray(cars.policyId, parentIdsToFetch));
+          for (const car of parentCars) {
+            const extra = (car.extraAttributes as Record<string, unknown> | null) ?? null;
+            if (extra) {
+              const insuredSnapshot = extra.insuredSnapshot as Record<string, unknown> | null;
+              const packagesSnapshot = extra.packagesSnapshot as Record<string, unknown> | null;
+              const name = getDisplayNameFromSnapshot({
+                insuredSnapshot,
+                packagesSnapshot,
+              });
+              if (name) policyDisplayNameMap.set(car.policyId, name);
+            }
+            const reg = readVehicleRegistrationFromCar(car.plateNumber, extra);
+            if (reg) policyVehicleRegMap.set(car.policyId, reg);
+          }
+        }
 
         const parentNumberMap = new Map<number, string>();
         for (const p of policyRows) parentNumberMap.set(p.id, p.policyNumber);
@@ -459,6 +562,18 @@ export async function GET(request: Request) {
             setCode,
             parentPolicyId,
             parentPolicyNumber,
+            // Human-friendly identity from the snapshot — surfaced
+            // here so dashboard surfaces don't have to fan out
+            // additional `/api/policies/:id` calls just to render
+            // "John Chan · AB1234" next to a policy number.
+            insuredDisplayName: policyId ? (policyDisplayNameMap.get(policyId) ?? null) : null,
+            vehicleRegistration: policyId ? (policyVehicleRegMap.get(policyId) ?? null) : null,
+            parentInsuredDisplayName: parentPolicyId
+              ? (policyDisplayNameMap.get(parentPolicyId) ?? null)
+              : null,
+            parentVehicleRegistration: parentPolicyId
+              ? (policyVehicleRegMap.get(parentPolicyId) ?? null)
+              : null,
             groupPolicyId,
             isEndorsement: parentPolicyId !== null,
             wasClientPaidDirectly,
@@ -491,6 +606,10 @@ export async function GET(request: Request) {
             setCode: extractSetCode(r.invoiceNumber),
             parentPolicyId: null,
             parentPolicyNumber: null,
+            insuredDisplayName: null,
+            vehicleRegistration: null,
+            parentInsuredDisplayName: null,
+            parentVehicleRegistration: null,
             groupPolicyId: null,
             isEndorsement: false,
             wasClientPaidDirectly,
@@ -521,8 +640,23 @@ export async function GET(request: Request) {
       }
     }
 
+    // Hide rows that are still in the QUOTATION-only phase — they're
+    // pre-sale proposals, not accounting records yet. We do this
+    // AFTER lifecycle has been built (above) so the filter uses the
+    // exact same trackingKey rule as the UI's `lifecycleTagFromKey`.
+    // The companion SQL fragment in `/api/accounting/stats` keeps
+    // money totals consistent with this list.
+    const beforeFilter = rows.length;
+    rows = rows.filter((r) =>
+      !isQuotationOnlyLifecycle(
+        (r.documentLifecycle as ReadonlyArray<{ trackingKey: string }>) ?? [],
+      ),
+    );
+    const filteredOut = beforeFilter - rows.length;
+    const finalTotal = Math.max(0, total - filteredOut);
+
     return NextResponse.json(
-      { rows, total, limit: qLimit, offset: qOffset },
+      { rows, total: finalTotal, limit: qLimit, offset: qOffset },
       { status: 200 },
     );
   } catch (err) {
