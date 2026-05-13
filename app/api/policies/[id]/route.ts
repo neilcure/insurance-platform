@@ -9,6 +9,7 @@ import { getPolicyColumns } from "@/lib/db/column-check";
 import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
 import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
 import { hasCompletedSetup } from "@/lib/auth/user-setup-status";
+import { extractVehicleColumns } from "@/lib/policies/extract-vehicle-columns";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -760,10 +761,54 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
       _lastEditedAt: new Date().toISOString(),
     };
 
-    await db
-      .update(cars)
-      .set({ extraAttributes: updated })
-      .where(eq(cars.id, carRow.id));
+    // Re-derive `cars.make` / `cars.model` / `cars.year` from
+    // the snapshot we are about to save, so the structured
+    // columns stay in lockstep with the wizard's snapshot.
+    //
+    // IMPORTANT: `cars.plate_number` is INTENTIONALLY NOT
+    // synced here. The plate column is the HISTORICAL record
+    // of which vehicle the policy was originally issued for.
+    // When an endorsement changes the registered vehicle
+    // (e.g. "swap reg no GH7888 → KD6668"), the endorsement
+    // updates the BASE POLICY's snapshot to reflect the new
+    // current-effective vehicle, but the base policy's invoice
+    // was issued against the ORIGINAL plate and the accounting
+    // view must continue to surface that history. Mutating
+    // `plate_number` here would silently overwrite the
+    // historical truth every time the wizard saves.
+    //
+    // `make` / `model` / `year` are different: those have no
+    // accounting-history meaning. The only reason rows have
+    // garbage in them today (e.g. `make = "2025"`) is the
+    // legacy POST regex bug, which the backfill script repairs.
+    // Going forward we keep them in lockstep with the snapshot
+    // so a wizard typo correction propagates.
+    //
+    // Only fields the extractor finds are written; nulls are
+    // skipped so we never blank out a value an admin manually
+    // set in the column but didn't echo into the snapshot.
+    const carCols = extractVehicleColumns({
+      packages: stripLinkedKeys(newPkgs) as Record<string, unknown>,
+    });
+    const carColUpdate: Record<string, unknown> = { extraAttributes: updated };
+    if (carCols.make !== null) carColUpdate.make = carCols.make;
+    if (carCols.model !== null) carColUpdate.model = carCols.model;
+    if (carCols.year !== null) carColUpdate.year = carCols.year;
+
+    try {
+      await db
+        .update(cars)
+        .set(carColUpdate)
+        .where(eq(cars.id, carRow.id));
+    } catch (_err) {
+      // Fallback for legacy DBs that don't have `make`/`model`/
+      // `year` columns — write just the JSON so the save still
+      // succeeds.
+      await db
+        .update(cars)
+        .set({ extraAttributes: updated })
+        .where(eq(cars.id, carRow.id));
+    }
 
     // Sync premiumRecord snapshot values to the policy_premiums table
     // so the accounting system always has up-to-date premium data.
@@ -891,6 +936,39 @@ export async function DELETE(_: Request, ctx: { params: Promise<{ id: string }> 
         { status: 400 },
       );
     }
+
+    // Cancel any open accounting_invoices linked to this policy BEFORE
+    // deleting it. Without this, the foreign key's ON DELETE: SET NULL
+    // turns them into orphan rows that pollute the dashboard stats
+    // indefinitely (status stays "pending", entity_policy_id becomes NULL,
+    // line items are cascade-deleted so the row looks like a ghost).
+    //
+    // Per `.cursor/skills/accounting-view-reconciliation/SKILL.md` §4:
+    //   "Orphan rows typically come from: a quote that was deleted before
+    //    becoming a policy (the auto-created AR row was never cleaned up)."
+    //
+    // We only cancel rows that have NOT been paid (paid_amount_cents = 0)
+    // and have no verified/confirmed payment history. If a real payment
+    // exists we leave the row alone and let the foreign key set it to NULL —
+    // an admin must review those manually (the DB still holds the money trail).
+    await db.execute(sql`
+      UPDATE accounting_invoices
+      SET
+        status = 'cancelled',
+        cancellation_date = CURRENT_DATE,
+        notes = COALESCE(notes, '') ||
+                CASE WHEN COALESCE(notes, '') = '' THEN '' ELSE E'\n' END ||
+                '[Auto-cancelled when policy ' || ${id} || ' was deleted]',
+        updated_at = NOW()
+      WHERE entity_policy_id = ${id}
+        AND status NOT IN ('cancelled', 'refunded', 'paid')
+        AND paid_amount_cents = 0
+        AND NOT EXISTS (
+          SELECT 1 FROM accounting_payments ap
+          WHERE ap.invoice_id = accounting_invoices.id
+            AND ap.status IN ('verified', 'confirmed', 'recorded')
+        )
+    `);
 
     await db.delete(policies).where(eq(policies.id, id));
     return NextResponse.json({ success: true }, { status: 200 });

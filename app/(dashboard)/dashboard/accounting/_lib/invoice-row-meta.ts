@@ -229,13 +229,67 @@ export function shouldShowNotes(row: InvoiceRow, category: InvoiceCategory): boo
 }
 
 /**
- * The latest lifecycle entry — i.e. the most recent document the
- * sender produced for this record. Used to render the "current
- * document" tag next to the stable id.
+ * Pick the document that represents this record on the Accounting
+ * dashboard.
+ *
+ * Why this is NOT just "the latest sent":
+ *   The records list looked schizophrenic — one row showed an INV
+ *   number, the next showed a DN number, the next showed a RECEIPT
+ *   number — because the headline rotated with whichever template
+ *   the admin happened to send last. Users want consistency: every
+ *   row anchored to its INVOICE number whenever one exists.
+ *
+ * Selection order (first match wins):
+ *   1. INVOICE — the canonical bill. ALWAYS preferred when present.
+ *   2. DEBIT NOTE — fallback when an invoice was never sent (typical
+ *      for endorsement-only flows that go straight to DN).
+ *   3. CREDIT NOTE — fallback for refund-only rows.
+ *   4. RECEIPT — last resort.
+ *   5. Anything else non-quotation.
+ *   6. Anything (defensive — the API filters quotation-only rows
+ *      out via `isQuotationOnlyLifecycle`, so this is just a safety
+ *      net).
+ *
+ * Quotations are NEVER chosen as the headline — they're pre-sale
+ * paperwork, not accounting documents.
  */
 export function getLatestLifecycleEntry(row: InvoiceRow): LifecycleEntry | null {
   if (!row.documentLifecycle || row.documentLifecycle.length === 0) return null;
-  return row.documentLifecycle[row.documentLifecycle.length - 1];
+
+  const kind = (k: string): "invoice" | "debitNote" | "creditNote" | "receipt" | "quotation" | "other" => {
+    const l = k.toLowerCase();
+    if (l.includes("quotation") || l.includes("quote")) return "quotation";
+    if (l.includes("debit_note") || l.includes("debitnote")) return "debitNote";
+    if (l.includes("credit_note") || l.includes("creditnote")) return "creditNote";
+    if (l.includes("receipt")) return "receipt";
+    if (l.includes("invoice")) return "invoice";
+    return "other";
+  };
+
+  let invoice: LifecycleEntry | null = null;
+  let debitNote: LifecycleEntry | null = null;
+  let creditNote: LifecycleEntry | null = null;
+  let receipt: LifecycleEntry | null = null;
+  let other: LifecycleEntry | null = null;
+
+  // Walk backwards so we pick the LATEST occurrence of each kind
+  // (lifecycle is chronological).
+  for (let i = row.documentLifecycle.length - 1; i >= 0; i--) {
+    const entry = row.documentLifecycle[i];
+    const k = kind(entry.trackingKey);
+    if (k === "invoice" && !invoice) invoice = entry;
+    else if (k === "debitNote" && !debitNote) debitNote = entry;
+    else if (k === "creditNote" && !creditNote) creditNote = entry;
+    else if (k === "receipt" && !receipt) receipt = entry;
+    else if (k === "other" && !other) other = entry;
+  }
+
+  return invoice
+    ?? debitNote
+    ?? creditNote
+    ?? receipt
+    ?? other
+    ?? row.documentLifecycle[row.documentLifecycle.length - 1];
 }
 
 /**

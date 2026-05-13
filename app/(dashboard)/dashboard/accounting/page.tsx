@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,7 +19,6 @@ import {
   AlertCircle,
   Clock,
   CheckCircle2,
-  FileText,
   ChevronDown,
   ChevronUp,
   ChevronLeft,
@@ -164,15 +162,23 @@ function StatCard({
   subtitle,
   icon: Icon,
   iconColor,
+  tooltip,
 }: {
   title: string;
   value: string;
   subtitle?: string;
   icon: React.ElementType;
   iconColor: string;
+  // Hover-only explainer surfaced as a native `title` so the
+  // card stays compact but a confused user can hover any of the
+  // money cards to read what it means and why a value of 0 is
+  // (or isn't) suspicious. Avoids the "what does Outstanding
+  // (Payable) mean and why is it 0 when I have an unpaid
+  // client invoice?" support ticket.
+  tooltip?: string;
 }) {
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden" title={tooltip}>
       <CardContent className="p-3">
         <div className="flex items-center justify-between gap-1.5">
           <div className="text-xs text-neutral-500 dark:text-neutral-400">{title}</div>
@@ -257,7 +263,32 @@ export default function AccountingPage() {
   const [hideOrphans, setHideOrphans] = React.useState(true);
   const [refreshKey, setRefreshKey] = React.useState(0);
   const [showSettings, setShowSettings] = React.useState(false);
-  const [displayColumns, setDisplayColumns] = React.useState<DisplayColumn[]>([]);
+  // Seed with the same defaults the API returns so the table has
+  // its normal columns on first paint — without this, the table
+  // would briefly flash with no data columns (only the Expand
+  // chevron) before the GET /api/admin/accounting-display response
+  // lands. Once the API returns the user's saved choice it
+  // replaces this seed.
+  const [displayColumns, setDisplayColumns] = React.useState<DisplayColumn[]>(() => [
+    { key: "invoiceDate", label: "Date", enabled: true },
+    { key: "invoiceNumber", label: "Document", enabled: true },
+    { key: "type", label: "Type", enabled: true },
+    { key: "insuredName", label: "Insured", enabled: true },
+    { key: "plate", label: "Vehicle Plate", enabled: true },
+    { key: "agentName", label: "Agent", enabled: false },
+    { key: "clientName", label: "Client Name", enabled: false },
+    { key: "policyNumber", label: "Policy", enabled: true },
+    { key: "direction", label: "Direction", enabled: false },
+    { key: "entityType", label: "Entity Type", enabled: false },
+    { key: "premiumType", label: "Premium Type", enabled: false },
+    { key: "notes", label: "Notes", enabled: false },
+    { key: "quotationNo", label: "Quotation No.", enabled: false },
+    { key: "receiptNo", label: "Receipt No.", enabled: false },
+    { key: "dueDate", label: "Due Date", enabled: false },
+    { key: "remaining", label: "Outstanding", enabled: true },
+    { key: "total", label: "Total", enabled: true },
+    { key: "status", label: "Status", enabled: true },
+  ]);
   const [savingCols, setSavingCols] = React.useState(false);
 
   // Month-year tab filter. Selecting a month constrains BOTH the
@@ -312,6 +343,7 @@ export default function AccountingPage() {
     },
     [displayColumns],
   );
+
 
   const saveColumns = async (cols: DisplayColumn[]) => {
     setSavingCols(true);
@@ -480,26 +512,31 @@ export default function AccountingPage() {
 
   // Per-tab counts so the tab bar can show "Agent Settlement (12)"
   // at a glance — no need to click each tab to see what's there.
-  // Computed from the WHOLE current page of `invoices` (not the
-  // filtered list) so the counts don't drop to 0 the moment you
-  // click into a tab.
+  // Computed AFTER the orphan filter is applied so the badge
+  // matches the row count the user actually sees in the table.
+  // Without this, "Hide 4 orphans" toggled ON would still show
+  // "Agent Settlement (7)" even though only 3 rows render —
+  // making the user think rows are missing.
   const ledgerCounts = React.useMemo(() => {
+    const visible = hideOrphans
+      ? invoices.filter((inv) => !inv.warnings.includes("orphan_no_policy"))
+      : invoices;
     const c = {
-      all: invoices.length,
+      all: visible.length,
       client_receivable: 0,
       agent_receivable: 0,
       agent_commission_payable: 0,
       credit_note: 0,
       statement_bundle: 0,
     };
-    for (const inv of invoices) {
+    for (const inv of visible) {
       const cat = classifyInvoice(inv);
       if (cat in c) {
         c[cat as keyof typeof c] += 1;
       }
     }
     return c;
-  }, [invoices]);
+  }, [invoices, hideOrphans]);
 
   const toggleSort = React.useCallback((key: SortKey) => {
     setSortKey((prev) => {
@@ -589,6 +626,387 @@ export default function AccountingPage() {
 
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+  // ── Column registry ───────────────────────────────────────────
+  // Every column the user can toggle / reorder via the Record
+  // Display Settings panel. Keys MUST match the entries in
+  // `DEFAULT_COLUMNS` in app/api/admin/accounting-display/route.ts.
+  // Adding a new column: add an entry here AND there.
+  //
+  // The user's choice of which columns are enabled + the ORDER
+  // they appear in lives in `displayColumns` (saved per-tenant in
+  // app_settings). `visibleColumns` below filters + orders the
+  // registry per the user's preference. The Expand chevron column
+  // is NOT in this registry — it's always appended last as a UI
+  // affordance, not data.
+  type AccountingCellCtx = {
+    category: ReturnType<typeof classifyInvoice>;
+    displayDate: string;
+    recordId: ReturnType<typeof getStableRecordId>;
+    insuredLabel: string | null;
+    plateLabel: string | null;
+    policyLabel: string | null;
+    headlineDocNumber: string;
+    remaining: number;
+  };
+  type ColumnDef = {
+    label: string;
+    headClass: string;
+    cellClass: string;
+    renderHead: () => React.ReactNode;
+    renderCell: (inv: FullInvoiceRow, ctx: AccountingCellCtx) => React.ReactNode;
+  };
+  const headBtnClass = "inline-flex items-center gap-1 hover:text-neutral-700 dark:hover:text-neutral-200";
+
+  // Pluck the first value in `documentNumbers` whose key matches a
+  // predicate. Used to extract Quotation / Receipt numbers for
+  // their own dedicated columns without re-running the headline
+  // selection logic.
+  const findDocNumberByKind = (
+    inv: FullInvoiceRow,
+    match: (k: string) => boolean,
+  ): string | null => {
+    if (!inv.documentNumbers) return null;
+    for (const [k, n] of Object.entries(inv.documentNumbers)) {
+      if (match(k.toLowerCase())) return n;
+    }
+    return null;
+  };
+
+  // Compute the per-row Status badge. Extracted into a function so
+  // the column registry doesn't carry 70 lines of inline JSX.
+  // Priority order matches the per-row "is paid?" rules in
+  // .cursor/skills/accounting-view-reconciliation/SKILL.md §6.1.
+  const renderStatusBadge = (inv: FullInvoiceRow): React.ReactNode => {
+    const total = inv.totalAmountCents;
+    const paid = inv.paidAmountCents;
+    const outstanding = total - paid;
+    type State = { label: string; tone: string; icon: string | null; sub?: string };
+    let state: State;
+    if (inv.status === "cancelled") {
+      state = { label: "VOID", tone: "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200", icon: "✕" };
+    } else if (inv.status === "refunded") {
+      state = { label: "REFUNDED", tone: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200", icon: "↩" };
+    } else if (inv.status === "statement_created") {
+      state = { label: "BUNDLED", tone: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200", icon: "▣" };
+    } else if (inv.status === "draft") {
+      state = { label: "DRAFT", tone: "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200", icon: null };
+    } else if (total === 0) {
+      state = { label: "ZERO", tone: "bg-neutral-200 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300", icon: null };
+    } else if (inv.wasClientPaidDirectly) {
+      state = { label: "PAID", tone: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200", icon: "✓", sub: "Client paid admin directly" };
+    } else if (inv.hasClientDirectSubmitted) {
+      state = { label: "PENDING VERIFY", tone: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200", icon: "▷", sub: "Client-direct payment submitted" };
+    } else if (outstanding <= 0) {
+      state = { label: "PAID", tone: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200", icon: "✓" };
+    } else if (paid > 0) {
+      state = { label: "PARTIAL", tone: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200", icon: "◐" };
+    } else if (inv.status === "overdue") {
+      state = { label: "OVERDUE", tone: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200", icon: "⚠" };
+    } else {
+      state = { label: "UNPAID", tone: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200", icon: null };
+    }
+    return (
+      <div className="flex flex-col items-start gap-0.5">
+        <Badge variant="custom" className={cn("text-[10px] font-bold tracking-wide", state.tone)} title={state.sub}>
+          {state.icon && <span className="mr-1">{state.icon}</span>}
+          {state.label}
+        </Badge>
+        {state.sub && (
+          <span className="text-[9px] text-emerald-700 dark:text-emerald-300 font-medium">{state.sub}</span>
+        )}
+        <span className="text-[9px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
+          {INVOICE_STATUS_LABELS[inv.status as InvoiceStatus] ?? inv.status}
+        </span>
+      </div>
+    );
+  };
+
+  const colRegistry: Record<string, ColumnDef> = {
+    invoiceDate: {
+      label: "Date",
+      headClass: "w-[110px] hidden md:table-cell",
+      cellClass: "hidden md:table-cell whitespace-nowrap text-xs text-neutral-500 dark:text-neutral-400",
+      renderHead: () => (
+        <button type="button" onClick={() => toggleSort("date")} className={headBtnClass}>
+          Date {sortIcon("date")}
+        </button>
+      ),
+      renderCell: (_inv, ctx) => new Date(ctx.displayDate).toLocaleDateString(),
+    },
+    invoiceNumber: {
+      label: "Document",
+      headClass: "min-w-[140px]",
+      cellClass: "",
+      renderHead: () => (
+        <button type="button" onClick={() => toggleSort("docNumber")} className={headBtnClass}>
+          Document {sortIcon("docNumber")}
+        </button>
+      ),
+      renderCell: (inv, ctx) => (
+        <div className="flex flex-col gap-0.5 min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+            <span className="font-mono text-sm font-semibold break-all">{ctx.headlineDocNumber}</span>
+            {inv.warnings.map((w) => (
+              <Badge
+                key={w}
+                variant="custom"
+                className={cn(
+                  "shrink-0 text-[10px]",
+                  WARNING_LABELS[w].tone === "danger"
+                    ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200"
+                    : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
+                )}
+                title={WARNING_LABELS[w].title}
+              >
+                <AlertTriangle className="h-3 w-3 mr-1" />
+                {w.replace(/_/g, " ")}
+              </Badge>
+            ))}
+          </div>
+          <span className="text-[10px] font-mono text-neutral-400" title="Internal record ID — stays the same across template changes">
+            {ctx.recordId.primary}
+          </span>
+        </div>
+      ),
+    },
+    type: {
+      label: "Type",
+      headClass: "hidden sm:table-cell min-w-[150px]",
+      cellClass: "hidden sm:table-cell",
+      renderHead: () => "Type",
+      renderCell: (inv, ctx) => (
+        <div className="flex flex-wrap items-center gap-1">
+          <Badge variant="custom" className={cn("shrink-0 text-[10px]", CATEGORY_ACCENT[ctx.category])}>
+            {CATEGORY_LABELS[ctx.category]}
+          </Badge>
+          {inv.isEndorsement && (
+            <Badge variant="custom" className="shrink-0 text-[10px] bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+              Endorsement
+            </Badge>
+          )}
+          {shouldShowClientPaidDirectlyBadge(inv) && (
+            <Badge variant="custom" className="shrink-0 text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-200 dark:border-emerald-800" title="Client paid admin directly. The agent commission is materialised on a separate payable (AP-…) row.">
+              Client paid directly
+            </Badge>
+          )}
+        </div>
+      ),
+    },
+    insuredName: {
+      label: "Insured",
+      headClass: "hidden lg:table-cell min-w-[160px]",
+      cellClass: "hidden lg:table-cell",
+      renderHead: () => "Insured",
+      renderCell: (_inv, ctx) =>
+        ctx.insuredLabel ? (
+          <span className="flex items-center gap-1.5 font-medium text-sm text-neutral-900 dark:text-neutral-100 truncate">
+            <User className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+            {ctx.insuredLabel}
+          </span>
+        ) : (
+          <span className="text-xs text-neutral-400">—</span>
+        ),
+    },
+    plate: {
+      label: "Vehicle Plate",
+      headClass: "hidden lg:table-cell min-w-[100px]",
+      cellClass: "hidden lg:table-cell",
+      renderHead: () => "Vehicle",
+      // Plain mono — no fake "license plate" pill. The user finds
+      // the badge styling distracting and the column header
+      // already tells you what kind of value this is.
+      renderCell: (_inv, ctx) =>
+        ctx.plateLabel ? (
+          <span className="font-mono text-xs text-neutral-700 dark:text-neutral-300">
+            {ctx.plateLabel}
+          </span>
+        ) : (
+          <span className="text-xs text-neutral-400">—</span>
+        ),
+    },
+    agentName: {
+      label: "Agent",
+      headClass: "hidden lg:table-cell min-w-[140px]",
+      cellClass: "hidden lg:table-cell",
+      renderHead: () => "Agent",
+      renderCell: (inv) => {
+        const agent = inv.entityType === "agent" ? (inv.entityName ?? inv.agentName) : inv.agentName;
+        return agent ? (
+          <span className="flex items-center gap-1 text-[12px] text-amber-700 dark:text-amber-300 truncate" title={`Agent: ${agent}`}>
+            <Briefcase className="h-3 w-3 shrink-0" />
+            {agent}
+          </span>
+        ) : (
+          <span className="text-xs text-neutral-400">—</span>
+        );
+      },
+    },
+    clientName: {
+      label: "Client Name",
+      headClass: "hidden lg:table-cell min-w-[140px]",
+      cellClass: "hidden lg:table-cell",
+      renderHead: () => "Client",
+      renderCell: (inv) =>
+        inv.clientName ? (
+          <span className="text-[12px] text-neutral-700 dark:text-neutral-300 truncate" title={inv.clientName}>
+            {inv.clientName}
+          </span>
+        ) : (
+          <span className="text-xs text-neutral-400">—</span>
+        ),
+    },
+    policyNumber: {
+      label: "Policy",
+      headClass: "hidden md:table-cell min-w-[150px]",
+      cellClass: "hidden md:table-cell",
+      renderHead: () => "Policy",
+      renderCell: (_inv, ctx) =>
+        ctx.policyLabel ? (
+          <span className="font-mono text-xs text-neutral-700 dark:text-neutral-300 break-all">
+            {ctx.policyLabel}
+          </span>
+        ) : (
+          <span className="text-xs text-neutral-400">—</span>
+        ),
+    },
+    direction: {
+      label: "Direction",
+      headClass: "hidden md:table-cell",
+      cellClass: "hidden md:table-cell",
+      renderHead: () => "Direction",
+      renderCell: (inv) => (
+        <Badge variant="custom" className={cn("shrink-0 text-[10px]", directionTone(inv.direction))}>
+          {inv.direction === "receivable" ? "Receivable" : "Payable"}
+        </Badge>
+      ),
+    },
+    entityType: {
+      label: "Entity Type",
+      headClass: "hidden md:table-cell",
+      cellClass: "hidden md:table-cell text-xs capitalize",
+      renderHead: () => "Entity",
+      renderCell: (inv) => inv.entityType,
+    },
+    premiumType: {
+      label: "Premium Type",
+      headClass: "hidden md:table-cell",
+      cellClass: "hidden md:table-cell text-xs",
+      renderHead: () => "Premium",
+      renderCell: (inv) =>
+        PREMIUM_TYPE_LABELS[inv.premiumType as PremiumType] ?? inv.premiumType.replace(/_/g, " "),
+    },
+    notes: {
+      label: "Notes",
+      headClass: "hidden md:table-cell min-w-[160px]",
+      cellClass: "hidden md:table-cell text-xs italic text-neutral-500 dark:text-neutral-400",
+      renderHead: () => "Notes",
+      renderCell: (inv) =>
+        inv.notes ? (
+          <span title={inv.notes} className="line-clamp-2">{inv.notes}</span>
+        ) : (
+          <span className="text-neutral-400">—</span>
+        ),
+    },
+    quotationNo: {
+      label: "Quotation No.",
+      headClass: "hidden md:table-cell",
+      cellClass: "hidden md:table-cell text-xs font-mono",
+      renderHead: () => "Quotation",
+      renderCell: (inv) =>
+        findDocNumberByKind(inv, (k) => k.includes("quot")) ?? (
+          <span className="text-neutral-400">—</span>
+        ),
+    },
+    receiptNo: {
+      label: "Receipt No.",
+      headClass: "hidden md:table-cell",
+      cellClass: "hidden md:table-cell text-xs font-mono",
+      renderHead: () => "Receipt",
+      renderCell: (inv) =>
+        findDocNumberByKind(inv, (k) => k.includes("receipt")) ?? (
+          <span className="text-neutral-400">—</span>
+        ),
+    },
+    dueDate: {
+      label: "Due Date",
+      headClass: "hidden md:table-cell",
+      cellClass: "hidden md:table-cell text-xs",
+      renderHead: () => "Due Date",
+      renderCell: (inv) =>
+        inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : <span className="text-neutral-400">—</span>,
+    },
+    remaining: {
+      label: "Outstanding",
+      headClass: "hidden sm:table-cell",
+      cellClass: "hidden sm:table-cell whitespace-nowrap",
+      renderHead: () => (
+        <button type="button" onClick={() => toggleSort("outstanding")} className={headBtnClass}>
+          Outstanding {sortIcon("outstanding")}
+        </button>
+      ),
+      renderCell: (inv, ctx) => (
+        <span className={cn("text-sm font-semibold", ctx.remaining > 0 ? "text-orange-600" : "text-green-600")}>
+          {formatCurrency(ctx.remaining, inv.currency)}
+        </span>
+      ),
+    },
+    total: {
+      label: "Total",
+      headClass: "",
+      cellClass: "whitespace-nowrap",
+      renderHead: () => (
+        <button type="button" onClick={() => toggleSort("total")} className={headBtnClass}>
+          Total {sortIcon("total")}
+        </button>
+      ),
+      renderCell: (inv) => (
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-semibold">{formatCurrency(inv.totalAmountCents, inv.currency)}</span>
+          <span className="text-[10px] text-neutral-400">Paid {formatCurrency(inv.paidAmountCents, inv.currency)}</span>
+        </div>
+      ),
+    },
+    status: {
+      label: "Status",
+      headClass: "hidden sm:table-cell",
+      cellClass: "hidden sm:table-cell",
+      renderHead: () => (
+        <button type="button" onClick={() => toggleSort("status")} className={headBtnClass}>
+          Status {sortIcon("status")}
+        </button>
+      ),
+      renderCell: (inv) => renderStatusBadge(inv),
+    },
+  };
+
+  // The visible, ordered list of column definitions. Order is the
+  // user's saved order in `displayColumns`; only enabled entries
+  // make it through. The "Expand" affordance is NOT here — it's
+  // appended as a separate TableCell in the JSX so it always sits
+  // on the rightmost edge as an interaction control, not data.
+  const visibleColumns = displayColumns
+    .filter((c) => c.enabled && colRegistry[c.key])
+    .map((c) => ({ key: c.key, def: colRegistry[c.key] }));
+
+  // Banner / expanded-detail rows span the full table width. With
+  // the new column system this is dynamic: data columns the user
+  // has visible + 1 for the always-rendered Expand cell.
+  const fullColSpan = visibleColumns.length + 1;
+
+  // Up/down reorder handlers for the panel. Mutating the array
+  // order means the column order in the table updates immediately
+  // (same `displayColumns` drives both).
+  const moveColumn = (key: string, dir: "up" | "down") => {
+    const idx = displayColumns.findIndex((c) => c.key === key);
+    if (idx < 0) return;
+    const swap = dir === "up" ? idx - 1 : idx + 1;
+    if (swap < 0 || swap >= displayColumns.length) return;
+    const next = [...displayColumns];
+    [next[idx], next[swap]] = [next[swap], next[idx]];
+    setDisplayColumns(next);
+    void saveColumns(next);
+  };
+
   return (
     <main className="mx-auto max-w-6xl space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -667,30 +1085,92 @@ export default function AccountingPage() {
       {showSettings && displayColumns.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm flex items-center gap-2">
-              <Settings2 className="h-4 w-4" />
-              Record Display Settings
+            <CardTitle className="text-sm flex items-center gap-2 justify-between">
+              <span className="flex items-center gap-2">
+                <Settings2 className="h-4 w-4" />
+                Record Display Settings
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  // Reset all toggles to ON so the user can recover
+                  // from "I turned everything off and the table looks
+                  // empty" — a common mistake the previous version
+                  // of this panel made very easy to fall into.
+                  const reset = displayColumns.map((c) => ({ ...c, enabled: true }));
+                  setDisplayColumns(reset);
+                  void saveColumns(reset);
+                }}
+                className="text-[11px] font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 px-2 py-1 rounded hover:bg-blue-50 dark:hover:bg-blue-950/30"
+                title="Re-enable every toggle below"
+              >
+                Reset all
+              </button>
             </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-xs text-neutral-500 mb-3">
-              Choose which fields appear on each accounting record. Changes save automatically.
+              Every column in the table below is fully under your control.
+              Toggle the eye to show or hide the column; use the arrows to
+              reorder it. The table renders columns top-to-bottom in the
+              order shown here. <strong className="text-neutral-700 dark:text-neutral-200">If you hide every column, the table will have no data columns at all</strong> — only the expand chevron.
             </p>
-            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-4">
-              {displayColumns.map((col) => (
-                <button
+            <div className="space-y-1.5">
+              {displayColumns.map((col, idx) => (
+                <div
                   key={col.key}
-                  type="button"
-                  onClick={() => toggleColumn(col.key)}
-                  className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
+                  className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition-colors ${
                     col.enabled
                       ? "border-blue-300 bg-blue-50 text-blue-800 dark:border-blue-700 dark:bg-blue-950/30 dark:text-blue-300"
-                      : "border-neutral-200 text-neutral-400 dark:border-neutral-700 dark:text-neutral-500"
+                      : "border-neutral-200 bg-neutral-50/50 text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900/30 dark:text-neutral-500"
                   }`}
                 >
-                  {col.enabled ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-                  {col.label}
-                </button>
+                  {/* Position number — gives the user a sense of
+                      where they are in the order. */}
+                  <span className="font-mono text-[10px] tabular-nums w-5 text-center text-neutral-400 dark:text-neutral-500 shrink-0">
+                    {idx + 1}
+                  </span>
+                  {/* Reorder controls. Up/down arrows swap with the
+                      previous/next row. Disabled at the boundaries
+                      so the user can't push past the start/end. */}
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => moveColumn(col.key, "up")}
+                      disabled={idx === 0}
+                      className="p-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-30 disabled:cursor-not-allowed"
+                      title="Move up (show earlier)"
+                      aria-label={`Move ${col.label} up`}
+                    >
+                      <ArrowUp className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveColumn(col.key, "down")}
+                      disabled={idx === displayColumns.length - 1}
+                      className="p-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-30 disabled:cursor-not-allowed"
+                      title="Move down (show later)"
+                      aria-label={`Move ${col.label} down`}
+                    >
+                      <ArrowDown className="h-3 w-3" />
+                    </button>
+                  </div>
+                  {/* Visibility toggle. Clicking the eye / label
+                      flips `enabled`. */}
+                  <button
+                    type="button"
+                    onClick={() => toggleColumn(col.key)}
+                    className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                    title={col.enabled ? "Hide this column" : "Show this column"}
+                  >
+                    {col.enabled ? (
+                      <Eye className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
+                    ) : (
+                      <EyeOff className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+                    )}
+                    <span className="truncate font-medium">{col.label}</span>
+                  </button>
+                </div>
               ))}
             </div>
             {savingCols && <p className="mt-2 text-[10px] text-neutral-400">Saving...</p>}
@@ -718,25 +1198,28 @@ export default function AccountingPage() {
         <div className="space-y-3">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard
-              title="Outstanding (Receivable)"
+              title="Money In — Outstanding"
               value={formatCurrency(stats.receivable.outstandingCents)}
-              subtitle={`${stats.receivable.recordCount} record${stats.receivable.recordCount !== 1 ? "s" : ""} · ${formatCurrency(stats.receivable.billedCents)} billed`}
+              subtitle={`${stats.receivable.recordCount} record${stats.receivable.recordCount !== 1 ? "s" : ""} · ${formatCurrency(stats.receivable.billedCents)} total invoiced`}
               icon={Clock}
               iconColor="bg-amber-100 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400"
+              tooltip="Money clients / agents still owe us. Sum of (total − paid) across every open receivable invoice. `Total invoiced` is the size of the receivable book — paid plus unpaid."
             />
             <StatCard
-              title="Collected (Receivable)"
+              title="Money In — Collected"
               value={formatCurrency(stats.receivable.collectedCents)}
               subtitle="Lifetime, capped per record"
               icon={CheckCircle2}
               iconColor="bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400"
+              tooltip="Money we have received. Lifetime sum, capped at each invoice's total so overpayments don't inflate this number."
             />
             <StatCard
-              title="Outstanding (Payable)"
+              title="Money Out — Outstanding"
               value={formatCurrency(stats.payable.outstandingCents)}
-              subtitle={`${stats.payable.recordCount} record${stats.payable.recordCount !== 1 ? "s" : ""}`}
+              subtitle={`${stats.payable.recordCount} record${stats.payable.recordCount !== 1 ? "s" : ""} · commissions we still owe agents`}
               icon={DollarSign}
               iconColor="bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400"
+              tooltip="Money WE owe out. Mainly agent commissions when the client paid admin directly. Unpaid CLIENT invoices belong in `Money In — Outstanding`, not here."
             />
             <StatCard
               title="Pending Review"
@@ -1007,54 +1490,16 @@ export default function AccountingPage() {
               <Table className="[&_th]:px-3 [&_td]:px-3 [&_td]:py-2 [&_td]:align-top text-sm">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[110px] hidden md:table-cell">
-                      <button
-                        type="button"
-                        onClick={() => toggleSort("date")}
-                        className="inline-flex items-center gap-1 hover:text-neutral-700 dark:hover:text-neutral-200"
-                      >
-                        Date {sortIcon("date")}
-                      </button>
-                    </TableHead>
-                    <TableHead className="min-w-[140px]">
-                      <button
-                        type="button"
-                        onClick={() => toggleSort("docNumber")}
-                        className="inline-flex items-center gap-1 hover:text-neutral-700 dark:hover:text-neutral-200"
-                      >
-                        Document {sortIcon("docNumber")}
-                      </button>
-                    </TableHead>
-                    <TableHead className="hidden sm:table-cell min-w-[150px]">Type</TableHead>
-                    <TableHead className="hidden lg:table-cell min-w-[200px]">Insured / Agent</TableHead>
-                    <TableHead className="hidden md:table-cell min-w-[150px]">Policy</TableHead>
-                    <TableHead className="text-right hidden sm:table-cell">
-                      <button
-                        type="button"
-                        onClick={() => toggleSort("outstanding")}
-                        className="inline-flex items-center gap-1 hover:text-neutral-700 dark:hover:text-neutral-200"
-                      >
-                        Outstanding {sortIcon("outstanding")}
-                      </button>
-                    </TableHead>
-                    <TableHead className="text-right">
-                      <button
-                        type="button"
-                        onClick={() => toggleSort("total")}
-                        className="inline-flex items-center gap-1 hover:text-neutral-700 dark:hover:text-neutral-200"
-                      >
-                        Total {sortIcon("total")}
-                      </button>
-                    </TableHead>
-                    <TableHead className="hidden sm:table-cell">
-                      <button
-                        type="button"
-                        onClick={() => toggleSort("status")}
-                        className="inline-flex items-center gap-1 hover:text-neutral-700 dark:hover:text-neutral-200"
-                      >
-                        Status {sortIcon("status")}
-                      </button>
-                    </TableHead>
+                    {/* Iterate ONLY columns the user enabled — in
+                        their saved order. Each column's renderHead
+                        renders the (possibly sortable) header
+                        button. The trailing Expand column always
+                        renders last as a UI affordance. */}
+                    {visibleColumns.map(({ key, def }) => (
+                      <TableHead key={key} className={def.headClass}>
+                        {def.renderHead()}
+                      </TableHead>
+                    ))}
                     <TableHead className="w-[40px]" aria-label="Expand"></TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1064,85 +1509,79 @@ export default function AccountingPage() {
                 // EITHER (a) the policy has > 1 record (typical: DN
                 // + AP + endorsements), or (b) the single record is
                 // an endorsement (parent policy context matters).
-                // Unlinked / orphan rows render alone without a
-                // banner — they have no parent to identify.
-                const showBanner = group.groupId !== null &&
-                  group.parentPolicyNumber &&
-                  (group.rows.length > 1 || group.rows.some((r) => r.isEndorsement));
                 return (
                   <React.Fragment key={group.key}>
-                    {showBanner && (
-                      <TableRow className="bg-blue-50/60 dark:bg-blue-950/30 hover:bg-blue-50/60 dark:hover:bg-blue-950/30 border-t-2 border-t-blue-200 dark:border-t-blue-900">
-                        <TableCell colSpan={9} className="py-2! px-3!">
-                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <FileText className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
-                              <span className="text-[10px] font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">Policy</span>
-                              <span className="font-mono text-sm font-bold text-neutral-900 dark:text-neutral-100 break-all">
-                                {group.parentPolicyNumber}
-                              </span>
-                            </div>
-                            {group.parentInsuredDisplayName && (
-                              <span className="flex items-center gap-1 text-sm font-medium text-neutral-800 dark:text-neutral-200 min-w-0">
-                                <User className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-                                <span className="truncate max-w-[180px]" title={group.parentInsuredDisplayName}>
-                                  {group.parentInsuredDisplayName}
-                                </span>
-                              </span>
-                            )}
-                            {group.parentVehicleRegistration && (
-                              <span className="font-mono text-xs font-semibold px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-100">
-                                {group.parentVehicleRegistration}
-                              </span>
-                            )}
-                            <span className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
-                              {group.rows.length} record{group.rows.length !== 1 ? "s" : ""}
-                            </span>
-                            <div className="ml-auto flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
-                              {/* Per `.cursor/skills/accounting-view-reconciliation/SKILL.md`
-                                  Pattern B: these are document totals,
-                                  NOT a reconciled policy obligation —
-                                  client-direct payments and agent
-                                  settlements are alternative paths for
-                                  the SAME debt, so summing them
-                                  double-counts. Label explicitly. */}
-                              <span
-                                className="text-neutral-500 dark:text-neutral-400"
-                                title="Sum of every document's total in this group. NOT a reconciled outstanding — open the policy's statement for the canonical view."
-                              >
-                                Σ docs: <span className="font-semibold text-neutral-700 dark:text-neutral-300">
-                                  {formatCurrency(group.groupTotalCents, group.currency)}
-                                </span>
-                              </span>
-                              {group.groupId !== null && (
-                                <Link
-                                  href={`/dashboard/policies?policyId=${group.groupId}&openTab=accounting`}
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-200 dark:hover:bg-blue-900/60 font-medium text-[10px]"
-                                  title="Open the policy's reconciled Accounting tab (Total Due / Client Paid / Agent Paid / Commission / Outstanding)"
-                                >
-                                  View statement →
-                                </Link>
-                              )}
-                            </div>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    )}
+                    {/* Group banner removed — the rows themselves
+                        carry enough context (insured name, vehicle,
+                        policy number column). A separator row between
+                        groups adds visual noise without adding value. */}
                     {group.rows.map((inv) => {
                     const isExpanded = expandedInvoice === inv.id;
                     const remaining = getOutstandingCents(inv);
                     const category = classifyInvoice(inv);
                     const recordId = getStableRecordId(inv);
                     const latestEntry = getLatestLifecycleEntry(inv);
-                    // Human-readable headline: prefer the latest sent
-                    // document number (e.g. `DN-2026-6345`) since that's
-                    // what people actually recognise. Fall back to the
-                    // row's own invoiceNumber when there's no lifecycle.
-                    const headlineDocNumber = latestEntry?.documentNumber ?? inv.invoiceNumber;
-                    const headlineDocType = latestEntry
-                      ? lifecycleTagFromKey(latestEntry.trackingKey)
-                      : null;
+                    // Headline: use the policy's actual Invoice number
+                    // whenever one exists. The row's `invoiceNumber`
+                    // column rotates as new templates (DN, Receipt,
+                    // etc.) are sent, but `documentNumbers` carries
+                    // the FULL map of every document type ever issued
+                    // for this policy via `policy.documentTracking`,
+                    // so an Invoice that was sent earlier is still
+                    // there — just under its own key. We pull it out
+                    // here so every row that's been invoiced reads
+                    // the same way (HIDIINV-…), instead of switching
+                    // to HIDIDEBT-… the moment a Debit Note was sent.
+                    //
+                    // Selection order:
+                    //   1. The Invoice number from the policy's
+                    //      document tracking map.
+                    //   2. The Debit Note number (for endorsement
+                    //      flows that go straight to DN — no Invoice
+                    //      was ever issued).
+                    //   3. The lifecycle's latest non-quotation entry.
+                    //   4. The row's stored invoiceNumber (last-resort).
+                    const findByKind = (kindMatch: (k: string) => boolean): string | null => {
+                      if (!inv.documentNumbers) return null;
+                      for (const [key, number] of Object.entries(inv.documentNumbers)) {
+                        if (kindMatch(key.toLowerCase())) return number;
+                      }
+                      return null;
+                    };
+                    // PLAIN invoice — must contain "invoice" but NOT
+                    // an endorsement / debit / credit prefix. Pull the
+                    // regular `HIDIINV-…` before any custom variant
+                    // like an "Endorsement Invoice" (`HIDIEDINV-…`)
+                    // your admin may have configured.
+                    const isPlainInvoiceKey = (k: string) =>
+                      k.includes("invoice")
+                      && !k.includes("endorsement")
+                      && !k.includes("endorse")
+                      && !k.includes("ed_invoice")
+                      && !k.includes("edinvoice")
+                      && !k.includes("renewal")
+                      && !k.includes("debit")
+                      && !k.includes("credit");
+                    // ANY invoice-like key — endorsement-invoice,
+                    // renewal-invoice, etc. Only used when no plain
+                    // invoice exists for this row.
+                    const isAnyInvoiceKey = (k: string) =>
+                      k.includes("invoice")
+                      && !k.includes("debit") && !k.includes("credit");
+                    const isDebitKey = (k: string) =>
+                      k.includes("debit_note") || k.includes("debitnote");
+                    const headlineDocNumber =
+                      findByKind(isPlainInvoiceKey)
+                      ?? findByKind(isAnyInvoiceKey)
+                      ?? findByKind(isDebitKey)
+                      ?? latestEntry?.documentNumber
+                      ?? inv.invoiceNumber;
+                    // Type badge dropped from the headline — the Type
+                    // column already labels the category (Client
+                    // Premium / Agent Settlement / etc.) so a second
+                    // INVOICE/DEBIT NOTE/RECEIPT label here was
+                    // redundant and inconsistent across rows.
+                    const headlineDocType: string | null = null;
                     const displayDate = inv.invoiceDate ?? inv.createdAt;
                     const policyLabel = inv.parentPolicyNumber ?? inv.policyNumber;
                     // For client rows: snapshot insured → parent insured →
@@ -1154,6 +1593,19 @@ export default function AccountingPage() {
                       ?? inv.clientName
                       ?? (inv.entityType === "client" ? inv.entityName : null);
                     const plateLabel = inv.vehicleRegistration ?? inv.parentVehicleRegistration;
+                    // Bundle the per-row computed locals so the
+                    // column registry's `renderCell` can read them
+                    // without having to re-derive them per cell.
+                    const cellCtx: AccountingCellCtx = {
+                      category,
+                      displayDate,
+                      recordId,
+                      insuredLabel,
+                      plateLabel,
+                      policyLabel,
+                      headlineDocNumber,
+                      remaining,
+                    };
 
                     return (
                       <React.Fragment key={inv.id}>
@@ -1162,324 +1614,28 @@ export default function AccountingPage() {
                         className={cn(
                           "cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/40",
                           isExpanded && "bg-neutral-50/60 dark:bg-neutral-800/30",
-                          // Subtle left-edge color stripe by category so
-                          // receivables / payables / credit notes are
-                          // visually distinct even in a flat table.
-                          "border-l-2",
-                          category === "client_receivable" && "border-l-blue-500",
-                          category === "agent_receivable" && "border-l-indigo-500",
-                          category === "agent_commission_payable" && "border-l-amber-500",
-                          category === "credit_note" && "border-l-rose-500",
-                          category === "statement_bundle" && "border-l-emerald-500",
-                          category === "other" && "border-l-neutral-300",
+                          // No left-edge category stripe — the Type
+                          // column (and the Category Ledger tabs
+                          // above the table) already encode category
+                          // explicitly, so the coloured bar was
+                          // visual noise.
                         )}
                       >
-                        {/* Date */}
-                        <TableCell className="hidden md:table-cell whitespace-nowrap text-xs text-neutral-500 dark:text-neutral-400">
-                          {new Date(displayDate).toLocaleDateString()}
-                        </TableCell>
-
-                        {/* Document number (latest sent) + type tag +
-                            small subtitle: record ID + warnings */}
-                        <TableCell>
-                          <div className="flex flex-col gap-0.5 min-w-0">
-                            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                              <span className="font-mono text-sm font-semibold break-all">{headlineDocNumber}</span>
-                              {headlineDocType && (
-                                <Badge variant="custom" className="shrink-0 bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 text-[10px]">
-                                  {headlineDocType}
-                                </Badge>
-                              )}
-                              {inv.warnings.map((w) => (
-                                <Badge
-                                  key={w}
-                                  variant="custom"
-                                  className={cn(
-                                    "shrink-0 text-[10px]",
-                                    WARNING_LABELS[w].tone === "danger"
-                                      ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200"
-                                      : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
-                                  )}
-                                  title={WARNING_LABELS[w].title}
-                                >
-                                  <AlertTriangle className="h-3 w-3 mr-1" />
-                                  {w.replace(/_/g, " ")}
-                                </Badge>
-                              ))}
-                            </div>
-                            {/* On screens narrower than `lg` the
-                                Insured/Vehicle and Policy columns are
-                                hidden — surface the essentials right
-                                under the doc number so the user can
-                                still ID the row without tapping to
-                                expand. */}
-                            {/* On <lg the Insured/Agent column is
-                                hidden — replicate its info here so
-                                the agent (or the insured for
-                                client-side rows) is never invisible. */}
-                            {(() => {
-                              const isAgentRow = category === "agent_receivable" || category === "agent_commission_payable";
-                              const agentName = inv.entityType === "agent" ? (inv.entityName ?? inv.agentName) : inv.agentName;
-                              return (
-                                <div className="lg:hidden flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
-                                  {isAgentRow && agentName && (
-                                    <span className="flex items-center gap-1 text-amber-700 dark:text-amber-300 font-medium truncate max-w-[180px]" title={`Agent: ${agentName}`}>
-                                      <Briefcase className="h-3 w-3 shrink-0" />
-                                      {agentName}
-                                    </span>
-                                  )}
-                                  {isAgentRow && !agentName && (
-                                    <span className="flex items-center gap-1 text-red-500 dark:text-red-400 italic">
-                                      ⚠ no agent linked
-                                    </span>
-                                  )}
-                                  {insuredLabel && (
-                                    <span className="flex items-center gap-1 truncate max-w-[180px]">
-                                      <User className="h-3 w-3 shrink-0" />
-                                      {insuredLabel}
-                                    </span>
-                                  )}
-                                  {plateLabel && (
-                                    <span className="font-mono font-semibold px-1 py-px rounded bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200">
-                                      {plateLabel}
-                                    </span>
-                                  )}
-                                  {!isAgentRow && agentName && (
-                                    <span className="flex items-center gap-1 text-amber-700 dark:text-amber-300 truncate max-w-[140px]" title={`Agent: ${agentName}`}>
-                                      <Briefcase className="h-3 w-3 shrink-0" />
-                                      {agentName}
-                                    </span>
-                                  )}
-                                  {policyLabel && (
-                                    <span className="font-mono text-neutral-400 break-all md:hidden">{policyLabel}</span>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                            <span
-                              className="text-[10px] font-mono text-neutral-400"
-                              title="Internal record ID — stays the same across template changes"
-                            >
-                              {recordId.primary}
-                              {isColEnabled("notes") && shouldShowNotes(inv, category) && inv.notes && (
-                                <span className="ml-2 italic text-neutral-500 dark:text-neutral-400">· {inv.notes}</span>
-                              )}
-                            </span>
-                          </div>
-                        </TableCell>
-
-                        {/* Type: category + direction + endorsement +
-                            "client paid directly" — clustered so the
-                            user can see what KIND of record this is at
-                            a glance. Hidden on mobile to save width. */}
-                        <TableCell className="hidden sm:table-cell">
-                          <div className="flex flex-wrap items-center gap-1">
-                            <Badge variant="custom" className={cn("shrink-0 text-[10px]", CATEGORY_ACCENT[category])}>
-                              {CATEGORY_LABELS[category]}
-                            </Badge>
-                            {isColEnabled("direction") && (
-                              <Badge variant="custom" className={cn("shrink-0 text-[10px]", directionTone(inv.direction))}>
-                                {inv.direction === "receivable" ? "Receivable" : "Payable"}
-                              </Badge>
-                            )}
-                            {inv.isEndorsement && (
-                              <Badge variant="custom" className="shrink-0 text-[10px] bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                                Endorsement
-                              </Badge>
-                            )}
-                            {shouldShowClientPaidDirectlyBadge(inv) && (
-                              <Badge
-                                variant="custom"
-                                className="shrink-0 text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-200 dark:border-emerald-800"
-                                title="Client paid admin directly. The agent commission is materialised on a separate payable (AP-…) row."
-                              >
-                                Client paid directly
-                              </Badge>
-                            )}
-                          </div>
-                        </TableCell>
-
-                        {/* Insured / Vehicle — surface the snapshot
-                            display name + plate so the user can
-                            identify the row without opening it. */}
-                        <TableCell className="hidden lg:table-cell">
-                          {(() => {
-                            // For agent-side rows the AGENT is the
-                            // counterparty (who owes us money on a
-                            // settlement, or whom we owe commission to)
-                            // — promote them to the primary line so
-                            // even orphan rows with no policy still
-                            // have an identity. For client-side rows
-                            // the insured stays primary; the agent
-                            // shows up smaller below.
-                            const isAgentRow = category === "agent_receivable" || category === "agent_commission_payable";
-                            const agentName = inv.entityType === "agent" ? (inv.entityName ?? inv.agentName) : inv.agentName;
-                            return (
-                              <div className="flex flex-col gap-0.5 min-w-0">
-                                {isAgentRow ? (
-                                  <>
-                                    {agentName ? (
-                                      <span className="flex items-center gap-1.5 font-medium text-sm text-amber-700 dark:text-amber-300 truncate" title={`Agent: ${agentName}`}>
-                                        <Briefcase className="h-3.5 w-3.5 shrink-0" />
-                                        {agentName}
-                                      </span>
-                                    ) : (
-                                      <span className="text-xs text-red-500 dark:text-red-400 italic">⚠ no agent linked</span>
-                                    )}
-                                    {insuredLabel && (
-                                      <span className="flex items-center gap-1 text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
-                                        <User className="h-3 w-3 shrink-0" />
-                                        {insuredLabel}
-                                      </span>
-                                    )}
-                                    {plateLabel && (
-                                      <span className="font-mono text-[11px] font-semibold inline-block w-fit px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200">
-                                        {plateLabel}
-                                      </span>
-                                    )}
-                                  </>
-                                ) : (
-                                  <>
-                                    {insuredLabel ? (
-                                      <span className="flex items-center gap-1.5 font-medium text-sm text-neutral-900 dark:text-neutral-100 truncate">
-                                        <User className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-                                        {insuredLabel}
-                                      </span>
-                                    ) : (
-                                      <span className="text-xs text-neutral-400">—</span>
-                                    )}
-                                    {plateLabel && (
-                                      <span className="font-mono text-[11px] font-semibold inline-block w-fit px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200">
-                                        {plateLabel}
-                                      </span>
-                                    )}
-                                    {isColEnabled("agentName") && agentName && (
-                                      <span className="text-[11px] text-amber-700 dark:text-amber-300 flex items-center gap-1 truncate" title={`Agent: ${agentName}`}>
-                                        <Briefcase className="h-3 w-3 shrink-0" />
-                                        {agentName}
-                                      </span>
-                                    )}
-                                  </>
-                                )}
-                              </div>
-                            );
-                          })()}
-                        </TableCell>
-
-                        {/* Policy number (parent if endorsement). */}
-                        <TableCell className="hidden md:table-cell">
-                          {policyLabel ? (
-                            <span className="font-mono text-xs text-neutral-700 dark:text-neutral-300 break-all">
-                              {policyLabel}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-neutral-400">—</span>
-                          )}
-                        </TableCell>
-
-                        {/* Outstanding — coloured: orange when > 0,
-                            green when settled. Hidden on mobile to
-                            save width; the Total column covers it. */}
-                        <TableCell className="hidden sm:table-cell text-right whitespace-nowrap">
-                          <span className={cn(
-                            "text-sm font-semibold",
-                            remaining > 0 ? "text-orange-600" : "text-green-600",
-                          )}>
-                            {formatCurrency(remaining, inv.currency)}
-                          </span>
-                        </TableCell>
-
-                        {/* Total — always visible; small "paid/total"
-                            subtitle below for at-a-glance progress. */}
-                        <TableCell className="text-right whitespace-nowrap">
-                          <div className="flex flex-col items-end gap-0.5">
-                            <span className="text-sm font-semibold">
-                              {formatCurrency(inv.totalAmountCents, inv.currency)}
-                            </span>
-                            <span className="text-[10px] text-neutral-400">
-                              Paid {formatCurrency(inv.paidAmountCents, inv.currency)}
-                            </span>
-                          </div>
-                        </TableCell>
-
-                        {/* Status — derived payment state (PAID /
-                            UNPAID / PARTIAL / etc.) computed from
-                            the actual amounts, NOT the raw workflow
-                            status. The workflow status (Pending /
-                            Submitted) shows as a tiny subtitle for
-                            ops users who care. This is the column
-                            people actually look at to answer "is
-                            this paid?". */}
-                        <TableCell className="hidden sm:table-cell">
-                          {(() => {
-                            const total = inv.totalAmountCents;
-                            const paid = inv.paidAmountCents;
-                            const outstanding = total - paid;
-                            type State = { label: string; tone: string; icon: string | null; sub?: string };
-                            let state: State;
-                            // === Highest priority: explicit workflow exits ===
-                            if (inv.status === "cancelled") {
-                              state = { label: "VOID", tone: "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200", icon: "✕" };
-                            } else if (inv.status === "refunded") {
-                              state = { label: "REFUNDED", tone: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200", icon: "↩" };
-                            } else if (inv.status === "statement_created") {
-                              state = { label: "BUNDLED", tone: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200", icon: "▣" };
-                            } else if (inv.status === "draft") {
-                              state = { label: "DRAFT", tone: "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200", icon: null };
-                            } else if (total === 0) {
-                              state = { label: "ZERO", tone: "bg-neutral-200 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300", icon: null };
-                            }
-                            // === Client-direct settlement wins over the
-                            //     raw paid/total comparison: when the
-                            //     client paid admin directly, the row IS
-                            //     settled even if `paid > total` looks
-                            //     weird (the receivable total is the
-                            //     agent net premium; the client paid the
-                            //     full client premium). The commission
-                            //     difference is on a separate AP- row. ===
-                            else if (inv.wasClientPaidDirectly) {
-                              state = {
-                                label: "PAID",
-                                tone: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200",
-                                icon: "✓",
-                                sub: "Client paid admin directly",
-                              };
-                            } else if (inv.hasClientDirectSubmitted) {
-                              state = {
-                                label: "PENDING VERIFY",
-                                tone: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200",
-                                icon: "▷",
-                                sub: "Client-direct payment submitted",
-                              };
-                            }
-                            // === Fall back to the actual paid amount ===
-                            else if (outstanding <= 0) {
-                              state = { label: "PAID", tone: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200", icon: "✓" };
-                            } else if (paid > 0) {
-                              state = { label: "PARTIAL", tone: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200", icon: "◐" };
-                            } else if (inv.status === "overdue") {
-                              state = { label: "OVERDUE", tone: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200", icon: "⚠" };
-                            } else {
-                              state = { label: "UNPAID", tone: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200", icon: null };
-                            }
-                            return (
-                              <div className="flex flex-col items-start gap-0.5">
-                                <Badge variant="custom" className={cn("text-[10px] font-bold tracking-wide", state.tone)} title={state.sub}>
-                                  {state.icon && <span className="mr-1">{state.icon}</span>}
-                                  {state.label}
-                                </Badge>
-                                {state.sub && (
-                                  <span className="text-[9px] text-emerald-700 dark:text-emerald-300 font-medium">
-                                    {state.sub}
-                                  </span>
-                                )}
-                                <span className="text-[9px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
-                                  {INVOICE_STATUS_LABELS[inv.status as InvoiceStatus] ?? inv.status}
-                                </span>
-                              </div>
-                            );
-                          })()}
-                        </TableCell>
+                        {/* Iterate ONLY the columns the user has
+                            enabled in their saved order. Every cell
+                            is wrapped in a <TableCell> with its
+                            registry-defined class; the content
+                            comes from `def.renderCell(inv, ctx)`.
+                            If `visibleColumns.length === 0` the
+                            row renders no data cells at all — only
+                            the trailing Expand chevron — which is
+                            exactly what the user asked for ("no
+                            default is showed if i hide all"). */}
+                        {visibleColumns.map(({ key, def }) => (
+                          <TableCell key={key} className={def.cellClass}>
+                            {def.renderCell(inv, cellCtx)}
+                          </TableCell>
+                        ))}
 
                         {/* Expand / collapse chevron */}
                         <TableCell className="w-[40px] text-right">
@@ -1496,7 +1652,7 @@ export default function AccountingPage() {
                             className="bg-neutral-50/40 dark:bg-neutral-900/30 hover:bg-neutral-50/40 dark:hover:bg-neutral-900/30"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <TableCell colSpan={9} className="px-3.5 py-3">
+                            <TableCell colSpan={fullColSpan} className="px-3.5 py-3">
                           <div className="space-y-3">
                             {shouldShowClientPaidDirectlyBadge(inv) && (
                               <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">

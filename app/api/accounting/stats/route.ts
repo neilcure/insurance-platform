@@ -87,6 +87,36 @@ export async function GET(request: Request) {
     // represent open obligations or completed cash flow.
     const closedStatuses = sql`('cancelled', 'refunded')`;
 
+    // When a client pays the agent directly, `findOrCreateClientInvoice`
+    // (in app/api/accounting/invoices/[id]/payments/route.ts) writes a
+    // SECOND receivable row tagged premium_type='client_premium' to track
+    // the client→agent leg. The canonical receivable for the SAME policy
+    // is still the premium_type='agent_premium' row (the agent net).
+    //
+    // Per `.cursor/skills/accounting-view-reconciliation/SKILL.md`:
+    //   §1: "1 receivable row ... with total=agentPremium" per policy
+    //   §7.1: "NEVER sum totalAmountCents across client_receivable +
+    //          agent_receivable ... those are the same money viewed
+    //          from three angles."
+    //
+    // So: drop the client_premium duplicate whenever its sibling
+    // agent_premium row exists for the same policy. The kept row is
+    // the agent_premium one — that's what admin actually invoices.
+    // Without this clause the cards double-count the commission slice
+    // (client_premium − agent_premium) on every client-paid-agent flow.
+    const dropClientPremiumDuplicate = sql`NOT (
+      ${accountingInvoices.premiumType} = 'client_premium'
+      AND ${accountingInvoices.entityPolicyId} IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM accounting_invoices sib
+        WHERE sib.entity_policy_id = ${accountingInvoices.entityPolicyId}
+          AND sib.premium_type = 'agent_premium'
+          AND sib.direction = 'receivable'
+          AND sib.status NOT IN ('cancelled', 'refunded')
+          AND sib.id <> ${accountingInvoices.id}
+      )
+    )`;
+
     // Receivable summary — combine "individuals not bundled into a
     // statement" with "statement parents", so every contribution is
     // counted exactly once and the lifecycle (quotation → debit note →
@@ -103,6 +133,8 @@ export async function GET(request: Request) {
       sql`${accountingInvoices.invoiceType} <> 'credit_note'`,
       // Quotation-only rows are pre-sale, not real receivables.
       excludeQuotationOnlyRows,
+      // Reconciliation rule (see comment block above).
+      dropClientPremiumDuplicate,
       ...orgConditions,
       ...monthFilterConditions,
     ];

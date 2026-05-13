@@ -161,23 +161,36 @@ Rows where `accounting_invoices.entityPolicyId IS NULL` AND no items
 link to a policy are tagged with the `orphan_no_policy` warning.
 They typically come from:
 
-- A quote that was deleted before becoming a policy (the auto-created
-  AR row was never cleaned up)
+- A quote or test policy that was deleted — the auto-created AR row
+  was turned into an orphan by the `ON DELETE: SET NULL` foreign key
+  on `entity_policy_id` while its `accounting_invoice_items` rows
+  were wiped by `ON DELETE: CASCADE`
 - A test/dev creation that bypassed `autoCreateAccountingInvoices`
 - A schema migration leftover
 
-**Reconciliation rule**: orphan rows can NEVER be reconciled because
-there is no policy to fetch a statement for. Therefore:
+**Prevention (fixed 2026-05-13)**: the policy DELETE handler in
+`app/api/policies/[id]/route.ts` now auto-cancels any open, unpaid
+accounting invoices for the policy BEFORE the `db.delete(policies)`
+call. This prevents new orphan rows from being created. Rows with a
+real verified payment are intentionally left alone (the foreign key
+sets them to NULL) because the money trail must be preserved for
+audit — an admin must review those manually.
+
+**Reconciliation rule**: orphan rows that DO exist (created before the
+fix) can NEVER be reconciled because there is no policy to fetch a
+statement for. Therefore:
 
 - They MUST NOT contribute to per-group totals (they aren't in any
   group)
 - They SHOULD be hidden by default in user-facing dashboards
   (`hideOrphans` toggle in `/dashboard/accounting`)
-- Cleanup is admin-driven (manual cancel via the invoice row's edit
-  panel, or a one-off SQL script after audit)
+- Cleanup of legacy orphans: use `scripts/cleanup-orphan-test-invoices.ts`
+  as a template — target specific IDs, include safety guards (must be
+  pending, paid=0, no payment rows), dry-run first, then `--apply`
 
-NEVER auto-cancel orphans server-side without an explicit admin
-action — there's no way to be 100% sure they're not legitimate.
+NEVER auto-cancel orphans in a bulk sweep without auditing each row
+first — there is no way to be 100% sure a row is not a legitimate
+receivable for a policy that was erroneously deleted.
 
 ## 5. The five places that MUST show consistent numbers
 
