@@ -4,17 +4,11 @@
  * `useTableViewPresets` — single source of truth for any dashboard table
  * that needs saved column-view presets.
  *
- * Every consumer (Policies, Users, Agents, ...) hits the same backend
- * (`/api/view-presets?scope=...`), uses the same shape (`ViewPreset`),
- * and respects the same MAX of 5 saved views.
+ * Every consumer hits the same backend (`/api/view-presets?scope=...`), uses the
+ * same shape (`ViewPreset`), and respects the same MAX of 5 saved views
+ * **per user** and **per organisation** (organisation defaults apply only
+ * while the user list is empty — first personal save forks a private copy).
  *
- * The hook handles:
- *   - GET on mount, with localStorage fallback when the API is offline
- *   - PUT on every save (writes both API and localStorage)
- *   - Active preset selection (default preset wins on first load)
- *   - upsert / delete / setDefault helpers
- *
- * The hook is intentionally NOT opinionated about what `columns` means.
  * See `lib/view-presets/types.ts` and the skill at
  * `.cursor/skills/table-view-presets/SKILL.md`.
  */
@@ -25,6 +19,11 @@ import {
   VIEW_PRESETS_MAX,
   type ViewPreset,
 } from "@/lib/view-presets/types";
+
+type ParsedBootstrap = {
+  user: ViewPreset[];
+  organisation: ViewPreset[];
+};
 
 export type UseTableViewPresetsOptions = {
   /** Distinct namespace per table. Same scope must be used by every page that
@@ -40,6 +39,7 @@ export type UseTableViewPresetsOptions = {
 };
 
 export type UseTableViewPresetsReturn = {
+  /** Effective list shown in UI: user's saves, or organisation defaults if none. */
   presets: ViewPreset[];
   presetsLoaded: boolean;
   activePresetId: string | null;
@@ -47,18 +47,15 @@ export type UseTableViewPresetsReturn = {
   /** Currently selected preset (default if none chosen). May be `null` until
    *  the API has responded. */
   activePreset: ViewPreset | null;
-  /** Replace the entire list (rarely needed; prefer `upsertPreset` /
-   *  `deletePreset`). Persists immediately. */
+  /** Saves stored only under this user's key (never mixes org defaults). */
+  userPresets: ViewPreset[];
+  /** User has zero personal presets and at least one organisation default exists. */
+  usingOrganisationFallback: boolean;
+  /** Replace the entire user list (rarely needed; prefer `upsertPreset` /
+   * `deletePreset`). Persists immediately. */
   savePresets: (next: ViewPreset[]) => void;
-  /** Insert if `id` not in list, otherwise replace. Enforces `VIEW_PRESETS_MAX`
-   *  on insert and shows a toast on overflow. Returns the resulting preset
-   *  on success, `null` on rejection. */
   upsertPreset: (preset: ViewPreset) => ViewPreset | null;
-  /** Remove by id. If the deleted preset was default and any remain, the
-   *  first remaining is promoted to default so the table never ends up
-   *  with zero defaults. */
   deletePreset: (id: string) => void;
-  /** Mark `id` as default and clear default on every other preset. */
   setDefault: (id: string) => void;
 };
 
@@ -83,21 +80,59 @@ function writeLegacyLocalStorage(key: string, value: ViewPreset[]) {
   }
 }
 
+function parseBootstrap(
+  data: unknown,
+  legacyLocalStorageKey: string | undefined,
+): ParsedBootstrap {
+  if (
+    data &&
+    typeof data === "object" &&
+    !Array.isArray(data) &&
+    Array.isArray((data as ParsedBootstrap).user)
+  ) {
+    const o = data as ParsedBootstrap;
+    return {
+      user: o.user as ViewPreset[],
+      organisation: Array.isArray(o.organisation) ? o.organisation : [],
+    };
+  }
+  if (Array.isArray(data)) {
+    return { user: data as ViewPreset[], organisation: [] };
+  }
+  if (legacyLocalStorageKey) {
+    const legacy = readLegacyLocalStorage(legacyLocalStorageKey);
+    if (legacy) return { user: legacy, organisation: [] };
+  }
+  return { user: [], organisation: [] };
+}
+
 export function useTableViewPresets(
   options: UseTableViewPresetsOptions,
 ): UseTableViewPresetsReturn {
   const { scope, legacyLocalStorageKey, normalizePreset } = options;
 
-  const [presets, setPresets] = React.useState<ViewPreset[]>([]);
+  const [userPresets, setUserPresets] = React.useState<ViewPreset[]>([]);
+  const [organisationPresets, setOrganisationPresets] = React.useState<
+    ViewPreset[]
+  >([]);
   const [presetsLoaded, setPresetsLoaded] = React.useState(false);
   const [activePresetId, setActivePresetId] = React.useState<string | null>(
     null,
   );
 
-  const presetsRef = React.useRef(presets);
+  const userPresetsRef = React.useRef(userPresets);
   React.useEffect(() => {
-    presetsRef.current = presets;
-  }, [presets]);
+    userPresetsRef.current = userPresets;
+  }, [userPresets]);
+
+  const presets = React.useMemo(
+    () =>
+      userPresets.length > 0 ? userPresets : organisationPresets,
+    [userPresets, organisationPresets],
+  );
+
+  const usingOrganisationFallback =
+    userPresets.length === 0 && organisationPresets.length > 0;
 
   const apiUrl = React.useMemo(
     () => `/api/view-presets?scope=${encodeURIComponent(scope)}`,
@@ -111,19 +146,21 @@ export function useTableViewPresets(
       .catch(() => null)
       .then((data: unknown) => {
         if (cancelled) return;
-        let incoming: ViewPreset[] = [];
-        if (Array.isArray(data)) {
-          incoming = data as ViewPreset[];
-        } else if (legacyLocalStorageKey) {
-          const legacy = readLegacyLocalStorage(legacyLocalStorageKey);
-          if (legacy) incoming = legacy;
-        }
-        if (normalizePreset) {
-          incoming = incoming
-            .map((p) => normalizePreset(p))
+        let { user: userIncoming, organisation: orgIncoming } =
+          parseBootstrap(data, legacyLocalStorageKey);
+
+        const norm = normalizePreset;
+        if (norm) {
+          userIncoming = userIncoming
+            .map((p) => norm(p))
+            .filter((p): p is ViewPreset => p !== null);
+          orgIncoming = orgIncoming
+            .map((p) => norm(p))
             .filter((p): p is ViewPreset => p !== null);
         }
-        setPresets(incoming);
+
+        setUserPresets(userIncoming);
+        setOrganisationPresets(orgIncoming);
         setPresetsLoaded(true);
       });
     return () => {
@@ -132,15 +169,16 @@ export function useTableViewPresets(
   }, [apiUrl, legacyLocalStorageKey, normalizePreset]);
 
   const persist = React.useCallback(
-    (next: ViewPreset[]) => {
-      setPresets(next);
-      if (legacyLocalStorageKey) writeLegacyLocalStorage(legacyLocalStorageKey, next);
+    (nextUserPresets: ViewPreset[]) => {
+      setUserPresets(nextUserPresets);
+      if (legacyLocalStorageKey)
+        writeLegacyLocalStorage(legacyLocalStorageKey, nextUserPresets);
       fetch(apiUrl, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(next),
+        body: JSON.stringify(nextUserPresets),
       }).catch(() => {
-        // Silent: localStorage already mirrors. The next mount will reconcile.
+        /* silent */
       });
     },
     [apiUrl, legacyLocalStorageKey],
@@ -155,7 +193,7 @@ export function useTableViewPresets(
 
   const upsertPreset = React.useCallback(
     (preset: ViewPreset): ViewPreset | null => {
-      const current = presetsRef.current;
+      const current = userPresetsRef.current;
       const idx = current.findIndex((p) => p.id === preset.id);
       if (idx === -1 && current.length >= VIEW_PRESETS_MAX) {
         toast.error(`Maximum ${VIEW_PRESETS_MAX} views allowed`);
@@ -182,7 +220,7 @@ export function useTableViewPresets(
 
   const deletePreset = React.useCallback(
     (id: string) => {
-      const current = presetsRef.current;
+      const current = userPresetsRef.current;
       const next = current.filter((p) => p.id !== id);
       if (next.length > 0 && !next.some((p) => p.isDefault)) {
         next[0] = { ...next[0], isDefault: true };
@@ -195,7 +233,7 @@ export function useTableViewPresets(
 
   const setDefault = React.useCallback(
     (id: string) => {
-      const current = presetsRef.current;
+      const current = userPresetsRef.current;
       const next = current.map((p) => ({ ...p, isDefault: p.id === id }));
       persist(next);
     },
@@ -224,6 +262,8 @@ export function useTableViewPresets(
     activePresetId,
     setActivePresetId,
     activePreset,
+    userPresets,
+    usingOrganisationFallback,
     savePresets,
     upsertPreset,
     deletePreset,

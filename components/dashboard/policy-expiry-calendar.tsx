@@ -37,7 +37,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ExternalLink, Mail, AlertTriangle, CalendarDays, Settings2, Check } from "lucide-react";
+import { ExternalLink, Mail, AlertTriangle, CalendarDays, Settings2, Check, ChevronDown } from "lucide-react";
 import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -56,6 +56,37 @@ import {
   isHandledByDefault,
 } from "@/lib/pdf/synthetic-fields";
 import { cn } from "@/lib/utils";
+import type { DocumentStatus } from "@/lib/types/upload-document";
+import type { TaskListPreviewItem } from "@/lib/policies/upload-requirement-build";
+
+function taskBadgeForPreviewStatus(st: DocumentStatus): { label: string; className: string } {
+  switch (st) {
+    case "outstanding":
+      return {
+        label: "Outstanding",
+        className:
+          "border-orange-200 bg-orange-100 text-orange-800 dark:border-orange-900 dark:bg-orange-950/50 dark:text-orange-200",
+      };
+    case "uploaded":
+      return {
+        label: "Pending",
+        className:
+          "border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-200",
+      };
+    case "rejected":
+      return {
+        label: "Rejected",
+        className:
+          "border-red-200 bg-red-100 text-red-800 dark:border-red-900 dark:bg-red-950/50 dark:text-red-200",
+      };
+    default:
+      return {
+        label: String(st),
+        className:
+          "border-neutral-200 bg-neutral-100 text-neutral-800 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200",
+      };
+  }
+}
 
 type CalendarEventKind = "renewal" | "incomplete";
 
@@ -82,6 +113,36 @@ type ExpiringRow = {
   agentId: number | null;
   isActive: boolean;
   extraFields: Record<string, string>;
+};
+
+type OpenTasksAggregateHeaderTone = "green" | "blue" | "red";
+
+/**
+ * Tint for aggregate document-task header uses policies that still have
+ * **outstanding** slots and `daysFromToday` from the calendar row (negative = past).
+ * Green: zero outstanding slots. Red: stalest outstanding row is beyond 14 days past its plotted date.
+ * Blue: outstanding work still within that window vs today (including renewal dates further out).
+ */
+function openTasksAggregateHeaderTone(
+  outstandingCount: number,
+  policiesWithDocTasks: { row: ExpiringRow; out: number }[],
+): OpenTasksAggregateHeaderTone {
+  if (outstandingCount <= 0) return "green";
+  if (policiesWithDocTasks.length === 0) return "blue";
+  let minDays = Infinity;
+  for (const { row, out } of policiesWithDocTasks) {
+    if (out <= 0) continue;
+    minDays = Math.min(minDays, row.daysFromToday);
+  }
+  if (!Number.isFinite(minDays)) return "green";
+  if (minDays < -14) return "red";
+  return "blue";
+}
+
+const OPEN_TASKS_HEADER_TONE_CLASS: Record<OpenTasksAggregateHeaderTone, string> = {
+  green: "text-green-700 dark:text-green-400",
+  blue: "text-blue-700 dark:text-blue-400",
+  red: "text-red-700 dark:text-red-400",
 };
 
 type BucketKey = "overdue_incomplete" | "in_progress" | "expired" | "week" | "month" | "later";
@@ -296,6 +357,127 @@ function openPolicyHref(row: ExpiringRow): string {
   return `${base}?policyId=${row.policyId}`;
 }
 
+/**
+ * Resolve a calendar `extraFields` value for an admin-catalog path like
+ * `vehicleinfo.registrationNumber` even when the snapshot key is variant
+ * suffixes (`registrationNumber__byLabel__…`, prefixed `vehicleinfo__…`, …).
+ */
+function resolveCalendarExtraFieldValue(fields: Record<string, string>, path: string): string | undefined {
+  const trimmedPath = path.trim();
+  const dot = trimmedPath.indexOf(".");
+  if (dot <= 0) {
+    const v = fields[trimmedPath]?.trim();
+    return v || undefined;
+  }
+  const pkg = trimmedPath.slice(0, dot);
+  const bareKey = trimmedPath.slice(dot + 1);
+  const exactCandidates = [
+    trimmedPath,
+    `${pkg}.${pkg}__${bareKey}`,
+    `${pkg}.${pkg}_${bareKey}`,
+  ];
+  for (const c of exactCandidates) {
+    const v = fields[c]?.trim();
+    if (v) return v;
+  }
+  const prefix = `${pkg}.`;
+  let bestVal: string | undefined;
+  let bestScore = 0;
+  for (const [fk, fv] of Object.entries(fields)) {
+    if (!fk.startsWith(prefix)) continue;
+    const tail = fk.slice(prefix.length);
+    const v = fv?.trim();
+    if (!v) continue;
+    let score = 0;
+    if (tail === bareKey) score = 100;
+    else if (tail.startsWith(`${bareKey}__`) || tail.startsWith(`${bareKey}_`)) score = 85;
+    else if (tail === `${pkg}__${bareKey}` || tail === `${pkg}_${bareKey}`) score = 90;
+    else if (tail.endsWith(`__${bareKey}`) || tail.endsWith(`_${bareKey}`)) score = 70;
+    else continue;
+    if (score > bestScore) {
+      bestScore = score;
+      bestVal = v;
+    }
+  }
+  return bestVal;
+}
+
+/** YYYY-MM-DD key matching `dayToRows` buckets (local calendar day). */
+function localDateRowMapKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Human label for a YYYY-MM-DD key in the user's local calendar. */
+function formatPreviewDayHeading(isoLocalKey: string): string {
+  const parts = isoLocalKey.split("-").map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return isoLocalKey;
+  const [y, m, d] = parts as [number, number, number];
+  return new Date(y, m - 1, d).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+/**
+ * Vehicle registration / plate from snapshot `extraFields` without a
+ * single hard-coded tenant key — match common path name patterns only.
+ */
+function findRegistrationDisplay(row: ExpiringRow): string | null {
+  const ef = row.extraFields ?? {};
+  for (const guess of [
+    "vehicleinfo.registrationNumber",
+    "vehicleinfo.registration",
+    "motor.registrationNumber",
+    "vehicle.registrationNumber",
+    "pcar.registrationNumber",
+    "commvehicle.registrationNumber",
+  ]) {
+    const v = resolveCalendarExtraFieldValue(ef, guess)?.trim();
+    if (v) return v;
+  }
+  for (const [path, val] of Object.entries(ef)) {
+    const tail = path.includes(".") ? path.slice(path.lastIndexOf(".") + 1) : path;
+    const norm = `${path} ${tail}`.toLowerCase();
+    if (
+      !/(registration|regnumber|plateno|licenseplate|licenceplate|vehicle_reg|vehicleid|vrn|\bplate\b|\bmv\b|motorcycle)/i
+        .test(norm)
+    ) {
+      continue;
+    }
+    const s = String(val).trim();
+    if (s) return s;
+  }
+  return null;
+}
+
+/**
+ * Registration plate for Day preview — must agree with pinned "Extra fields"
+ * on list rows (`resolveCalendarExtraFieldValue` + catalog path). Do not rely
+ * only on generic scans: tenants use arbitrary package keys (`pcar`, `vehicle`, …).
+ */
+function resolvePinnedRegistration(row: ExpiringRow, pinnedPaths: string[]): string | undefined {
+  const ef = row.extraFields ?? {};
+  for (const path of pinnedPaths) {
+    if (
+      !/(registration|regnumber|plateno|vrn|licenseplate|licenceplate|\bplate\b|vehiclereg|motorcycle|mvrec|\bmv\b)/i
+        .test(path)
+    ) {
+      continue;
+    }
+    const v = resolveCalendarExtraFieldValue(ef, path)?.trim();
+    if (v) return v;
+  }
+  const guessed = findRegistrationDisplay(row)?.trim();
+  if (guessed) return guessed;
+  for (const path of pinnedPaths) {
+    const v = resolveCalendarExtraFieldValue(ef, path)?.trim();
+    if (v) return v;
+  }
+  return undefined;
+}
+
 // ── Persistent settings ────────────────────────────────────────────────────
 // Defined OUTSIDE the component so the constant is never recreated and,
 // critically, so `loadSettings` cannot accidentally run on the server during
@@ -443,6 +625,7 @@ export function PolicyExpiryCalendar({
   const [loading, setLoading] = React.useState<boolean>(true);
   const [error, setError] = React.useState<string | null>(null);
   const [selectedDay, setSelectedDay] = React.useState<Date | undefined>(undefined);
+  const [hoverPreviewKey, setHoverPreviewKey] = React.useState<string | null>(null);
   // Controlled month so we can auto-navigate the calendar to the
   // first month that actually contains an expiry. Without this the
   // calendar always opens on the current month, and tenants whose
@@ -520,19 +703,6 @@ export function PolicyExpiryCalendar({
     autoNavigatedRef.current = true;
   }, [rows]);
 
-  const buckets: Bucket[] = React.useMemo(() => {
-    const grouped: Record<BucketKey, ExpiringRow[]> = {
-      overdue_incomplete: [],
-      in_progress: [],
-      expired: [],
-      week: [],
-      month: [],
-      later: [],
-    };
-    for (const r of rows) grouped[bucketForRow(r)].push(r);
-    return BUCKET_DEFS.map((def) => ({ ...def, rows: grouped[def.key] }));
-  }, [rows]);
-
   const totalCount = rows.length;
 
   // Which month is currently being shown on the calendar grid?
@@ -542,7 +712,7 @@ export function PolicyExpiryCalendar({
   // SCOPED to this month, per the user's spec: "June policy in June,
   // not showing all — if showing all why not just go to the policies
   // page?". A clicked day narrows further to that single day.
-  const activeMonth = calendarMonth ?? new Date();
+  const activeMonth = React.useMemo(() => calendarMonth ?? new Date(), [calendarMonth]);
 
   const isInActiveMonth = React.useCallback(
     (iso: string) => {
@@ -569,7 +739,6 @@ export function PolicyExpiryCalendar({
 
   const [packageLabels, setPackageLabels] = React.useState<Record<string, string>>({});
   const [fieldLabels, setFieldLabels] = React.useState<Record<string, string>>({});
-  const [fieldSortOrders, setFieldSortOrders] = React.useState<Record<string, number>>({});
   const [packageOrder, setPackageOrder] = React.useState<string[]>([]);
   // Catalog of every (pkg, fieldKey) pair admin has configured —
   // used so the picker can offer fields even when no currently-loaded
@@ -616,7 +785,6 @@ export function PolicyExpiryCalendar({
         );
         if (cancelled) return;
         const fLabels: Record<string, string> = {};
-        const fOrders: Record<string, number> = {};
         const catalog = new Map<string, { path: string; label: string; sortOrder: number }[]>();
         for (const { pkg, fRows } of fieldResults) {
           if (!Array.isArray(fRows)) continue;
@@ -634,7 +802,6 @@ export function PolicyExpiryCalendar({
             const order = Number.isFinite(so) ? so : 0;
             for (const v of variants) {
               fLabels[v] = lbl;
-              fOrders[v] = order;
             }
             // Catalog uses the canonical "bare" path; the picker
             // displays this and the API will accept any registered
@@ -652,7 +819,6 @@ export function PolicyExpiryCalendar({
         setPackageLabels(pLabels);
         setPackageOrder(pOrder);
         setFieldLabels(fLabels);
-        setFieldSortOrders(fOrders);
         setAdminFieldCatalog(catalog);
       });
     return () => { cancelled = true; };
@@ -833,13 +999,239 @@ export function PolicyExpiryCalendar({
   const dayToRows = React.useMemo(() => {
     const map = new Map<string, ExpiringRow[]>();
     for (const r of rows) {
-      const d = new Date(r.date);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const key = localDateRowMapKey(new Date(r.date));
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(r);
     }
     return map;
   }, [rows]);
+
+  const previewDayKey = React.useMemo(
+    () => hoverPreviewKey ?? (selectedDay ? localDateRowMapKey(selectedDay) : null),
+    [hoverPreviewKey, selectedDay],
+  );
+
+  const previewDayRows = React.useMemo(
+    () => (previewDayKey ? dayToRows.get(previewDayKey) ?? [] : []),
+    [previewDayKey, dayToRows],
+  );
+
+  const dashboardTaskScopePolicies = React.useMemo(() => {
+    let filtered = rows;
+    if (settings.hiddenStatuses.length > 0) {
+      filtered = filtered.filter((r) =>
+        !settings.hiddenStatuses.includes((r.status ?? "").trim() || "quotation_prepared"),
+      );
+    }
+    if (statusFilter.size > 0) {
+      filtered = filtered.filter((r) =>
+        statusFilter.has((r.status ?? "").trim() || "quotation_prepared"),
+      );
+    }
+    const byPolicyId = new Map<number, ExpiringRow>();
+    for (const r of filtered) {
+      if (!byPolicyId.has(r.policyId)) byPolicyId.set(r.policyId, r);
+    }
+    return [...byPolicyId.values()];
+  }, [rows, settings.hiddenStatuses, statusFilter]);
+
+  const aggregatePolicyFetchKey = React.useMemo(() => {
+    if (dashboardTaskScopePolicies.length === 0) return "";
+    const cap = Math.max(1, pageLimit * 4);
+    const slice = dashboardTaskScopePolicies.slice(0, cap);
+    return slice.map((r) => r.policyId).sort((a, b) => a - b).join(",");
+  }, [dashboardTaskScopePolicies, pageLimit]);
+
+  const aggregatePolicyCapReached = dashboardTaskScopePolicies.length > Math.max(1, pageLimit * 4);
+
+  const rowByPolicyId = React.useMemo(() => {
+    const m = new Map<number, ExpiringRow>();
+    for (const r of dashboardTaskScopePolicies) m.set(r.policyId, r);
+    return m;
+  }, [dashboardTaskScopePolicies]);
+
+  const previewSidebarRows = React.useMemo(() => {
+    if (!previewDayKey) return [];
+    let list = previewDayRows;
+    if (settings.hiddenStatuses.length > 0) {
+      list = list.filter((r) =>
+        !settings.hiddenStatuses.includes((r.status ?? "").trim() || "quotation_prepared"),
+      );
+    }
+    if (statusFilter.size > 0) {
+      list = list.filter((r) =>
+        statusFilter.has((r.status ?? "").trim() || "quotation_prepared"),
+      );
+    }
+    return list;
+  }, [previewDayKey, previewDayRows, settings.hiddenStatuses, statusFilter]);
+
+  /** Sidebar preview has ≥1 policy card for the focal day (respects status / hidden filters). */
+  const dayPreviewHasListedPolicies =
+    previewDayKey != null && previewSidebarRows.length > 0;
+
+  /** Overlay sheet only during active hover — slides away when mouse leaves the calendar. */
+  const dayPreviewSheetOpen = hoverPreviewKey !== null && dayPreviewHasListedPolicies;
+
+  /** Dim Open Tasks only while the sheet is hovering over them. */
+  const dimOpenTasksBehindSheet = dayPreviewSheetOpen;
+
+  /** Bottom hint only when nothing is hovered and no day is selected — main calendar body covers the selected-day view. */
+  const showInlineDayPreview = previewDayKey == null;
+
+  const dayPreviewHoverHint = (
+    <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+      Hover or tap a calendar day to preview policies. Your Open tasks list is unchanged.
+    </p>
+  );
+
+  const dayPreviewDetailAfterTitle = React.useMemo(() => {
+    if (!previewDayKey) return null;
+    if (previewDayRows.length === 0) {
+      return (
+        <p className="mt-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+          No policies on this date.
+        </p>
+      );
+    }
+    if (previewSidebarRows.length === 0) {
+      return (
+        <p className="mt-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+          No policies match the current filters for this date.
+        </p>
+      );
+    }
+    return (
+      <ul className="mt-2 space-y-2">
+        {previewSidebarRows.map((row) => {
+          const reg = resolvePinnedRegistration(row, settings.visibleFields);
+          return (
+            <li key={row.policyId}>
+              <Link
+                href={openPolicyHref(row)}
+                className="block rounded-md border border-neutral-200 bg-white p-2 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-950/50 dark:hover:bg-neutral-800/80"
+              >
+                <div className="truncate text-xs font-medium text-neutral-900 dark:text-neutral-100 sm:text-[13px]">
+                  {row.insuredName.trim() || "—"}
+                </div>
+                <div className="mt-1 text-xs text-neutral-700 dark:text-neutral-300 sm:text-[13px]">
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200">Registration</span>
+                  {": "}
+                  <span className="font-mono font-semibold">{reg ?? "—"}</span>
+                </div>
+                <div className="mt-0.5 truncate font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
+                  {row.policyNumber}
+                </div>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }, [previewDayKey, previewDayRows, previewSidebarRows, settings.visibleFields]);
+
+  const [aggregateOpenTasksByPolicyId, setAggregateOpenTasksByPolicyId] = React.useState<
+    Record<number, TaskListPreviewItem[]>
+  >({});
+  const [aggregateTasksLoading, setAggregateTasksLoading] = React.useState(false);
+  /** Roll up / expand open tasks vs day preview panels (many tasks scroll inside). */
+  const [aggregatePanelOpen, setAggregatePanelOpen] = React.useState(true);
+  const [dayPreviewPanelOpen, setDayPreviewPanelOpen] = React.useState(true);
+  /** Per-policy rows in the aggregate list — default collapsed (`false`/unset). */
+  const [expandedAggregatePolicyIds, setExpandedAggregatePolicyIds] = React.useState<Record<number, boolean>>({});
+
+  React.useEffect(() => {
+    if (!aggregatePolicyFetchKey) {
+      setAggregateOpenTasksByPolicyId({});
+      setAggregateTasksLoading(false);
+      return;
+    }
+    const ids = aggregatePolicyFetchKey
+      .split(",")
+      .map((x) => Number(x))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (ids.length === 0) {
+      setAggregateOpenTasksByPolicyId({});
+      setAggregateTasksLoading(false);
+      return;
+    }
+
+    const ac = new AbortController();
+    setAggregateTasksLoading(true);
+    fetch(`/api/policies/bulk-task-list-open?ids=${ids.join(",")}`, {
+      signal: ac.signal,
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : { results: {} }))
+      .then((j: { results?: Record<string, TaskListPreviewItem[]> }) => {
+        if (ac.signal.aborted) return;
+        const raw = j.results ?? {};
+        const map: Record<number, TaskListPreviewItem[]> = {};
+        for (const [key, items] of Object.entries(raw)) {
+          const pid = Number(key);
+          if (pid > 0) map[pid] = items;
+        }
+        setAggregateOpenTasksByPolicyId(map);
+      })
+      .catch(() => {
+        if (ac.signal.aborted) return;
+        setAggregateOpenTasksByPolicyId({});
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setAggregateTasksLoading(false);
+      });
+    return () => ac.abort();
+  }, [aggregatePolicyFetchKey]);
+
+  React.useEffect(() => {
+    setExpandedAggregatePolicyIds({});
+  }, [aggregatePolicyFetchKey]);
+
+  const aggregateTaskStats = React.useMemo(() => {
+    let outstanding = 0;
+    let pending = 0;
+    let rejected = 0;
+    let policiesWithTasks = 0;
+    let totalIncompleteSlots = 0;
+    for (const id of aggregatePolicyFetchKey.split(",").map((x) => Number(x)).filter((id) => id > 0)) {
+      const items = aggregateOpenTasksByPolicyId[id];
+      if (!items?.length) continue;
+      policiesWithTasks += 1;
+      totalIncompleteSlots += items.length;
+      for (const t of items) {
+        if (t.displayStatus === "outstanding") outstanding += 1;
+        else if (t.displayStatus === "uploaded") pending += 1;
+        else if (t.displayStatus === "rejected") rejected += 1;
+      }
+    }
+    return { outstanding, pending, rejected, policiesWithTasks, totalIncompleteSlots };
+  }, [aggregatePolicyFetchKey, aggregateOpenTasksByPolicyId]);
+
+  const aggregatePoliciesWithTasksSorted = React.useMemo(() => {
+    const ids = aggregatePolicyFetchKey
+      .split(",")
+      .map((x) => Number(x))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    return ids
+      .map((policyId) => {
+        const row = rowByPolicyId.get(policyId);
+        const tasks = aggregateOpenTasksByPolicyId[policyId] ?? [];
+        const out = tasks.filter((t) => t.displayStatus === "outstanding").length;
+        return { policyId, row, tasks, out };
+      })
+      .filter((x): x is { policyId: number; row: ExpiringRow; tasks: TaskListPreviewItem[]; out: number } =>
+        Boolean(x.row) && x.tasks.length > 0,
+      )
+      .sort((a, b) => b.out - a.out || b.tasks.length - a.tasks.length);
+  }, [aggregatePolicyFetchKey, aggregateOpenTasksByPolicyId, rowByPolicyId]);
+
+  const aggregateOpenTasksHeaderTone = React.useMemo(
+    () => openTasksAggregateHeaderTone(aggregateTaskStats.outstanding, aggregatePoliciesWithTasksSorted),
+    [aggregateTaskStats.outstanding, aggregatePoliciesWithTasksSorted],
+  );
+
+  const aggregateOpenTasksHeaderClass =
+    OPEN_TASKS_HEADER_TONE_CLASS[aggregateOpenTasksHeaderTone];
 
   const handleRemind = React.useCallback(
     (row: ExpiringRow) => {
@@ -1163,7 +1555,8 @@ export function PolicyExpiryCalendar({
               up at sm: and md: so phones stay tappable but desktops
               get a true "big" calendar feel.
             */}
-            <div className="overflow-x-auto rounded-md border border-neutral-200 dark:border-neutral-800">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-stretch lg:gap-5">
+              <div className="min-w-0 flex-1 overflow-x-auto rounded-md border border-neutral-200 dark:border-neutral-800">
               <Calendar
                 mode="single"
                 selected={selectedDay}
@@ -1172,29 +1565,19 @@ export function PolicyExpiryCalendar({
                 onMonthChange={setCalendarMonth}
                 modifiers={modifiers}
                 components={{
-                  DayButton: ({ day, modifiers: _m, className, ...props }) => {
+                  DayButton: ({ day, className, ...props }) => {
                     const d = day.date;
-                    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+                    const key = localDateRowMapKey(d);
                     const dayRows = dayToRows.get(key) ?? [];
-                    // Show only the user's pinned extra field values
-                    // (e.g. registration number) — one per policy.
-                    // Falls back to policy number if no extra fields
-                    // have been selected yet in Settings.
+                    // Native `title` tooltips are unreliable on iOS / touch —
+                    // the right-hand Day preview panel mirrors this data.
                     const tooltip = dayRows.length
                       ? dayRows
                           .map((r) => {
                             const vals = settings.visibleFields
                               .map((path) => {
-                                const dot = path.indexOf(".");
-                                const pkg = dot >= 0 ? path.slice(0, dot) : "";
-                                const key2 = dot >= 0 ? path.slice(dot + 1) : path;
-                                const candidates = pkg
-                                  ? [path, `${pkg}.${pkg}__${key2}`, `${pkg}.${pkg}_${key2}`]
-                                  : [path];
-                                for (const c of candidates) {
-                                  if (r.extraFields?.[c]) return r.extraFields[c];
-                                }
-                                return null;
+                                const v = resolveCalendarExtraFieldValue(r.extraFields ?? {}, path);
+                                return v?.trim() || null;
                               })
                               .filter(Boolean);
                             return vals.length
@@ -1208,6 +1591,14 @@ export function PolicyExpiryCalendar({
                         {...props}
                         className={className}
                         title={tooltip}
+                        onMouseEnter={(e) => {
+                          setHoverPreviewKey(key);
+                          props.onMouseEnter?.(e);
+                        }}
+                        onMouseLeave={(e) => {
+                          setHoverPreviewKey(null);
+                          props.onMouseLeave?.(e);
+                        }}
                       />
                     );
                   },
@@ -1275,6 +1666,256 @@ export function PolicyExpiryCalendar({
                   </span>
                 ))}
               </div>
+              </div>
+
+              <aside
+                className="scrollbar-hide flex min-h-0 w-full shrink-0 flex-col overflow-y-auto rounded-md border border-neutral-200 bg-neutral-50/90 p-3 dark:border-neutral-800 dark:bg-neutral-900/50 lg:max-h-[min(48rem,90vh)] lg:w-56 xl:w-64"
+                aria-label="Open document tasks and day preview"
+              >
+                {/* Open tasks stack: preview sheet slides from the top over this layer while hovering calendar days */}
+                <div className="relative shrink-0 overflow-hidden rounded-md">
+                  <div
+                    className={cn(
+                      "transition-opacity duration-300 ease-out motion-reduce:transition-none",
+                      dimOpenTasksBehindSheet && "pointer-events-none opacity-[0.38]",
+                    )}
+                  >
+                    <div className="border-b border-neutral-200 pb-3 dark:border-neutral-700">
+                  <button
+                    type="button"
+                    aria-expanded={aggregatePanelOpen}
+                    onClick={() => setAggregatePanelOpen((v) => !v)}
+                    className="flex w-full items-start justify-between gap-2 text-left"
+                  >
+                    <div className="min-w-0">
+                      <div
+                        className={cn(
+                          "text-[11px] font-semibold uppercase tracking-wide",
+                          aggregateOpenTasksHeaderClass,
+                        )}
+                      >
+                        Open tasks
+                      </div>
+                      {aggregateTasksLoading ? (
+                        <div className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400">Loading…</div>
+                      ) : aggregatePolicyFetchKey ? (
+                        <div className="mt-1 text-[10px] text-neutral-600 dark:text-neutral-400">
+                          {aggregateTaskStats.policiesWithTasks > 0 ? (
+                            <>
+                              <span className="font-semibold text-orange-700 dark:text-orange-300">
+                                {aggregateTaskStats.outstanding}
+                              </span>
+                              {" "}
+                              outstanding
+                              {" · "}
+                              {aggregateTaskStats.policiesWithTasks} polic
+                              {aggregateTaskStats.policiesWithTasks === 1 ? "y" : "ies"}
+                              {" · "}
+                              {aggregateTaskStats.totalIncompleteSlots} incomplete slot
+                              {aggregateTaskStats.totalIncompleteSlots !== 1 ? "s" : ""}
+                              {aggregateTaskStats.pending > 0 ? (
+                                <span>{` · ${aggregateTaskStats.pending} pending verification`}</span>
+                              ) : null}
+                              {aggregateTaskStats.rejected > 0 ? (
+                                <span>{` · ${aggregateTaskStats.rejected} rejected`}</span>
+                              ) : null}
+                            </>
+                          ) : (
+                            <span>No open document tasks in this filtered set.</span>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400">
+                          No policies in the current filters to check.
+                        </div>
+                      )}
+                    </div>
+                    <ChevronDown
+                      className={cn(
+                        "mt-0.5 h-4 w-4 shrink-0 transition-transform",
+                        aggregateOpenTasksHeaderClass,
+                        aggregatePanelOpen ? "rotate-180" : "rotate-0",
+                      )}
+                      aria-hidden
+                    />
+                  </button>
+                  {aggregatePolicyCapReached ? (
+                    <p className="mt-2 text-[9px] leading-snug text-neutral-500 dark:text-neutral-400">
+                      Showing tasks for the first {Math.max(1, pageLimit * 4)} policies in this filtered view;
+                      reload the calendar to refresh. Narrow status filters if the list grows.
+                    </p>
+                  ) : null}
+                  {aggregatePanelOpen && aggregatePolicyFetchKey ? (
+                    <div className="mt-2 space-y-2 pr-1" role="region">
+                      {aggregateTasksLoading ? (
+                        <p className="text-[11px] text-neutral-500 dark:text-neutral-400">Loading document tasks…</p>
+                      ) : aggregatePoliciesWithTasksSorted.length === 0 ? (
+                        <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                          No incomplete document slots in this filtered set right now.
+                        </p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {aggregatePoliciesWithTasksSorted.map(({ row, tasks, out }) => {
+                            const expanded = expandedAggregatePolicyIds[row.policyId] === true;
+                            const pendingOrOther = tasks.length - out;
+                            const reg = resolvePinnedRegistration(row, settings.visibleFields);
+                            return (
+                              <li key={`agg-open-${row.policyId}`} className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-700">
+                                <button
+                                  type="button"
+                                  aria-expanded={expanded}
+                                  onClick={() => {
+                                    setExpandedAggregatePolicyIds((prev) => ({
+                                      ...prev,
+                                      [row.policyId]: !(prev[row.policyId] === true),
+                                    }));
+                                  }}
+                                  className="flex w-full items-start justify-between gap-2 bg-white p-2 text-left transition-colors hover:bg-neutral-100 dark:bg-neutral-950/30 dark:hover:bg-neutral-800/50"
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                                      {row.policyNumber}
+                                    </div>
+                                    <div className="mt-1 truncate text-xs font-medium text-neutral-800 dark:text-neutral-200 sm:text-[13px]">
+                                      {row.insuredName.trim() || "—"}
+                                    </div>
+                                    <div className="mt-1 text-xs text-neutral-700 dark:text-neutral-300 sm:text-[13px]">
+                                      <span className="font-medium text-neutral-800 dark:text-neutral-200">
+                                        Registration
+                                      </span>
+                                      {": "}
+                                      <span className="font-mono font-semibold">{reg ?? "—"}</span>
+                                    </div>
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                      <Badge variant="outline" className="text-[9px] px-1 py-0">
+                                        {out} outstanding
+                                      </Badge>
+                                      {pendingOrOther > 0 ? (
+                                        <Badge variant="outline" className="text-[9px] px-1 py-0">
+                                          +{pendingOrOther} more
+                                        </Badge>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                  <ChevronDown
+                                    className={cn(
+                                      "mt-0.5 h-4 w-4 shrink-0 text-neutral-500 transition-transform dark:text-neutral-400",
+                                      expanded ? "rotate-180" : "rotate-0",
+                                    )}
+                                    aria-hidden
+                                  />
+                                </button>
+                                {expanded ? (
+                                  <ul className="space-y-1 border-t border-neutral-100 bg-neutral-50/90 p-2 dark:border-neutral-800 dark:bg-neutral-900/40">
+                                    {tasks.map((task) => {
+                                      const b = taskBadgeForPreviewStatus(task.displayStatus);
+                                      return (
+                                        <li key={`${row.policyId}-${task.typeKey}-${task.displayStatus}`}>
+                                          <Link
+                                            href={openPolicyHref(row)}
+                                            className="block rounded-md border border-neutral-200 bg-white px-2 py-1.5 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-950/40 dark:hover:bg-neutral-800/80"
+                                          >
+                                            <div className="flex items-start justify-between gap-1">
+                                              <span className="line-clamp-2 text-[11px] font-medium leading-tight text-neutral-900 dark:text-neutral-100">
+                                                {task.label}
+                                              </span>
+                                              <Badge
+                                                variant="outline"
+                                                className={cn(
+                                                  "shrink-0 whitespace-nowrap border px-1 py-0 text-[8px] font-semibold uppercase",
+                                                  b.className,
+                                                )}
+                                              >
+                                                {b.label}
+                                              </Badge>
+                                            </div>
+                                            {task.required && task.displayStatus === "outstanding" ? (
+                                              <div className="mt-0.5 text-[9px] font-medium text-red-500 dark:text-red-400">
+                                                Required
+                                              </div>
+                                            ) : null}
+                                          </Link>
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
+                                ) : null}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+                  ) : null}
+                    </div>
+                  </div>
+                  {/* Second layer — slides down from the top over Open tasks while a calendar day is hovered */}
+                  <div
+                    aria-hidden={!dayPreviewSheetOpen}
+                    className={cn(
+                      "scrollbar-hide absolute inset-x-0 top-0 z-35 flex max-h-[min(28rem,78vh)] min-h-50 flex-col overflow-hidden rounded-lg border border-neutral-300 bg-neutral-50/96 px-2.5 pb-2 pt-2 shadow-[0_14px_40px_-6px_rgba(0,0,0,0.3)] ring-1 ring-black/10 backdrop-blur-sm dark:border-neutral-600 dark:bg-neutral-950/96 dark:ring-white/15",
+                      "transition-transform duration-420 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform motion-reduce:transition-none",
+                      dayPreviewSheetOpen
+                        ? "translate-y-0"
+                        : "pointer-events-none -translate-y-[calc(100%+14px)]",
+                    )}
+                  >
+                    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-200 pb-2 dark:border-neutral-800">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                        Day preview
+                      </span>
+                      {previewDayKey ? (
+                        <span className="line-clamp-2 max-w-[58%] text-right text-[10px] font-semibold leading-tight text-neutral-900 dark:text-neutral-100">
+                          {formatPreviewDayHeading(previewDayKey)}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] italic text-neutral-500 dark:text-neutral-400">
+                          Hover a date
+                        </span>
+                      )}
+                    </div>
+                    <div className="scrollbar-hide min-h-0 flex-1 overflow-y-auto py-2" aria-live="polite">
+                      {!previewDayKey ? dayPreviewHoverHint : dayPreviewDetailAfterTitle}
+                    </div>
+                  </div>
+                </div>
+
+                {showInlineDayPreview ? (
+                <div className="mt-3 min-h-0">
+                  <button
+                    type="button"
+                    aria-expanded={dayPreviewPanelOpen}
+                    onClick={() => setDayPreviewPanelOpen((v) => !v)}
+                    className="flex w-full items-center justify-between gap-2 text-left"
+                  >
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                      Day preview
+                    </span>
+                    <ChevronDown
+                      className={cn(
+                        "h-4 w-4 shrink-0 text-neutral-500 transition-transform dark:text-neutral-400",
+                        dayPreviewPanelOpen ? "rotate-180" : "rotate-0",
+                      )}
+                      aria-hidden
+                    />
+                  </button>
+                  {dayPreviewPanelOpen ? (
+                    <div className="mt-2 border-t border-neutral-200 pt-2 dark:border-neutral-700" aria-live="polite">
+                      {!previewDayKey ? (
+                        dayPreviewHoverHint
+                      ) : (
+                        <>
+                          <div className="text-xs font-semibold text-neutral-800 dark:text-neutral-100">
+                            {formatPreviewDayHeading(previewDayKey)}
+                          </div>
+                          {dayPreviewDetailAfterTitle}
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+                ) : null}
+              </aside>
             </div>
 
             {/*
@@ -1559,20 +2200,11 @@ function ExpiringRowItem({
   // which naming convention the source snapshot used.
   const extraFieldValues = visibleFields
     .map((path) => {
-      const dot = path.indexOf(".");
-      const pkg = dot >= 0 ? path.slice(0, dot) : "";
-      const key = dot >= 0 ? path.slice(dot + 1) : path;
-      const candidates = pkg
-        ? [path, `${pkg}.${pkg}__${key}`, `${pkg}.${pkg}_${key}`]
-        : [path];
-      let val: string | undefined;
-      for (const c of candidates) {
-        if (row.extraFields?.[c]) { val = row.extraFields[c]; break; }
-      }
-      if (!val) return null;
-      return { label: getFieldLabel(path), val };
+      const val = resolveCalendarExtraFieldValue(row.extraFields ?? {}, path);
+      if (!val?.trim()) return null;
+      return { path, label: getFieldLabel(path), val };
     })
-    .filter((x): x is { label: string; val: string } => x !== null);
+    .filter((x): x is { path: string; label: string; val: string } => x !== null);
 
   return (
     <li className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1591,11 +2223,11 @@ function ExpiringRowItem({
             {/* Extra fields the user pinned via Settings appear
                 inline after the name with a · separator, same
                 font weight and size so the row reads as one line. */}
-            {extraFieldValues.map(({ label, val }) => (
+            {extraFieldValues.map(({ path, label, val }) => (
               <span
-                key={label}
+                key={path}
                 className="text-neutral-400 dark:text-neutral-500"
-                title={label}
+                title={`${label}: ${val}`}
               >
                 {" · "}
                 <span className={cn(

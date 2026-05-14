@@ -8,6 +8,7 @@ import {
   Users,
   BarChart3,
   ArrowRight,
+  LogIn,
   CheckCircle2,
 } from "lucide-react";
 import {
@@ -18,6 +19,7 @@ import { db } from "@/db/client";
 import { appSettings } from "@/db/schema/core";
 import { eq } from "drizzle-orm";
 import { ModeToggle } from "@/components/ui/mode-toggle";
+import { Button } from "@/components/ui/button";
 
 async function getLandingContent(): Promise<LandingPageSettings> {
   try {
@@ -113,12 +115,16 @@ export default async function Home() {
         </div>
         <div className="flex items-center gap-2">
           <ModeToggle />
-          <Link
-            href="/auth/signin"
-            className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
+          <Button
+            asChild
+            size="sm"
+            className="bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
           >
-            Sign in
-          </Link>
+            <Link href="/auth/signin" aria-label="Sign in">
+              <LogIn className="h-4 w-4 shrink-0 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Sign in</span>
+            </Link>
+          </Button>
         </div>
       </nav>
 

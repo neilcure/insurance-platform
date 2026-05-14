@@ -25,6 +25,7 @@ import type {
   UploadDocumentTypeMeta,
   UploadDocumentTypeRow,
 } from "@/lib/types/upload-document";
+import { useUserTypes } from "@/hooks/use-user-types";
 
 const GROUP_KEY = "upload_document_types";
 
@@ -69,6 +70,7 @@ export default function UploadDocumentTypesManager({
   uploadSource?: UploadDocumentSource;
 } = {}) {
   const isAdminScope = uploadSource === "admin";
+  const { options: userTypePickerOptions } = useUserTypes();
   const [rows, setRows] = React.useState<UploadDocumentTypeRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [open, setOpen] = React.useState(false);
@@ -323,6 +325,11 @@ export default function UploadDocumentTypesManager({
                         Line: {r.meta.accountingLineKey}
                       </span>
                     )}
+                    {r.meta?.visibleToUserTypes && r.meta.visibleToUserTypes.length > 0 && (
+                      <span className="inline-block rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                        Viewers: {r.meta.visibleToUserTypes.join(", ")}
+                      </span>
+                    )}
                   </div>
                 </TableCell>
                 <TableCell className="hidden sm:table-cell text-xs">
@@ -547,6 +554,42 @@ export default function UploadDocumentTypesManager({
                         }
                       />
                       {ins.name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {userTypePickerOptions.length > 0 && (
+              <div className="grid gap-1">
+                <Label>
+                  Visible to user types{" "}
+                  <span className="text-xs text-neutral-400">(optional - empty = all)</span>
+                </Label>
+                <p className="mb-1 text-xs text-neutral-400">
+                  Matches <code className="text-[10px]">users.user_type</code>. Restricts who sees this requirement in Workflow;
+                  downloads still obey policy access and template audience rules separately.
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  {userTypePickerOptions.map((ut) => (
+                    <label key={ut.value} className="flex items-center gap-1.5 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={meta.visibleToUserTypes?.includes(ut.value) ?? false}
+                        onChange={(e) =>
+                          setMeta((m) => {
+                            const next = new Set(m.visibleToUserTypes ?? []);
+                            if (e.target.checked) next.add(ut.value);
+                            else next.delete(ut.value);
+                            const arr = [...next];
+                            return {
+                              ...m,
+                              visibleToUserTypes: arr.length === 0 ? undefined : arr,
+                            };
+                          })
+                        }
+                      />
+                      {ut.label}
                     </label>
                   ))}
                 </div>

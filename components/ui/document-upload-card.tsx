@@ -21,6 +21,7 @@ import {
   ChevronRight,
   ChevronDown,
   CalendarClock,
+  Building2,
 } from "lucide-react";
 import Image from "next/image";
 import { Label } from "@/components/ui/label";
@@ -40,6 +41,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ReminderScheduler } from "@/components/ui/reminder-scheduler";
+import { confirmDialog } from "@/components/ui/global-dialogs";
 
 const STATUS_CONFIG: Record<DocumentStatus, {
   label: string;
@@ -52,6 +54,13 @@ const STATUS_CONFIG: Record<DocumentStatus, {
     variant: "outline",
     className: "border-neutral-300 text-neutral-500 dark:border-neutral-600 dark:text-neutral-400",
     icon: Clock,
+  },
+  awaiting_office: {
+    label: "Awaiting office",
+    variant: "outline",
+    className:
+      "border-sky-200 text-sky-700 bg-sky-50 dark:border-sky-800 dark:text-sky-200 dark:bg-sky-950/40",
+    icon: Building2,
   },
   uploaded: {
     label: "Pending Verification",
@@ -372,7 +381,10 @@ export function DocumentUploadCard({
   const StatusIcon = statusCfg.icon;
 
   const acceptAttr = meta?.acceptedTypes?.join(",") ?? undefined;
-  const canUpload = displayStatus === "outstanding" || displayStatus === "rejected";
+  const canUpload =
+    displayStatus === "outstanding"
+    || displayStatus === "rejected"
+    || (meta?.uploadSource === "admin" && displayStatus === "awaiting_office");
 
   function resetPaymentForm() {
     setPaymentPayer(hasAgent ? null : "client");
@@ -575,7 +587,13 @@ export function DocumentUploadCard({
   }
 
   async function handleDelete(docId: number) {
-    if (!window.confirm("Delete this uploaded document?")) return;
+    const ok = await confirmDialog({
+      title: "Delete this uploaded document?",
+      description: "This cannot be undone.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     setActionBusy(docId);
     try {
       const res = await fetch(`/api/policies/${policyId}/documents/${docId}`, {
@@ -608,7 +626,9 @@ export function DocumentUploadCard({
               <StatusIcon className="h-3 w-3" />
               {statusCfg.label}
             </Badge>
-            {meta?.required && displayStatus === "outstanding" && (
+            {meta?.required
+              && displayStatus === "outstanding"
+              && meta?.uploadSource !== "admin" && (
               <span className="text-[10px] text-red-500 dark:text-red-400 shrink-0">Required</span>
             )}
           </div>

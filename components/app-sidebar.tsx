@@ -122,13 +122,23 @@ export function AppSidebar(
     canManageSettings?: boolean;
     userType?: string;
     user?: { name?: string | null; email?: string | null };
+    /** Client master `displayName` from the server — keeps the header from briefly showing `user.name`. */
+    initialWorkspaceLabel?: string | null;
   }
 ) {
-  const { isAdmin = false, canManageSettings = false, userType = "", user, ...sidebarProps } = props as {
+  const {
+    isAdmin = false,
+    canManageSettings = false,
+    userType = "",
+    user,
+    initialWorkspaceLabel = null,
+    ...sidebarProps
+  } = props as {
     isAdmin?: boolean;
     canManageSettings?: boolean;
     userType?: string;
     user?: { name?: string | null; email?: string | null };
+    initialWorkspaceLabel?: string | null;
   };
   const isClientUser = userType === "direct_client";
   const userKey = React.useMemo(() => (user?.email || user?.name || "anon") as string, [user?.email, user?.name]);
@@ -140,8 +150,18 @@ export function AppSidebar(
   const [adminOpen, setAdminOpen] = React.useState<boolean>(adminOpenCache ?? true);
   const [policyOpen, setPolicyOpen] = React.useState<boolean>(policyOpenCache ?? true);
   const [pkgOpen, setPkgOpen] = React.useState<Record<string, boolean>>(pkgOpenCache ?? {});
-  const [orgName, setOrgName] = React.useState<string | null>(null);
+  const [orgName, setOrgName] = React.useState<string | null>(() => {
+    if (!isClientUser) return null;
+    const v = initialWorkspaceLabel?.trim();
+    return v || null;
+  });
   const [auditBadge, setAuditBadge] = React.useState(0);
+
+  React.useEffect(() => {
+    if (!isClientUser) return;
+    const v = initialWorkspaceLabel?.trim();
+    if (v) setOrgName(v);
+  }, [isClientUser, initialWorkspaceLabel]);
 
   const navItems = React.useMemo(() => {
     if (isClientUser) {
@@ -401,6 +421,12 @@ export function AppSidebar(
   const [policyCollapsedOpen, setPolicyCollapsedOpen] = React.useState(false);
   const [pkgCollapsedOpen, setPkgCollapsedOpen] = React.useState(false);
 
+  const headerWorkspaceLabel = isClientUser
+    ? (orgName?.trim() ||
+        initialWorkspaceLabel?.trim() ||
+        "Client account")
+    : (orgName?.trim() || user?.name || user?.email || "Account");
+
   return (
     <Sidebar collapsible="icon" {...sidebarProps}>
       <SidebarHeader>
@@ -408,7 +434,7 @@ export function AppSidebar(
           size="xs"
           teams={[
             {
-              name: (orgName ?? (user?.name || user?.email || "Account")),
+              name: headerWorkspaceLabel,
               logo: GalleryVerticalEnd,
               plan: "",
             },

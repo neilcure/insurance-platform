@@ -111,6 +111,7 @@ export default function UserSettingsTableClient({
 
   const {
     presets,
+    userPresets,
     activePresetId,
     setActivePresetId,
     activePreset,
@@ -166,11 +167,11 @@ export default function UserSettingsTableClient({
 
   function openNewPreset() {
     setEditingPreset(null);
-    setDraftName(`View ${presets.length + 1}`);
+    setDraftName(`View ${userPresets.length + 1}`);
     setDraftSortKey(sortKey);
     setDraftSortDir(sortDir);
     setDraftColumns(activePreset?.columns ?? (DEFAULT_COLUMNS as string[]));
-    setDraftIsDefault(presets.length === 0);
+    setDraftIsDefault(userPresets.length === 0);
     setConfigOpen(true);
   }
 
@@ -207,7 +208,7 @@ export default function UserSettingsTableClient({
         id: `preset_${Date.now()}`,
         name,
         columns,
-        isDefault: draftIsDefault || presets.length === 0,
+        isDefault: draftIsDefault || userPresets.length === 0,
         sortKey: draftSortKey,
         sortDir: draftSortDir,
       });

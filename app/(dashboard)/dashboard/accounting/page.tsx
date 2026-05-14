@@ -459,7 +459,7 @@ export default function AccountingPage() {
   // API is `createdAt DESC` (newest first); the user can flip it or
   // sort by another column from the table header. Page-bound only —
   // multi-page sort would require server support.
-  type SortKey = "date" | "docNumber" | "total" | "outstanding" | "status";
+  type SortKey = "date" | "docNumber" | "total" | "outstanding" | "status" | "insuredName" | "agentName";
   const [sortKey, setSortKey] = React.useState<SortKey>("date");
   const [sortDir, setSortDir] = React.useState<"asc" | "desc">("desc");
 
@@ -495,6 +495,16 @@ export default function AccountingPage() {
         }
         case "status":
           return String(a.status).localeCompare(String(b.status)) * factor;
+        case "insuredName": {
+          const an = (a.insuredDisplayName ?? a.parentInsuredDisplayName ?? "").toLowerCase();
+          const bn = (b.insuredDisplayName ?? b.parentInsuredDisplayName ?? "").toLowerCase();
+          return an.localeCompare(bn) * factor;
+        }
+        case "agentName": {
+          const aa = (a.entityType === "agent" ? (a.entityName ?? a.agentName ?? "") : (a.agentName ?? "")).toLowerCase();
+          const ba = (b.entityType === "agent" ? (b.entityName ?? b.agentName ?? "") : (b.agentName ?? "")).toLowerCase();
+          return aa.localeCompare(ba) * factor;
+        }
         default:
           return 0;
       }
@@ -796,7 +806,11 @@ export default function AccountingPage() {
       label: "Insured",
       headClass: "hidden lg:table-cell min-w-[160px]",
       cellClass: "hidden lg:table-cell",
-      renderHead: () => "Insured",
+      renderHead: () => (
+        <button type="button" onClick={() => toggleSort("insuredName")} className={headBtnClass}>
+          Insured {sortIcon("insuredName")}
+        </button>
+      ),
       renderCell: (_inv, ctx) =>
         ctx.insuredLabel ? (
           <span className="flex items-center gap-1.5 font-medium text-sm text-neutral-900 dark:text-neutral-100 truncate">
@@ -828,7 +842,11 @@ export default function AccountingPage() {
       label: "Agent",
       headClass: "hidden lg:table-cell min-w-[140px]",
       cellClass: "hidden lg:table-cell",
-      renderHead: () => "Agent",
+      renderHead: () => (
+        <button type="button" onClick={() => toggleSort("agentName")} className={headBtnClass}>
+          Agent {sortIcon("agentName")}
+        </button>
+      ),
       renderCell: (inv) => {
         const agent = inv.entityType === "agent" ? (inv.entityName ?? inv.agentName) : inv.agentName;
         return agent ? (

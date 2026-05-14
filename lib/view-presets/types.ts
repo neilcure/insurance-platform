@@ -7,8 +7,9 @@
  * domain-specific column shape on top of `columns: string[]`.
  *
  * Persistence:
- *   - Server-of-record: app_settings row keyed by `view_presets:user:<id>:<scope>`
- *     (see `app/api/view-presets/route.ts`).
+ *   - Server-of-record — per-user: `view_presets:user:<id>:<scope>`
+ *     and optional org defaults for users with no saves:
+ *     `view_presets:org:<organisationId>:<scope>` (see `app/api/view-presets/route.ts`).
  *   - localStorage fallback when the API is unreachable.
  *
  * See `.cursor/skills/table-view-presets/SKILL.md`.

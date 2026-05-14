@@ -1,5 +1,8 @@
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
+import { eq } from "drizzle-orm";
+import { db } from "@/db/client";
+import { clients } from "@/db/schema/core";
 import { authOptions } from "@/lib/auth/options";
 import { AppSidebar } from "@/components/app-sidebar";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
@@ -23,6 +26,20 @@ export default async function DashboardGroupLayout({
     redirect("/login");
   }
 
+  /** Sidebar header for direct clients — must match DB, not session user.name, to avoid flashing the login name. */
+  let initialWorkspaceLabel: string | null = null;
+  const userType = ((session.user as any)?.userType ?? "") as string;
+  const sessionUserId = Number((session.user as any)?.id);
+  if (userType === "direct_client" && Number.isFinite(sessionUserId) && sessionUserId > 0) {
+    const [clientRow] = await db
+      .select({ displayName: clients.displayName })
+      .from(clients)
+      .where(eq(clients.userId, sessionUserId))
+      .limit(1);
+    const dn = clientRow?.displayName?.trim();
+    initialWorkspaceLabel = dn || null;
+  }
+
   return (
     <SidebarProvider>
       <AppSidebar
@@ -30,6 +47,7 @@ export default async function DashboardGroupLayout({
         canManageSettings={["admin", "agent", "internal_staff"].includes((((session.user as any)?.userType) ?? ""))}
         userType={((session.user as any)?.userType ?? "") as string}
         user={{ name: (session.user as any)?.name ?? null, email: (session.user as any)?.email ?? null }}
+        initialWorkspaceLabel={initialWorkspaceLabel}
       />
       <SidebarInset>
         {/*

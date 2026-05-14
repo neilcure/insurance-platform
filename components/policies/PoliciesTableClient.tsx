@@ -4,7 +4,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
-import { Trash2, Ban, CheckCircle2, Info, Loader2, ChevronLeft, ChevronRight } from "lucide-react";
+import { Trash2, Ban, CheckCircle2, Info, Loader2, ChevronLeft, ChevronRight, Users } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -28,6 +28,11 @@ import { TableViewPresetEditor } from "@/components/ui/table-view-preset-editor"
 import { usePagination } from "@/lib/pagination/use-pagination";
 import { Pagination } from "@/components/ui/pagination";
 import { confirmDialog } from "@/components/ui/global-dialogs";
+import {
+  POLICY_TABLE_LEGACY_PKG_MAP,
+  expandPolicyTableMapsWithCompositeChildren,
+  humanizePolicyTableTailKey,
+} from "@/lib/policies/policy-table-column-labels";
 
 const PolicySnapshotView = dynamic(
   () => import("@/components/policies/PolicySnapshotView").then((m) => m.PolicySnapshotView),
@@ -132,6 +137,18 @@ function extractNameFromExtra(extra: Record<string, unknown> | null | undefined)
     insuredSnapshot: extra.insuredSnapshot as Record<string, unknown> | null | undefined,
     packagesSnapshot: extra.packagesSnapshot as Record<string, unknown> | null | undefined,
   });
+}
+
+/** Case-insensitive substring match for policy table client-side search across snapshot scalars. */
+function snapshotCellMatchesQuery(val: unknown, q: string): boolean {
+  if (val === null || val === undefined) return false;
+  if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
+    return String(val).toLowerCase().includes(q);
+  }
+  if (Array.isArray(val)) {
+    return val.some((item) => snapshotCellMatchesQuery(item, q));
+  }
+  return false;
 }
 
 export default function PoliciesTableClient({
@@ -299,6 +316,8 @@ export default function PoliciesTableClient({
   const [fieldLabels, setFieldLabels] = React.useState<Record<string, string>>({});
   const [fieldSortOrders, setFieldSortOrders] = React.useState<Record<string, number>>({});
   const [fieldLabelCases, setFieldLabelCases] = React.useState<Record<string, "original" | "upper" | "lower" | "title">>({});
+  /** Form `meta.groupOrder`: stacks admin sub-sections (dates vs excess) before field sortOrder. */
+  const [fieldSectionOrders, setFieldSectionOrders] = React.useState<Record<string, number>>({});
   const [packageLabels, setPackageLabels] = React.useState<Record<string, string>>({});
   const [packageSortOrders, setPackageSortOrders] = React.useState<Record<string, number>>({});
 
@@ -309,11 +328,15 @@ export default function PoliciesTableClient({
     Promise.all([
       fetch(`/api/form-options?groupKey=packages&_t=${ts}`, { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : [])).catch(() => []),
-      ...pkgNames.map((pkg) =>
-        fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}&_t=${ts}`, { cache: "no-store" })
+      ...pkgNames.map((pkg) => {
+        const lookupPkg = POLICY_TABLE_LEGACY_PKG_MAP[pkg] ?? pkg;
+        return fetch(`/api/form-options?groupKey=${encodeURIComponent(`${lookupPkg}_fields`)}&_t=${ts}`, { cache: "no-store" })
           .then((r) => (r.ok ? r.json() : [])).catch(() => [])
-          .then((fRows: Array<{ value?: string; label?: string; sortOrder?: number; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }>) => ({ pkg, fRows }))
-      ),
+          .then((fRows: Array<{ value?: string; label?: string; sortOrder?: number; meta?: Record<string, unknown> | null }>) => ({
+            pkg,
+            fRows,
+          }));
+      }),
     ]).then(([pkgRows, ...fieldResults]) => {
       if (cancelled) return;
       const pLabels: Record<string, string> = { insured: "Insured" };
@@ -329,18 +352,34 @@ export default function PoliciesTableClient({
           }
         }
       }
+      for (const [legacy, current] of Object.entries(POLICY_TABLE_LEGACY_PKG_MAP)) {
+        if (!pLabels[legacy] && pLabels[current]) {
+          pLabels[legacy] = pLabels[current]!;
+          pOrders[legacy] = pOrders[current] ?? 0;
+        }
+      }
       setPackageLabels(pLabels);
       setPackageSortOrders(pOrders);
       const labels: Record<string, string> = {};
       const orders: Record<string, number> = {};
       const cases: Record<string, "original" | "upper" | "lower" | "title"> = {};
-      for (const { pkg, fRows } of fieldResults as Array<{ pkg: string; fRows: Array<{ value?: string; label?: string; sortOrder?: number; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }> }>) {
+      const groupOrders: Record<string, number> = {};
+      const mutMaps = {
+        labels,
+        orders,
+        cases,
+        groupOrders,
+      };
+      for (const { pkg, fRows } of fieldResults as Array<{
+        pkg: string;
+        fRows: Array<{ value?: string; label?: string; sortOrder?: number; meta?: Record<string, unknown> | null }>;
+      }>) {
         if (!Array.isArray(fRows)) continue;
         for (const row of fRows) {
           const key = String(row?.value ?? "").trim();
           const rawLbl = String(row?.label ?? "").trim();
           if (!key || !rawLbl) continue;
-          const labelCase = row?.meta?.labelCase;
+          const labelCase = row?.meta?.labelCase as "original" | "upper" | "lower" | "title" | undefined;
           const lbl = !labelCase || labelCase === "original" ? rawLbl
             : labelCase === "upper" ? rawLbl.toUpperCase()
             : labelCase === "lower" ? rawLbl.toLowerCase()
@@ -348,6 +387,8 @@ export default function PoliciesTableClient({
           const so = Number(row?.sortOrder);
           const order = Number.isFinite(so) ? so : 0;
           const effectiveCase = (labelCase ?? "original") as "original" | "upper" | "lower" | "title";
+          const gm = Number((row.meta as Record<string, unknown> | undefined)?.groupOrder);
+          const uiGroupOrder = Number.isFinite(gm) ? gm : 0;
           const prefixes = pkg === "insured" ? ["insured"] : [`pkg.${pkg}`];
           for (const pfx of prefixes) {
             labels[`${pfx}.${key}`] = lbl;
@@ -359,12 +400,27 @@ export default function PoliciesTableClient({
             cases[`${pfx}.${key}`] = effectiveCase;
             cases[`${pfx}.${pkg}__${key}`] = effectiveCase;
             cases[`${pfx}.${pkg}_${key}`] = effectiveCase;
+            groupOrders[`${pfx}.${key}`] = uiGroupOrder;
+            groupOrders[`${pfx}.${pkg}__${key}`] = uiGroupOrder;
+            groupOrders[`${pfx}.${pkg}_${key}`] = uiGroupOrder;
           }
+
+          expandPolicyTableMapsWithCompositeChildren(
+            mutMaps,
+            pkg,
+            row.meta ?? undefined,
+            key,
+            rawLbl,
+            order,
+            effectiveCase,
+            uiGroupOrder,
+          );
         }
       }
       setFieldLabels(labels);
       setFieldSortOrders(orders);
       setFieldLabelCases(cases);
+      setFieldSectionOrders(groupOrders);
     });
     return () => { cancelled = true; };
   }, [pkgNames.join(",")]);
@@ -379,7 +435,10 @@ export default function PoliciesTableClient({
     const normalizedPath = parts.length === 3
       ? `pkg.${parts[1]}.${stripped}` : parts.length === 2 ? `insured.${stripped}` : path;
     if (fieldLabels[normalizedPath]) return fieldLabels[normalizedPath];
-    return humanizeKey(raw);
+    if (parts.length === 3 && parts[0] === "pkg") {
+      return humanizePolicyTableTailKey(raw, parts[1]);
+    }
+    return humanizePolicyTableTailKey(raw);
   }, [fieldLabels, label]);
 
   const getFieldSortOrder = React.useCallback((path: string): number => {
@@ -393,6 +452,30 @@ export default function PoliciesTableClient({
     return 9999;
   }, [fieldSortOrders]);
 
+  const getFieldSectionOrder = React.useCallback((path: string): number => {
+    if (fieldSectionOrders[path] !== undefined) return fieldSectionOrders[path];
+    const parts = path.split(".");
+    const raw = parts[parts.length - 1];
+    const stripped = raw.replace(/^[a-zA-Z0-9]+__/, "").replace(/^_+/, "");
+    const normalizedPath = parts.length === 3
+      ? `pkg.${parts[1]}.${stripped}` : parts.length === 2 ? `insured.${stripped}` : path;
+    if (fieldSectionOrders[normalizedPath] !== undefined) return fieldSectionOrders[normalizedPath];
+    return 0;
+  }, [fieldSectionOrders]);
+
+  const comparePickerColumns = React.useCallback(
+    (a: FieldOption, b: FieldOption): number => {
+      const ga = getFieldSectionOrder(a.path);
+      const gb = getFieldSectionOrder(b.path);
+      if (ga !== gb) return ga - gb;
+      const oa = getFieldSortOrder(a.path);
+      const ob = getFieldSortOrder(b.path);
+      if (oa !== ob) return oa - ob;
+      return a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
+    },
+    [getFieldSectionOrder, getFieldSortOrder],
+  );
+
   const availableFields = React.useMemo<FieldOption[]>(() => {
     const pathSet = new Set<string>();
     for (const r of rows) {
@@ -401,13 +484,8 @@ export default function PoliciesTableClient({
     }
     return Array.from(pathSet)
       .map((path) => ({ path, label: getFieldLabel(path) }))
-      .sort((a, b) => {
-        const oa = getFieldSortOrder(a.path);
-        const ob = getFieldSortOrder(b.path);
-        if (oa !== ob) return oa - ob;
-        return a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
-      });
-  }, [rows, flattenExtra, getFieldLabel, getFieldSortOrder]);
+      .sort(comparePickerColumns);
+  }, [rows, flattenExtra, getFieldLabel, comparePickerColumns]);
 
   const groupedFields = React.useMemo<FieldGroup[]>(() => {
     const groups = new Map<string, FieldOption[]>();
@@ -423,7 +501,10 @@ export default function PoliciesTableClient({
       .map(([groupKey, fields]) => ({
         groupKey,
         groupLabel: builtinLabel[groupKey] || packageLabels[groupKey] || humanizeKey(groupKey),
-        fields,
+        fields:
+          groupKey === "_builtin"
+            ? fields
+            : [...fields].sort(comparePickerColumns),
       }))
       .sort((a, b) => {
         if (a.groupKey === "_builtin") return -1;
@@ -433,7 +514,7 @@ export default function PoliciesTableClient({
         if (oa !== ob) return oa - ob;
         return a.groupLabel.localeCompare(b.groupLabel, undefined, { sensitivity: "base" });
       });
-  }, [availableFields, packageLabels, packageSortOrders, label]);
+  }, [availableFields, packageLabels, packageSortOrders, comparePickerColumns, label]);
 
   const columnGroups = React.useMemo<ViewPresetColumnGroup[]>(
     () =>
@@ -448,6 +529,7 @@ export default function PoliciesTableClient({
   const presetScope = entityLabel ?? "default";
   const {
     presets,
+    userPresets,
     activePresetId,
     setActivePresetId,
     activePreset,
@@ -457,6 +539,37 @@ export default function PoliciesTableClient({
   } = useTableViewPresets({ scope: presetScope, legacyLocalStorageKey: PRESETS_KEY });
   const activeColumns = activePreset?.columns ?? [];
 
+  const publishOrgViewDefaults = React.useCallback(async () => {
+    if (userPresets.length === 0) {
+      toast.error(
+        "Create and save your own column views first, then publish them as the organisation default.",
+      );
+      return;
+    }
+    const confirmed = await confirmDialog({
+      title: "Publish organisation table defaults?",
+      description:
+        "Anyone who has not saved their own policies table views will see this exact set of saved views.\nThey can change or replace them anytime.",
+      confirmLabel: "Publish",
+    });
+    if (!confirmed) return;
+    try {
+      const q = new URLSearchParams({ scope: presetScope });
+      const oid = (session.data?.user as { activeOrganisationId?: number } | undefined)
+        ?.activeOrganisationId;
+      if (oid != null && Number.isFinite(Number(oid))) q.set("organisationId", String(oid));
+      const res = await fetch(`/api/admin/org-view-presets?${q}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(userPresets),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      toast.success("Organisation defaults published");
+    } catch {
+      toast.error("Could not publish organisation defaults");
+    }
+  }, [presetScope, session.data?.user, userPresets]);
+
   const [configOpen, setConfigOpen] = React.useState(false);
   const [editingPreset, setEditingPreset] = React.useState<ViewPreset | null>(null);
   const [draftName, setDraftName] = React.useState("");
@@ -464,7 +577,7 @@ export default function PoliciesTableClient({
 
   function openNewPreset() {
     setEditingPreset(null);
-    setDraftName(`View ${presets.length + 1}`);
+    setDraftName(`View ${userPresets.length + 1}`);
     setDraftColumns([]);
     setConfigOpen(true);
   }
@@ -494,7 +607,7 @@ export default function PoliciesTableClient({
         id: `preset_${Date.now()}`,
         name,
         columns: draftColumns,
-        isDefault: presets.length === 0,
+        isDefault: userPresets.length === 0,
       });
       if (!created) return;
       setActivePresetId(created.id);
@@ -611,11 +724,16 @@ export default function PoliciesTableClient({
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return sorted;
-    return sorted.filter((r) =>
-      r.policyNumber.toLowerCase().includes(q) ||
-      (r.displayName ?? "").toLowerCase().includes(q)
-    );
-  }, [sorted, query]);
+    return sorted.filter((row) => {
+      if (row.policyNumber.toLowerCase().includes(q)) return true;
+      if ((row.displayName ?? "").toLowerCase().includes(q)) return true;
+      const flat = flattenExtra(row.carExtra);
+      for (const cell of Object.values(flat)) {
+        if (snapshotCellMatchesQuery(cell, q)) return true;
+      }
+      return false;
+    });
+  }, [sorted, query, flattenExtra]);
 
   async function openDetails(id: number, opts?: { silent?: boolean }): Promise<PolicyDetail | null> {
     if (!opts?.silent) {
@@ -1015,6 +1133,24 @@ export default function PoliciesTableClient({
             onNew={openNewPreset}
             emptySetupLabel="Set Up Columns"
           />
+          {isAdmin ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={userPresets.length === 0}
+              className="h-auto flex-col gap-0 py-1 sm:h-9 sm:flex-row sm:gap-1.5 sm:py-0"
+              title={
+                userPresets.length === 0
+                  ? "Save your own views first"
+                  : "Publish your saved views as the organisation default for users without their own"
+              }
+              onClick={() => void publishOrgViewDefaults()}
+            >
+              <Users className="h-4 w-4 sm:hidden lg:inline" />
+              <span className="hidden sm:inline">Org defaults…</span>
+            </Button>
+          ) : null}
           <label className="hidden sm:inline text-neutral-500 dark:text-neutral-400">Sort</label>
           <CompactSelect
             options={sortOptions}

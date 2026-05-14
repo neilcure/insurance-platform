@@ -7,52 +7,30 @@ import { DocumentActionBar } from "@/components/document-delivery/DocumentAction
 import { type DeliveryDocGroup } from "@/lib/document-delivery";
 import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 import type {
-  DocumentStatus,
   PolicyDocumentRow,
   PolicyPaymentRecord,
   PremiumBreakdown,
   UploadDocumentTypeRow,
   DocumentRequirement,
 } from "@/lib/types/upload-document";
+import {
+  buildUploadStatusOrdinalMap,
+  buildVisibleDocumentRequirements,
+  isOfficeProvidedReq,
+} from "@/lib/policies/upload-requirement-build";
 
-const FALLBACK_POLICY_STATUS_ORDER = [
-  "quotation_prepared",
-  "quotation_sent",
-  "quotation_confirmed",
-  "invoice_prepared",
-  "invoice_sent",
-  "pending_payment",
-  "payment_received",
-  "confirmed",
-  "bound",
-  "active",
-  "completed",
-] as const;
-
-function computeDisplayStatus(
-  uploads: PolicyDocumentRow[],
-  payments?: PolicyPaymentRecord[],
-): DocumentStatus {
-  if (uploads.some((u) => u.status === "verified")) return "verified";
-  if (payments && payments.length > 0) {
-    const hasVerified = payments.some(
-      (p) =>
-        (!p.direction || p.direction === "receivable") &&
-        (p.status === "verified" || p.status === "confirmed" || p.status === "recorded"),
-    );
-    if (hasVerified) return "verified";
-  }
-  if (uploads.length === 0) return "outstanding";
-  if (uploads.some((u) => u.status === "uploaded")) return "uploaded";
-  if (uploads.every((u) => u.status === "rejected")) return "rejected";
-  return "outstanding";
-}
+export type { TaskListPreviewItem } from "@/lib/policies/upload-requirement-build";
 
 export type UploadSummary = {
+  /** All visible requirement slots (documents + payments in this slice) */
   total: number;
   verified: number;
+  /** Slots the client/agent is expected to supply (excludes uploadSource admin) — used for progress X/Y */
+  userTaskTotal: number;
+  userVerified: number;
   pending: number;
   outstanding: number;
+  awaitingOffice: number;
   rejected: number;
 };
 
@@ -80,6 +58,8 @@ export function UploadDocumentsTab({
   defaultEmail,
   defaultPhone,
   defaultRecipientName,
+  viewerUserType,
+  documentSubset = "all",
 }: {
   policyId: number;
   flowKey?: string;
@@ -90,6 +70,8 @@ export function UploadDocumentsTab({
   onSummaryChange?: (summary: UploadSummary) => void;
   onPaymentRecorded?: () => void;
   filter?: "all" | "documents" | "payments";
+  /** When showing document requirements in split Workflow sections (`task-list` vs `final-documents`). Ignored unless `filter` is `"documents"` or `"all"`. */
+  documentSubset?: "all" | "task-list" | "final-documents";
   parentPolicyId?: number;
   parentSchedules?: ScheduleInfo[];
   /** Used to pre-fill the email subject. */
@@ -100,6 +82,8 @@ export function UploadDocumentsTab({
   defaultPhone?: string;
   /** Pre-filled recipient name shown in the WhatsApp message body. */
   defaultRecipientName?: string;
+  /** Logged-in `user.user_type`; filters by `meta.visibleToUserTypes` when set. */
+  viewerUserType?: string | null;
 }) {
   const { allOptions: statusOptionsFromHook } = usePolicyStatuses();
   const [requirements, setRequirements] = React.useState<DocumentRequirement[]>([]);
@@ -120,6 +104,11 @@ export function UploadDocumentsTab({
 
   const clientSchedule = schedules.find((s) => s.entityType === "client") ?? null;
   const agentSchedule = schedules.find((s) => s.entityType === "agent") ?? null;
+
+  const statusOrdinalMap = React.useMemo(
+    () => buildUploadStatusOrdinalMap(statusOptionsFromHook),
+    [statusOptionsFromHook],
+  );
 
   const [hasStatementInvoices, setHasStatementInvoices] = React.useState(false);
   React.useEffect(() => {
@@ -162,12 +151,6 @@ export function UploadDocumentsTab({
     let cancelled = false;
     setLoading(true);
 
-    const matchingIds = [...new Set([policyId, ...policyInsurerIds])];
-    const matchesInsurer = (tplInsurerIds: number[] | undefined) => {
-      if (!tplInsurerIds || tplInsurerIds.length === 0) return true;
-      return matchingIds.some((pid) => tplInsurerIds.includes(pid));
-    };
-
     Promise.all([
       fetch(`/api/form-options?groupKey=upload_document_types&_t=${Date.now()}`, { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
@@ -184,105 +167,61 @@ export function UploadDocumentsTab({
       if (cancelled) return;
       setTotalConfigured(types.length);
 
-      const effectiveStatusOrder = Array.from(new Set([
-        ...statusOptionsFromHook.map((s) => s.value),
-        ...FALLBACK_POLICY_STATUS_ORDER,
-      ]));
-
-      const applicable = types.filter((t) => {
-        // Flow + Insurer restrictions are AND-ed: a template flagged
-        // for both flow X and insurer Y now only shows on policies
-        // that match BOTH (previously the insurer restriction
-        // silently bypassed the flow check).
-        const flows = t.meta?.flows;
-        if (flows && flows.length > 0) {
-          if (!flowKey || !flows.includes(flowKey)) return false;
-        }
-        if (!matchesInsurer(t.meta?.insurerPolicyIds)) return false;
-
-        const sws = t.meta?.showWhenStatus;
-        if (sws && sws.length > 0) {
-          const status = currentStatus || "quotation_prepared";
-          const hasUploadsForType = uploads.some((u) => u.documentTypeKey === t.value);
-          if (!hasUploadsForType) {
-            const curIdx = effectiveStatusOrder.indexOf(status);
-            const earliestIdx = Math.min(
-              ...sws.map((s) => effectiveStatusOrder.indexOf(s)).filter((i) => i >= 0),
-            );
-            if (curIdx < 0 || earliestIdx === Infinity) {
-              if (!sws.includes(status)) return false;
-            } else if (curIdx < earliestIdx) {
-              return false;
-            }
-          }
-        }
-
-        const its = t.meta?.insuredTypes;
-        if (its && its.length > 0 && insuredType) {
-          if (!its.includes(insuredType)) return false;
-        }
-
-        const alk = t.meta?.accountingLineKey;
-        if (alk && policyLineKeys.size > 0 && !policyLineKeys.has(alk)) return false;
-        if (t.meta?.requireNcb && !hasNcb) return false;
-        return true;
+      const visible = buildVisibleDocumentRequirements({
+        types,
+        uploads,
+        policyPayments,
+        premiumData,
+        insurerPolicyIds: policyInsurerIds,
+        policyLineKeys,
+        policyNumericId: policyId,
+        flowKey,
+        currentStatus,
+        insuredType,
+        hasNcb: hasNcb ?? false,
+        viewerUserType,
+        filter,
+        documentSubset,
+        statusOrdinalMap,
       });
-
-      const reqs: DocumentRequirement[] = applicable.map((t) => {
-        const typeUploads = uploads.filter((u) => u.documentTypeKey === t.value);
-        const isPaymentType = t.meta?.requirePaymentDetails === true;
-        return {
-          typeKey: t.value,
-          label: t.label,
-          meta: t.meta,
-          displayStatus: computeDisplayStatus(typeUploads, isPaymentType ? policyPayments : undefined),
-          uploads: typeUploads,
-          ...(isPaymentType ? { payments: policyPayments, premiumBreakdown: premiumData ?? undefined } : {}),
-        };
-      });
-
-      // Include orphaned uploads (uploaded for types no longer in config)
-      const knownKeys = new Set(applicable.map((t) => t.value));
-      const orphanedUploads = uploads.filter((u) => !knownKeys.has(u.documentTypeKey));
-      const orphanedGroups = new Map<string, PolicyDocumentRow[]>();
-      for (const u of orphanedUploads) {
-        const arr = orphanedGroups.get(u.documentTypeKey) ?? [];
-        arr.push(u);
-        orphanedGroups.set(u.documentTypeKey, arr);
-      }
-      for (const [key, docs] of orphanedGroups) {
-        reqs.push({
-          typeKey: key,
-          label: key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-          meta: null,
-          displayStatus: computeDisplayStatus(docs),
-          uploads: docs,
-        });
-      }
-
-      const filtered = filter === "all"
-        ? reqs
-        : filter === "payments"
-          ? reqs.filter((r) => r.meta?.requirePaymentDetails)
-          : reqs.filter((r) => !r.meta?.requirePaymentDetails);
-      setRequirements(filtered);
+      setRequirements(visible);
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
 
     return () => { cancelled = true; };
-  }, [policyId, flowKey, currentStatus, refreshKey, policyInsurerIds, policyLineKeys, insuredType, hasNcb, filter, statusOptionsFromHook]);
+  }, [
+    policyId,
+    flowKey,
+    currentStatus,
+    refreshKey,
+    policyInsurerIds,
+    policyLineKeys,
+    insuredType,
+    hasNcb,
+    filter,
+    documentSubset,
+    statusOptionsFromHook,
+    statusOrdinalMap,
+    viewerUserType,
+  ]);
 
   const summaryRef = React.useRef(onSummaryChange);
-  summaryRef.current = onSummaryChange;
+  React.useEffect(() => {
+    summaryRef.current = onSummaryChange;
+  }, [onSummaryChange]);
 
   React.useEffect(() => {
     if (loading) return;
+    const userFacing = requirements.filter((r) => !isOfficeProvidedReq(r));
     const s: UploadSummary = {
       total: requirements.length,
       verified: requirements.filter((r) => r.displayStatus === "verified").length,
+      userTaskTotal: userFacing.length,
+      userVerified: userFacing.filter((r) => r.displayStatus === "verified").length,
       pending: requirements.filter((r) => r.displayStatus === "uploaded").length,
       outstanding: requirements.filter((r) => r.displayStatus === "outstanding").length,
+      awaitingOffice: requirements.filter((r) => r.displayStatus === "awaiting_office").length,
       rejected: requirements.filter((r) => r.displayStatus === "rejected").length,
     };
     summaryRef.current?.(s);
@@ -341,7 +280,11 @@ export function UploadDocumentsTab({
       <div className="rounded-md border border-dashed border-neutral-300 p-6 text-center dark:border-neutral-700">
         <Upload className="mx-auto mb-2 h-8 w-8 text-neutral-400 dark:text-neutral-500" />
         <div className="text-sm font-medium text-neutral-600 dark:text-neutral-400">
-          No upload requirements
+          {documentSubset === "final-documents"
+            ? "No final documents for this policy"
+            : documentSubset === "task-list"
+              ? "Nothing to collect yet"
+              : "No upload requirements"}
         </div>
         {totalConfigured === 0 ? (
           <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
@@ -364,6 +307,28 @@ export function UploadDocumentsTab({
     );
   }
 
+  function renderRequirementCards(slice: DocumentRequirement[]) {
+    return slice.map((req) => (
+      <DocumentUploadCard
+        key={req.typeKey}
+        typeKey={req.typeKey}
+        label={req.label}
+        meta={req.meta}
+        displayStatus={req.displayStatus}
+        uploads={req.uploads}
+        payments={req.payments}
+        premiumBreakdown={req.premiumBreakdown}
+        policyId={policyId}
+        isAdmin={isAdmin}
+        onRefresh={refresh}
+        onStatementToggled={() => onPaymentRecorded?.()}
+        clientSchedule={clientSchedule}
+        agentSchedule={agentSchedule}
+        hasStatementInvoices={hasStatementInvoices}
+      />
+    ));
+  }
+
   return (
     <div className="space-y-3">
       {showShareButtons && (
@@ -384,25 +349,40 @@ export function UploadDocumentsTab({
         </div>
       )}
 
-      {requirements.map((req) => (
-        <DocumentUploadCard
-          key={req.typeKey}
-          typeKey={req.typeKey}
-          label={req.label}
-          meta={req.meta}
-          displayStatus={req.displayStatus}
-          uploads={req.uploads}
-          payments={req.payments}
-          premiumBreakdown={req.premiumBreakdown}
-          policyId={policyId}
-          isAdmin={isAdmin}
-          onRefresh={refresh}
-          onStatementToggled={() => onPaymentRecorded?.()}
-          clientSchedule={clientSchedule}
-          agentSchedule={agentSchedule}
-          hasStatementInvoices={hasStatementInvoices}
-        />
-      ))}
+      {documentSubset !== "all" ? (
+        <div className="space-y-3">{renderRequirementCards(requirements)}</div>
+      ) : (() => {
+        const clientAgentReqs: DocumentRequirement[] = [];
+        const officeReqs: DocumentRequirement[] = [];
+        for (const r of requirements) {
+          if (isOfficeProvidedReq(r)) officeReqs.push(r);
+          else clientAgentReqs.push(r);
+        }
+        return (
+          <>
+            {clientAgentReqs.length > 0 && (
+              <div className="space-y-2">
+                {officeReqs.length > 0 && (
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                    Required from client or agent
+                  </div>
+                )}
+                <div className="space-y-3">{renderRequirementCards(clientAgentReqs)}</div>
+              </div>
+            )}
+            {officeReqs.length > 0 && (
+              <div
+                className={`space-y-2 ${clientAgentReqs.length > 0 ? "pt-3 border-t border-neutral-200 dark:border-neutral-800" : ""}`}
+              >
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                  Final documents
+                </div>
+                <div className="space-y-3">{renderRequirementCards(officeReqs)}</div>
+              </div>
+            )}
+          </>
+        );
+      })()}
 
     </div>
   );

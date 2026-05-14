@@ -6,6 +6,20 @@ import { ChevronRight, FileText } from "lucide-react";
 import type { PolicyDetail } from "@/lib/types/policy";
 import { usePolicyStatuses } from "@/hooks/use-policy-statuses";
 import { resolveDefaultRecipientFromExtra } from "@/lib/document-delivery";
+import type { UploadSummary } from "@/components/policies/tabs/UploadDocumentsTab";
+
+function emptyUploadSummary(): UploadSummary {
+  return {
+    total: 0,
+    verified: 0,
+    userTaskTotal: 0,
+    userVerified: 0,
+    pending: 0,
+    outstanding: 0,
+    awaitingOffice: 0,
+    rejected: 0,
+  };
+}
 
 type LinkedEndorsement = {
   policyId: number;
@@ -116,9 +130,8 @@ export function WorkflowTab({
   }, [detail.extraAttributes]);
 
   const [showOverride, setShowOverride] = React.useState(false);
-  const [uploadSummary, setUploadSummary] = React.useState<{
-    total: number; verified: number; pending: number; outstanding: number; rejected: number;
-  } | null>(null);
+  const [taskListUploadSummary, setTaskListUploadSummary] = React.useState<UploadSummary | null>(null);
+  const [finalDocsUploadSummary, setFinalDocsUploadSummary] = React.useState<UploadSummary | null>(null);
   const [paymentSummary, setPaymentSummary] = React.useState<{
     totalOwed: number; totalPaid: number; totalPending: number; remaining: number;
     currency: string; invoiceCount: number; hasSubmitted: boolean;
@@ -129,9 +142,22 @@ export function WorkflowTab({
 
   const isParentPolicy = !flowKey || flowKey === "policyset" || flowKey === "";
   const isClientFlow = (flowKey ?? "").toLowerCase() === "clientset";
+  /** Main wizard policies omit `detail.flowKey` on some payloads — upload types restricted to Policies must still match `policyset`. */
+  const uploadDocsFlowKey = React.useMemo(() => {
+    const fromProp = flowKey?.trim();
+    if (fromProp) return fromProp;
+    const fromSnap = String((detail.extraAttributes as Record<string, unknown> | undefined)?.flowKey ?? "").trim();
+    if (fromSnap) return fromSnap;
+    const fromDetail = typeof (detail as { flowKey?: string }).flowKey === "string"
+      ? String((detail as { flowKey?: string }).flowKey).trim()
+      : "";
+    if (fromDetail) return fromDetail;
+    return "policyset";
+  }, [flowKey, detail]);
   const [linkedEndorsements, setLinkedEndorsements] = React.useState<LinkedEndorsement[]>([]);
   const [endorsementDetails, setEndorsementDetails] = React.useState<Record<number, PolicyDetail>>({});
-  const [endorsementSummaries, setEndorsementSummaries] = React.useState<Record<number, { total: number; verified: number; outstanding: number }>>({});
+  const [endorsementTaskSummaries, setEndorsementTaskSummaries] = React.useState<Record<number, UploadSummary>>({});
+  const [endorsementFinalSummaries, setEndorsementFinalSummaries] = React.useState<Record<number, UploadSummary>>({});
 
   // Shared schedule data — fetched once, passed to all endorsement UploadDocumentsTab instances
   const [parentSchedules, setParentSchedules] = React.useState<{ id: number; entityType: string; entityName: string | null; frequency: string | null; billingDay: number | null; isActive?: boolean }[]>([]);
@@ -268,24 +294,52 @@ export function WorkflowTab({
     }
   }, [docsSummary.signed, docsSummary.awaitingSignature, expandedSection, initialSection]);
 
-  const combinedUploadSummary = React.useMemo(() => {
-    const base = uploadSummary ?? { total: 0, verified: 0, pending: 0, outstanding: 0, rejected: 0 };
+  const combinedTaskListSummary = React.useMemo(() => {
+    const base = taskListUploadSummary ?? emptyUploadSummary();
     let total = base.total;
     let verified = base.verified;
-    const pending = base.pending;
+    let userTaskTotal = base.userTaskTotal;
+    let userVerified = base.userVerified;
+    let pending = base.pending;
     let outstanding = base.outstanding;
-    const rejected = base.rejected;
-    for (const s of Object.values(endorsementSummaries)) {
+    let awaitingOffice = base.awaitingOffice;
+    let rejected = base.rejected;
+    for (const s of Object.values(endorsementTaskSummaries)) {
       total += s.total;
       verified += s.verified;
+      userTaskTotal += s.userTaskTotal ?? s.total;
+      userVerified += s.userVerified ?? s.verified;
+      pending += s.pending;
       outstanding += s.outstanding;
+      awaitingOffice += s.awaitingOffice ?? 0;
+      rejected += s.rejected;
     }
-    return { total, verified, pending, outstanding, rejected };
-  }, [uploadSummary, endorsementSummaries]);
+    return { total, verified, userTaskTotal, userVerified, pending, outstanding, awaitingOffice, rejected };
+  }, [taskListUploadSummary, endorsementTaskSummaries]);
+
+  const combinedFinalDocsSummary = React.useMemo(() => {
+    const base = finalDocsUploadSummary ?? emptyUploadSummary();
+    let total = base.total;
+    let verified = base.verified;
+    let pending = base.pending;
+    let outstanding = base.outstanding;
+    let awaitingOffice = base.awaitingOffice;
+    let rejected = base.rejected;
+    for (const s of Object.values(endorsementFinalSummaries)) {
+      total += s.total;
+      verified += s.verified;
+      pending += s.pending;
+      outstanding += s.outstanding;
+      awaitingOffice += s.awaitingOffice ?? 0;
+      rejected += s.rejected;
+    }
+    return { total, verified, pending, outstanding, awaitingOffice, rejected };
+  }, [finalDocsUploadSummary, endorsementFinalSummaries]);
 
   const sections = [
     { id: "documents", label: "Documents", show: true },
     { id: "uploads", label: "Task List", show: true },
+    { id: "final-documents", label: "Final Documents", show: true },
     { id: "payments", label: "Payments", show: true },
     { id: "actions", label: "Additional Actions", show: !!isAdmin },
   ].filter((s) => s.show);
@@ -413,23 +467,75 @@ export function WorkflowTab({
                     )}
                   </>
                 )}
-                {sec.id === "uploads" && combinedUploadSummary.total > 0 && (() => {
-                  const s = combinedUploadSummary;
-                  const allDone = s.verified === s.total;
+                {sec.id === "uploads" && combinedTaskListSummary.total > 0 && (() => {
+                  const s = combinedTaskListSummary;
+                  const ut = Math.max(0, s.userTaskTotal);
+                  const uv = Math.max(0, s.userVerified);
+                  const fracNum = ut > 0 ? uv : s.verified;
+                  const fracDen = ut > 0 ? ut : s.total;
+                  const uploadsQuiescent =
+                    s.outstanding === 0 &&
+                    s.pending === 0 &&
+                    s.rejected === 0;
                   return (
                     <>
                       <Badge
                         variant="custom"
-                        className={`text-[10px] ${allDone
+                        title={ut > 0 ? "Verified client/agent uploads vs configured slots" : "Upload progress"}
+                        className={`text-[10px] ${uploadsQuiescent && fracDen > 0 && fracNum >= fracDen
                           ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
                           : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
                         }`}
                       >
-                        {s.verified}/{s.total}
+                        {fracNum}/{fracDen}
                       </Badge>
                       {s.outstanding > 0 && (
                         <Badge variant="custom" className="text-[10px] bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
                           {s.outstanding} outstanding
+                        </Badge>
+                      )}
+                      {s.pending > 0 && (
+                        <Badge variant="custom" className="text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                          {s.pending} pending
+                        </Badge>
+                      )}
+                      {s.rejected > 0 && (
+                        <Badge variant="custom" className="text-[10px] bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                          {s.rejected} rejected
+                        </Badge>
+                      )}
+                    </>
+                  );
+                })()}
+                {sec.id === "final-documents" && combinedFinalDocsSummary.total > 0 && (() => {
+                  const s = combinedFinalDocsSummary;
+                  const fracDen = Math.max(0, s.total);
+                  const fracNum = Math.max(0, s.verified);
+                  const uploadsQuiescent =
+                    fracDen > 0 &&
+                    fracNum >= fracDen &&
+                    (s.awaitingOffice ?? 0) === 0 &&
+                    s.pending === 0 &&
+                    s.rejected === 0;
+                  return (
+                    <>
+                      <Badge
+                        variant="custom"
+                        title="Published final documents uploaded vs configured"
+                        className={`text-[10px] ${uploadsQuiescent
+                          ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                          : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                        }`}
+                      >
+                        {fracNum}/{fracDen}
+                      </Badge>
+                      {(s.awaitingOffice ?? 0) > 0 && (
+                        <Badge
+                          variant="custom"
+                          className="text-[10px] bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-200"
+                          title="Admin must upload — not a missing client/agent task"
+                        >
+                          {s.awaitingOffice} awaiting office
                         </Badge>
                       )}
                       {s.pending > 0 && (
@@ -512,12 +618,14 @@ export function WorkflowTab({
                   )}
                   <UploadDocumentsTab
                     policyId={detail.policyId}
-                    flowKey={flowKey}
+                    flowKey={uploadDocsFlowKey}
                     isAdmin={isAdmin ?? false}
                     currentStatus={curStatusClient}
                     insuredType={insuredType}
                     hasNcb={hasNcb}
-                    onSummaryChange={setUploadSummary}
+                    viewerUserType={currentUserType}
+                    documentSubset="task-list"
+                    onSummaryChange={setTaskListUploadSummary}
                     onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
                     filter="documents"
                     policyNumber={detail.policyNumber}
@@ -537,10 +645,70 @@ export function WorkflowTab({
                       flowKey="endorsement"
                       isAdmin={isAdmin ?? false}
                       currentStatus={e.status}
+                      viewerUserType={currentUserType}
                       parentPolicyId={detail.policyId}
                       parentSchedules={parentSchedules}
+                      documentSubset="task-list"
                       onSummaryChange={(s) => {
-                        setEndorsementSummaries((prev) => ({ ...prev, [e.policyId]: s }));
+                        setEndorsementTaskSummaries((prev) => ({ ...prev, [e.policyId]: s }));
+                      }}
+                      onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
+                      filter="documents"
+                      policyNumber={e.policyNumber}
+                      defaultEmail={defaultEmailRecipient}
+                      defaultPhone={defaultPhoneRecipient}
+                      defaultRecipientName={defaultRecipientName}
+                    />
+                  </div>
+                ))}
+              </React.Suspense>
+            </div>
+          )}
+          {sec.id === "final-documents" && expandedSection === sec.id && (
+            <div className="border-t border-neutral-200 p-3 dark:border-neutral-800 space-y-4">
+              <React.Suspense fallback={<div className="py-4 text-center text-xs text-neutral-400">Loading...</div>}>
+                <div>
+                  {isParentPolicy && linkedEndorsements.length > 0 && (
+                    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-sky-600 dark:text-sky-400">
+                      <FileText className="h-3 w-3" />
+                      Policy {detail.policyNumber}
+                    </div>
+                  )}
+                  <UploadDocumentsTab
+                    policyId={detail.policyId}
+                    flowKey={uploadDocsFlowKey}
+                    isAdmin={isAdmin ?? false}
+                    currentStatus={curStatusClient}
+                    insuredType={insuredType}
+                    hasNcb={hasNcb}
+                    viewerUserType={currentUserType}
+                    documentSubset="final-documents"
+                    onSummaryChange={setFinalDocsUploadSummary}
+                    onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
+                    filter="documents"
+                    policyNumber={detail.policyNumber}
+                    defaultEmail={defaultEmailRecipient}
+                    defaultPhone={defaultPhoneRecipient}
+                    defaultRecipientName={defaultRecipientName}
+                  />
+                </div>
+                {isParentPolicy && linkedEndorsements.map((e) => (
+                  <div key={e.policyId}>
+                    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                      <FileText className="h-3 w-3" />
+                      Endorsement {e.policyNumber}
+                    </div>
+                    <UploadDocumentsTab
+                      policyId={e.policyId}
+                      flowKey="endorsement"
+                      isAdmin={isAdmin ?? false}
+                      currentStatus={e.status}
+                      viewerUserType={currentUserType}
+                      parentPolicyId={detail.policyId}
+                      parentSchedules={parentSchedules}
+                      documentSubset="final-documents"
+                      onSummaryChange={(s) => {
+                        setEndorsementFinalSummaries((prev) => ({ ...prev, [e.policyId]: s }));
                       }}
                       onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
                       filter="documents"
@@ -566,11 +734,12 @@ export function WorkflowTab({
                   )}
                   <UploadDocumentsTab
                     policyId={detail.policyId}
-                    flowKey={flowKey}
+                    flowKey={uploadDocsFlowKey}
                     isAdmin={isAdmin ?? false}
                     currentStatus={curStatusClient}
                     insuredType={insuredType}
                     hasNcb={hasNcb}
+                    viewerUserType={currentUserType}
                     parentSchedules={parentSchedules}
                     onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
                     filter="payments"
@@ -587,6 +756,7 @@ export function WorkflowTab({
                       flowKey="endorsement"
                       isAdmin={isAdmin ?? false}
                       currentStatus={e.status}
+                      viewerUserType={currentUserType}
                       parentPolicyId={detail.policyId}
                       parentSchedules={parentSchedules}
                       onPaymentRecorded={() => setPaymentRefreshKey((k) => k + 1)}
@@ -608,7 +778,10 @@ export function WorkflowTab({
               </React.Suspense>
             </div>
           )}
-          {sec.id !== "uploads" && sec.id !== "payments" && expandedSection === sec.id && (
+          {sec.id !== "uploads"
+            && sec.id !== "final-documents"
+            && sec.id !== "payments"
+            && expandedSection === sec.id && (
             <div className="border-t border-neutral-200 p-3 dark:border-neutral-800">
               <React.Suspense fallback={<div className="py-4 text-center text-xs text-neutral-400">Loading...</div>}>
                 {sec.id === "documents" && (
@@ -652,7 +825,6 @@ export function WorkflowTab({
           )}
         </div>
       ))}
-
     </div>
   );
 }

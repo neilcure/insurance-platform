@@ -19,6 +19,12 @@ export type UploadDocumentTypeMeta = {
   showWhenStatus?: string[];
   /** Restrict to policies linked to specific insurance company records (empty = all) */
   insurerPolicyIds?: number[];
+  /**
+   * Restrict which signed-in user_type values see this requirement in Workflow.
+   * Empty / omitted = visible to everyone with policy access (defense-in-depth on
+   * downloads still enforced per document routes).
+   */
+  visibleToUserTypes?: string[];
   /** Restrict to specific insured types: "personal", "company" (empty = all) */
   insuredTypes?: string[];
   /** Only show when policy has NCB (No Claims Bonus) */
@@ -39,7 +45,8 @@ export type UploadDocumentTypeRow = {
   meta: UploadDocumentTypeMeta | null;
 };
 
-export type DocumentStatus = "outstanding" | "uploaded" | "verified" | "rejected";
+/** `awaiting_office` = configured as admin-provided (`uploadSource: "admin"`) but no file yet — not an outstanding client/agent task */
+export type DocumentStatus = "outstanding" | "awaiting_office" | "uploaded" | "verified" | "rejected";
 
 export type PolicyDocumentRow = {
   id: number;
