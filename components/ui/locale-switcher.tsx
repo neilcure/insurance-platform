@@ -1,36 +1,17 @@
 "use client";
 
 /**
- * Locale switcher dropdown — sibling of `<ModeToggle>`.
- *
- * Behaviour
- * ---------
- * - Reads the active locale from `<I18nProvider>` so the menu's tick
- *   mark always reflects the language the user is currently seeing.
- * - On selection, POSTs to `/api/me/locale` (which sets the cookie
- *   AND, when signed in, persists to `users.profile_meta.locale`).
- * - Optimistically updates the in-memory React tree via
- *   `useSetLocale`, then calls `router.refresh()` so server
- *   components rerun against the new cookie / `x-locale` header.
- * - Visible labels come from the `messages/<locale>.ts` dictionaries
- *   under the `locale.*` namespace — each language is shown in its
- *   OWN script (English shows "English", Chinese shows "繁體中文")
- *   so a misclicked choice can be reversed without re-translating.
+ * Locale switcher — same interaction model as `<RowActionMenu>`:
+ * desktop = horizontal strip that expands with max-width + opacity (700ms);
+ * header sits flush-right so we use the `align="end"` geometry (panel grows LEFT).
+ * Mobile = compact vertical panel under the chip (matches RowActionMenu).
  */
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { Languages, Check, Loader2 } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
 import {
   SUPPORTED_LOCALES,
   tStatic,
@@ -40,7 +21,6 @@ import {
 } from "@/lib/i18n";
 
 type Props = {
-  /** Optional className passed to the trigger `<Button>`. */
   className?: string;
 };
 
@@ -49,12 +29,37 @@ export function LocaleSwitcher({ className }: Props) {
   const setLocale = useSetLocale();
   const router = useRouter();
 
+  const [open, setOpen] = React.useState(false);
   const [pending, setPending] = React.useState<Locale | null>(null);
   const isPending = pending !== null;
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  const currentLocaleLabel = tStatic(`locale.${locale}`, locale, locale);
+
+  React.useEffect(() => {
+    if (!open) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
 
   const handleSelect = React.useCallback(
     async (next: Locale) => {
       if (next === locale || isPending) return;
+      setOpen(false);
       setPending(next);
       try {
         const res = await fetch("/api/me/locale", {
@@ -67,9 +72,6 @@ export function LocaleSwitcher({ className }: Props) {
           return;
         }
         setLocale(next);
-        // Re-run server components so the new cookie / x-locale header
-        // takes effect for any server-rendered text on the current
-        // page (sidebar, breadcrumbs, server-rendered chrome).
         router.refresh();
       } catch (err) {
         console.error("[locale-switcher] network error:", err);
@@ -80,51 +82,105 @@ export function LocaleSwitcher({ className }: Props) {
     [locale, isPending, router, setLocale],
   );
 
+  const chipLabel = tStatic("locale.label", locale, "Language");
+
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          aria-label={tStatic("locale.label", locale, "Language")}
-          className={className}
-          disabled={isPending}
-        >
-          {isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Languages className="h-4 w-4" />
-          )}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuLabel className="text-xs text-neutral-500 dark:text-neutral-400">
-          {tStatic("locale.label", locale, "Language")}
-        </DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        {SUPPORTED_LOCALES.map((code) => {
-          const isActive = code === locale;
-          // Each entry is intentionally rendered in ITS OWN language so
-          // a user accidentally on the wrong locale can still recognise
-          // their preferred option ("English" stays English, Chinese
-          // shows in Hanzi).
-          const label = tStatic(`locale.${code}`, code, code);
-          return (
-            <DropdownMenuItem
-              key={code}
-              onSelect={() => {
-                void handleSelect(code);
-              }}
-              className="flex items-center justify-between gap-3"
-            >
-              <span>{label}</span>
-              {isActive ? (
-                <Check className="h-4 w-4 text-neutral-500 dark:text-neutral-400" />
-              ) : null}
-            </DropdownMenuItem>
-          );
-        })}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <div ref={containerRef} className={cn("relative inline-flex items-center", className)}>
+      <button
+        type="button"
+        aria-label={chipLabel}
+        aria-expanded={open}
+        aria-haspopup="true"
+        disabled={isPending}
+        onClick={() => !isPending && setOpen((prev) => !prev)}
+        className={cn(
+          "inline-flex items-center rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-sm font-medium text-neutral-600 shadow-sm outline-none select-none",
+          "transition-colors hover:bg-neutral-50 focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 dark:focus-visible:ring-neutral-600 dark:focus-visible:ring-offset-neutral-950",
+          "dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700/70",
+          isPending && "cursor-not-allowed opacity-50",
+          !isPending && "cursor-pointer",
+        )}
+      >
+        {isPending ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <>
+            <Languages className="h-4 w-4 sm:hidden" aria-hidden />
+            <span className="hidden max-w-40 truncate sm:inline">{currentLocaleLabel}</span>
+          </>
+        )}
+      </button>
+
+      {/* Desktop — same slide-out as RowActionMenu align="end": grows LEFT toward page centre */}
+      <div
+        className={cn(
+          "absolute top-1/2 right-full z-30 hidden -translate-y-1/2 items-center overflow-hidden transition-all duration-700 ease-in-out sm:flex",
+          open ? "mr-2 max-w-[280px] opacity-100" : "mr-0 max-w-0 opacity-0",
+        )}
+      >
+        <div className="flex items-center gap-0 rounded-md border border-neutral-200 bg-neutral-100 p-0.5 shadow-sm dark:border-neutral-700 dark:bg-neutral-800">
+          {SUPPORTED_LOCALES.map((code) => {
+            const isActive = code === locale;
+            const label = tStatic(`locale.${code}`, code, code);
+            return (
+              <button
+                key={code}
+                type="button"
+                disabled={isPending}
+                onClick={() => {
+                  void handleSelect(code);
+                }}
+                className={cn(
+                  "inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
+                  "focus:outline-none disabled:pointer-events-none disabled:opacity-50",
+                  isActive
+                    ? "bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-100"
+                    : "text-neutral-600 hover:bg-white hover:text-neutral-900 hover:shadow-sm dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-neutral-100",
+                )}
+              >
+                <span>{label}</span>
+                {isActive ? <Check className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden /> : null}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Mobile — vertical stack like RowActionMenu */}
+      <div
+        className={cn(
+          "absolute right-0 top-full z-50 mt-1 overflow-hidden transition-all duration-500 ease-in-out sm:hidden",
+          open ? "max-h-40 opacity-100" : "max-h-0 opacity-0",
+        )}
+      >
+        <div className="flex min-w-44 flex-col rounded-md border border-neutral-200 bg-neutral-100 p-0.5 shadow-md dark:border-neutral-700 dark:bg-neutral-800">
+          <div className="px-2 py-1 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">{chipLabel}</div>
+          {SUPPORTED_LOCALES.map((code) => {
+            const isActive = code === locale;
+            const label = tStatic(`locale.${code}`, code, code);
+            return (
+              <button
+                key={code}
+                type="button"
+                disabled={isPending}
+                onClick={() => {
+                  void handleSelect(code);
+                }}
+                className={cn(
+                  "inline-flex items-center justify-between gap-2 whitespace-nowrap rounded-sm px-2.5 py-1.5 text-left text-xs font-medium transition-colors",
+                  "focus:outline-none disabled:pointer-events-none disabled:opacity-50",
+                  isActive
+                    ? "bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-100"
+                    : "text-neutral-600 hover:bg-white hover:text-neutral-900 hover:shadow-sm dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-neutral-100",
+                )}
+              >
+                <span>{label}</span>
+                {isActive ? <Check className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden /> : null}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }
