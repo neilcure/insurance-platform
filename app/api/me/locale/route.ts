@@ -21,11 +21,10 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
-import { eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/db/client";
-import { users } from "@/db/schema/core";
 import { authOptions } from "@/lib/auth/options";
 import {
   LOCALE_COOKIE,
@@ -39,6 +38,59 @@ const Body = z.object({
 
 /** One year — long enough that the cookie effectively persists, short enough that browsers won't reject it. */
 const ONE_YEAR_SECONDS = 60 * 60 * 24 * 365;
+
+/**
+ * Build the response synchronously — the cookie is what unblocks the
+ * NEXT page request, and the client switcher already has the new
+ * locale rendering RIGHT NOW. Returning fast keeps the browser-side
+ * `keepalive` request short and stops any UI that does happen to
+ * await the response from feeling sluggish.
+ */
+function buildResponse(locale: Locale) {
+  const response = NextResponse.json({ locale }, { status: 200 });
+  response.cookies.set({
+    name: LOCALE_COOKIE,
+    value: locale,
+    path: "/",
+    maxAge: ONE_YEAR_SECONDS,
+    sameSite: "lax",
+    // Do NOT mark httpOnly — the client-side switcher reads / writes
+    // this cookie too (it's the lowest-friction hand-off when the
+    // user hasn't signed in yet).
+    httpOnly: false,
+    secure: process.env.NODE_ENV === "production",
+  });
+  return response;
+}
+
+/**
+ * Single-statement upsert into `users.profile_meta` using the JSONB
+ * concat operator. Replaces the OLD pattern of:
+ *
+ *   SELECT profile_meta FROM users WHERE id = $1   -- 1 round-trip
+ *   UPDATE users SET profile_meta = ... WHERE id = $1  -- 2nd round-trip
+ *
+ * with a single round-trip that lets Postgres do the merge:
+ *
+ *   UPDATE users
+ *   SET profile_meta = COALESCE(profile_meta, '{}'::jsonb)
+ *                      || jsonb_build_object('locale', $1),
+ *       updated_at = now()
+ *   WHERE id = $2
+ *
+ * This roughly halves the wall-clock time of the route on a warm
+ * connection — the dominant cost is the network hop, not the work
+ * Postgres does.
+ */
+async function persistLocaleToUser(userId: number, locale: Locale) {
+  await db.execute(sql`
+    UPDATE users
+    SET profile_meta = COALESCE(profile_meta, '{}'::jsonb)
+                       || jsonb_build_object('locale', ${locale}::text),
+        updated_at = NOW()
+    WHERE id = ${userId}
+  `);
+}
 
 export async function POST(request: NextRequest) {
   let parsed;
@@ -57,29 +109,16 @@ export async function POST(request: NextRequest) {
 
   const { locale } = parsed.data;
 
-  // Persist to the user row when the caller is signed in. We merge
-  // into the existing `profile_meta` so unrelated keys (e.g.
-  // `companyName`, `primaryId`) are preserved — same pattern as the
-  // admin user PATCH handler.
+  // Persist to the user row when the caller is signed in. The merge
+  // is done by Postgres via the JSONB `||` operator so unrelated
+  // keys (`companyName`, `primaryId`, etc.) are preserved — same
+  // semantics as the admin user PATCH handler, but in ONE round-trip
+  // instead of two.
   try {
     const session = await getServerSession(authOptions);
     const userId = Number((session?.user as { id?: string | number } | undefined)?.id);
     if (Number.isFinite(userId) && userId > 0) {
-      const [existing] = await db
-        .select({ profileMeta: users.profileMeta })
-        .from(users)
-        .where(eq(users.id, userId))
-        .limit(1);
-      if (existing) {
-        const next = { ...((existing.profileMeta ?? {}) as Record<string, unknown>), locale };
-        await db
-          .update(users)
-          .set({
-            profileMeta: next,
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(users.id, userId));
-      }
+      await persistLocaleToUser(userId, locale);
     }
   } catch (err) {
     // Don't fail the request — the cookie is still written below so
@@ -88,18 +127,5 @@ export async function POST(request: NextRequest) {
     console.error("[/api/me/locale] DB persistence failed:", err);
   }
 
-  const response = NextResponse.json({ locale }, { status: 200 });
-  response.cookies.set({
-    name: LOCALE_COOKIE,
-    value: locale,
-    path: "/",
-    maxAge: ONE_YEAR_SECONDS,
-    sameSite: "lax",
-    // Do NOT mark httpOnly — the client-side switcher reads / writes
-    // this cookie too (it's the lowest-friction hand-off when the
-    // user hasn't signed in yet).
-    httpOnly: false,
-    secure: process.env.NODE_ENV === "production",
-  });
-  return response;
+  return buildResponse(locale);
 }
