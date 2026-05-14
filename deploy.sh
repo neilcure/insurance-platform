@@ -10,8 +10,10 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-echo "1/4 - Pulling latest code..."
-git pull origin main
+echo "1/4 - Pulling latest code (always deploy from main)..."
+git fetch origin
+git checkout main
+git pull --ff-only origin main
 
 echo "2/4 - Stopping old container..."
 docker rm -f insurance-platform-app-1 2>/dev/null || true
