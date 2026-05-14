@@ -58,24 +58,32 @@ import {
 import { cn } from "@/lib/utils";
 import type { DocumentStatus } from "@/lib/types/upload-document";
 import type { TaskListPreviewItem } from "@/lib/policies/upload-requirement-build";
+import { tStatic, useLocale, useT, type Locale } from "@/lib/i18n";
 
-function taskBadgeForPreviewStatus(st: DocumentStatus): { label: string; className: string } {
+/**
+ * Translates the upload-document task badge into the active locale.
+ *
+ * The `className` half of the return value is colour-coded by status
+ * and stays constant across locales — only the human-readable
+ * `label` changes.
+ */
+function taskBadgeForPreviewStatus(st: DocumentStatus, locale: Locale): { label: string; className: string } {
   switch (st) {
     case "outstanding":
       return {
-        label: "Outstanding",
+        label: tStatic("calendar.bucket.outstanding", locale, "Outstanding"),
         className:
           "border-orange-200 bg-orange-100 text-orange-800 dark:border-orange-900 dark:bg-orange-950/50 dark:text-orange-200",
       };
     case "uploaded":
       return {
-        label: "Pending",
+        label: tStatic("calendar.bucket.pending", locale, "Pending"),
         className:
           "border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-200",
       };
     case "rejected":
       return {
-        label: "Rejected",
+        label: tStatic("calendar.bucket.rejected", locale, "Rejected"),
         className:
           "border-red-200 bg-red-100 text-red-800 dark:border-red-900 dark:bg-red-950/50 dark:text-red-200",
       };
@@ -211,10 +219,32 @@ const EARLY_STAGE_STATUSES = new Set([
   "quotation_sent",
 ]);
 
-const BUCKET_DEFS: ReadonlyArray<Pick<Bucket, "key" | "label" | "description" | "badgeClass" | "dotClass">> =
-  [
+/**
+ * Bucket definitions used as both the dot legend on the calendar and
+ * the section headers in the grouped list below.
+ *
+ * The `label` / `description` fields hold the canonical English
+ * strings (used as `tStatic` fallbacks); the `labelKey` /
+ * `descriptionKey` fields point to the localised versions in
+ * `messages/<locale>.ts`. Render sites pass each definition through
+ * `translateBucketDef` so the visible text follows the active
+ * locale while the underlying badge / dot colour mapping stays in one
+ * place.
+ *
+ * Note: bucket-only descriptions ("Quotation not actioned — start
+ * date is today or has passed", etc.) are intentionally NOT in the
+ * dictionary yet — they're long copy that is still being iterated
+ * on. They surface as English even on zh-HK; promoting them is a
+ * one-line change once the wording stabilises.
+ */
+const BUCKET_DEFS: ReadonlyArray<
+  Pick<Bucket, "key" | "label" | "description" | "badgeClass" | "dotClass"> & {
+    labelKey: string;
+  }
+> = [
     {
       key: "overdue_incomplete",
+      labelKey: "calendar.bucket.overdue",
       label: "Overdue",
       description: "Quotation not actioned — start date is today or has passed",
       badgeClass:
@@ -223,6 +253,7 @@ const BUCKET_DEFS: ReadonlyArray<Pick<Bucket, "key" | "label" | "description" | 
     },
     {
       key: "in_progress",
+      labelKey: "calendar.bucket.inProgress",
       label: "In Progress",
       description: "Invoice sent / payment received — waiting to finalise",
       badgeClass:
@@ -231,6 +262,7 @@ const BUCKET_DEFS: ReadonlyArray<Pick<Bucket, "key" | "label" | "description" | 
     },
     {
       key: "expired",
+      labelKey: "calendar.bucket.overdue",
       label: "Expired / Overdue",
       description: "Issued policy is already past its end date",
       badgeClass:
@@ -239,6 +271,7 @@ const BUCKET_DEFS: ReadonlyArray<Pick<Bucket, "key" | "label" | "description" | 
     },
     {
       key: "week",
+      labelKey: "calendar.bucket.thisWeek",
       label: "This week",
       description: "Expires in the next 7 days",
       badgeClass:
@@ -247,6 +280,7 @@ const BUCKET_DEFS: ReadonlyArray<Pick<Bucket, "key" | "label" | "description" | 
     },
     {
       key: "month",
+      labelKey: "calendar.bucket.thisMonth",
       label: "This month",
       description: "Expires in 8–30 days",
       badgeClass:
@@ -255,6 +289,7 @@ const BUCKET_DEFS: ReadonlyArray<Pick<Bucket, "key" | "label" | "description" | 
     },
     {
       key: "later",
+      labelKey: "calendar.bucket.later",
       label: "Later",
       description: "Expires in 31+ days",
       badgeClass:
@@ -262,6 +297,20 @@ const BUCKET_DEFS: ReadonlyArray<Pick<Bucket, "key" | "label" | "description" | 
       dotClass: "bg-blue-500 dark:bg-blue-400",
     },
   ];
+
+/**
+ * Apply locale to a bucket def — replaces `label` with the localised
+ * value if present in the dictionary, otherwise leaves the original
+ * English string.
+ */
+function translateBucketDef<
+  T extends { labelKey: string; label: string },
+>(def: T, locale: Locale): T {
+  return {
+    ...def,
+    label: tStatic(def.labelKey, locale, def.label),
+  };
+}
 
 /**
  * Bucketing rule for incomplete (not-yet-issued) policies:
@@ -328,10 +377,17 @@ function monthLabel(days: number): string {
   return `${months} months`;
 }
 
-function relativeLabel(days: number): string {
-  if (days === 0) return "Today";
-  if (days === 1) return "Tomorrow";
-  if (days === -1) return "Yesterday";
+/**
+ * Human label for a signed day delta. The "{N} days [ago]" tail is
+ * still English-only — translating it cleanly needs plural rules
+ * which we don't ship yet — so we only localise the three named
+ * deltas (Today / Tomorrow / Yesterday) which are by far the most
+ * common in this widget.
+ */
+function relativeLabel(days: number, locale: Locale): string {
+  if (days === 0) return tStatic("calendar.day.today", locale, "Today");
+  if (days === 1) return tStatic("calendar.day.tomorrow", locale, "Tomorrow");
+  if (days === -1) return tStatic("calendar.day.yesterday", locale, "Yesterday");
   if (days < 0) return `${Math.abs(days)} days ago`;
   return `${days} days`;
 }
@@ -504,6 +560,8 @@ export function PolicyExpiryCalendar({
   userType,
 }: Props) {
   const deliver = useDeliverDocuments();
+  const locale = useLocale();
+  const t = useT();
   // Pull status labels + colours from `form_options.policy_statuses`
   // (admin-configurable) so the calendar row badges stay in sync with
   // the StatusTab and any future status added by an admin. Per the
@@ -668,7 +726,7 @@ export function PolicyExpiryCalendar({
       })
       .catch((err: Error) => {
         if (cancelled) return;
-        setError(err.message ?? "Failed to load");
+        setError(err.message ?? t("calendar.error.failedToLoad", "Failed to load"));
         setRows([]);
       })
       .finally(() => {
@@ -959,8 +1017,11 @@ export function PolicyExpiryCalendar({
       later: [],
     };
     for (const r of visibleRows) grouped[bucketForRow(r)].push(r);
-    return BUCKET_DEFS.map((def) => ({ ...def, rows: grouped[def.key] }));
-  }, [visibleRows]);
+    return BUCKET_DEFS.map((def) => ({
+      ...translateBucketDef(def, locale),
+      rows: grouped[def.key],
+    }));
+  }, [visibleRows, locale]);
 
   const monthDisplay = activeMonth.toLocaleDateString("en-US", {
     month: "long",
@@ -1310,7 +1371,7 @@ export function PolicyExpiryCalendar({
             The previous "Policy Renewals" name only described half
             of the surface and confused the user.
           */}
-          <CardTitle>Policy Calendar</CardTitle>
+          <CardTitle>{t("calendar.title", "Policy Calendar")}</CardTitle>
           {totalCount > 0 ? (
             <Badge variant="secondary" className="ml-1">
               {totalCount}
@@ -1328,8 +1389,9 @@ export function PolicyExpiryCalendar({
               size="sm"
               variant="ghost"
               onClick={() => setStatusFilter(new Set())}
-              title="Clear all status filters"
+              title={t("calendar.toolbar.clearFilters", "Clear all status filters")}
             >
+              {/* Inline button copy is intentionally English: it's a small toolbar action and the count makes the meaning unambiguous. */}
               Clear status ({statusFilter.size})
             </Button>
           ) : null}
@@ -1347,7 +1409,7 @@ export function PolicyExpiryCalendar({
             onOpenChange={(o) => { if (o) openSettings(); else cancelSettings(); }}
           >
             <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="ghost" title="Calendar settings">
+              <Button size="sm" variant="ghost" title={t("calendar.toolbar.calendarSettings", "Calendar settings")}>
                 <Settings2 className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
@@ -1495,7 +1557,7 @@ export function PolicyExpiryCalendar({
               {/* ── Footer: Save / Cancel ─────────────────────────── */}
               <div className="sticky bottom-0 flex items-center justify-between gap-2 border-t bg-popover px-3 py-2">
                 <span className="text-[11px] text-neutral-500">
-                  {draftDirty ? "Unsaved changes" : "No changes"}
+                  {draftDirty ? t("calendar.toolbar.unsavedChanges", "Unsaved changes") : t("calendar.toolbar.noChanges", "No changes")}
                 </span>
                 <div className="flex gap-2">
                   <Button
@@ -1503,14 +1565,14 @@ export function PolicyExpiryCalendar({
                     variant="ghost"
                     onClick={cancelSettings}
                   >
-                    Cancel
+                    {t("common.cancel", "Cancel")}
                   </Button>
                   <Button
                     size="sm"
                     onClick={saveSettingsNow}
                     disabled={!draftDirty}
                   >
-                    Save
+                    {t("common.save", "Save")}
                   </Button>
                 </div>
               </div>
@@ -1659,18 +1721,21 @@ export function PolicyExpiryCalendar({
                 }}
               />
               <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 border-t border-neutral-200 px-3 py-2 text-[11px] text-neutral-600 dark:border-neutral-800 dark:text-neutral-400 sm:text-xs">
-                {BUCKET_DEFS.map((b) => (
-                  <span key={b.key} className="flex items-center gap-1.5">
-                    <span className={cn("inline-block h-2.5 w-2.5 rounded-full", b.dotClass)} />
-                    {b.label}
-                  </span>
-                ))}
+                {BUCKET_DEFS.map((b) => {
+                  const tb = translateBucketDef(b, locale);
+                  return (
+                    <span key={tb.key} className="flex items-center gap-1.5">
+                      <span className={cn("inline-block h-2.5 w-2.5 rounded-full", tb.dotClass)} />
+                      {tb.label}
+                    </span>
+                  );
+                })}
               </div>
               </div>
 
               <aside
                 className="scrollbar-hide flex min-h-0 w-full shrink-0 flex-col overflow-y-auto rounded-md border border-neutral-200 bg-neutral-50/90 p-3 dark:border-neutral-800 dark:bg-neutral-900/50 lg:max-h-[min(48rem,90vh)] lg:w-56 xl:w-64"
-                aria-label="Open document tasks and day preview"
+                aria-label={t("calendar.aria.openDayPreview", "Open document tasks and day preview")}
               >
                 {/* Open tasks stack: preview sheet slides from the top over this layer while hovering calendar days */}
                 <div className="relative shrink-0 overflow-hidden rounded-md">
@@ -1808,7 +1873,7 @@ export function PolicyExpiryCalendar({
                                 {expanded ? (
                                   <ul className="space-y-1 border-t border-neutral-100 bg-neutral-50/90 p-2 dark:border-neutral-800 dark:bg-neutral-900/40">
                                     {tasks.map((task) => {
-                                      const b = taskBadgeForPreviewStatus(task.displayStatus);
+                                      const b = taskBadgeForPreviewStatus(task.displayStatus, locale);
                                       return (
                                         <li key={`${row.policyId}-${task.typeKey}-${task.displayStatus}`}>
                                           <Link
@@ -2026,7 +2091,9 @@ export function PolicyExpiryCalendar({
                       onClick={() => setShowAllMonths((v) => !v)}
                       className="h-6 text-xs"
                     >
-                      {showAllMonths ? "Show by month" : `Show all ${totalCount}`}
+                      {showAllMonths
+                        ? t("calendar.toolbar.showByMonth", "Show by month")
+                        : t("calendar.toolbar.showAllCount", "Show all {count}", { count: totalCount })}
                     </Button>
                   ) : null}
                 </div>
@@ -2187,6 +2254,8 @@ function ExpiringRowItem({
   visibleFields: string[];
   getFieldLabel: (path: string) => string;
 }) {
+  const t = useT();
+  const locale = useLocale();
   const statusValue = row.status?.trim() || "quotation_prepared";
   const statusLabel = getStatusLabel(statusValue);
   const statusColor = getStatusColor(statusValue);
@@ -2287,11 +2356,11 @@ function ExpiringRowItem({
             >
               {bucketKey === "overdue_incomplete"
                 ? row.daysFromToday < 0
-                  ? `Overdue ${Math.abs(row.daysFromToday)}d`
+                  ? `${t("calendar.bucket.overdue", "Overdue")} ${Math.abs(row.daysFromToday)}d`
                   : row.daysFromToday === 0
-                    ? "Starts today"
-                    : "Starts tomorrow"
-                : relativeLabel(row.daysFromToday)}
+                    ? t("calendar.starts.today", "Starts today")
+                    : t("calendar.starts.tomorrow", "Starts tomorrow")
+                : relativeLabel(row.daysFromToday, locale)}
             </span>
           )}
         </div>
@@ -2314,10 +2383,10 @@ function ExpiringRowItem({
           can start a renewal from the drawer's Workflow tab, no
           need for a separate dashboard button. Removed both.
         */}
-        <Button asChild size="sm" variant="outline" title="Open policy">
+        <Button asChild size="sm" variant="outline" title={t("calendar.action.openTitle", "Open policy")}>
           <Link href={openPolicyHref(row)}>
             <ExternalLink className="h-4 w-4 sm:hidden lg:inline" />
-            <span className="hidden sm:inline">Open</span>
+            <span className="hidden sm:inline">{t("calendar.action.open", "Open")}</span>
           </Link>
         </Button>
         {canTakeWriteActions ? (
@@ -2326,13 +2395,13 @@ function ExpiringRowItem({
             variant="secondary"
             title={
               row.kind === "incomplete"
-                ? "Email a follow-up to chase this policy"
-                : "Email a renewal reminder"
+                ? t("calendar.action.emailReminder", "Email a renewal reminder")
+                : t("calendar.action.emailReminder", "Email a renewal reminder")
             }
             onClick={() => onRemind(row)}
           >
             <Mail className="h-4 w-4 sm:hidden lg:inline" />
-            <span className="hidden sm:inline">Email</span>
+            <span className="hidden sm:inline">{t("calendar.action.email", "Email")}</span>
           </Button>
         ) : null}
       </div>

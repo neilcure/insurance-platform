@@ -1,3 +1,5 @@
+import type { Locale, TranslationBlock } from "@/lib/i18n";
+
 export type WorkflowActionType =
   | "note"
   | "email"
@@ -40,6 +42,8 @@ export type WorkflowActionMeta = {
   documentTemplateId?: number;
   /** For send_document type: document template label for display */
   documentTemplateLabel?: string;
+  /** Locale-specific overrides edited via `<TranslationsEditor>`. Falls back to English on missing entries. */
+  translations?: Partial<Record<Locale, TranslationBlock>>;
 };
 
 export type WorkflowActionRow = {

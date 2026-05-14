@@ -9,12 +9,15 @@ import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbP
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { ModeToggle } from "@/components/ui/mode-toggle";
+import { LocaleSwitcher } from "@/components/ui/locale-switcher";
 import { PresenceProvider } from "@/lib/presence/presence-context";
 import { OnlineUsersWidget } from "@/components/presence/online-users-widget";
 import { DocumentDeliveryProvider } from "@/lib/document-delivery";
 import { DocumentDeliveryHost } from "@/components/document-delivery/DocumentDeliveryHost";
 import { IdleTimeoutHost } from "@/components/idle-timeout/IdleTimeoutHost";
 import { Suspense } from "react";
+import { tStatic } from "@/lib/i18n";
+import { getLocale } from "@/lib/i18n/server";
 
 export default async function DashboardGroupLayout({
   children,
@@ -25,6 +28,11 @@ export default async function DashboardGroupLayout({
   if (!session?.user) {
     redirect("/login");
   }
+
+  // Server-side locale read so the breadcrumb (rendered by THIS server
+  // component) follows the same language as the client-rendered chrome.
+  // The cookie / x-locale header / DB chain runs once per request.
+  const locale = await getLocale();
 
   /** Sidebar header for direct clients — must match DB, not session user.name, to avoid flashing the login name. */
   let initialWorkspaceLabel: string | null = null;
@@ -72,17 +80,18 @@ export default async function DashboardGroupLayout({
                 <Breadcrumb>
                   <BreadcrumbList>
                     <BreadcrumbItem className="hidden md:block">
-                      <BreadcrumbLink href="/dashboard">Dashboard</BreadcrumbLink>
+                      <BreadcrumbLink href="/dashboard">{tStatic("nav.dashboard", locale, "Dashboard")}</BreadcrumbLink>
                     </BreadcrumbItem>
                     <BreadcrumbSeparator className="hidden md:block" />
                     <BreadcrumbItem>
-                      <BreadcrumbPage>Overview</BreadcrumbPage>
+                      <BreadcrumbPage>{tStatic("nav.overview", locale, "Overview")}</BreadcrumbPage>
                     </BreadcrumbItem>
                   </BreadcrumbList>
                 </Breadcrumb>
               </div>
               <div className="ml-auto flex items-center gap-2">
                 <OnlineUsersWidget />
+                <LocaleSwitcher />
                 <ModeToggle />
               </div>
             </header>

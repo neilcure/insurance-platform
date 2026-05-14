@@ -14,8 +14,10 @@ import {
   validatePassword,
   policyDescription,
 } from "@/lib/password-policy";
+import { useT } from "@/lib/i18n";
 
 export default function ResetPasswordPage(props: { params: Promise<{ token: string }> }) {
+  const t = useT();
   const { token } = React.use(props.params);
   const router = useRouter();
   const [submitting, setSubmitting] = React.useState(false);
@@ -68,19 +70,19 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
 
   const rules = React.useMemo(() => {
     const list: { label: string; met: boolean }[] = [
-      { label: `At least ${policy.minLength} characters`, met: password.length >= policy.minLength },
+      { label: t("auth.reset.minLength", "At least {n} characters", { n: policy.minLength }), met: password.length >= policy.minLength },
     ];
-    if (policy.requireUppercase) list.push({ label: "Uppercase letter (A-Z)", met: /[A-Z]/.test(password) });
-    if (policy.requireLowercase) list.push({ label: "Lowercase letter (a-z)", met: /[a-z]/.test(password) });
-    if (policy.requireNumber) list.push({ label: "Number (0-9)", met: /\d/.test(password) });
-    if (policy.requireSpecial) list.push({ label: "Special character (!@#...)", met: /[^A-Za-z0-9]/.test(password) });
+    if (policy.requireUppercase) list.push({ label: t("auth.reset.uppercase", "Uppercase letter (A-Z)"), met: /[A-Z]/.test(password) });
+    if (policy.requireLowercase) list.push({ label: t("auth.reset.lowercase", "Lowercase letter (a-z)"), met: /[a-z]/.test(password) });
+    if (policy.requireNumber) list.push({ label: t("auth.reset.number", "Number (0-9)"), met: /\d/.test(password) });
+    if (policy.requireSpecial) list.push({ label: t("auth.reset.special", "Special character (!@#...)"), met: /[^A-Za-z0-9]/.test(password) });
     return list;
-  }, [password, policy]);
+  }, [password, policy, t]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!isValid) {
-      const msg = policyErrors[0] || (mismatch ? "Passwords do not match" : "Please fill in all fields");
+      const msg = policyErrors[0] || (mismatch ? t("auth.reset.passwordsNoMatch", "Passwords do not match") : t("auth.reset.fillAll", "Please fill in all fields"));
       toast.error(msg);
       return;
     }
@@ -93,13 +95,13 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data?.error ?? "Failed to reset password");
+        toast.error(data?.error ?? t("auth.reset.failedReset", "Failed to reset password"));
         return;
       }
-      toast.success("Password updated. You can now log in.");
+      toast.success(t("auth.reset.success", "Password updated. You can now log in."));
       router.push("/auth/signin");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to reset password";
+      const msg = err instanceof Error ? err.message : t("auth.reset.failedReset", "Failed to reset password");
       toast.error(msg);
     } finally {
       setSubmitting(false);
@@ -118,7 +120,8 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Reset Password</CardTitle>
+          {/* `policyDescription(policy)` is a server-side composed sentence intentionally left in English; it can move to the dictionary in a later phase. */}
+          <CardTitle>{t("auth.reset.title", "Reset Password")}</CardTitle>
           <p className="text-sm text-muted-foreground">{policyDescription(policy)}</p>
         </CardHeader>
         <CardContent>
@@ -141,12 +144,12 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
               style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
             />
             <div className="grid gap-1.5">
-              <Label htmlFor="password">New Password</Label>
+              <Label htmlFor="password">{t("auth.reset.newPassword", "New Password")}</Label>
               <PasswordInput
                 id="password"
                 name="new-password"
                 autoComplete="new-password"
-                placeholder={`At least ${policy.minLength} characters`}
+                placeholder={t("auth.reset.minLength", "At least {n} characters", { n: policy.minLength })}
                 value={password}
                 onChange={(e) => {
                   setPassword(e.target.value);
@@ -170,22 +173,22 @@ export default function ResetPasswordPage(props: { params: Promise<{ token: stri
             </div>
 
             <div className="grid gap-1.5">
-              <Label htmlFor="confirm">Confirm Password</Label>
+              <Label htmlFor="confirm">{t("auth.reset.confirmPassword", "Confirm Password")}</Label>
               <PasswordInput
                 id="confirm"
                 name="confirm-new-password"
                 autoComplete="new-password"
-                placeholder="Re-enter your password"
+                placeholder={t("auth.reset.placeholderRetype", "Re-enter your password")}
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
               />
               {mismatch && (
-                <p className="text-sm text-destructive">Passwords do not match</p>
+                <p className="text-sm text-destructive">{t("auth.reset.passwordsNoMatch", "Passwords do not match")}</p>
               )}
             </div>
 
             <Button type="submit" className="w-full" disabled={submitting || !isValid}>
-              {submitting ? "Updating..." : "Update Password"}
+              {submitting ? t("auth.reset.updating", "Updating...") : t("auth.reset.updatePassword", "Update Password")}
             </Button>
           </form>
         </CardContent>

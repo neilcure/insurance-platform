@@ -50,6 +50,7 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { LOCALE_COOKIE, LOCALE_HEADER, coerceLocale } from "@/lib/i18n/types";
 
 const PUBLIC_API_PREFIXES = [
   "/api/auth/",
@@ -62,15 +63,42 @@ const PUBLIC_API_PREFIXES = [
   // Public read of admin-edited landing-page content. POST still calls
   // requireUser inside the handler.
   "/api/admin/landing-page",
+  // Locale switcher — visitors on the unauthenticated landing page must
+  // be able to flip language. The handler conditionally persists to the
+  // DB only when a session exists; the cookie is always set.
+  "/api/me/locale",
 ];
 
 function isPublicApi(pathname: string): boolean {
   return PUBLIC_API_PREFIXES.some((p) => pathname.startsWith(p));
 }
 
+/**
+ * Forward the resolved locale to downstream handlers via the
+ * `x-locale` request header so route handlers / server components
+ * can call `getLocale()` without repeating the cookie parse.
+ *
+ * The header is the FIRST link in the chain consulted by
+ * `lib/i18n/locale.ts` after the cookie itself, so this works as a
+ * pure optimisation — pages still resolve the correct locale even
+ * if the proxy is bypassed (kill-switch, tests, etc.).
+ *
+ * We mutate the inbound request headers and pass them through
+ * `NextResponse.next({ request })` rather than the response, since
+ * server components read REQUEST headers via `next/headers`.
+ */
+function withLocaleHeader(req: NextRequest): NextResponse {
+  const cookieValue = req.cookies.get(LOCALE_COOKIE)?.value;
+  if (!cookieValue) return NextResponse.next();
+  const locale = coerceLocale(cookieValue);
+  const requestHeaders = new Headers(req.headers);
+  requestHeaders.set(LOCALE_HEADER, locale);
+  return NextResponse.next({ request: { headers: requestHeaders } });
+}
+
 export async function proxy(req: NextRequest) {
   if (process.env.DISABLE_AUTH_MIDDLEWARE === "1") {
-    return NextResponse.next();
+    return withLocaleHeader(req);
   }
 
   const { pathname, search } = req.nextUrl;
@@ -78,12 +106,12 @@ export async function proxy(req: NextRequest) {
   // Skip the public API surfaces — they handle their own auth (or
   // intentionally don't need any, like the public sign flow).
   if (pathname.startsWith("/api/") && isPublicApi(pathname)) {
-    return NextResponse.next();
+    return withLocaleHeader(req);
   }
 
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
   if (token) {
-    return NextResponse.next();
+    return withLocaleHeader(req);
   }
 
   // Not signed in.

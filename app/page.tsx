@@ -19,7 +19,10 @@ import { db } from "@/db/client";
 import { appSettings } from "@/db/schema/core";
 import { eq } from "drizzle-orm";
 import { ModeToggle } from "@/components/ui/mode-toggle";
+import { LocaleSwitcher } from "@/components/ui/locale-switcher";
 import { Button } from "@/components/ui/button";
+import { tStatic } from "@/lib/i18n";
+import { getLocale } from "@/lib/i18n/server";
 
 async function getLandingContent(): Promise<LandingPageSettings> {
   try {
@@ -64,6 +67,11 @@ export default async function Home() {
   }
 
   const c = await getLandingContent();
+  // Page chrome (Sign in button / footer copyright / Forgot password
+  // link) follows the language switcher; the admin-edited landing
+  // content (`c.brandName`, `c.heroHeading`, etc.) intentionally
+  // stays as-is until the dynamic translation pipeline lands.
+  const locale = await getLocale();
 
   return (
     <main className="min-h-screen bg-neutral-50 transition-colors duration-500 dark:bg-neutral-950">
@@ -114,15 +122,16 @@ export default async function Home() {
           </span>
         </div>
         <div className="flex items-center gap-2">
+          <LocaleSwitcher />
           <ModeToggle />
           <Button
             asChild
             size="sm"
             className="bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
           >
-            <Link href="/auth/signin" aria-label="Sign in">
+            <Link href="/auth/signin" aria-label={tStatic("landing.signIn", locale, "Sign in")}>
               <LogIn className="h-4 w-4 shrink-0 sm:hidden lg:inline" />
-              <span className="hidden sm:inline">Sign in</span>
+              <span className="hidden sm:inline">{tStatic("landing.signIn", locale, "Sign in")}</span>
             </Link>
           </Button>
         </div>
@@ -208,7 +217,7 @@ export default async function Home() {
           href="/auth/signin"
           className="mt-6 inline-flex items-center gap-2 rounded-md bg-neutral-900 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
         >
-          Sign in
+          {tStatic("landing.signIn", locale, "Sign in")}
           <ArrowRight className="h-4 w-4" />
         </Link>
       </section>
@@ -219,15 +228,15 @@ export default async function Home() {
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-neutral-400" />
             <span className="text-sm text-neutral-500 dark:text-neutral-400">
-              &copy; {new Date().getFullYear()} {c.footerName}. All rights reserved.
+              &copy; {new Date().getFullYear()} {c.footerName}. {tStatic("landing.allRightsReserved", locale, "All rights reserved.")}
             </span>
           </div>
           <div className="flex gap-6 text-sm text-neutral-500 dark:text-neutral-400">
             <Link href="/auth/signin" className="hover:text-neutral-900 dark:hover:text-neutral-100">
-              Sign in
+              {tStatic("landing.signIn", locale, "Sign in")}
             </Link>
             <Link href="/forgot-password" className="hover:text-neutral-900 dark:hover:text-neutral-100">
-              Forgot password
+              {tStatic("landing.forgotPassword", locale, "Forgot password")}
             </Link>
           </div>
         </div>

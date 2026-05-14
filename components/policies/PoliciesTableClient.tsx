@@ -33,6 +33,7 @@ import {
   expandPolicyTableMapsWithCompositeChildren,
   humanizePolicyTableTailKey,
 } from "@/lib/policies/policy-table-column-labels";
+import { tDynamic, useLocale, useT } from "@/lib/i18n";
 
 const PolicySnapshotView = dynamic(
   () => import("@/components/policies/PolicySnapshotView").then((m) => m.PolicySnapshotView),
@@ -177,6 +178,8 @@ export default function PoliciesTableClient({
    *  filtering is not relevant (e.g. endorsements, client views). */
   showMonthTabs?: boolean;
 }) {
+  const t = useT();
+  const locale = useLocale();
   const label = entityLabel || "Policy";
   const showMonthTabsEffective = showMonthTabs !== false;
   const session = useSession();
@@ -339,12 +342,16 @@ export default function PoliciesTableClient({
       }),
     ]).then(([pkgRows, ...fieldResults]) => {
       if (cancelled) return;
-      const pLabels: Record<string, string> = { insured: "Insured" };
+      // The literal "Insured" fallback for the implicit insured group is
+      // pulled from the dictionary so non-English locales render consistently.
+      const pLabels: Record<string, string> = { insured: t("policiesTable.implicitInsured", "Insured") };
       const pOrders: Record<string, number> = { insured: -1 };
       if (Array.isArray(pkgRows)) {
-        for (const row of pkgRows as Array<{ value?: string; label?: string; sortOrder?: number }>) {
+        for (const row of pkgRows as Array<{ value?: string; label?: string; sortOrder?: number; meta?: Record<string, unknown> | null }>) {
           const key = String(row?.value ?? "").trim();
-          const lbl = String(row?.label ?? "").trim();
+          // tDynamic first → the visible label respects the active locale;
+          // labelCase composition still happens at the SnapshotView layer.
+          const lbl = tDynamic({ label: row?.label, meta: row?.meta }, locale).trim();
           if (key && lbl) pLabels[key] = lbl;
           if (key) {
             const so = Number(row?.sortOrder);
@@ -377,13 +384,19 @@ export default function PoliciesTableClient({
         if (!Array.isArray(fRows)) continue;
         for (const row of fRows) {
           const key = String(row?.value ?? "").trim();
-          const rawLbl = String(row?.label ?? "").trim();
+          // Composition order per `field-label-case` skill: tDynamic
+          // (translate) FIRST, then `labelCase` is applied to the
+          // translated string. That keeps "Coverage" → "保險範圍" and
+          // a stored labelCase=upper would correctly render "保險範圍"
+          // (Chinese has no case so the upper/lower transform is a
+          // no-op, exactly the behaviour we want).
+          const rawLbl = tDynamic({ label: row?.label, meta: row?.meta }, locale).trim();
           if (!key || !rawLbl) continue;
           const labelCase = row?.meta?.labelCase as "original" | "upper" | "lower" | "title" | undefined;
           const lbl = !labelCase || labelCase === "original" ? rawLbl
             : labelCase === "upper" ? rawLbl.toUpperCase()
             : labelCase === "lower" ? rawLbl.toLowerCase()
-            : rawLbl.replace(/\b\w/g, (c) => c.toUpperCase());
+            : rawLbl.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
           const so = Number(row?.sortOrder);
           const order = Number.isFinite(so) ? so : 0;
           const effectiveCase = (labelCase ?? "original") as "original" | "upper" | "lower" | "title";
@@ -423,7 +436,13 @@ export default function PoliciesTableClient({
       setFieldSectionOrders(groupOrders);
     });
     return () => { cancelled = true; };
-  }, [pkgNames.join(",")]);
+    // `locale` / `t` deps: when the user flips language we rebuild
+    // the column-label maps so the table re-renders in the new locale
+    // without forcing a hard navigation. The fetch itself is cheap
+    // (cached form_options API) so the extra round-trip on every
+    // language change is acceptable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pkgNames.join(","), locale, t]);
 
   const getFieldLabel = React.useCallback((path: string): string => {
     const builtin = BUILTIN_FIELDS.find((b) => b.path === path);

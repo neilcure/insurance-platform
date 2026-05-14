@@ -9,6 +9,8 @@ import { eq } from "drizzle-orm";
 import { FilePlus2 } from "lucide-react";
 import { PolicyExpiryCalendar } from "@/components/dashboard/policy-expiry-calendar";
 import { WelcomeCard } from "@/components/dashboard/welcome-card";
+import { tStatic } from "@/lib/i18n";
+import { getLocale } from "@/lib/i18n/server";
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
@@ -56,6 +58,7 @@ export default async function DashboardPage() {
   }
 
   const isDirectClient = user?.userType === "direct_client";
+  const locale = await getLocale();
 
   return (
     /*
@@ -72,12 +75,12 @@ export default async function DashboardPage() {
     */
     <main className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">Dashboard</h1>
+        <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">{tStatic("dashboard.title", locale, "Dashboard")}</h1>
         {!isDirectClient ? (
           <Button asChild size="sm">
             <Link href="/policies/new">
               <FilePlus2 className="h-4 w-4 shrink-0 sm:hidden lg:inline" />
-              <span className="hidden sm:inline">Create Policy</span>
+              <span className="hidden sm:inline">{tStatic("dashboard.createPolicy", locale, "Create Policy")}</span>
             </Link>
           </Button>
         ) : null}

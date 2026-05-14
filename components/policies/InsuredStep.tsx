@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { maskDDMMYYYY } from "@/lib/format/date";
 import { Field } from "@/components/ui/form-field";
+import { tDynamic, useLocale, useT } from "@/lib/i18n";
 
 /**
  * Boolean Yes/No radio pair bound to RHF.
@@ -79,6 +80,8 @@ type DynamicField = {
     booleanChildren?: { true?: { label?: string; inputType?: string; options?: { label?: string; value?: string }[] }[]; false?: { label?: string; inputType?: string; options?: { label?: string; value?: string }[] }[] };
     defaultBoolean?: boolean | null;
     selectDisplay?: "dropdown" | "radio";
+    /** Optional admin-edited locale overrides — opaque blob, see `lib/i18n`. */
+    translations?: unknown;
   } | null;
 };
 
@@ -87,7 +90,9 @@ export function InsuredStep({
 }: {
   form: UseFormReturn<Record<string, unknown>>;
 }) {
-  const [insuredTypes, setInsuredTypes] = React.useState<{ label: string; value: string }[]>([]);
+  const locale = useLocale();
+  const t = useT();
+  const [insuredTypes, setInsuredTypes] = React.useState<{ label: string; value: string; meta?: Record<string, unknown> | null }[]>([]);
   const insuredType = String((form.watch("insuredType") as string) ?? "")
     .trim()
     .toLowerCase();
@@ -106,12 +111,13 @@ export function InsuredStep({
       try {
         const res = await fetch("/api/form-options?groupKey=insured_category", { cache: "no-store" });
         if (!res.ok) return;
-        const data = (await res.json()) as { label: string; value: string }[];
+        const data = (await res.json()) as { label: string; value: string; meta?: Record<string, unknown> | null }[];
         if (cancelled) return;
         const normalized = (Array.isArray(data) ? data : [])
           .map((d) => ({
             label: String(d?.label ?? d?.value ?? ""),
             value: normalizeInsuredCategoryValue(d?.value),
+            meta: (d?.meta ?? null) as Record<string, unknown> | null,
           }))
           .filter((d) => String(d.value ?? "").trim() !== "");
         setInsuredTypes(normalized);
@@ -203,10 +209,13 @@ export function InsuredStep({
   return (
     <>
       <div className="space-y-2">
-        <Label>Insured Type</Label>
+        <Label>{t("insured.typeLabel", "Insured Type")}</Label>
         {insuredTypes.length === 0 ? (
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
-            No insured categories configured. Please create one in Admin → Policy Settings → Insured Category.
+            {t(
+              "insured.noCategoriesHelp",
+              "No insured categories configured. Please create one in Admin → Policy Settings → Insured Category.",
+            )}
           </p>
         ) : (
           <div className="flex gap-6">
@@ -219,7 +228,8 @@ export function InsuredStep({
                   checked={insuredType === opt.value}
                   onChange={() => form.setValue("insuredType", normalizeInsuredCategoryValue(opt.value) as never, { shouldDirty: true })}
                 />
-                {opt.label}
+                {/* Translate first; this label has no labelCase so no need to compose. */}
+                {tDynamic(opt, locale)}
               </label>
             ))}
           </div>
@@ -233,7 +243,7 @@ export function InsuredStep({
         return canonCats.length === 0 || canonCats.includes(insuredType as string);
       }).length > 0 ? (
         <section className="space-y-4">
-          <h3 className="text-sm font-medium">Insured Info</h3>
+          <h3 className="text-sm font-medium">{t("insured.infoSectionTitle", "Insured Info")}</h3>
           <div className="grid grid-cols-2 gap-4">
             {dynamicFields
               .filter((f) => {
@@ -260,7 +270,7 @@ export function InsuredStep({
                   return (
                     <div key={nameBase} className="space-y-1">
                       <Label>
-                        {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                        {tDynamic(f, locale)} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                       </Label>
                       <div className="flex flex-wrap gap-4">
                         {options.map((o) => (
@@ -286,7 +296,7 @@ export function InsuredStep({
                   return (
                     <div key={nameBase} className="space-y-1">
                       <Label>
-                        {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                        {tDynamic(f, locale)} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                       </Label>
                       <div className="max-h-40 overflow-y-auto rounded-md border border-neutral-300 p-2 dark:border-neutral-700">
                         {options.map((o) => (
@@ -302,7 +312,7 @@ export function InsuredStep({
                             {o.label}
                           </label>
                         ))}
-                        {options.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">No options configured.</p> : null}
+                        {options.length === 0 ? <p className="text-xs text-neutral-500 dark:text-neutral-400">{t("insured.noOptionsConfigured", "No options configured.")}</p> : null}
                       </div>
                     </div>
                   );
@@ -316,7 +326,7 @@ export function InsuredStep({
                     <div key={nameBase} className="col-span-2 space-y-2">
                       <div className="space-y-1">
                         <Label>
-                          {f.label} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                          {tDynamic(f, locale)} {f.meta?.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
                         </Label>
                         <BooleanRadioPair form={form} name={nameBase} required={Boolean(f.meta?.required)} />
                       </div>
@@ -487,7 +497,7 @@ export function InsuredStep({
                 return (
                   <Field
                     key={nameBase}
-                    label={f.label}
+                    label={tDynamic(f, locale)}
                     required={Boolean(f.meta?.required)}
                     type={isNumber ? "number" : isDate ? "text" : "text"}
                     placeholder={isDate ? "DD-MM-YYYY" : undefined}

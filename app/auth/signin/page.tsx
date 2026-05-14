@@ -12,12 +12,14 @@ import { Label } from "@/components/ui/label";
 import { useSession } from "next-auth/react";
 import { Separator } from "@/components/ui/separator";
 import { Chrome, ShieldCheck } from "lucide-react";
+import { useT } from "@/lib/i18n";
 
 export default function SignInPage() {
   return (
     <Suspense
       fallback={
         <main className="flex min-h-screen items-center justify-center bg-neutral-50 dark:bg-neutral-950">
+          {/* Suspense fallback runs BEFORE any client provider mounts, so we cannot use `useT` here. The English placeholder is shown only briefly. */}
           <div className="text-sm text-neutral-500">Loading...</div>
         </main>
       }
@@ -28,6 +30,7 @@ export default function SignInPage() {
 }
 
 function SignInContent() {
+  const t = useT();
   const router = useRouter();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callbackUrl") ?? "/dashboard";
@@ -132,16 +135,16 @@ function SignInContent() {
   useEffect(() => {
     if (!errorFromUrl) return;
     if (errorFromUrl === "AccessDenied") {
-      setError("Google sign-in is only available for invited, active users. Please ask an admin to invite your email.");
+      setError(t("auth.signin.errorGoogleAccessDenied"));
       return;
     }
-    setError(`Sign in error: ${errorFromUrl}`);
-  }, [errorFromUrl]);
+    setError(t("auth.signin.errorGeneric", undefined, { error: errorFromUrl }));
+  }, [errorFromUrl, t]);
 
   useEffect(() => {
     if (reasonFromUrl !== "idle") return;
-    setError("You were signed out automatically due to inactivity. Please sign in again.");
-  }, [reasonFromUrl]);
+    setError(t("auth.signin.errorIdleTimeout"));
+  }, [reasonFromUrl, t]);
 
   async function handleGoogleSignIn() {
     setLoading(true);
@@ -149,7 +152,7 @@ function SignInContent() {
     try {
       await signIn("google", { callbackUrl });
     } catch {
-      setError("Google sign-in failed. Please try again.");
+      setError(t("auth.signin.errorGoogleFailed"));
     } finally {
       setLoading(false);
     }
@@ -168,18 +171,18 @@ function SignInContent() {
       });
 
       if (!result) {
-        setError("No response from auth server.");
+        setError(t("auth.signin.errorNoResponse"));
         return;
       }
       if (result.error) {
-        setError(result.error === "CredentialsSignin" ? "Invalid email or password." : result.error);
+        setError(result.error === "CredentialsSignin" ? t("auth.signin.errorInvalidCredentials") : result.error);
         return;
       }
 
       router.push(result.url ?? callbackUrl);
       router.refresh();
     } catch {
-      setError("Sign in failed. Please try again.");
+      setError(t("auth.signin.errorSignInFailed"));
     } finally {
       setLoading(false);
     }
@@ -209,8 +212,8 @@ function SignInContent() {
               }}
             />
           )}
-          <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Welcome back</h1>
-          <p className="text-sm text-neutral-500 dark:text-neutral-400">Sign in to your account to continue</p>
+          <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">{t("auth.signin.welcomeBack", "Welcome back")}</h1>
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">{t("auth.signin.subtitle", "Sign in to your account to continue")}</p>
         </div>
 
         <Card className="border-neutral-200 dark:border-neutral-800">
@@ -228,7 +231,7 @@ function SignInContent() {
               autoComplete={isIdleRedirect ? "off" : "on"}
             >
               <div className="grid gap-2">
-                <Label htmlFor="email">Email</Label>
+                <Label htmlFor="email">{t("auth.email", "Email")}</Label>
                 <Input
                   id="email"
                   type="email"
@@ -256,12 +259,12 @@ function SignInContent() {
               </div>
               <div className="grid gap-2">
                 <div className="flex items-center justify-between">
-                  <Label htmlFor="password">Password</Label>
+                  <Label htmlFor="password">{t("auth.password", "Password")}</Label>
                   <Link
                     href="/forgot-password"
                     className="text-xs text-neutral-500 underline-offset-4 hover:text-neutral-900 hover:underline dark:text-neutral-400 dark:hover:text-neutral-100"
                   >
-                    Forgot password?
+                    {t("auth.forgotPassword", "Forgot password?")}
                   </Link>
                 </div>
                 <PasswordInput
@@ -289,7 +292,7 @@ function SignInContent() {
               ) : null}
 
               <Button type="submit" className="w-full" disabled={loading}>
-                {loading ? "Signing in..." : "Sign in"}
+                {loading ? t("auth.signin.signingIn", "Signing in...") : t("auth.signInTitle", "Sign in")}
               </Button>
             </form>
 
@@ -300,7 +303,7 @@ function SignInContent() {
                     <Separator className="w-full" />
                   </div>
                   <div className="relative flex justify-center text-xs">
-                    <span className="bg-card px-2 text-muted-foreground">or</span>
+                    <span className="bg-card px-2 text-muted-foreground">{t("auth.signin.or", "or")}</span>
                   </div>
                 </div>
 
@@ -312,7 +315,7 @@ function SignInContent() {
                   onClick={handleGoogleSignIn}
                 >
                   <Chrome className="mr-2 h-4 w-4" />
-                  Continue with Google
+                  {t("auth.signin.continueWithGoogle", "Continue with Google")}
                 </Button>
               </>
             ) : null}
@@ -320,7 +323,7 @@ function SignInContent() {
         </Card>
 
         <p className="mt-4 text-center text-xs text-neutral-500 dark:text-neutral-400">
-          Don&apos;t have an account? Contact your administrator.
+          {t("auth.signin.contactAdmin", "Don't have an account? Contact your administrator.")}
         </p>
       </div>
     </main>

@@ -9,6 +9,9 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { getIcon } from "@/lib/icons";
 import { IconPicker } from "@/components/admin/generic/IconPicker";
+import { TranslationsEditor } from "@/components/admin/i18n/TranslationsEditor";
+import { confirmDialog } from "@/components/ui/global-dialogs";
+import type { Locale, TranslationBlock } from "@/lib/i18n";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
 
 type OptionRow = {
@@ -37,6 +40,13 @@ export default function PackagesManager() {
   const selectedIcon = (form.meta as Record<string, unknown> | null)?.icon as string | undefined;
   const editSnapshot = React.useRef<Record<string, unknown> | null>(null);
 
+  function bumpFormOptionsCache() {
+    try {
+      window.dispatchEvent(new Event("form-options:changed"));
+    } catch {
+      // ignore — not in browser
+    }
+  }
   async function load() {
     setLoading(true);
     try {
@@ -55,6 +65,22 @@ export default function PackagesManager() {
     void load();
   }, []);
 
+  /** Merge icon + optional `meta.translations` for API payload (matches form_options shape). */
+  function normalizePackageMeta(
+    base: Record<string, unknown> | null | undefined,
+    icon: string | undefined,
+  ): Record<string, unknown> {
+    const raw = { ...(base ?? {}) };
+    const translations = raw.translations;
+    const next: Record<string, unknown> = { ...raw, icon: icon || null };
+    if (translations && typeof translations === "object" && Object.keys(translations as object).length > 0) {
+      next.translations = translations;
+    } else {
+      delete next.translations;
+    }
+    return next;
+  }
+
   function startCreate() {
     setEditing(null);
     setForm({ label: "", value: "", sortOrder: 0, isActive: true, meta: null });
@@ -65,12 +91,13 @@ export default function PackagesManager() {
     setEditing(row);
     setForm({ ...row, meta: row.meta ?? null });
     setOpen(true);
+    const snapMeta = normalizePackageMeta(row.meta as Record<string, unknown> | undefined, (row.meta as Record<string, unknown> | null)?.icon as string | undefined);
     editSnapshot.current = formSnapshot({
       label: row.label,
       value: row.value,
       sortOrder: Number(row.sortOrder) || 0,
       isActive: !!row.isActive,
-      meta: { ...(row.meta ?? {}), icon: (row.meta as any)?.icon || null },
+      meta: snapMeta,
     });
   }
   async function save() {
@@ -80,7 +107,7 @@ export default function PackagesManager() {
         return;
       }
       if (editing) {
-        const meta = { ...(form.meta as Record<string, unknown> ?? {}), icon: selectedIcon || null };
+        const meta = normalizePackageMeta(form.meta as Record<string, unknown> | undefined, selectedIcon);
         const current = formSnapshot({
           label: form.label,
           value: form.value,
@@ -94,7 +121,7 @@ export default function PackagesManager() {
           return;
         }
       }
-      const meta = { ...(form.meta as Record<string, unknown> ?? {}), icon: selectedIcon || null };
+      const meta = normalizePackageMeta(form.meta as Record<string, unknown> | undefined, selectedIcon);
       if (editing) {
         const res = await fetch(`/api/admin/form-options/${editing.id}`, {
           method: "PATCH",
@@ -107,7 +134,18 @@ export default function PackagesManager() {
             meta,
           }),
         });
-        if (!res.ok) throw new Error("Update failed");
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          let msg = text || `Update failed (${res.status})`;
+          try {
+            const j = JSON.parse(text) as { error?: string };
+            if (typeof j?.error === "string" && j.error.trim()) msg = j.error;
+          } catch {
+            /* use msg */
+          }
+          throw new Error(msg);
+        }
+        await res.json().catch(() => null);
         toast.success("Updated");
       } else {
         const res = await fetch(`/api/admin/form-options`, {
@@ -123,9 +161,21 @@ export default function PackagesManager() {
             meta,
           }),
         });
-        if (!res.ok) throw new Error("Create failed");
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          let msg = text || `Create failed (${res.status})`;
+          try {
+            const shallow = JSON.parse(text) as { error?: string };
+            if (typeof shallow?.error === "string" && shallow.error.trim()) msg = shallow.error;
+          } catch {
+            /* use msg */
+          }
+          throw new Error(msg);
+        }
+        await res.json().catch(() => null);
         toast.success("Created");
       }
+      bumpFormOptionsCache();
       setOpen(false);
       await load();
     } catch (err: unknown) {
@@ -141,6 +191,7 @@ export default function PackagesManager() {
         body: JSON.stringify({ isActive: !row.isActive }),
       });
       if (!res.ok) throw new Error("Failed");
+      bumpFormOptionsCache();
       await load();
     } catch {
       toast.error("Update failed");
@@ -148,7 +199,12 @@ export default function PackagesManager() {
   }
   async function remove(row: OptionRow) {
     try {
-      const proceed = window.confirm(`Delete package "${row.label}"? This cannot be undone.`);
+      const proceed = await confirmDialog({
+        title: `Delete package "${row.label}"?`,
+        description: "This cannot be undone.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
       if (!proceed) return;
       const res = await fetch(`/api/admin/form-options/${row.id}`, { method: "DELETE" });
       if (!res.ok) {
@@ -156,6 +212,7 @@ export default function PackagesManager() {
         throw new Error(text || "Delete failed");
       }
       toast.success("Deleted");
+      bumpFormOptionsCache();
       await load();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Delete failed";
@@ -248,6 +305,22 @@ export default function PackagesManager() {
               <Label>Label</Label>
               <Input value={form.label ?? ""} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} />
             </div>
+            <TranslationsEditor
+              hint="Shown in the sidebar and anywhere the package name is resolved with the locale switcher (e.g. 繁體中文)."
+              sourceLabel={form.label ?? ""}
+              value={(form.meta as Record<string, unknown> | null)?.translations as Partial<Record<Locale, TranslationBlock>> | undefined}
+              onChange={(next) =>
+                setForm((f) => {
+                  const m = { ...(f.meta as Record<string, unknown> | undefined) };
+                  if (next && typeof next === "object" && Object.keys(next).length > 0) {
+                    m.translations = next as Record<string, unknown>;
+                  } else {
+                    delete m.translations;
+                  }
+                  return { ...f, meta: Object.keys(m).length ? m : null };
+                })
+              }
+            />
             <div className="grid gap-1">
               <Label>Key (slug)</Label>
             <Input

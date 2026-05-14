@@ -4,6 +4,7 @@ import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { LocalUpdatedBadge } from "@/components/LocalUpdatedBadge";
+import { useT } from "@/lib/i18n";
 
 interface WelcomeCardProps {
   name?: string | null;
@@ -25,6 +26,7 @@ export function WelcomeCard({
   updatedAtIso,
   userTimeZone,
 }: WelcomeCardProps) {
+  const t = useT();
   const [visible, setVisible] = React.useState(true);
   const [fading, setFading] = React.useState(false);
 
@@ -51,18 +53,24 @@ export function WelcomeCard({
     >
       <Card>
         <CardHeader>
-          <CardTitle>Welcome</CardTitle>
+          <CardTitle>{t("dashboard.welcomeTitle", "Welcome")}</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-2">
           <div className="text-sm text-neutral-600 dark:text-neutral-400">
-            Signed in as{" "}
+            {t("dashboard.welcomeSignedInAs", "Signed in as")}{" "}
             <span className="font-medium">{name ?? email}</span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm text-neutral-600 dark:text-neutral-400">Role</span>
-            <Badge>{userType ?? "user"}</Badge>
+            <span className="text-sm text-neutral-600 dark:text-neutral-400">{t("dashboard.welcomeRole", "Role")}</span>
+            {/*
+              `userType` itself is the raw enum value (`admin`, `agent`, ...)
+              — it stays as-is. The fallback label when the field is
+              missing comes from the dictionary so a missing role
+              doesn't render the literal English word "user" in zh-HK.
+            */}
+            <Badge>{userType ?? t("dashboard.welcomeFallbackRole", "user")}</Badge>
             {accountComplete ? (
-              <Badge variant="success">Account setup complete</Badge>
+              <Badge variant="success">{t("dashboard.welcomeAccountSetupComplete", "Account setup complete")}</Badge>
             ) : null}
             {updatedAtIso ? (
               <LocalUpdatedBadge ts={updatedAtIso} timeZone={userTimeZone} />

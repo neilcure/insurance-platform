@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { formOptions } from "@/db/schema/form_options";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { normalizeKeyLike } from "@/lib/utils";
 
@@ -44,6 +44,11 @@ function fixChildOptions(child: ChildLike): ChildLike {
   return c;
 }
 
+/** `typeof null === "object"` — never treat null as a meta payload */
+function isJsonObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
 function sanitizeMetaOptions(meta: Record<string, unknown>): void {
   if (Array.isArray(meta.options)) {
     meta.options = fixOptionValues(meta.options as OptLike[]);
@@ -79,20 +84,30 @@ export async function PATCH(
   const current = existing[0];
 
   const body = await request.json();
-  const update: any = {};
+  const update: Record<string, unknown> = {};
   if (typeof body.label === "string") update.label = body.label;
   if (typeof body.value === "string") update.value = body.value.trim();
   if (typeof body.sortOrder === "number") update.sortOrder = body.sortOrder;
   if (typeof body.isActive === "boolean") update.isActive = body.isActive;
-  if (typeof body.meta === "object") update.meta = body.meta;
-
-  // Sanitize option values: auto-derive empty values from labels, strip fully empty entries
-  if (update.meta && typeof update.meta === "object") {
-    sanitizeMetaOptions(update.meta as Record<string, unknown>);
-  }
 
   const currentGroupKey = String(current.groupKey ?? "");
   const lowerGroupKey = currentGroupKey.toLowerCase();
+
+  /** Only accept real objects — omitting `meta` leaves DB unchanged; `null` does NOT wipe JSONB */
+  if ("meta" in body) {
+    if (isJsonObject(body.meta)) {
+      const incoming = { ...(body.meta as Record<string, unknown>) };
+      // Packages: shallow-merge into existing meta so partial PATCHes / client gaps
+      // never drop unrelated keys (`translations`, `icon`, etc.).
+      const merged =
+        currentGroupKey === "packages"
+          ? { ...(((current.meta ?? {}) as Record<string, unknown>) ?? {}), ...incoming }
+          : incoming;
+      sanitizeMetaOptions(merged);
+      update.meta = merged;
+    }
+    // Explicit null / array / primitives: ignore (preserve stored meta).
+  }
 
   // Package keys are part of groupKey construction (`${pkg}_fields`, `${pkg}_category`), so they must be immutable.
   if (

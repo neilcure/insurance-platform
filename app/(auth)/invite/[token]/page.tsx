@@ -7,8 +7,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { useT } from "@/lib/i18n";
 
 export default function InviteAcceptPage() {
+  const t = useT();
   const params = useParams<{ token: string }>();
   const token = (params?.token ?? "") as string;
   const router = useRouter();
@@ -27,7 +29,7 @@ export default function InviteAcceptPage() {
         });
         const data = await res.json();
         if (!res.ok) {
-          toast.error(data?.error ?? "Invalid or expired invite");
+          toast.error(data?.error ?? t("auth.invite.invalidExpired", "Invalid or expired invite"));
           return;
         }
         setEmail(data.email);
@@ -36,15 +38,15 @@ export default function InviteAcceptPage() {
       }
     })();
     return () => controller.abort();
-  }, [token]);
+  }, [token, t]);
 
   async function onSubmit() {
     if (password.length < 10) {
-      toast.error("Password must be at least 10 characters");
+      toast.error(t("auth.invite.passwordMinLen", "Password must be at least 10 characters"));
       return;
     }
     if (password !== confirm) {
-      toast.error("Passwords do not match");
+      toast.error(t("auth.invite.passwordsNoMatch", "Passwords do not match"));
       return;
     }
     setSubmitting(true);
@@ -56,14 +58,14 @@ export default function InviteAcceptPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data?.error ?? "Failed to accept invite");
+        toast.error(data?.error ?? t("auth.invite.failedAccept", "Failed to accept invite"));
         setSubmitting(false);
         return;
       }
-      toast.success("Password set. You can now log in.");
+      toast.success(t("auth.invite.success", "Password set. You can now log in."));
       router.push(`/auth/signin?email=${encodeURIComponent(email)}`);
     } catch (err: any) {
-      toast.error(err?.message ?? "Failed to accept invite");
+      toast.error(err?.message ?? t("auth.invite.failedAccept", "Failed to accept invite"));
       setSubmitting(false);
     }
   }
@@ -72,24 +74,24 @@ export default function InviteAcceptPage() {
     <div className="mx-auto max-w-md py-8">
       <Card>
         <CardHeader>
-          <CardTitle>Accept Invite</CardTitle>
+          <CardTitle>{t("auth.invite.title", "Accept Invite")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-2">
-            <Label>Email</Label>
+            <Label>{t("auth.email", "Email")}</Label>
             <Input value={email} readOnly />
           </div>
           <div className="grid gap-2">
-            <Label>Password (min 10 chars)</Label>
+            <Label>{t("auth.invite.passwordHint", "Password (min 10 chars)")}</Label>
             <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="new-password" />
           </div>
           <div className="grid gap-2">
-            <Label>Confirm Password</Label>
+            <Label>{t("auth.invite.confirmPassword", "Confirm Password")}</Label>
             <Input value={confirm} onChange={(e) => setConfirm(e.target.value)} type="password" autoComplete="new-password" />
           </div>
           <div className="flex justify-end">
             <Button disabled={submitting} onClick={onSubmit}>
-              {submitting ? "Submitting..." : "Set Password"}
+              {submitting ? t("auth.invite.submitting", "Submitting...") : t("auth.invite.setPassword", "Set Password")}
             </Button>
           </div>
         </CardContent>

@@ -31,6 +31,7 @@ import { X, UserPlus, UserSearch, ArrowRight, Check, Loader2, Save } from "lucid
 import { extractDisplayName } from "@/lib/import/entity-display-name";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { BooleanBranchFields } from "@/components/policies/InlineSelectWithChildren";
+import { tDynamic, useLocale } from "@/lib/i18n";
 
 type WizardState = {
   step: number;
@@ -348,7 +349,8 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
   pkg: string;
   allowedCategories?: string[] | undefined;
 }) {
-  const [categories, setCategories] = React.useState<{ label: string; value: string; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }[]>([]);
+  const locale = useLocale();
+  const [categories, setCategories] = React.useState<{ label: string; value: string; meta?: { labelCase?: "original" | "upper" | "lower" | "title"; translations?: unknown } | null }[]>([]);
   const catFieldName = `${pkg}__category`;
   React.useEffect(() => {
     let cancelled = false;
@@ -468,7 +470,8 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                 checked={selectedCategory === opt.value}
                 onChange={(e) => form.setValue(catFieldName as never, e.target.value as never)}
               />
-              {applyLabelCase(opt.label, opt.meta?.labelCase ?? "original")}
+              {/* Translate FIRST then apply labelCase — see field-label-case skill. */}
+              {applyLabelCase(tDynamic(opt, locale), opt.meta?.labelCase ?? "original")}
             </label>
           ))}
           {categories.length === 0 ? null : null}
@@ -557,7 +560,10 @@ const PackageBlockMemo = React.memo(function PackageBlockMemo({
                     booleanDisplay?: "radio" | "dropdown";
                     labelCase?: "original" | "upper" | "lower" | "title";
                   };
-                  const displayLabel = applyLabelCase(f.label, meta.labelCase);
+                  const displayLabel = applyLabelCase(
+                    tDynamic({ label: f.label, meta: f.meta as Record<string, unknown> | null }, locale),
+                    meta.labelCase,
+                  );
                   const inputType = meta.inputType ?? "string";
                   const isCurrency = inputType === "currency" || inputType === "negative_currency";
                   const isPercent = inputType === "percent";

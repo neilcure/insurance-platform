@@ -11,6 +11,9 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { TranslationsEditor } from "@/components/admin/i18n/TranslationsEditor";
+import type { Locale, TranslationBlock } from "@/lib/i18n";
+import { confirmDialog } from "@/components/ui/global-dialogs";
 
 const GROUP_KEY = "policy_statuses";
 
@@ -32,7 +35,14 @@ type StatusRow = {
   value: string;
   sortOrder: number;
   isActive: boolean;
-  meta: { color?: string; flows?: string[]; triggersInvoice?: boolean; onEnter?: { action: string; templateId?: number }[] } | null;
+  meta: {
+    color?: string;
+    flows?: string[];
+    triggersInvoice?: boolean;
+    onEnter?: { action: string; templateId?: number }[];
+    /** Locale-specific overrides edited via `<TranslationsEditor>`. */
+    translations?: Partial<Record<Locale, TranslationBlock>>;
+  } | null;
 };
 
 export default function PolicyStatusesManager() {
@@ -48,6 +58,9 @@ export default function PolicyStatusesManager() {
   const [formColor, setFormColor] = React.useState(COLOR_PRESETS[0].value);
   const [formFlows, setFormFlows] = React.useState<string[]>([]);
   const [formTriggersInvoice, setFormTriggersInvoice] = React.useState(false);
+  const [formTranslations, setFormTranslations] = React.useState<
+    Partial<Record<Locale, TranslationBlock>> | null
+  >(null);
 
   async function load() {
     setLoading(true);
@@ -75,6 +88,7 @@ export default function PolicyStatusesManager() {
     setFormColor(COLOR_PRESETS[0].value);
     setFormFlows([]);
     setFormTriggersInvoice(false);
+    setFormTranslations(null);
     setOpen(true);
   }
 
@@ -86,6 +100,7 @@ export default function PolicyStatusesManager() {
     setFormColor(row.meta?.color ?? COLOR_PRESETS[0].value);
     setFormFlows(row.meta?.flows ?? []);
     setFormTriggersInvoice(row.meta?.triggersInvoice ?? false);
+    setFormTranslations(row.meta?.translations ?? null);
     setOpen(true);
   }
 
@@ -106,6 +121,10 @@ export default function PolicyStatusesManager() {
         color: formColor,
         flows: formFlows.length > 0 ? formFlows : undefined,
         triggersInvoice: formTriggersInvoice || undefined,
+        translations:
+          formTranslations && Object.keys(formTranslations).length > 0
+            ? formTranslations
+            : undefined,
       },
     };
     try {
@@ -134,7 +153,12 @@ export default function PolicyStatusesManager() {
   }
 
   async function remove(row: StatusRow) {
-    if (!window.confirm(`Delete status "${row.label}"?`)) return;
+    const ok = await confirmDialog({
+      title: `Delete status "${row.label}"?`,
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/admin/form-options/${row.id}`, { method: "DELETE" });
       if (!res.ok) throw new Error(await res.text());
@@ -218,6 +242,14 @@ export default function PolicyStatusesManager() {
                 <Input value={formValue} onChange={(e) => setFormValue(e.target.value)} placeholder="quotation_prepared" />
               </div>
             </div>
+            <TranslationsEditor
+              value={formTranslations}
+              sourceLabel={formLabel}
+              hint="Leave a row blank to fall back to English."
+              onChange={(next) =>
+                setFormTranslations(Object.keys(next).length > 0 ? next : null)
+              }
+            />
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
                 <Label>Color</Label>

@@ -26,6 +26,9 @@ import type {
   WorkflowActionRow,
   WorkflowActionType,
 } from "@/lib/types/workflow-action";
+import { TranslationsEditor } from "@/components/admin/i18n/TranslationsEditor";
+import type { Locale, TranslationBlock } from "@/lib/i18n";
+import { confirmDialog } from "@/components/ui/global-dialogs";
 
 const GROUP_KEY = "workflow_actions";
 
@@ -182,8 +185,13 @@ export default function WorkflowActionsManager() {
   }
 
   async function remove(row: WorkflowActionRow) {
-    if (!window.confirm(`Delete action "${row.label}"? This cannot be undone.`))
-      return;
+    const ok = await confirmDialog({
+      title: `Delete action "${row.label}"?`,
+      description: "This cannot be undone.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/admin/form-options/${row.id}`, {
         method: "DELETE",
@@ -301,6 +309,17 @@ export default function WorkflowActionsManager() {
                 />
               </div>
             </div>
+            <TranslationsEditor
+              value={(meta.translations ?? null) as Partial<Record<Locale, TranslationBlock>> | null}
+              sourceLabel={formLabel}
+              hint="Leave a row blank to fall back to English."
+              onChange={(next) =>
+                setMeta((m) => ({
+                  ...m,
+                  translations: Object.keys(next).length > 0 ? next : undefined,
+                }))
+              }
+            />
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">

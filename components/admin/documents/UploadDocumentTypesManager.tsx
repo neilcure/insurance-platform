@@ -26,6 +26,8 @@ import type {
   UploadDocumentTypeRow,
 } from "@/lib/types/upload-document";
 import { useUserTypes } from "@/hooks/use-user-types";
+import { TranslationsEditor } from "@/components/admin/i18n/TranslationsEditor";
+import type { Locale, TranslationBlock } from "@/lib/i18n";
 
 const GROUP_KEY = "upload_document_types";
 
@@ -409,6 +411,17 @@ export default function UploadDocumentTypesManager({
                 />
               </div>
             </div>
+            <TranslationsEditor
+              value={(meta.translations ?? null) as Partial<Record<Locale, TranslationBlock>> | null}
+              sourceLabel={formLabel}
+              hint="Leave a row blank to fall back to English."
+              onChange={(next) =>
+                setMeta((m) => ({
+                  ...m,
+                  translations: Object.keys(next).length > 0 ? next : undefined,
+                }))
+              }
+            />
 
             <div className="grid gap-1">
               <Label>Description</Label>

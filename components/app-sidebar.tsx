@@ -36,6 +36,7 @@ import { getIcon } from "@/lib/icons";
 import { NavMain } from "@/components/nav-main";
 import { NavUser } from "@/components/nav-user";
 import { TeamSwitcher } from "@/components/team-switcher";
+import { tDynamic, useLocale, useT } from "@/lib/i18n";
 import {
   Sidebar,
   SidebarContent,
@@ -95,12 +96,23 @@ let adminOpenCache: boolean | null = null;
 let policyOpenCache: boolean | null = null;
 let pkgOpenCache: Record<string, boolean> | null = null;
 
-const BASE_DASHBOARD_ITEMS: { title: string; url: string; icon: LucideIcon }[] = [
-  { title: "Agents", url: "/dashboard/agents", icon: UserPlus },
-  { title: "Accounting", url: "/dashboard/accounting", icon: ClipboardList },
-  { title: "Imports", url: "/dashboard/imports", icon: Upload },
-  { title: "Membership", url: "/dashboard/membership", icon: IdCard },
-  { title: "Profile", url: "/dashboard/account", icon: User },
+/**
+ * Static structure of the base dashboard items. Titles are rendered
+ * via `t(titleKey, fallbackTitle)` inside the component so that the
+ * language switcher can re-render without duplicating the icon/url
+ * shape in two places.
+ */
+const BASE_DASHBOARD_ITEMS: {
+  titleKey: string;
+  fallbackTitle: string;
+  url: string;
+  icon: LucideIcon;
+}[] = [
+  { titleKey: "nav.agents", fallbackTitle: "Agents", url: "/dashboard/agents", icon: UserPlus },
+  { titleKey: "nav.accounting", fallbackTitle: "Accounting", url: "/dashboard/accounting", icon: ClipboardList },
+  { titleKey: "nav.imports", fallbackTitle: "Imports", url: "/dashboard/imports", icon: Upload },
+  { titleKey: "nav.membership", fallbackTitle: "Membership", url: "/dashboard/membership", icon: IdCard },
+  { titleKey: "nav.profile", fallbackTitle: "Profile", url: "/dashboard/account", icon: User },
 ];
 
 const data = {
@@ -140,6 +152,7 @@ export function AppSidebar(
     user?: { name?: string | null; email?: string | null };
     initialWorkspaceLabel?: string | null;
   };
+  const t = useT();
   const isClientUser = userType === "direct_client";
   const userKey = React.useMemo(() => (user?.email || user?.name || "anon") as string, [user?.email, user?.name]);
   const [flows, setFlows] = React.useState<SidebarFlow[]>(() => flowsCache ?? []);
@@ -167,17 +180,21 @@ export function AppSidebar(
     if (isClientUser) {
       return [
         {
-          title: "Dashboard",
+          title: t("nav.dashboard", "Dashboard"),
           url: "/dashboard",
           icon: LayoutDashboard,
           isActive: true,
           items: [
-            { title: "My Policies", url: "/dashboard/policies", icon: FileText },
-            { title: "My Profile", url: "/dashboard/account", icon: User },
+            { title: t("nav.myPolicies", "My Policies"), url: "/dashboard/policies", icon: FileText },
+            { title: t("nav.myProfile", "My Profile"), url: "/dashboard/account", icon: User },
           ],
         },
       ];
     }
+    // Flow titles are admin-configured (dynamic) and follow Pipeline B —
+    // they will pick up `meta.translations` once Phase 4a wires the
+    // dynamic resolver into this list. For Phase 2 we keep the raw
+    // value so existing flows render unchanged.
     const dashboardFlowItems = flows
       .filter((f) => f.meta?.showInDashboard)
       .sort((a, b) => a.sortOrder - b.sortOrder)
@@ -186,25 +203,30 @@ export function AppSidebar(
         url: `/dashboard/flows/${f.value}`,
         icon: getIcon(f.meta?.icon),
       }));
+    const baseItems = BASE_DASHBOARD_ITEMS.map((item) => ({
+      title: t(item.titleKey, item.fallbackTitle),
+      url: item.url,
+      icon: item.icon,
+    }));
     return [
       {
-        title: "Dashboard",
+        title: t("nav.dashboard", "Dashboard"),
         url: "/dashboard",
         icon: LayoutDashboard,
         isActive: true,
         items: [
           ...dashboardFlowItems,
-          ...BASE_DASHBOARD_ITEMS,
+          ...baseItems,
         ],
       },
       {
-        title: "Docs",
+        title: t("nav.docs", "Docs"),
         url: "#",
         icon: BookOpen,
-        items: [{ title: "Guide", url: "#" }],
+        items: [{ title: t("nav.guide", "Guide"), url: "#" }],
       },
     ];
-  }, [flows, isClientUser]);
+  }, [flows, isClientUser, t]);
 
   const loadFlowsOnce = React.useCallback(async () => {
     if (isClientUser) return;
@@ -416,6 +438,7 @@ export function AppSidebar(
   }, [loadPackagesOnce, loadFlowsOnce]);
 
   const { collapsed, isMobile } = useSidebar();
+  const locale = useLocale();
   const isCollapsed = collapsed && !isMobile;
   const [adminCollapsedOpen, setAdminCollapsedOpen] = React.useState(true);
   const [policyCollapsedOpen, setPolicyCollapsedOpen] = React.useState(false);
@@ -424,8 +447,8 @@ export function AppSidebar(
   const headerWorkspaceLabel = isClientUser
     ? (orgName?.trim() ||
         initialWorkspaceLabel?.trim() ||
-        "Client account")
-    : (orgName?.trim() || user?.name || user?.email || "Account");
+        t("sidebar.clientAccount", "Client account"))
+    : (orgName?.trim() || user?.name || user?.email || t("sidebar.account", "Account"));
 
   return (
     <Sidebar collapsible="icon" {...sidebarProps}>
@@ -451,21 +474,21 @@ export function AppSidebar(
               <SidebarMenu>
                 {/* Admin group — toggle */}
                 <CollapsedGroupBadge
-                  title="Admin Panel"
+                  title={t("sidebar.adminPanel", "Admin Panel")}
                   icon={Shield}
                   onToggle={() => setAdminCollapsedOpen((v) => !v)}
                 />
                 {adminCollapsedOpen && (
                   <>
                     <SidebarMenuItem>
-                      <SidebarMenuButton tooltip="User Settings" asChild>
+                      <SidebarMenuButton tooltip={t("sidebar.userSettings", "User Settings")} asChild>
                         <Link href="/admin/users">
                           <UserCog className="h-3.5 w-3.5 shrink-0" />
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                     <SidebarMenuItem>
-                      <SidebarMenuButton tooltip="Activity Log" asChild>
+                      <SidebarMenuButton tooltip={t("sidebar.activityLog", "Activity Log")} asChild>
                         <Link href="/admin/activity-log" className="relative">
                           <ClipboardList className="h-3.5 w-3.5 shrink-0" />
                           {auditBadge > 0 && (
@@ -477,21 +500,21 @@ export function AppSidebar(
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                     <SidebarMenuItem>
-                      <SidebarMenuButton tooltip="Client Number Settings" asChild>
+                      <SidebarMenuButton tooltip={t("sidebar.clientNumberSettings", "Client Number Settings")} asChild>
                         <Link href="/admin/client-settings">
                           <Hash className="h-3.5 w-3.5 shrink-0" />
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                     <SidebarMenuItem>
-                      <SidebarMenuButton tooltip="Landing Page" asChild>
+                      <SidebarMenuButton tooltip={t("sidebar.landingPage", "Landing Page")} asChild>
                         <Link href="/admin/landing-page">
                           <Globe className="h-3.5 w-3.5 shrink-0" />
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                     <SidebarMenuItem>
-                      <SidebarMenuButton tooltip="Payment Schedules" asChild>
+                      <SidebarMenuButton tooltip={t("sidebar.paymentSchedules", "Payment Schedules")} asChild>
                         <Link href="/admin/payment-schedules">
                           <ClipboardList className="h-3.5 w-3.5 shrink-0" />
                         </Link>
@@ -499,7 +522,7 @@ export function AppSidebar(
                     </SidebarMenuItem>
                     {isAdmin && (
                       <SidebarMenuItem>
-                        <SidebarMenuButton tooltip="System Diagnostics" asChild>
+                        <SidebarMenuButton tooltip={t("sidebar.systemDiagnostics", "System Diagnostics")} asChild>
                           <Link href="/admin/field-resolver">
                             <Bug className="h-3.5 w-3.5 shrink-0" />
                           </Link>
@@ -512,70 +535,70 @@ export function AppSidebar(
                   <>
                     {/* Policy Settings group — toggle */}
                     <CollapsedGroupBadge
-                      title="Policy Settings"
+                      title={t("sidebar.policySettings", "Policy Settings")}
                       icon={FileText}
                       onToggle={() => setPolicyCollapsedOpen((v) => !v)}
                     />
                     {policyCollapsedOpen && (
                       <>
                         <SidebarMenuItem>
-                          <SidebarMenuButton tooltip="Accounting Rules" asChild>
+                          <SidebarMenuButton tooltip={t("sidebar.accountingRules", "Accounting Rules")} asChild>
                             <Link href="/admin/policy-settings/policy/category">
                               <Shield className="h-3.5 w-3.5 shrink-0" />
                             </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>
-                          <SidebarMenuButton tooltip="Packages" asChild>
+                          <SidebarMenuButton tooltip={t("sidebar.packages", "Packages")} asChild>
                             <Link href="/admin/policy-settings/packages">
                               <Package className="h-3.5 w-3.5 shrink-0" />
                             </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>
-                          <SidebarMenuButton tooltip="Flows" asChild>
+                          <SidebarMenuButton tooltip={t("sidebar.flows", "Flows")} asChild>
                             <Link href="/admin/policy-settings/flows">
                               <GitBranch className="h-3.5 w-3.5 shrink-0" />
                             </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>
-                          <SidebarMenuButton tooltip="Document Templates" asChild>
+                          <SidebarMenuButton tooltip={t("sidebar.documentTemplates", "Document Templates")} asChild>
                             <Link href="/admin/policy-settings/document-templates">
                               <BookOpen className="h-3.5 w-3.5 shrink-0" />
                             </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>
-                          <SidebarMenuButton tooltip="Workflow Actions" asChild>
+                          <SidebarMenuButton tooltip={t("sidebar.workflowActions", "Workflow Actions")} asChild>
                             <Link href="/admin/policy-settings/workflow-actions">
                               <Frame className="h-3.5 w-3.5 shrink-0" />
                             </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>
-                          <SidebarMenuButton tooltip="Policy Statuses" asChild>
+                          <SidebarMenuButton tooltip={t("sidebar.policyStatuses", "Policy Statuses")} asChild>
                             <Link href="/admin/policy-settings/policy-statuses">
                               <ListOrdered className="h-3.5 w-3.5 shrink-0" />
                             </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>
-                          <SidebarMenuButton tooltip="Upload Documents" asChild>
+                          <SidebarMenuButton tooltip={t("sidebar.uploadDocuments", "Upload Documents")} asChild>
                             <Link href="/admin/policy-settings/upload-documents">
                               <Upload className="h-3.5 w-3.5 shrink-0" />
                             </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>
-                          <SidebarMenuButton tooltip="Backend Documents" asChild>
+                          <SidebarMenuButton tooltip={t("sidebar.backendDocuments", "Backend Documents")} asChild>
                             <Link href="/admin/policy-settings/backend-documents">
                               <FileDown className="h-3.5 w-3.5 shrink-0" />
                             </Link>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <SidebarMenuItem>
-                          <SidebarMenuButton tooltip="PDF Mail Merge" asChild>
+                          <SidebarMenuButton tooltip={t("sidebar.pdfMailMerge", "PDF Mail Merge")} asChild>
                             <Link href="/admin/policy-settings/pdf-templates">
                               <Stamp className="h-3.5 w-3.5 shrink-0" />
                             </Link>
@@ -587,10 +610,11 @@ export function AppSidebar(
                     {packages.length > 0 && (
                       <>
                         <CollapsedGroupBadge
-                          title="Packages"
+                          title={t("sidebar.packages", "Packages")}
                           icon={Folder}
                           onToggle={() => setPkgCollapsedOpen((v) => !v)}
                         />
+                        {/* Per-package tooltip uses `p.label` (admin-configured). Phase 4a will route this through `tDynamic`. */}
                         {pkgCollapsedOpen && packages.map((p) => {
                           const iconName = (p.meta as Record<string, unknown> | null)?.icon as string | undefined;
                           const PkgIcon = getIcon(iconName);
@@ -617,29 +641,29 @@ export function AppSidebar(
                     <div>
                       <CollapsibleTrigger asChild>
                         <SidebarMenuButton
-                          tooltip="Admin Panel"
+                          tooltip={t("sidebar.adminPanel", "Admin Panel")}
                           className="bg-yellow-400 text-neutral-900 hover:bg-yellow-500 dark:bg-yellow-400 dark:text-neutral-900 dark:hover:bg-yellow-500"
                         >
                           <Shield className="h-4 w-4 shrink-0" />
-                          <span className="font-medium">Admin Panel</span>
+                          <span className="font-medium">{t("sidebar.adminPanel", "Admin Panel")}</span>
                           <ChevronRight className="ml-auto h-4 w-4 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
                         </SidebarMenuButton>
                       </CollapsibleTrigger>
                       <CollapsibleContent>
                         <ul className="ml-4 grid gap-1 py-1">
                           <li>
-                            <SidebarMenuButton tooltip="User Settings" asChild>
+                            <SidebarMenuButton tooltip={t("sidebar.userSettings", "User Settings")} asChild>
                               <Link href="/admin/users">
                                 <UserCog className="h-4 w-4 shrink-0" />
-                                <span>User Settings</span>
+                                <span>{t("sidebar.userSettings", "User Settings")}</span>
                               </Link>
                             </SidebarMenuButton>
                           </li>
                           <li>
-                            <SidebarMenuButton tooltip="Activity Log" asChild>
+                            <SidebarMenuButton tooltip={t("sidebar.activityLog", "Activity Log")} asChild>
                               <Link href="/admin/activity-log" className="relative">
                                 <ClipboardList className="h-4 w-4 shrink-0" />
-                                <span>Activity Log</span>
+                                <span>{t("sidebar.activityLog", "Activity Log")}</span>
                                 {auditBadge > 0 && (
                                   <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white">
                                     {auditBadge > 99 ? "99+" : auditBadge}
@@ -649,35 +673,35 @@ export function AppSidebar(
                             </SidebarMenuButton>
                           </li>
                           <li>
-                            <SidebarMenuButton tooltip="Client Number Settings" asChild>
+                            <SidebarMenuButton tooltip={t("sidebar.clientNumberSettings", "Client Number Settings")} asChild>
                               <Link href="/admin/client-settings">
                                 <Hash className="h-4 w-4 shrink-0" />
-                                <span>Client Number Settings</span>
+                                <span>{t("sidebar.clientNumberSettings", "Client Number Settings")}</span>
                               </Link>
                             </SidebarMenuButton>
                           </li>
                           <li>
-                            <SidebarMenuButton tooltip="Landing Page" asChild>
+                            <SidebarMenuButton tooltip={t("sidebar.landingPage", "Landing Page")} asChild>
                               <Link href="/admin/landing-page">
                                 <Globe className="h-4 w-4 shrink-0" />
-                                <span>Landing Page</span>
+                                <span>{t("sidebar.landingPage", "Landing Page")}</span>
                               </Link>
                             </SidebarMenuButton>
                           </li>
                           <li>
-                            <SidebarMenuButton tooltip="Payment Schedules" asChild>
+                            <SidebarMenuButton tooltip={t("sidebar.paymentSchedules", "Payment Schedules")} asChild>
                               <Link href="/admin/payment-schedules">
                                 <ClipboardList className="h-4 w-4 shrink-0" />
-                                <span>Payment Schedules</span>
+                                <span>{t("sidebar.paymentSchedules", "Payment Schedules")}</span>
                               </Link>
                             </SidebarMenuButton>
                           </li>
                           {isAdmin && (
                             <li>
-                              <SidebarMenuButton tooltip="System Diagnostics" asChild>
+                              <SidebarMenuButton tooltip={t("sidebar.systemDiagnostics", "System Diagnostics")} asChild>
                                 <Link href="/admin/field-resolver">
                                   <Bug className="h-4 w-4 shrink-0" />
-                                  <span>System Diagnostics</span>
+                                  <span>{t("sidebar.systemDiagnostics", "System Diagnostics")}</span>
                                 </Link>
                               </SidebarMenuButton>
                             </li>
@@ -687,83 +711,83 @@ export function AppSidebar(
                               <Collapsible asChild className="group/collapsible" open={policyOpen} onOpenChange={setPolicyOpen}>
                                 <div>
                                   <CollapsibleTrigger asChild>
-                                    <SidebarMenuButton tooltip="Policy Settings">
+                                    <SidebarMenuButton tooltip={t("sidebar.policySettings", "Policy Settings")}>
                                       <FileText className="h-4 w-4 shrink-0" />
-                                      <span>Policy Settings</span>
+                                      <span>{t("sidebar.policySettings", "Policy Settings")}</span>
                                       <ChevronRight className="ml-auto h-4 w-4 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
                                     </SidebarMenuButton>
                                   </CollapsibleTrigger>
                                   <CollapsibleContent>
                                     <ul className="ml-4 grid gap-1 py-1">
                                       <li>
-                                        <SidebarMenuButton tooltip="Accounting Rules" asChild>
+                                        <SidebarMenuButton tooltip={t("sidebar.accountingRules", "Accounting Rules")} asChild>
                                           <Link href="/admin/policy-settings/policy/category">
                                             <Shield className="h-4 w-4 shrink-0" />
-                                            <span>Accounting Rules</span>
+                                            <span>{t("sidebar.accountingRules", "Accounting Rules")}</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>
                                       <li>
-                                        <SidebarMenuButton tooltip="Packages" asChild>
+                                        <SidebarMenuButton tooltip={t("sidebar.packages", "Packages")} asChild>
                                           <Link href="/admin/policy-settings/packages">
                                             <Package className="h-4 w-4 shrink-0" />
-                                            <span>Packages</span>
+                                            <span>{t("sidebar.packages", "Packages")}</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>
                                       <li>
-                                        <SidebarMenuButton tooltip="Flows" asChild>
+                                        <SidebarMenuButton tooltip={t("sidebar.flows", "Flows")} asChild>
                                           <Link href="/admin/policy-settings/flows">
                                             <GitBranch className="h-4 w-4 shrink-0" />
-                                            <span>Flows</span>
+                                            <span>{t("sidebar.flows", "Flows")}</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>
                                       <li>
-                                        <SidebarMenuButton tooltip="Document Templates" asChild>
+                                        <SidebarMenuButton tooltip={t("sidebar.documentTemplates", "Document Templates")} asChild>
                                           <Link href="/admin/policy-settings/document-templates">
                                             <BookOpen className="h-4 w-4 shrink-0" />
-                                            <span>Document Templates</span>
+                                            <span>{t("sidebar.documentTemplates", "Document Templates")}</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>
                                       <li>
-                                        <SidebarMenuButton tooltip="Workflow Actions" asChild>
+                                        <SidebarMenuButton tooltip={t("sidebar.workflowActions", "Workflow Actions")} asChild>
                                           <Link href="/admin/policy-settings/workflow-actions">
                                             <Frame className="h-4 w-4 shrink-0" />
-                                            <span>Workflow Actions</span>
+                                            <span>{t("sidebar.workflowActions", "Workflow Actions")}</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>
                                       <li>
-                                        <SidebarMenuButton tooltip="Policy Statuses" asChild>
+                                        <SidebarMenuButton tooltip={t("sidebar.policyStatuses", "Policy Statuses")} asChild>
                                           <Link href="/admin/policy-settings/policy-statuses">
                                             <ListOrdered className="h-4 w-4 shrink-0" />
-                                            <span>Policy Statuses</span>
+                                            <span>{t("sidebar.policyStatuses", "Policy Statuses")}</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>
                                       <li>
-                                        <SidebarMenuButton tooltip="Upload Documents" asChild>
+                                        <SidebarMenuButton tooltip={t("sidebar.uploadDocuments", "Upload Documents")} asChild>
                                           <Link href="/admin/policy-settings/upload-documents">
                                             <Upload className="h-4 w-4 shrink-0" />
-                                            <span>Upload Documents</span>
+                                            <span>{t("sidebar.uploadDocuments", "Upload Documents")}</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>
                                       <li>
-                                        <SidebarMenuButton tooltip="Backend Documents" asChild>
+                                        <SidebarMenuButton tooltip={t("sidebar.backendDocuments", "Backend Documents")} asChild>
                                           <Link href="/admin/policy-settings/backend-documents">
                                             <FileDown className="h-4 w-4 shrink-0" />
-                                            <span>Backend Documents</span>
+                                            <span>{t("sidebar.backendDocuments", "Backend Documents")}</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>
                                       <li>
-                                        <SidebarMenuButton tooltip="PDF Mail Merge" asChild>
+                                        <SidebarMenuButton tooltip={t("sidebar.pdfMailMerge", "PDF Mail Merge")} asChild>
                                           <Link href="/admin/policy-settings/pdf-templates">
                                             <Stamp className="h-4 w-4 shrink-0" />
-                                            <span>PDF Mail Merge</span>
+                                            <span>{t("sidebar.pdfMailMerge", "PDF Mail Merge")}</span>
                                           </Link>
                                         </SidebarMenuButton>
                                       </li>
@@ -779,12 +803,17 @@ export function AppSidebar(
                   </Collapsible>
                 </SidebarMenuItem>
 
+                {/* Per-package items: admin `label` + `meta.translations` via `tDynamic` (see i18n skill). */}
                 {isAdmin && packages.length > 0 && (
                   <>
                     <Separator className="my-2 dark:bg-neutral-800" />
                     {packages.map((p) => {
                       const iconName = (p.meta as Record<string, unknown> | null)?.icon as string | undefined;
                       const PkgIcon = getIcon(iconName);
+                      const pkgLabel = tDynamic(
+                        { label: p.label, meta: (p.meta ?? null) as Record<string, unknown> | null },
+                        locale,
+                      );
                       return (
                         <SidebarMenuItem key={p.value}>
                           <Collapsible
@@ -801,27 +830,27 @@ export function AppSidebar(
                           >
                             <div>
                               <CollapsibleTrigger asChild>
-                                <SidebarMenuButton tooltip={p.label}>
+                                <SidebarMenuButton tooltip={pkgLabel}>
                                   <PkgIcon className="h-4 w-4 shrink-0" />
-                                  <span>{p.label}</span>
+                                  <span>{pkgLabel}</span>
                                   <ChevronRight className="ml-auto h-4 w-4 transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
                                 </SidebarMenuButton>
                               </CollapsibleTrigger>
                               <CollapsibleContent>
                                 <ul className="ml-4 grid gap-1 py-1">
                                   <li>
-                                    <SidebarMenuButton tooltip={`${p.label} — Category`} asChild>
+                                    <SidebarMenuButton tooltip={t("sidebar.categoryHint", "{label} — Category", { label: pkgLabel })} asChild>
                                       <Link href={`/admin/policy-settings/${p.value}/category`}>
                                         <Folder className="h-4 w-4 shrink-0" />
-                                        <span>Category</span>
+                                        <span>{t("sidebar.category", "Category")}</span>
                                       </Link>
                                     </SidebarMenuButton>
                                   </li>
                                   <li>
-                                    <SidebarMenuButton tooltip={`${p.label} — Fields`} asChild>
+                                    <SidebarMenuButton tooltip={t("sidebar.fieldsHint", "{label} — Fields", { label: pkgLabel })} asChild>
                                       <Link href={`/admin/policy-settings/${p.value}/fields`}>
                                         <FileText className="h-4 w-4 shrink-0" />
-                                        <span>Fields</span>
+                                        <span>{t("sidebar.fields", "Fields")}</span>
                                       </Link>
                                     </SidebarMenuButton>
                                   </li>

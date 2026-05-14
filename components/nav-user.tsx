@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { signOut } from "next-auth/react";
+import { useT } from "@/lib/i18n";
 
 function getInitials(nameOrEmail: string): string {
   if (!nameOrEmail) return "?";
@@ -14,8 +15,9 @@ function getInitials(nameOrEmail: string): string {
 }
 
 export function NavUser({ user }: { user: { name?: string | null; email?: string | null } }) {
+  const t = useT();
   const [open, setOpen] = React.useState(false);
-  const label = (user.name || user.email || "User") as string;
+  const label = (user.name || user.email || t("common.fallbackUserName", "User")) as string;
   const initials = getInitials(label);
   return (
     <div className="relative">
@@ -38,7 +40,7 @@ export function NavUser({ user }: { user: { name?: string | null; email?: string
             className="block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
             onClick={() => signOut({ callbackUrl: "/" })}
           >
-            Sign out
+            {t("nav.logout", "Sign out")}
           </button>
         </div>
       ) : null}

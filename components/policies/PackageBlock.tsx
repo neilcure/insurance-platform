@@ -21,6 +21,7 @@ import { getInsuredDisplayName, getInsuredType } from "@/lib/field-resolver";
 import { isPremiumPkg } from "@/lib/premium-options";
 import { filterFieldsByUserType, mapFormOptionRowToAccountingFieldDef } from "@/lib/accounting-fields-shared";
 import { dedupeBadgeFromMeta } from "@/components/ui/dedupe-field-badge";
+import { tDynamic, useLocale } from "@/lib/i18n";
 
 type EntityPickerFieldMapping = {
   sourceField: string;
@@ -1056,11 +1057,12 @@ function CategoryTabs({
   onSelect,
   applyLabelCase,
 }: {
-  categories: { id: number; label: string; value: string; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }[];
+  categories: { id: number; label: string; value: string; meta?: { labelCase?: "original" | "upper" | "lower" | "title"; translations?: unknown } | null }[];
   selectedCategory: string;
   onSelect: (v: string) => void;
   applyLabelCase: (text: string, mode?: "original" | "upper" | "lower" | "title") => string;
 }) {
+  const locale = useLocale();
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [indicator, setIndicator] = React.useState({ left: 0, width: 0 });
 
@@ -1094,7 +1096,14 @@ function CategoryTabs({
           }`}
           onClick={() => onSelect(opt.value)}
         >
-          {applyLabelCase(opt.label, opt.meta?.labelCase ?? "original")}
+          {/*
+            Composition: translate (`tDynamic`) FIRST, THEN apply
+            `labelCase`. See `field-label-case` skill — case lives on
+            the parent and is a render-time transform, not a stored
+            value, so it must run after the locale-resolved string is
+            in hand.
+          */}
+          {applyLabelCase(tDynamic(opt, locale), opt.meta?.labelCase ?? "original")}
         </button>
       ))}
     </div>
@@ -1119,7 +1128,8 @@ export function PackageBlock({
   /** When set on premium packages, applies the same `filterFieldsByUserType` rules as the Premium tab (admins still bypass user-type filtering). */
   viewerUserType?: string | null;
 }) {
-  const [categories, setCategories] = React.useState<{ id: number; label: string; value: string; sortOrder: number; meta?: { labelCase?: "original" | "upper" | "lower" | "title" } | null }[]>([]);
+  const locale = useLocale();
+  const [categories, setCategories] = React.useState<{ id: number; label: string; value: string; sortOrder: number; meta?: { labelCase?: "original" | "upper" | "lower" | "title"; translations?: unknown } | null }[]>([]);
   const catFieldName = `${pkg}__category`;
   const normalizeCategoryValue = React.useCallback(
     (v: unknown): string => {
@@ -1794,7 +1804,13 @@ export function PackageBlock({
                     labelCase?: "original" | "upper" | "lower" | "title";
                     entityPicker?: EntityPickerMeta;
                   };
-                  const displayLabel = applyLabelCase(f.label, meta.labelCase);
+                  // Translate (`tDynamic`) FIRST then apply `labelCase` —
+                  // see `field-label-case` skill for the canonical
+                  // composition order.
+                  const displayLabel = applyLabelCase(
+                    tDynamic({ label: f.label, meta: f.meta as Record<string, unknown> | null }, locale),
+                    meta.labelCase,
+                  );
                   const dedupeBadge = dedupeBadgeFromMeta(meta as Record<string, unknown>, pkg);
                   const inputType = meta.inputType ?? "string";
                   const isCurrency = inputType === "currency" || inputType === "negative_currency";

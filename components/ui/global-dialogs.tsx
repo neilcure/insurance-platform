@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useT } from "@/lib/i18n";
 
 /**
  * App-wide lightbox dialog system. Replaces native `window.confirm`,
@@ -120,6 +121,7 @@ export function promptDialog(opts: {
  * `confirmDialog` / `alertDialog` / `promptDialog` flow through this host.
  */
 export function GlobalDialogHost() {
+  const t = useT();
   const [queue, setQueue] = React.useState<DialogRequest[]>([]);
   const [promptValue, setPromptValue] = React.useState("");
   const inputRef = React.useRef<HTMLInputElement | null>(null);
@@ -213,7 +215,13 @@ export function GlobalDialogHost() {
         <DialogFooter>
           {!isAlert && (
             <Button variant="outline" onClick={handleCancel}>
-              {(current as ConfirmRequest | PromptRequest).cancelLabel ?? "Cancel"}
+              {/*
+                Caller-supplied `cancelLabel` ALWAYS wins so a feature
+                can opt into a specific verb (e.g. "Discard" / "Keep
+                editing"). If it's omitted we fall back to the locale-
+                resolved generic.
+              */}
+              {(current as ConfirmRequest | PromptRequest).cancelLabel ?? t("common.cancel", "Cancel")}
             </Button>
           )}
           <Button
@@ -222,7 +230,11 @@ export function GlobalDialogHost() {
             autoFocus={!isPrompt}
           >
             {("confirmLabel" in current && current.confirmLabel) ||
-              (isAlert ? "OK" : destructive ? "Delete" : "Confirm")}
+              (isAlert
+                ? t("common.ok", "OK")
+                : destructive
+                  ? t("common.delete", "Delete")
+                  : t("common.confirm", "Confirm"))}
           </Button>
         </DialogFooter>
       </DialogContent>

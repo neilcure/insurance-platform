@@ -52,6 +52,7 @@ skill **before** writing code:
 | Role-based visibility | `form_options.user_type_visibility.meta.allowedPremiumRoles` + per-field `meta.visibleToRoles` override | Hardcoded `if (userType === "client" && role === "net")` |
 | HK-specific columns (Levy / Stamp Duty / Discount) | Tag locale in registry; tenant-scoped `form_options` decide visibility | Schema-level columns assumed to apply to every tenant |
 | Adding "one more" entry to an existing hardcoded list | Migrate the list to `form_options` first, THEN add the entry | Grow the violation |
+| Localizing an admin-edited label for a non-English UI | Store the variant in `form_options.meta.translations.<locale>.label` (or nested `options[]` / `booleanChildren` / `repeatable`); read via `tDynamic` from `@/lib/i18n` | Add a parallel `labelZh` column / a per-row `translations` table / a code-side map keyed by row value |
 
 ## Existing violations (audit trail in skill §4)
 

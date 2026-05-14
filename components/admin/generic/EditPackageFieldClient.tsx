@@ -34,6 +34,8 @@ import { GroupAssignmentSection } from "@/components/admin/generic/GroupAssignme
 import { AutoFillConfigEditor, type AutoFillConfig } from "@/components/admin/generic/AutoFillConfig";
 import { EntityPickerConfigEditor, type EntityPickerConfig } from "@/components/admin/generic/EntityPickerConfig";
 import { InputTypeSelect, type InputType } from "@/components/admin/generic/InputTypeSelect";
+import { TranslationsEditor } from "@/components/admin/i18n/TranslationsEditor";
+import type { Locale, TranslationBlock } from "@/lib/i18n";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
 import type { PkgFieldInfo } from "@/hooks/use-pkg-fields";
 
@@ -60,6 +62,15 @@ type FieldMeta = {
     max?: number;
     fields?: { label?: string; value?: string; inputType?: string; options?: OptionRow[] }[];
   };
+  /**
+   * Localized variants of this field's `label`, option labels, boolean
+   * branch child labels, and repeatable child labels — keyed by locale
+   * (see `lib/i18n` resolver). Edited via `<TranslationsEditor>`.
+   * Missing locales fall back to the source English values.
+   */
+  translations?: import("@/lib/i18n").TranslationBlock extends infer T
+    ? Partial<Record<import("@/lib/i18n").Locale, T>>
+    : never;
   showWhen?: ShowWhenRule[];
   groupShowWhen?: GswRule[] | null;
   groupShowWhenMap?: Record<string, GswRule[] | null>;
@@ -397,6 +408,21 @@ export default function EditPackageFieldClient({ pkg, id }: { pkg: string; id: n
             <Label>Label</Label>
             <Input value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} />
           </div>
+          <TranslationsEditor
+            value={(form.meta?.translations ?? null) as Partial<Record<Locale, TranslationBlock>> | null}
+            sourceLabel={form.label}
+            options={(form.meta?.options ?? []) as { value?: string; label?: string }[]}
+            booleanChildren={
+              form.meta?.booleanChildren as
+                | { true?: { label?: string }[]; false?: { label?: string }[] }
+                | undefined
+            }
+            repeatable={
+              (form.meta?.repeatable?.fields ?? []) as { value?: string; label?: string }[]
+            }
+            hint="Leave a row blank to fall back to English."
+            onChange={(next) => updateMeta("translations", next as FieldMeta["translations"])}
+          />
           <div className="grid gap-1">
             <Label>Label Case</Label>
             <select

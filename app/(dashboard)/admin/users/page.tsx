@@ -10,6 +10,8 @@ import { SettingsBlock } from "@/components/ui/settings-block";
 import { Separator } from "@/components/ui/separator";
 import { ServerErrorToast } from "@/components/ui/ServerErrorToast";
 import { getCompletedSetupUserIds } from "@/lib/auth/user-setup-status";
+import { tStatic } from "@/lib/i18n";
+import { getLocale } from "@/lib/i18n/server";
 
 type UserType = "admin" | "agent" | "accounting" | "internal_staff" | "direct_client" | "service_provider";
 
@@ -188,15 +190,31 @@ export default async function AdminUsersPage() {
     `${(r.userNumber ?? "").toString()}|${(r.email || "").toLowerCase()}|${String(r.id).padStart(10, "0")}`;
   rows = rows.slice().sort((a, b) => makeSortKey(a).localeCompare(makeSortKey(b)));
 
+  const locale = await getLocale();
   return (
     <main className="mx-auto max-w-6xl space-y-6">
       {loadError ? <ServerErrorToast message={loadError} /> : null}
       <div>
-        <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Admin Panel</h1>
-        <p className="text-sm text-neutral-600 dark:text-neutral-400">Manage users and permissions.</p>
+        <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">
+          {tStatic("sidebar.adminPanel", locale, "Admin Panel")}
+        </h1>
+        <p className="text-sm text-neutral-600 dark:text-neutral-400">
+          {tStatic(
+            "admin.users.subtitle",
+            locale,
+            "Manage users and permissions.",
+          )}
+        </p>
       </div>
       <Separator />
-      <SettingsBlock title="User Settings" description="Invite users, change roles, activate/deactivate or delete accounts.">
+      <SettingsBlock
+        title={tStatic("sidebar.userSettings", locale, "User Settings")}
+        description={tStatic(
+          "admin.users.description",
+          locale,
+          "Invite users, change roles, activate/deactivate or delete accounts.",
+        )}
+      >
         <div className="space-y-4">
           <InviteForm allowedTypes={me.userType === "admin" ? ["admin","agent","accounting","internal_staff","direct_client"] : ["accounting","internal_staff"]} />
           <Separator />

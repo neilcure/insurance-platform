@@ -1,0 +1,90 @@
+---
+description: Tripwire that forces multi-language support to flow through the unified `lib/i18n` resolver — `tStatic` / `useT` for hardcoded UI text in `messages/<locale>.ts`, `tDynamic*` for admin-edited labels via `form_options.meta.translations.<locale>`, and the `<TranslationsEditor>` admin component. Forbids hardcoded strings in dashboard JSX, ad-hoc per-locale code branches, and translating PDFs / emails / WhatsApp / user-entered data. Must read the i18n skill before editing any user-facing string.
+alwaysApply: true
+---
+
+# i18n Unified Resolver
+
+Multi-language support uses ONE home-grown resolver — NOT
+`next-intl`. The full contract (when to use `tStatic` vs
+`tDynamic`, the composition order with `field-label-case`, the
+`meta.translations` shape, the `<TranslationsEditor>` panel, the
+locale resolution chain, and the explicit "PDFs / emails stay
+English" boundary) lives in
+[`.cursor/skills/i18n/SKILL.md`](mdc:.cursor/skills/i18n/SKILL.md).
+
+If your task touches **any** of the following, STOP and read the
+skill **before** writing code:
+
+- Adding ANY user-facing string in `app/(dashboard)/**` or
+  `components/**`
+- Adding a new admin-configurable list whose labels appear in the
+  dashboard UI (statuses, workflow actions, document types,
+  package fields, premium roles, etc.)
+- Wiring `tDynamic` into a new consumer of `form_options`
+- Adding a new admin editor that exposes a "Label" input
+- Editing `lib/i18n/**`, `messages/**`, `proxy.ts`,
+  `app/api/me/locale/route.ts`,
+  `components/admin/i18n/TranslationsEditor.tsx`, or
+  `components/ui/locale-switcher.tsx`
+- Adding a new locale to `SUPPORTED_LOCALES`
+- Adding a new column / table / drawer that renders labels from
+  `form_options.label`
+- Debugging "language switcher doesn't update X / X still renders
+  in English / X renders raw key / X breaks the column case
+  transform / locale didn't persist across sessions"
+- Touching `applyLabelCase` / `applyCaseToText` / any `applyCase`
+  call site (translation MUST run first; see
+  `field-label-case` skill cross-reference)
+
+## The 30-second cheatsheet
+
+| Concern | Pattern | Don't do |
+|---|---|---|
+| Hardcoded UI string in client JSX | `const t = useT(); t("section.key", "English fallback")` | `<span>Confirm</span>` |
+| Hardcoded UI string in server component | `tStatic("section.key", await getLocale(), "English fallback")` | Hardcode the literal |
+| Admin-edited label from `form_options` | `tDynamic({ label: row.label, meta: row.meta }, locale)` | `String(row.label ?? "")` |
+| Translation + `labelCase` | `applyCase(tDynamic(row, locale), row.meta?.labelCase)` — translate FIRST, case AFTER | `applyCase(row.label, mode)` then translate |
+| Admin-edited dropdown option label | `tDynamicOption(field, optionValue, locale, fallback)` | Read `meta.options[].label` directly |
+| Admin-edited boolean-child label | `tDynamicBooleanChild(field, branch, idx, locale, fallback)` | Read `meta.booleanChildren[...]` directly |
+| Confirm / cancel / delete / OK button text | Use `confirmDialog` / `alertDialog` defaults (auto-localized) | Render your own Dialog with hardcoded "Cancel" |
+| Add an admin editor for `meta.translations` | Drop `<TranslationsEditor>` next to the Label input | Hand-roll a per-locale text input grid |
+| Read locale on the server | `await getLocale()` from `@/lib/i18n/server` | Inline cookie / header parsing |
+| Read locale on the client | `useLocale()` from `@/lib/i18n` | Inline cookie parsing / `document.cookie` |
+| New locale | Add to `SUPPORTED_LOCALES` + new `messages/<locale>.ts` + locale switcher entry | Hardcode `if (locale === "zh-HK")` branches |
+| Localized PDF / email / WhatsApp body | DON'T — explicit OUT-of-scope | Pipe `tDynamic` results into anything in `lib/pdf/**` or `lib/email.ts` callers |
+
+## Out-of-scope surfaces (must stay English)
+
+These are deliberately untouched per the i18n plan and the
+shared-field-resolver skill:
+
+- Anything inside `lib/pdf/**` — entire tree
+- `lib/field-resolver.ts` — used by both dashboard AND PDF; the
+  dashboard wraps its output with `tDynamic` at the consumer layer
+  instead, so the resolver itself stays locale-blind
+- Email subjects / bodies, WhatsApp body templates, share-link
+  landing pages
+- All currency / date / number formatting
+- API contracts, file URLs, document share tokens, audit log
+  payloads, user-entered snapshot values
+
+If you need to localize one of these on purpose, it's a scope
+change — re-read the plan first.
+
+## Cross-references
+
+- `.cursor/skills/field-label-case/SKILL.md` — `applyCase` MUST
+  run AFTER `tDynamic`, never before.
+- `.cursor/rules/dynamic-config-first.mdc` — the `meta.translations`
+  shape is the canonical "admin-edited locale variants live in
+  `form_options`, not in code" pattern.
+- `.cursor/rules/no-native-dialogs.mdc` — the global dialog API
+  used here ships with locale-resolved button labels by default.
+- `.cursor/rules/shared-field-resolver.mdc` — `lib/field-resolver.ts`
+  is the boundary between English-only PDF code and translatable
+  dashboard code.
+
+If anything above is unclear, the skill has the full contract,
+the migration recipe, the verification recipe, and the matrix of
+already-translated surfaces.

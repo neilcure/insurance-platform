@@ -1,5 +1,9 @@
+import type { Locale, TranslationBlock } from "@/lib/i18n";
+
 export type UploadDocumentTypeMeta = {
   description?: string;
+  /** Locale-specific overrides for the row's `label`, edited via `<TranslationsEditor>`. */
+  translations?: Partial<Record<Locale, TranslationBlock>>;
   /**
    * Who provides the document.
    * - "customer" (default): client / agent uploads, admin verifies. Reminders apply.

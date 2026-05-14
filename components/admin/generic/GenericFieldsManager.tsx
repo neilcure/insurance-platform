@@ -18,6 +18,8 @@ import { InputTypeSelect } from "@/components/admin/generic/InputTypeSelect";
 import { deepEqual, formSnapshot } from "@/lib/form-utils";
 import { confirmDialog } from "@/components/ui/global-dialogs";
 import { dedupeBadgeFromMeta } from "@/components/ui/dedupe-field-badge";
+import { TranslationsEditor } from "@/components/admin/i18n/TranslationsEditor";
+import type { Locale, TranslationBlock } from "@/lib/i18n";
 
 type BooleanBranchChild = {
   label?: string;
@@ -94,6 +96,11 @@ type FieldMeta = {
    * categories.
    */
   dedupeCategory?: string;
+  /**
+   * Locale-specific overrides edited via `<TranslationsEditor>`.
+   * Falls back to English on missing entries — see `lib/i18n`.
+   */
+  translations?: Partial<Record<Locale, TranslationBlock>>;
 };
 
 type FieldRow = {
@@ -1186,6 +1193,23 @@ export default function GenericFieldsManager({ pkg }: { pkg: string }) {
               <Label>Label</Label>
               <Input value={form.label ?? ""} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} />
             </div>
+            <TranslationsEditor
+              value={(form.meta as FieldMeta | undefined)?.translations ?? null}
+              sourceLabel={form.label ?? ""}
+              options={(((form.meta as FieldMeta | undefined)?.options ?? []) as Array<{ value?: string; label?: string }>)}
+              booleanChildren={
+                (form.meta as FieldMeta | undefined)?.booleanChildren as
+                  | { true?: { label?: string }[]; false?: { label?: string }[] }
+                  | undefined
+              }
+              repeatable={
+                (((form.meta as FieldMeta | undefined)?.repeatable && !Array.isArray((form.meta as FieldMeta | undefined)?.repeatable)
+                  ? ((form.meta as FieldMeta | undefined)?.repeatable as { fields?: Array<{ value?: string; label?: string }> } | undefined)?.fields
+                  : undefined) ?? []) as Array<{ value?: string; label?: string }>
+              }
+              hint="Leave a row blank to fall back to English."
+              onChange={(next) => updateMeta("translations" as never, next as never)}
+            />
             <div className="grid gap-1">
               <Label>Value (key)</Label>
               <Input value={form.value ?? ""} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} />

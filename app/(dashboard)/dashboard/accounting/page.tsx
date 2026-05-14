@@ -35,6 +35,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import {
   PAYMENT_METHOD_OPTIONS,
   PAYMENT_STATUS_LABELS,
@@ -240,6 +241,7 @@ function lifecycleTagFromKey(key: string): string {
 }
 
 export default function AccountingPage() {
+  const t = useT();
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [schedules, setSchedules] = React.useState<ScheduleSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -1028,7 +1030,7 @@ export default function AccountingPage() {
   return (
     <main className="mx-auto max-w-6xl space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-semibold">Accounting</h1>
+        <h1 className="text-2xl font-semibold">{t("nav.accounting", "Accounting")}</h1>
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
@@ -1036,7 +1038,7 @@ export default function AccountingPage() {
             onClick={() => setShowSettings(!showSettings)}
           >
             <Settings2 className="h-4 w-4 sm:hidden lg:inline" />
-            <span className="hidden sm:inline">Display</span>
+            <span className="hidden sm:inline">{t("accounting.display", "Display")}</span>
           </Button>
           <Button
             variant="outline"

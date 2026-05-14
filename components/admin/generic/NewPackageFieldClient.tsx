@@ -33,6 +33,8 @@ const PREMIUM_ROLE_OPTIONS = [
 ];
 const isPremiumPkg = (p: string) => p === "premiumRecord" || p === "accounting";
 import { InputTypeSelect, type InputType } from "@/components/admin/generic/InputTypeSelect";
+import { TranslationsEditor } from "@/components/admin/i18n/TranslationsEditor";
+import type { Locale, TranslationBlock } from "@/lib/i18n";
 
 export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
   const [categoryOptions, setCategoryOptions] = React.useState<{ label: string; value: string }[]>([]);
@@ -84,6 +86,8 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
       dedupeIdentifier?: boolean;
       /** Category scope for the dedupe match: "any" (or omitted), "company", "personal", or any admin-configured category. */
       dedupeCategory?: string;
+      /** Locale-specific overrides; edited via `<TranslationsEditor>`. Missing locales fall back to English. */
+      translations?: Partial<Record<Locale, TranslationBlock>>;
     };
   }>({
     label: "",
@@ -265,6 +269,21 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
             <Label>Label</Label>
             <Input value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} />
           </div>
+          <TranslationsEditor
+            value={(form.meta?.translations ?? null) as Partial<Record<Locale, TranslationBlock>> | null}
+            sourceLabel={form.label}
+            options={(form.meta?.options ?? []) as { value?: string; label?: string }[]}
+            booleanChildren={
+              form.meta?.booleanChildren as
+                | { true?: { label?: string }[]; false?: { label?: string }[] }
+                | undefined
+            }
+            repeatable={
+              (form.meta?.repeatable?.fields ?? []) as { value?: string; label?: string }[]
+            }
+            hint="Leave a row blank to fall back to English."
+            onChange={(next) => updateMeta("translations" as never, next as never)}
+          />
           <div className="grid gap-1">
             <Label>Label Case</Label>
             <select

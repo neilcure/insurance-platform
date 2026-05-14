@@ -17,6 +17,7 @@ import {
   FloatingTooltip,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { useT } from "@/lib/i18n";
 
 function CollapsedGroupHeader({
   title,
@@ -58,6 +59,7 @@ export function NavMain({
     items?: NavSubItem[];
   }[];
 }) {
+  const t = useT();
   const { collapsed, isMobile } = useSidebar();
   const isCollapsed = collapsed && !isMobile;
 
@@ -106,7 +108,7 @@ export function NavMain({
 
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>Platform</SidebarGroupLabel>
+      <SidebarGroupLabel>{t("nav.platform", "Platform")}</SidebarGroupLabel>
       <SidebarMenu>
         {items.map((item) => (
           <SidebarMenuItem key={item.title}>

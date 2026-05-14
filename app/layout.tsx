@@ -4,6 +4,8 @@ import { Toaster } from "sonner";
 import { ThemeProvider } from "@/components/ui/theme-provider";
 import { AuthSessionProvider } from "@/components/auth/session-provider";
 import { GlobalDialogHost } from "@/components/ui/global-dialogs";
+import { I18nProvider } from "@/lib/i18n";
+import { getLocale } from "@/lib/i18n/server";
 
 const SITE_NAME = "Bravo General Insurance Interface";
 const SITE_SHORT_NAME = "Bravo GI";
@@ -89,13 +91,22 @@ const jsonLdWebsite = {
   url: SITE_URL,
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Resolve the locale once on the server so:
+  //   1. <html lang> is correct on the very first paint (good for SEO,
+  //      screen readers, and browser-native translation prompts).
+  //   2. Every nested client component reads the same value via
+  //      `useLocale()` without needing a separate fetch.
+  // The resolution is cookie-first / DB-second / header-third — see
+  // `lib/i18n/locale.ts` for the full chain.
+  const locale = await getLocale();
+
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang={locale} suppressHydrationWarning>
       <body className="antialiased">
         {/*
           JSON-LD goes inline in the body. Google's crawler reads it
@@ -116,11 +127,13 @@ export default function RootLayout({
           }}
         />
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-          <AuthSessionProvider>
-            {children}
-            <Toaster richColors position="top-right" duration={2000} />
-            <GlobalDialogHost />
-          </AuthSessionProvider>
+          <I18nProvider initialLocale={locale}>
+            <AuthSessionProvider>
+              {children}
+              <Toaster richColors position="top-right" duration={2000} />
+              <GlobalDialogHost />
+            </AuthSessionProvider>
+          </I18nProvider>
         </ThemeProvider>
       </body>
     </html>

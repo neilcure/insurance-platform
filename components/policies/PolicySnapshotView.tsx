@@ -8,6 +8,7 @@ import { ClientLinkedPolicies } from "@/components/policies/ClientLinkedPolicies
 import { EndorsementHistory } from "@/components/policies/EndorsementHistory";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatResolvedValue } from "@/lib/field-resolver";
+import { tDynamic, useLocale, type Locale } from "@/lib/i18n";
 
 type RepeatableSubField = {
   label: string;
@@ -110,7 +111,7 @@ function registerChildLabels(
 
 const LEGACY_PKG_MAP: Record<string, string> = { accounting: "premiumRecord" };
 
-async function loadFieldMeta(packageNames: string[]): Promise<{
+async function loadFieldMeta(packageNames: string[], locale: Locale = "en"): Promise<{
   pkgMeta: Record<string, FieldMeta>;
   packageLabels: Record<string, string>;
   packageSortOrders: Record<string, number>;
@@ -131,10 +132,17 @@ async function loadFieldMeta(packageNames: string[]): Promise<{
   const packageLabels: Record<string, string> = {};
   const packageSortOrders: Record<string, number> = {};
   if (Array.isArray(packagesRes)) {
-    for (const row of packagesRes as Array<{ value?: unknown; label?: unknown; sortOrder?: unknown }>) {
+    for (const row of packagesRes as Array<{ value?: unknown; label?: unknown; sortOrder?: unknown; meta?: unknown }>) {
       const key = toKey(row?.value);
       if (!key) continue;
-      packageLabels[key] = toKey(row?.label) || key;
+      // Translate the package label first; the snapshot view applies
+      // case transforms downstream so we keep the raw resolved string
+      // here.
+      const translated = tDynamic(
+        { label: toKey(row?.label), meta: (row?.meta ?? null) as Record<string, unknown> | null },
+        locale,
+      );
+      packageLabels[key] = translated || toKey(row?.label) || key;
       packageSortOrders[key] = toNum(row?.sortOrder);
     }
   }
@@ -150,7 +158,7 @@ async function loadFieldMeta(packageNames: string[]): Promise<{
 
   packageNames.forEach((pkg, idx) => {
     const fieldRows = fieldAndCatResults[idx * 2] as Array<{ value?: unknown; label?: unknown; sortOrder?: unknown; meta?: unknown }> ?? [];
-    const catRows = fieldAndCatResults[idx * 2 + 1] as Array<{ value?: unknown; label?: unknown }> ?? [];
+    const catRows = fieldAndCatResults[idx * 2 + 1] as Array<{ value?: unknown; label?: unknown; meta?: unknown }> ?? [];
 
     const fm: FieldMeta = {
       labels: {}, sortOrders: {}, groupOrders: {}, groupNames: {},
@@ -160,7 +168,15 @@ async function loadFieldMeta(packageNames: string[]): Promise<{
     for (const row of Array.isArray(fieldRows) ? fieldRows : []) {
       const key = toKey(row?.value);
       if (!key) continue;
-      const parentLabel = toKey(row?.label) || key;
+      // Translate field labels at the central meta-build site so
+      // every consumer (table headers, drawer field rows, group
+      // titles) inherits the locale-resolved value. labelCase still
+      // runs at render time inside `applyCase(...)`.
+      const translatedLabel = tDynamic(
+        { label: toKey(row?.label), meta: (row?.meta ?? null) as Record<string, unknown> | null },
+        locale,
+      );
+      const parentLabel = translatedLabel || toKey(row?.label) || key;
       fm.labels[key] = parentLabel;
       fm.sortOrders[key] = toNum((row as any)?.sortOrder);
 
@@ -236,7 +252,11 @@ async function loadFieldMeta(packageNames: string[]): Promise<{
     for (const row of Array.isArray(catRows) ? catRows : []) {
       const key = toKey(row?.value);
       if (!key) continue;
-      catMap[key] = toKey(row?.label) || key;
+      const translated = tDynamic(
+        { label: toKey(row?.label), meta: (row?.meta ?? null) as Record<string, unknown> | null },
+        locale,
+      );
+      catMap[key] = translated || toKey(row?.label) || key;
     }
     categoryLabels[pkg] = catMap;
   });
@@ -774,12 +794,17 @@ export function PolicySnapshotView({ detail, entityLabel, onEditPackage, canEdit
     return keys;
   }, [snap._audit]);
 
+  const locale = useLocale();
   React.useEffect(() => {
     if (pkgNames.length === 0) { setMeta(null); return; }
     let cancelled = false;
-    loadFieldMeta(pkgNames).then(result => { if (!cancelled) setMeta(result); }).catch(() => {});
+    loadFieldMeta(pkgNames, locale).then(result => { if (!cancelled) setMeta(result); }).catch(() => {});
     return () => { cancelled = true; };
-  }, [pkgNames.join(",")]);
+    // Re-fetch + re-translate the entire field meta when the locale
+    // flips so every label in the snapshot view (package titles,
+    // category badges, field rows) updates without a hard reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pkgNames.join(","), locale]);
 
   const packageLabels = meta?.packageLabels ?? {};
 
