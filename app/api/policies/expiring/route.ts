@@ -207,6 +207,35 @@ export async function GET(request: Request) {
 
     const polCols = await getPolicyColumns();
 
+    // Format the window as `YYYY-MM-DD` for Postgres `date` casts.
+    // Using local-time accessors (NOT toISOString) so the day boundary
+    // matches the local-day semantics the rest of the route already
+    // uses via `startOfDay`.
+    const toIsoYmd = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const windowFromIso = toIsoYmd(windowFrom);
+    const windowToIso = toIsoYmd(windowTo);
+
+    // Project ONLY the three JSON paths the route actually reads
+    // (`status`, `insuredSnapshot`, `packagesSnapshot`) instead of
+    // the entire `cars.extra_attributes` blob. The full blob can
+    // include audit logs, document tracking, statement history,
+    // etc. — easily 10–50KB per policy — and pulling 1000 of them
+    // over the wire was the dominant cost of this endpoint. The
+    // shrunk shape is API-compatible with `extractStatus` /
+    // `extractInsuredName` / `extractDateField` / `extraFields`
+    // builder because all of those read exactly these three keys.
+    const carExtraProjection = sql<Record<string, unknown> | null>`
+      CASE
+        WHEN ${cars.extraAttributes} IS NULL THEN NULL
+        ELSE jsonb_build_object(
+          'status',           ${cars.extraAttributes} -> 'status',
+          'insuredSnapshot',  ${cars.extraAttributes} -> 'insuredSnapshot',
+          'packagesSnapshot', ${cars.extraAttributes} -> 'packagesSnapshot'
+        )
+      END
+    `;
+
     const baseSelect = db
       .select({
         policyId: policies.id,
@@ -216,16 +245,85 @@ export async function GET(request: Request) {
         isActive: policies.isActive,
         flowKey: policies.flowKey,
         agentId: policies.agentId,
-        carExtra: cars.extraAttributes,
+        carExtra: carExtraProjection,
       })
       .from(policies)
       .leftJoin(cars, eq(cars.policyId, policies.id));
+
+    // Same projection literal for the raw-SQL paths below. Built
+    // once so the JSON-build expression is identical everywhere.
+    const carExtraProjRawSql = sql`
+      CASE
+        WHEN c.extra_attributes IS NULL THEN NULL
+        ELSE jsonb_build_object(
+          'status',           c.extra_attributes -> 'status',
+          'insuredSnapshot',  c.extra_attributes -> 'insuredSnapshot',
+          'packagesSnapshot', c.extra_attributes -> 'packagesSnapshot'
+        )
+      END
+    `;
+
+    // SQL-side window filter using the denormalised
+    // `start_date_indexed` / `end_date_indexed` columns (see
+    // migration 0015 + `lib/policies/indexed-dates.ts`).
+    //
+    // Logic (3 disjuncts):
+    //   1. Both indexed columns NULL — row predates the backfill
+    //      OR truly has no date in its snapshot. Pass through so
+    //      the JS-side filter still runs. After the one-time
+    //      backfill, this branch only catches genuinely date-less
+    //      rows (a handful, if any).
+    //   2. `end_date_indexed` in window — covers terminal/issued
+    //      policies plotted at their endDate AND incomplete policies
+    //      whose proposed term ends in the window.
+    //   3. `start_date_indexed` in window — covers incomplete
+    //      policies plotted at their startDate.
+    //
+    // What gets excluded: policies whose BOTH dates are outside the
+    // window — i.e. terminal policies far past/future, AND the rare
+    // "old quotation with a far-future end date" case. The
+    // edge-case incomplete policy is accepted as a tradeoff for an
+    // indexed-range-scan-able predicate (vs. fetching every active
+    // row and post-filtering in JS).
+    //
+    // IMPORTANT: only apply this filter if the columns actually
+    // exist in the DB (migration 0015 may not have run yet). If
+    // they don't, we fall back to the original "fetch all active,
+    // filter in JS" behaviour — slower but correct.
+    const hasIndexedDateColumns =
+      polCols.hasStartDateIndexed && polCols.hasEndDateIndexed;
+
+    // Drizzle-style filter (used by admin / member paths):
+    const indexedDateFilter = hasIndexedDateColumns
+      ? sql`(
+          (${policies.endDateIndexed} IS NULL AND ${policies.startDateIndexed} IS NULL)
+          OR ${policies.endDateIndexed} BETWEEN ${windowFromIso}::date AND ${windowToIso}::date
+          OR ${policies.startDateIndexed} BETWEEN ${windowFromIso}::date AND ${windowToIso}::date
+        )`
+      : null;
+
+    // Raw-SQL counterpart (used by agent / direct_client paths).
+    // The `p.` alias mirrors the surrounding queries.
+    const indexedDateFilterRawSql = hasIndexedDateColumns
+      ? sql`and (
+          (p.end_date_indexed IS NULL AND p.start_date_indexed IS NULL)
+          OR p.end_date_indexed BETWEEN ${windowFromIso}::date AND ${windowToIso}::date
+          OR p.start_date_indexed BETWEEN ${windowFromIso}::date AND ${windowToIso}::date
+        )`
+      : sql``;
 
     let rows: ScopedPolicyRow[] = [];
     try {
       if (user.userType === "admin" || user.userType === "internal_staff") {
         let q: any = baseSelect;
-        if (!includeInactive) q = q.where(eq(policies.isActive, true));
+        const whereClauses: any[] = [];
+        if (!includeInactive) whereClauses.push(eq(policies.isActive, true));
+        if (indexedDateFilter) whereClauses.push(indexedDateFilter);
+        if (whereClauses.length === 1) {
+          q = q.where(whereClauses[0]);
+        } else if (whereClauses.length > 1) {
+          q = q.where(and(...whereClauses));
+        }
         q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(FETCH_HARD_CAP);
         rows = (await q) as ScopedPolicyRow[];
       } else if (user.userType === "agent") {
@@ -242,11 +340,12 @@ export async function GET(request: Request) {
               p.is_active as "isActive",
               ${polCols.hasFlowKey ? sql`p.flow_key as "flowKey",` : sql`null::text as "flowKey",`}
               ${polCols.hasAgentId ? sql`p.agent_id as "agentId",` : sql`null::int as "agentId",`}
-              c.extra_attributes as "carExtra"
+              ${carExtraProjRawSql} as "carExtra"
             from "policies" p
             left join "cars" c on c.policy_id = p.id
             where p.agent_id = ${agentId}
               ${includeInactive ? sql`` : sql`and p.is_active = true`}
+              ${indexedDateFilterRawSql}
             order by p.created_at desc, p.id desc
             limit ${FETCH_HARD_CAP}
           `);
@@ -263,7 +362,7 @@ export async function GET(request: Request) {
             p.is_active as "isActive",
             ${polCols.hasFlowKey ? sql`p.flow_key as "flowKey",` : sql`null::text as "flowKey",`}
             ${polCols.hasAgentId ? sql`p.agent_id as "agentId",` : sql`null::int as "agentId",`}
-            c.extra_attributes as "carExtra"
+            ${carExtraProjRawSql} as "carExtra"
           from "policies" p
           left join "cars" c on c.policy_id = p.id
           inner join "clients" cl on cl.user_id = ${userId}
@@ -277,6 +376,7 @@ export async function GET(request: Request) {
             )
           )
           ${includeInactive ? sql`` : sql`and p.is_active = true`}
+          ${indexedDateFilterRawSql}
           order by p.created_at desc, p.id desc
           limit ${FETCH_HARD_CAP}
         `);
@@ -289,11 +389,27 @@ export async function GET(request: Request) {
             eq(memberships.userId, Number(user.id)),
           ),
         );
-        if (!includeInactive) scoped = scoped.where(eq(policies.isActive, true));
+        const whereClauses: any[] = [];
+        if (!includeInactive) whereClauses.push(eq(policies.isActive, true));
+        if (indexedDateFilter) whereClauses.push(indexedDateFilter);
+        if (whereClauses.length === 1) {
+          scoped = scoped.where(whereClauses[0]);
+        } else if (whereClauses.length > 1) {
+          scoped = scoped.where(and(...whereClauses));
+        }
         scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(FETCH_HARD_CAP);
         rows = (await scoped) as ScopedPolicyRow[];
       }
-    } catch {
+    } catch (err) {
+      // The outer try/catch existed before this change; it silently
+      // swallowed errors and set rows=[]. That hid the regression
+      // where queries failed because of a missing column. Log the
+      // error in dev so future schema mismatches surface quickly
+      // instead of just showing an empty calendar.
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn("[/api/policies/expiring] query failed:", err);
+      }
       rows = [];
     }
 

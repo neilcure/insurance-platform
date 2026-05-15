@@ -10,6 +10,7 @@ import { syncPremiumSnapshotToTable } from "@/lib/sync-premiums";
 import { autoCreateAccountingInvoices } from "@/lib/auto-create-invoices";
 import { hasCompletedSetup } from "@/lib/auth/user-setup-status";
 import { extractVehicleColumns } from "@/lib/policies/extract-vehicle-columns";
+import { syncPolicyIndexedDates } from "@/lib/policies/indexed-dates";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -810,6 +811,12 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
         .where(eq(cars.id, carRow.id));
     }
 
+    // Keep the denormalised date columns on `policies` in sync
+    // with the new snapshot. Used by the Policy Calendar's
+    // SQL-side window filter. Internal helper swallows errors
+    // (legacy DBs without the columns won't break the save).
+    await syncPolicyIndexedDates(db, id, updated);
+
     // Sync premiumRecord snapshot values to the policy_premiums table
     // so the accounting system always has up-to-date premium data.
     try {
@@ -914,6 +921,10 @@ export async function DELETE(_: Request, ctx: { params: Promise<{ id: string }> 
           };
 
           await db.update(cars).set({ extraAttributes: updatedOrigExtra }).where(eq(cars.id, origCarRow.id));
+          // Endorsement rollback may have reverted the start/end
+          // date on the ORIGINAL policy — keep the indexed columns
+          // in sync so the Policy Calendar reflects the rollback.
+          await syncPolicyIndexedDates(db, linkedPolicyId, updatedOrigExtra);
         }
       }
 

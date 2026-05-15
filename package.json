@@ -13,6 +13,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:backfill:status-tracks": "node scripts/backfill-policy-status-tracks.js",
+    "db:backfill:policy-indexed-dates": "tsx scripts/backfill-policy-indexed-dates.ts",
     "db:seed:agent-statuses": "node scripts/tmp-seed-agent-statuses.js",
     "db:sync:agent-status": "node scripts/sync-agent-status-from-data.js"
   },

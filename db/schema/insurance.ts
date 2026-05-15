@@ -1,4 +1,4 @@
-import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, date, index, integer, jsonb, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 import { organisations, clients, users } from "./core";
 
 export const policies = pgTable("policies", {
@@ -11,12 +11,22 @@ export const policies = pgTable("policies", {
   createdBy: integer("created_by"),
   isActive: boolean("is_active").notNull().default(true),
   documentTracking: jsonb("document_tracking"),
+  // Denormalized read-optimization columns for the Policy Calendar
+  // window filter. Populated on every write to
+  // `cars.extra_attributes` via `syncPolicyIndexedDates()` in
+  // `lib/policies/indexed-dates.ts`. Source of truth remains the
+  // JSONB snapshot — these are derived. See migration 0015 and the
+  // `policy-calendar-expiry` skill for full contract.
+  startDateIndexed: date("start_date_indexed", { mode: "string" }),
+  endDateIndexed: date("end_date_indexed", { mode: "string" }),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
 }, (t) => ({
   orgCreatedIdx: index("policies_org_created_idx").on(t.organisationId, t.createdAt),
   flowKeyIdx: index("policies_flow_key_idx").on(t.flowKey),
   clientIdIdx: index("policies_client_id_idx").on(t.clientId),
   agentIdIdx: index("policies_agent_id_idx").on(t.agentId),
+  endDateIdx: index("policies_end_date_idx").on(t.endDateIndexed),
+  startDateIdx: index("policies_start_date_idx").on(t.startDateIndexed),
 }));
 
 export const cars = pgTable("cars", {

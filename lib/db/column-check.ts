@@ -7,6 +7,9 @@ interface PolicyColumnsPresence {
   hasCreatedBy: boolean;
   hasIsActive: boolean;
   hasFlowKey: boolean;
+  /** Migration 0015 — denormalised calendar window columns. */
+  hasStartDateIndexed: boolean;
+  hasEndDateIndexed: boolean;
 }
 
 let cached: PolicyColumnsPresence | null = null;
@@ -23,7 +26,10 @@ export async function getPolicyColumns(): Promise<PolicyColumnsPresence> {
     select column_name
     from information_schema.columns
     where table_name = 'policies'
-      and column_name in ('client_id', 'agent_id', 'created_by', 'is_active', 'flow_key')
+      and column_name in (
+        'client_id', 'agent_id', 'created_by', 'is_active', 'flow_key',
+        'start_date_indexed', 'end_date_indexed'
+      )
   `);
 
   const rows: Array<{ column_name: string }> = Array.isArray(result)
@@ -37,6 +43,18 @@ export async function getPolicyColumns(): Promise<PolicyColumnsPresence> {
     hasCreatedBy: names.has("created_by"),
     hasIsActive: names.has("is_active"),
     hasFlowKey: names.has("flow_key"),
+    hasStartDateIndexed: names.has("start_date_indexed"),
+    hasEndDateIndexed: names.has("end_date_indexed"),
   };
   return cached;
+}
+
+/**
+ * Invalidate the process-level cache. Call after running a
+ * migration that adds/drops columns within the same process (e.g.
+ * dev hot reload), so the next call re-reads
+ * `information_schema.columns`.
+ */
+export function invalidatePolicyColumnsCache(): void {
+  cached = null;
 }

@@ -15,6 +15,7 @@ import { loadAccountingFields, buildFieldColumnMap, getColumnType } from "@/lib/
 import { findClientByIdentity } from "@/lib/import/client-resolver";
 import { extractDateField } from "@/lib/policies/date-extract";
 import { parseAnyDate } from "@/lib/format/date";
+import { syncPolicyIndexedDates } from "@/lib/policies/indexed-dates";
 
 type FinalPolicyPayload = {
   insured?: any;
@@ -616,8 +617,25 @@ export async function POST(request: Request) {
           }
         }
 
-        return { policy: createdPolicy };
+        // Pass `snapshot` out so we can populate the denormalised
+        // date columns on `policies` AFTER the transaction commits
+        // (see the post-transaction `syncPolicyIndexedDates` call
+        // below). We deliberately do NOT call the helper inside the
+        // transaction: a transient failure on the UPDATE would
+        // abort the transaction and roll back the policy create,
+        // which is much worse than a temporarily-stale calendar.
+        return { policy: createdPolicy, snapshot };
       });
+
+      // ── Calendar read-optimization: populate denormalised
+      //    `policies.start_date_indexed` / `end_date_indexed`
+      //    from the just-saved snapshot.
+      //
+      // Runs OUTSIDE the transaction so it can never roll back the
+      // policy create — the helper internally checks that the
+      // columns exist before issuing the UPDATE, and swallows any
+      // transient error.
+      await syncPolicyIndexedDates(db, result.policy.id, result.snapshot);
 
       // Extract accounting fields and persist to policy_premiums, respecting line config
       try {

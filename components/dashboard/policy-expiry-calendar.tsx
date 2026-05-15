@@ -55,6 +55,10 @@ import {
   SYNTHETIC_FIELDS_BY_SOURCE,
   isHandledByDefault,
 } from "@/lib/pdf/synthetic-fields";
+import {
+  getFormOptionsGroup,
+  getFormOptionsGroups,
+} from "@/lib/form-options-cache";
 import { cn } from "@/lib/utils";
 import type { DocumentStatus } from "@/lib/types/upload-document";
 import type { TaskListPreviewItem } from "@/lib/policies/upload-requirement-build";
@@ -812,80 +816,88 @@ export function PolicyExpiryCalendar({
     Map<string, { path: string; label: string; sortOrder: number }[]>
   >(() => new Map());
 
+  // Load admin-configured packages + their `${pkg}_fields` groups
+  // through the shared form-options cache (`lib/form-options-cache.ts`).
+  //
+  // The cache:
+  //   1. dedupes concurrent callers (other dashboard widgets fetching
+  //      the same groups don't trigger duplicate HTTP calls);
+  //   2. keeps entries for 30s so navigating away and back doesn't
+  //      re-pay the round trip;
+  //   3. coalesces the N+1 pattern below (1 packages fetch followed
+  //      by one fetch per package) into background work — the
+  //      packages fetch resolves first, then the per-package fetches
+  //      kick off in parallel, all sharing the cache.
+  //
+  // We intentionally don't gate on `loading` here — the picker can
+  // still hydrate after the calendar paints; the only visible
+  // consequence is "Loading admin-configured fields…" inside the
+  // settings dropdown, which most users never open during the
+  // initial render anyway.
   React.useEffect(() => {
     let cancelled = false;
-    const ts = Date.now();
-    fetch(`/api/form-options?groupKey=packages&_t=${ts}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : []))
-      .catch(() => [])
-      .then(async (pkgRows: Array<{ value?: string; label?: string; sortOrder?: number }>) => {
-        if (cancelled) return;
-        const pLabels: Record<string, string> = { insured: "Insured" };
-        const pOrder: string[] = [];
-        const pkgList: string[] = ["insured"];
-        if (Array.isArray(pkgRows)) {
-          // Sort packages by their admin sortOrder for a stable order
-          // in the field picker.
-          const sorted = [...pkgRows].sort((a, b) => {
-            const aSo = Number(a?.sortOrder); const bSo = Number(b?.sortOrder);
-            return (Number.isFinite(aSo) ? aSo : 0) - (Number.isFinite(bSo) ? bSo : 0);
+    (async () => {
+      const pkgRows = await getFormOptionsGroup("packages");
+      if (cancelled) return;
+      const pLabels: Record<string, string> = { insured: "Insured" };
+      const pOrder: string[] = [];
+      const pkgList: string[] = ["insured"];
+      if (Array.isArray(pkgRows)) {
+        const sorted = [...pkgRows].sort((a, b) => {
+          const aSo = Number(a?.sortOrder); const bSo = Number(b?.sortOrder);
+          return (Number.isFinite(aSo) ? aSo : 0) - (Number.isFinite(bSo) ? bSo : 0);
+        });
+        for (const row of sorted) {
+          const key = String(row?.value ?? "").trim();
+          const lbl = String(row?.label ?? "").trim();
+          if (!key) continue;
+          if (lbl) pLabels[key] = lbl;
+          if (!pkgList.includes(key)) pkgList.push(key);
+        }
+      }
+      pOrder.push(...pkgList);
+
+      // Apply package metadata immediately so the picker can begin
+      // showing groups before the per-package field labels arrive.
+      setPackageLabels(pLabels);
+      setPackageOrder(pOrder);
+
+      const fieldGroups = await getFormOptionsGroups(pkgList.map((pkg) => `${pkg}_fields`));
+      if (cancelled) return;
+
+      const fLabels: Record<string, string> = {};
+      const catalog = new Map<string, { path: string; label: string; sortOrder: number }[]>();
+      for (const pkg of pkgList) {
+        const fRows = fieldGroups.get(`${pkg}_fields`) ?? [];
+        if (!Array.isArray(fRows)) continue;
+        const pkgEntries: { path: string; label: string; sortOrder: number }[] = [];
+        for (const row of fRows) {
+          const key = String(row?.value ?? "").trim();
+          const lbl = String(row?.label ?? "").trim();
+          if (!key || !lbl) continue;
+          // Register every key variant the API might emit so the
+          // path produced by the API (`<pkg>.<rawKey>`) resolves to
+          // the admin label regardless of whether the snapshot key
+          // had a `pkg__` / `pkg_` prefix.
+          const variants = [`${pkg}.${key}`, `${pkg}.${pkg}__${key}`, `${pkg}.${pkg}_${key}`];
+          const so = Number(row?.sortOrder);
+          const order = Number.isFinite(so) ? so : 0;
+          for (const v of variants) {
+            fLabels[v] = lbl;
+          }
+          pkgEntries.push({ path: `${pkg}.${key}`, label: lbl, sortOrder: order });
+        }
+        if (pkgEntries.length > 0) {
+          pkgEntries.sort((a, b) => {
+            if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+            return a.label.localeCompare(b.label);
           });
-          for (const row of sorted) {
-            const key = String(row?.value ?? "").trim();
-            const lbl = String(row?.label ?? "").trim();
-            if (!key) continue;
-            if (lbl) pLabels[key] = lbl;
-            if (!pkgList.includes(key)) pkgList.push(key);
-          }
+          catalog.set(pkg, pkgEntries);
         }
-        pOrder.push(...pkgList);
-        // Fetch each package's `${pkg}_fields` group in parallel.
-        const fieldResults = await Promise.all(
-          pkgList.map((pkg) =>
-            fetch(`/api/form-options?groupKey=${encodeURIComponent(`${pkg}_fields`)}&_t=${ts}`, { cache: "no-store" })
-              .then((r) => (r.ok ? r.json() : []))
-              .catch(() => [])
-              .then((fRows: Array<{ value?: string; label?: string; sortOrder?: number }>) => ({ pkg, fRows }))
-          )
-        );
-        if (cancelled) return;
-        const fLabels: Record<string, string> = {};
-        const catalog = new Map<string, { path: string; label: string; sortOrder: number }[]>();
-        for (const { pkg, fRows } of fieldResults) {
-          if (!Array.isArray(fRows)) continue;
-          const pkgEntries: { path: string; label: string; sortOrder: number }[] = [];
-          for (const row of fRows) {
-            const key = String(row?.value ?? "").trim();
-            const lbl = String(row?.label ?? "").trim();
-            if (!key || !lbl) continue;
-            // Register every key variant the API might emit so the
-            // path produced by the API (`<pkg>.<rawKey>`) resolves to
-            // the admin label regardless of whether the snapshot key
-            // had a `pkg__` / `pkg_` prefix.
-            const variants = [`${pkg}.${key}`, `${pkg}.${pkg}__${key}`, `${pkg}.${pkg}_${key}`];
-            const so = Number(row?.sortOrder);
-            const order = Number.isFinite(so) ? so : 0;
-            for (const v of variants) {
-              fLabels[v] = lbl;
-            }
-            // Catalog uses the canonical "bare" path; the picker
-            // displays this and the API will accept any registered
-            // variant when extracting the value at render time.
-            pkgEntries.push({ path: `${pkg}.${key}`, label: lbl, sortOrder: order });
-          }
-          if (pkgEntries.length > 0) {
-            pkgEntries.sort((a, b) => {
-              if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
-              return a.label.localeCompare(b.label);
-            });
-            catalog.set(pkg, pkgEntries);
-          }
-        }
-        setPackageLabels(pLabels);
-        setPackageOrder(pOrder);
-        setFieldLabels(fLabels);
-        setAdminFieldCatalog(catalog);
-      });
+      }
+      setFieldLabels(fLabels);
+      setAdminFieldCatalog(catalog);
+    })();
     return () => { cancelled = true; };
   }, []);
 
@@ -1208,9 +1220,27 @@ export function PolicyExpiryCalendar({
   /** Per-policy rows in the aggregate list — default collapsed (`false`/unset). */
   const [expandedAggregatePolicyIds, setExpandedAggregatePolicyIds] = React.useState<Record<number, boolean>>({});
 
+  // Bulk-task-list-open is a SECOND server round-trip that runs ~7
+  // DB queries internally and can't start until `/api/policies/expiring`
+  // returns the policy IDs. It populates the "Open Tasks" panel —
+  // which is non-essential for the first paint of the calendar.
+  //
+  // Two optimisations apply here:
+  //   1. Only fetch when the Open Tasks panel is OPEN. The user can
+  //      collapse it, in which case we save the round trip entirely.
+  //   2. Defer the fetch with `requestIdleCallback` (falling back to
+  //      a short setTimeout) so the calendar paints first and we
+  //      don't compete with the main `/api/policies/expiring`
+  //      response for Neon's serverless DB connections.
   React.useEffect(() => {
     if (!aggregatePolicyFetchKey) {
       setAggregateOpenTasksByPolicyId({});
+      setAggregateTasksLoading(false);
+      return;
+    }
+    if (!aggregatePanelOpen) {
+      // Panel is collapsed — no point fetching. Existing data
+      // (if any) stays cached in state so re-expanding feels instant.
       setAggregateTasksLoading(false);
       return;
     }
@@ -1226,30 +1256,60 @@ export function PolicyExpiryCalendar({
 
     const ac = new AbortController();
     setAggregateTasksLoading(true);
-    fetch(`/api/policies/bulk-task-list-open?ids=${ids.join(",")}`, {
-      signal: ac.signal,
-      cache: "no-store",
-    })
-      .then((r) => (r.ok ? r.json() : { results: {} }))
-      .then((j: { results?: Record<string, TaskListPreviewItem[]> }) => {
-        if (ac.signal.aborted) return;
-        const raw = j.results ?? {};
-        const map: Record<number, TaskListPreviewItem[]> = {};
-        for (const [key, items] of Object.entries(raw)) {
-          const pid = Number(key);
-          if (pid > 0) map[pid] = items;
-        }
-        setAggregateOpenTasksByPolicyId(map);
+
+    const runFetch = () => {
+      if (ac.signal.aborted) return;
+      fetch(`/api/policies/bulk-task-list-open?ids=${ids.join(",")}`, {
+        signal: ac.signal,
+        cache: "no-store",
       })
-      .catch(() => {
-        if (ac.signal.aborted) return;
-        setAggregateOpenTasksByPolicyId({});
-      })
-      .finally(() => {
-        if (!ac.signal.aborted) setAggregateTasksLoading(false);
-      });
-    return () => ac.abort();
-  }, [aggregatePolicyFetchKey]);
+        .then((r) => (r.ok ? r.json() : { results: {} }))
+        .then((j: { results?: Record<string, TaskListPreviewItem[]> }) => {
+          if (ac.signal.aborted) return;
+          const raw = j.results ?? {};
+          const map: Record<number, TaskListPreviewItem[]> = {};
+          for (const [key, items] of Object.entries(raw)) {
+            const pid = Number(key);
+            if (pid > 0) map[pid] = items;
+          }
+          setAggregateOpenTasksByPolicyId(map);
+        })
+        .catch(() => {
+          if (ac.signal.aborted) return;
+          setAggregateOpenTasksByPolicyId({});
+        })
+        .finally(() => {
+          if (!ac.signal.aborted) setAggregateTasksLoading(false);
+        });
+    };
+
+    // Defer until the browser is idle so the main calendar paints
+    // first. `requestIdleCallback` is undefined in Safari ≤17 and on
+    // the SSR pass; the `setTimeout` fallback keeps the deadline
+    // bounded (~80ms) so users on those browsers still see the data
+    // quickly.
+    const ric =
+      typeof window !== "undefined" && "requestIdleCallback" in window
+        ? (window as Window & {
+            requestIdleCallback: (cb: () => void, opts?: { timeout?: number }) => number;
+            cancelIdleCallback: (id: number) => void;
+          })
+        : null;
+
+    let idleHandle: number | null = null;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    if (ric) {
+      idleHandle = ric.requestIdleCallback(runFetch, { timeout: 250 });
+    } else {
+      timeoutHandle = setTimeout(runFetch, 80);
+    }
+
+    return () => {
+      ac.abort();
+      if (idleHandle != null && ric) ric.cancelIdleCallback(idleHandle);
+      if (timeoutHandle != null) clearTimeout(timeoutHandle);
+    };
+  }, [aggregatePolicyFetchKey, aggregatePanelOpen]);
 
   React.useEffect(() => {
     setExpandedAggregatePolicyIds({});
