@@ -10,6 +10,7 @@ import { sendEmail, getBaseUrlFromRequestUrl } from "@/lib/email";
 import { generateNextUserNumber } from "@/lib/user-number";
 import { getInsuredDisplayName, getInsuredType, getInsuredPrimaryId, getContactField } from "@/lib/field-resolver";
 import { generatePlaceholderEmail } from "@/lib/auth/placeholder-email";
+import { coerceLocale } from "@/lib/i18n/types";
 
 /**
  * Creates a clients table entry from a clientSet flow record (cars row).
@@ -77,6 +78,8 @@ type PostBody = {
   };
   /** Primary ID (HKID etc.) for non-agent, non-direct-client users. Stored in profileMeta. */
   userPrimaryId?: string;
+  /** UI language seeded into `profile_meta.locale` until the user changes it in the switcher. */
+  defaultLocale?: string;
 };
 
 export async function POST(request: Request) {
@@ -144,7 +147,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Direct client accounts must be created via invite flow." }, { status: 400 });
     }
     const userPrimaryId = typeof body.userPrimaryId === "string" ? body.userPrimaryId.trim() : "";
-    const profileMeta: Record<string, unknown> | null =
+    const localeSeed =
+      typeof body.defaultLocale === "string" && body.defaultLocale.trim()
+        ? coerceLocale(body.defaultLocale.trim())
+        : null;
+
+    let profileMeta: Record<string, unknown> | null =
       body.userType === "agent"
         ? {
             accountType,
@@ -154,6 +162,10 @@ export async function POST(request: Request) {
         : userPrimaryId
           ? { primaryId: userPrimaryId }
           : null;
+
+    if (localeSeed) {
+      profileMeta = { ...(profileMeta ?? {}), locale: localeSeed };
+    }
 
     // Create a random strong passphrase hash so the account can't be used
     const tempPassword = crypto.randomBytes(32).toString("hex");

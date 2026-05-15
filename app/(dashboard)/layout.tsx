@@ -15,6 +15,7 @@ import { OnlineUsersWidget } from "@/components/presence/online-users-widget";
 import { DocumentDeliveryProvider } from "@/lib/document-delivery";
 import { DocumentDeliveryHost } from "@/components/document-delivery/DocumentDeliveryHost";
 import { IdleTimeoutHost } from "@/components/idle-timeout/IdleTimeoutHost";
+import { AnnouncementHost } from "@/components/announcements/AnnouncementHost";
 import { Suspense } from "react";
 import { tStatic } from "@/lib/i18n";
 import { getLocale } from "@/lib/i18n/server";
@@ -115,6 +116,7 @@ export default async function DashboardGroupLayout({
               Settings (see lib/idle-timeout/policy.ts).
             */}
             <IdleTimeoutHost />
+            <AnnouncementHost />
           </DocumentDeliveryProvider>
         </PresenceProvider>
       </SidebarInset>

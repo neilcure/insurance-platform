@@ -11,6 +11,7 @@ import { Copy, Loader2, Search, UserPlus, X } from "lucide-react";
 import type { UserType } from "@/lib/user-types";
 import { useUserTypes } from "@/hooks/use-user-types";
 import { useRouter } from "next/navigation";
+import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type Locale, useT } from "@/lib/i18n";
 
 type CreationMode = "invite" | "account_only";
 type AgentAccountType = "personal" | "company";
@@ -26,6 +27,7 @@ type UnlinkedClient = {
 
 export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[] }) {
   const router = useRouter();
+  const t = useT();
   const { options: configuredTypes, getLabel: getUserTypeLabel } = useUserTypes();
   const safeTypes = React.useMemo<UserType[]>(() => {
     const fromConfig = configuredTypes.map((t) => t.value as UserType);
@@ -49,6 +51,7 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
   const [lastName, setLastName] = React.useState("");
   const [firstName, setFirstName] = React.useState("");
   const [primaryId, setPrimaryId] = React.useState("");
+  const [defaultLocale, setDefaultLocale] = React.useState<Locale>(DEFAULT_LOCALE);
 
   // Client linking state
   const [unlinkedClients, setUnlinkedClients] = React.useState<UnlinkedClient[]>([]);
@@ -151,6 +154,7 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
           payload.clientId = selectedClientId;
         }
       }
+      payload.defaultLocale = defaultLocale;
       const res = await fetch("/api/admin/users", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -181,6 +185,7 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
       setPrimaryId("");
       setSelectedClientId(null);
       setUserType(safeTypes[0]!);
+      setDefaultLocale(DEFAULT_LOCALE);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to create invite";
       toast.error(message);
@@ -347,6 +352,27 @@ export default function InviteForm({ allowedTypes }: { allowedTypes?: UserType[]
             </RadioGroup>
           </div>
         )}
+
+        <div className="grid gap-2">
+          <Label>{t("admin.inviteForm.defaultUiLanguage", "Default UI language")}</Label>
+          <select
+            value={defaultLocale}
+            onChange={(e) => setDefaultLocale(e.target.value as Locale)}
+            className="flex h-9 w-full rounded-md border border-neutral-200 bg-white px-3 py-1 text-sm shadow-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          >
+            {SUPPORTED_LOCALES.map((loc) => (
+              <option key={loc} value={loc}>
+                {loc === "en" ? t("locale.en", "English") : t("locale.zh-HK", "繁體中文")}
+              </option>
+            ))}
+          </select>
+          <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+            {t(
+              "admin.inviteForm.defaultUiLanguageHint",
+              "Used until the user picks a different language in the header switcher.",
+            )}
+          </p>
+        </div>
 
         {isClientType && (
           <div className="grid gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-800/50">

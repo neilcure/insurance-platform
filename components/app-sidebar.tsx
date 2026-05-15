@@ -29,6 +29,7 @@ import {
   Bug,
   Activity,
   Globe,
+  Megaphone,
   type LucideIcon,
 } from "lucide-react";
 import { getIcon } from "@/lib/icons";
@@ -154,6 +155,7 @@ export function AppSidebar(
   };
   const t = useT();
   const isClientUser = userType === "direct_client";
+  const canManageAnnouncements = isAdmin || userType === "internal_staff";
   const userKey = React.useMemo(() => (user?.email || user?.name || "anon") as string, [user?.email, user?.name]);
   const [flows, setFlows] = React.useState<SidebarFlow[]>(() => flowsCache ?? []);
   const [packages, setPackages] = React.useState<SidebarPackage[]>(
@@ -520,6 +522,15 @@ export function AppSidebar(
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
+                    {canManageAnnouncements ? (
+                      <SidebarMenuItem>
+                        <SidebarMenuButton tooltip={t("sidebar.announcements", "Announcements")} asChild>
+                          <Link href="/admin/announcements">
+                            <Megaphone className="h-3.5 w-3.5 shrink-0" />
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    ) : null}
                     {isAdmin && (
                       <SidebarMenuItem>
                         <SidebarMenuButton tooltip={t("sidebar.systemDiagnostics", "System Diagnostics")} asChild>
@@ -696,6 +707,16 @@ export function AppSidebar(
                               </Link>
                             </SidebarMenuButton>
                           </li>
+                          {canManageAnnouncements ? (
+                            <li>
+                              <SidebarMenuButton tooltip={t("sidebar.announcements", "Announcements")} asChild>
+                                <Link href="/admin/announcements">
+                                  <Megaphone className="h-4 w-4 shrink-0" />
+                                  <span>{t("sidebar.announcements", "Announcements")}</span>
+                                </Link>
+                              </SidebarMenuButton>
+                            </li>
+                          ) : null}
                           {isAdmin && (
                             <li>
                               <SidebarMenuButton tooltip={t("sidebar.systemDiagnostics", "System Diagnostics")} asChild>

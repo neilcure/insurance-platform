@@ -621,6 +621,13 @@ export function PolicyExpiryCalendar({
   // every time the panel opens so a previous Cancel doesn't leak.
   const [draftSettings, setDraftSettings] = React.useState<CalendarSettings>(settings);
   const [settingsOpen, setSettingsOpen] = React.useState<boolean>(false);
+  // Client-only mount flag — keeps Radix's internal `useId` (used by
+  // <DropdownMenu>) from emitting a server-rendered id that ends up
+  // different from the client one and produces a hydration warning.
+  // The trigger button is rendered as a static placeholder during SSR
+  // and only swapped to the real Radix tree after mount.
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => { setMounted(true); }, []);
 
   const openSettings = React.useCallback(() => {
     setDraftSettings(settings);
@@ -1404,6 +1411,17 @@ export function PolicyExpiryCalendar({
             and now my list is gone but I never confirmed" feeling
             users get when changes auto-apply.
           */}
+          {!mounted ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              title={t("calendar.toolbar.calendarSettings", "Calendar settings")}
+              disabled
+              aria-hidden
+            >
+              <Settings2 className="h-4 w-4" />
+            </Button>
+          ) : (
           <DropdownMenu
             open={settingsOpen}
             onOpenChange={(o) => { if (o) openSettings(); else cancelSettings(); }}
@@ -1578,6 +1596,7 @@ export function PolicyExpiryCalendar({
               </div>
             </DropdownMenuContent>
           </DropdownMenu>
+          )}
         </div>
       </CardHeader>
 

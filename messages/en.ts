@@ -74,6 +74,7 @@ export type Messages = {
     categoryHint: string;
     /** "{label} — Fields" — placeholder for the package's name. */
     fieldsHint: string;
+    announcements: string;
   };
   common: {
     save: string;
@@ -97,6 +98,27 @@ export type Messages = {
     required: string;
     /** Fallback display label when neither name nor email is available. */
     fallbackUserName: string;
+    /** Shared <UserPicker> used by announcements, share targets, etc. */
+    userPicker: {
+      searchPlaceholder: string;
+      help: string;
+      selectedCount: string;
+      shownCount: string;
+      noLoginCount: string;
+      empty: string;
+      loading: string;
+      clearSelection: string;
+      missingTitle: string;
+      removeOne: string;
+      removeOneClient: string;
+      filterAllTypes: string;
+      filterTypeLabel: string;
+      bucketPersonalClient: string;
+      bucketCompanyClient: string;
+      statusNoEmail: string;
+      statusNoLogin: string;
+      clientHint: string;
+    };
   };
   auth: {
     signInTitle: string;
@@ -267,6 +289,53 @@ export type Messages = {
       subtitle: string;
       description: string;
     };
+    inviteForm: {
+      defaultUiLanguage: string;
+      defaultUiLanguageHint: string;
+    };
+    announcements: {
+      title: string;
+      subtitle: string;
+      columnTitle: string;
+      columnSchedule: string;
+      columnActive: string;
+      columnActions: string;
+      newButton: string;
+      editButton: string;
+      deleteButton: string;
+      saveButton: string;
+      cancelButton: string;
+      titleLabel: string;
+      bodyLabel: string;
+      bodyHelp: string;
+      linkUrlLabel: string;
+      linkUrlPlaceholder: string;
+      startsLabel: string;
+      endsLabel: string;
+      autoCloseLabel: string;
+      autoCloseHint: string;
+      autoClosePlaceholder: string;
+      priorityLabel: string;
+      activeLabel: string;
+      targetingLabel: string;
+      targetingAll: string;
+      targetingTypes: string;
+      targetingUsers: string;
+      userPickerHelp: string;
+      uploadMedia: string;
+      clearMedia: string;
+      mediaPreviewUploaded: string;
+      listEmpty: string;
+      confirmDeleteTitle: string;
+      confirmDeleteDescription: string;
+      toastSaved: string;
+      toastDeleted: string;
+      toastError: string;
+    };
+  };
+  announcementsViewer: {
+    openLink: string;
+    autoCloseNotice: string;
   };
   locale: {
     label: string;
@@ -322,6 +391,7 @@ const messages: Messages = {
     switchTeam: "Switch team",
     categoryHint: "{label} — Category",
     fieldsHint: "{label} — Fields",
+    announcements: "Announcements",
   },
 
   common: {
@@ -344,6 +414,28 @@ const messages: Messages = {
     optional: "Optional",
     required: "Required",
     fallbackUserName: "User",
+    userPicker: {
+      searchPlaceholder: "Search by name, email, or user number…",
+      help: "Tick the users you want to include.",
+      selectedCount: "{count} selected",
+      shownCount: "Showing {shown} of {total}",
+      noLoginCount: "{count} without login",
+      empty: "No matching users.",
+      loading: "Loading users…",
+      clearSelection: "Clear selection",
+      missingTitle:
+        "Some selected users are not shown below (left the organisation or beyond the list limit). They stay selected until you remove them or save.",
+      removeOne: "Remove user {id}",
+      removeOneClient: "Remove client {id}",
+      filterAllTypes: "All types",
+      filterTypeLabel: "Filter by user type",
+      bucketPersonalClient: "Client (no login)",
+      bucketCompanyClient: "Company client (no login)",
+      statusNoEmail: "No email yet",
+      statusNoLogin: "Pending login",
+      clientHint:
+        "This client doesn't have a login yet. The pop-up will appear automatically once they're invited as a user.",
+    },
   },
 
   auth: {
@@ -503,6 +595,56 @@ const messages: Messages = {
       description:
         "Invite users, change roles, activate/deactivate or delete accounts.",
     },
+    inviteForm: {
+      defaultUiLanguage: "Default UI language",
+      defaultUiLanguageHint:
+        "Used until the user picks a different language in the header switcher.",
+    },
+    announcements: {
+      title: "Announcements",
+      subtitle: "Dashboard pop-ups for your organisation — audience, schedule, and optional poster or PDF.",
+      columnTitle: "Title",
+      columnSchedule: "Schedule",
+      columnActive: "Active",
+      columnActions: "Actions",
+      newButton: "New announcement",
+      editButton: "Edit",
+      deleteButton: "Delete",
+      saveButton: "Save",
+      cancelButton: "Cancel",
+      titleLabel: "Title",
+      bodyLabel: "Message (HTML)",
+      bodyHelp: "Basic HTML is allowed (paragraphs, bold, lists, links). Scripts are stripped.",
+      linkUrlLabel: "Optional link URL",
+      linkUrlPlaceholder: "https://...",
+      startsLabel: "Starts",
+      endsLabel: "Ends",
+      autoCloseLabel: "Auto-close after (seconds)",
+      autoCloseHint: "Leave empty to close only when the user clicks Close.",
+      autoClosePlaceholder: "e.g. 15",
+      priorityLabel: "Priority (higher shows first)",
+      activeLabel: "Active",
+      targetingLabel: "Audience",
+      targetingAll: "Everyone in this organisation",
+      targetingTypes: "Selected user types",
+      targetingUsers: "Specific users",
+      userPickerHelp:
+        "Tick the people who should see this pop-up. Clients without a login can be picked too — the announcement will appear automatically once they're invited as users.",
+      uploadMedia: "Upload image or PDF",
+      clearMedia: "Remove media",
+      mediaPreviewUploaded: "Media uploaded — will show in the pop-up.",
+      listEmpty: "No announcements yet.",
+      confirmDeleteTitle: "Delete this announcement?",
+      confirmDeleteDescription: "Users who already dismissed it will not see it again; this removes it for everyone going forward.",
+      toastSaved: "Announcement saved",
+      toastDeleted: "Announcement deleted",
+      toastError: "Something went wrong",
+    },
+  },
+
+  announcementsViewer: {
+    openLink: "Open link",
+    autoCloseNotice: "This message will close automatically.",
   },
 
   locale: {
