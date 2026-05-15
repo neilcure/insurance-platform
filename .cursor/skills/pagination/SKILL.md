@@ -59,6 +59,22 @@ Every consumer that calls a paginated route (e.g. `/api/policies?flow=...`) was 
 
 Client-side query / sort still happens locally on the rows for the current page only. This means typing in the search box filters only the visible 50 rows. To fully fix, push search and sort to `/api/policies` and reset `page` to 0 when they change. Tracked for a follow-up.
 
+### Fetch-all + client-paginate mode (May 2026)
+
+`<PoliciesTableClient>` was migrated AWAY from naive server-paginated mode after repeated "sort is wrong across pages" bug reports. The problem: the table exposes ~20 different sort columns (built-in + admin-configured package fields) — server-side sort would require complex per-column JSONB SQL for each. Server-paginating + client-sorting ONLY the current page produced wrong order across pages.
+
+Resolution: **fetch the full result set in one shot (`initialPageSize: FETCH_ALL_LIMIT = 500`), then sort + filter + slice on the client.** Display pagination is local state with its own localStorage key (`policies:<scope>:displaySize`) so "X per page" still persists.
+
+When to use this pattern instead of standard server-paginated mode:
+
+| Use server pagination when… | Use fetch-all + client paginate when… |
+|---|----|
+| Dataset can realistically exceed 500 rows | Dataset bounded by tenant size (typically <500) |
+| You only sort by 1–3 indexed columns | User picks from many sort columns including derived / JSONB ones |
+| Sort columns can be cleanly mapped to SQL `ORDER BY` | Sort columns include computed fields (e.g. `displayName` derived from `insuredSnapshot`) |
+
+The flag is just `initialPageSize: 500` + ignoring the hook's `setPage`/`setPageSize` in favor of local display state. Don't fork `usePagination`.
+
 ## When to use
 
 Any one of:
@@ -312,6 +328,66 @@ If you keep client-side filter, pagination becomes meaningless: page 2 might hav
 
 Same problem. Sorting only the current page produces "wrong order across pages". Always sort server-side via `?sortKey=...&sortDir=...` and reset to page 0 on sort change.
 
+### 3a. String sort on date-formatted values
+
+The codebase stores snapshot dates as STRINGS in two formats:
+- `"YYYY-MM-DD"` (HTML5 date input — `"2026-06-03"`)
+- `"DD-MM-YYYY"` (formula / import — `"22-03-2026"`)
+
+Lexicographic string compare on these is NOT chronological:
+
+```
+"02-06-2026" < "22-03-2026"   // because '0' < '2'
+```
+
+So "22-03-2026" (the earliest) sorts AFTER "02-06-2026" — wrong. Any client-side sort over package-field date columns MUST parse via `parseAnyDate(s)` from `@/lib/format/date` first and compare timestamps. Pattern (see `PoliciesTableClient.tsx getSortValue`):
+
+```ts
+if (/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{4}$/.test(s) ||
+    /^\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}/.test(s)) {
+  const parsed = parseAnyDate(s);
+  if (parsed) return parsed.getTime();   // sort branch will compare numerically
+}
+return s;
+```
+
+Server-side sort on `policies.start_date_indexed` / `end_date_indexed` columns already avoids this (they're `date` columns, not strings) — but only those two date fields are indexed. Every other date field lives in JSONB as a string and goes through client sort.
+
+### 3b. Sort by derived / computed field — must match the cell renderer
+
+Some columns are NOT in the API response and are derived client-side (e.g. `displayName` is computed from `insuredSnapshot` via `getDisplayNameFromSnapshot`). The cell renderer typically has a fallback:
+
+```ts
+const name = row.displayName || extractNameFromExtra(row.carExtra);
+```
+
+The sort function MUST use the SAME fallback — otherwise API-fetched rows return `""` from `row.displayName ?? ""` and clump together at one end of the sort, while SSR rows (which have the field pre-computed) sort correctly. Symptom: "this row is always at the bottom no matter which direction I sort".
+
+```ts
+// ✅ GOOD — same source of truth as the cell renderer
+if (path === "_builtin.displayName") {
+  return (row.displayName || extractNameFromExtra(row.carExtra) || "").toLowerCase();
+}
+
+// ❌ BAD — only works for SSR-seeded rows
+if (path === "_builtin.displayName") return row.displayName ?? "";
+```
+
+### 3c. Indexed-column sort must `NULLS LAST`
+
+When the server sorts on a denormalised column (e.g. `policies.start_date_indexed` populated by `lib/policies/indexed-dates.ts`), legacy rows or any row created via a code path that skipped the sync helper will have `NULL`. Postgres puts `NULL` at unpredictable positions:
+
+- `ORDER BY x ASC`  → NULLs at the END
+- `ORDER BY x DESC` → NULLs at the FRONT
+
+Without `NULLS LAST`, those rows look "stuck at the top" under DESC. Always pin them to the end:
+
+```ts
+sql`order by p.start_date_indexed ${dirSql} nulls last, p.id desc`
+```
+
+Also keep `scripts/backfill-policy-indexed-dates.ts` (and equivalents) up to date — re-run with `--apply` after any migration that adds a new denormalised column.
+
 ### 4. Off-by-one when filters narrow the set
 
 User on page 5, applies a filter that reduces total from 200 to 30. Without bounds-checking they see an empty page 5. The hook MUST clamp `page` to `Math.max(0, Math.ceil(total / size) - 1)` whenever `total` updates.
@@ -340,6 +416,27 @@ When the server pre-renders page 0, do NOT refetch on mount. Refetch only when `
 ### 9. "Show all" toggles
 
 Tempting but dangerous. A user clicking "Show all" on a 5,000-row table will lock the page. If the dataset is bounded (<200) skip pagination entirely; if unbounded, never offer "Show all".
+
+### 9a. Deep-link drawer params must be stripped on close
+
+`<PoliciesTableClient>` (and any equivalent that opens a `<RecordDetailsDrawer>` via URL params like `?open=416` / `?policyId=416` / `?openSection=...` / `?docTemplate=...`) reads those params on mount and auto-opens the drawer. If the user closes the drawer but the params stay in the URL, **refreshing the page reopens the same drawer immediately** — looks like the page is "stuck" on a detail view.
+
+Always strip the deep-link params from the URL in the close handler via `history.replaceState` (no history entry, no remount):
+
+```ts
+function closeDrawer() {
+  setDrawerOpen(false);
+  setTimeout(() => setOpenId(null), 250);
+  try {
+    const url = new URL(window.location.href);
+    let mutated = false;
+    for (const key of ["open", "policyId", "id", "openSection", "openTab", "docTemplate", "docAudience"]) {
+      if (url.searchParams.has(key)) { url.searchParams.delete(key); mutated = true; }
+    }
+    if (mutated) window.history.replaceState(window.history.state, "", url.toString());
+  } catch {}
+}
+```
 
 ### 10. SSR pages with `serverFetch`
 

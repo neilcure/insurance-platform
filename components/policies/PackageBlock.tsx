@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import { maskDDMMYYYY, parseAnyDate } from "@/lib/format/date";
 import { Field } from "@/components/ui/form-field";
-import { resolveFieldValue, evaluateFormula } from "@/lib/formula";
+import { resolveFieldValue, evaluateFormula, expandRedundantPackageFieldRef } from "@/lib/formula";
 import type { SelectOption, RepeatableFieldConfig, RepeatableConfig } from "@/lib/types/form";
 import { EntityPickerDrawer, type EntityPickerSelection } from "@/components/policies/EntityPickerDrawer";
 import { AgentPickerDrawer, type AgentPickerSelection } from "@/components/policies/AgentPickerDrawer";
@@ -22,6 +22,45 @@ import { isPremiumPkg } from "@/lib/premium-options";
 import { filterFieldsByUserType, mapFormOptionRowToAccountingFieldDef } from "@/lib/accounting-fields-shared";
 import { dedupeBadgeFromMeta } from "@/components/ui/dedupe-field-badge";
 import { tDynamic, useLocale } from "@/lib/i18n";
+import { getFormOptionsGroup, type FormOptionRow } from "@/lib/form-options-cache";
+
+/**
+ * `form_options` row `value` is usually the short tail (e.g. `occupation`) while
+ * admins write `{insured_insuredOccupation}`. Align with `expandRedundantPackageFieldRef`.
+ */
+function formOptionRowKeyCandidates(sourcePackage: string, tailFieldKey: string): string[] {
+  const keys: string[] = [];
+  const push = (k: string) => {
+    const t = String(k ?? "").trim();
+    if (!t || keys.some((e) => e.toLowerCase() === t.toLowerCase())) return;
+    keys.push(t);
+  };
+  push(tailFieldKey);
+  for (const seed of [`${sourcePackage}_${tailFieldKey}`, `${sourcePackage}__${tailFieldKey}`]) {
+    for (const expanded of expandRedundantPackageFieldRef(seed)) {
+      const mm = /^([a-zA-Z][a-zA-Z0-9]*)(?:__|_)(.+)$/.exec(expanded);
+      if (mm?.[2]) push(mm[2]);
+    }
+  }
+  return keys;
+}
+
+function findFormOptionFieldRow(rows: FormOptionRow[], keyCandidates: string[]): FormOptionRow | undefined {
+  const lowers = keyCandidates.map((k) => k.toLowerCase());
+  return rows.find((r) => lowers.includes(String(r.value ?? "").trim().toLowerCase()));
+}
+
+function optionLabelForStoredValue(
+  opts: { value?: string; label?: string }[],
+  stored: string,
+): string {
+  if (!stored) return "";
+  const low = stored.toLowerCase();
+  const hit =
+    opts.find((o) => o.value === stored) ??
+    opts.find((o) => String(o.value ?? "").toLowerCase() === low);
+  return hit?.label != null && String(hit.label).trim() !== "" ? String(hit.label) : stored;
+}
 
 type EntityPickerFieldMapping = {
   sourceField: string;
@@ -60,13 +99,6 @@ function applyLabelCase(text: string, mode?: "original" | "upper" | "lower" | "t
   return text;
 }
 
-function evaluateRowFormula(
-  formula: string,
-  rowValues: Record<string, unknown>,
-): string {
-  return evaluateFormula(formula, rowValues);
-}
-
 /**
  * Renders a formula cell inside a repeatable row AND persists the computed
  * value back into RHF state at `${childName}` so it ends up in the policy
@@ -76,9 +108,14 @@ function evaluateRowFormula(
  * `${parent}__r${N}__${cfKey}` resolve to "" because the resolver only does
  * snapshot lookups (it does NOT re-evaluate formulas at PDF render time).
  *
- * Mirrors the "non-clobbering" contract of the top-level FormulaField:
- * only writes when computed is non-empty AND has changed since the last
- * write — never clears a previously stored value when refs go missing.
+ * Full form values are merged with the row's own values so cross-field
+ * references like `{insured__hkid}` work correctly even inside a repeatable
+ * row. Row values override same-named global keys so row-local fields stay
+ * authoritative.
+ *
+ * Also watches the full form for changes (e.g. insured step updating the ID
+ * number) and re-evaluates on every change — same reactive contract as the
+ * top-level FormulaField.
  */
 function RepeatableFormulaCell({
   form,
@@ -93,25 +130,40 @@ function RepeatableFormulaCell({
   rowVals: Record<string, unknown>;
   label: string;
 }) {
-  const computed = evaluateRowFormula(formula, rowVals);
   const lastWritten = React.useRef<string>("");
 
   React.useEffect(() => {
-    if (!computed) return;
-    if (computed === lastWritten.current) return;
-    const current = String(form.getValues(childName as never) ?? "");
-    if (computed === current) {
-      lastWritten.current = computed;
-      return;
+    function calc() {
+      // Merge full form values with row values; row takes precedence for same-named keys.
+      const allVals = form.getValues() as Record<string, unknown>;
+      return evaluateFormula(formula, { ...allVals, ...rowVals });
     }
-    lastWritten.current = computed;
-    form.setValue(childName as never, computed as never, { shouldDirty: true });
-  }, [form, childName, computed]);
+
+    const initial = calc();
+    if (initial && initial !== lastWritten.current) {
+      lastWritten.current = initial;
+      const current = String(form.getValues(childName as never) ?? "");
+      if (initial !== current) {
+        form.setValue(childName as never, initial as never, { shouldDirty: true });
+      }
+    }
+
+    const sub = form.watch(() => {
+      const next = calc();
+      if (next && next !== lastWritten.current) {
+        lastWritten.current = next;
+        form.setValue(childName as never, next as never, { shouldDirty: true });
+      }
+    });
+    return () => sub.unsubscribe();
+  }, [form, childName, formula, rowVals]);
+
+  const currentVal = String(useWatch({ control: form.control, name: childName as string }) ?? "");
 
   return (
     <div className="space-y-1">
       <Label>{label}</Label>
-      <Input type="text" readOnly value={computed} className="bg-neutral-50 dark:bg-neutral-800 cursor-default" />
+      <Input type="text" readOnly value={currentVal} className="bg-neutral-50 dark:bg-neutral-800 cursor-default" />
     </div>
   );
 }
@@ -645,6 +697,7 @@ function FormulaField({
   required,
   pkg,
   labelExtra,
+  options,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   name: string;
@@ -653,6 +706,12 @@ function FormulaField({
   required?: boolean;
   pkg: string;
   labelExtra?: React.ReactNode;
+  /** When provided, the stored formula value is treated as an option VALUE and
+   *  the matching option LABEL is shown in the input. Useful when a formula
+   *  mirrors a select field that stores short codes (e.g. "T") but should
+   *  display the full label (e.g. "TRANSPORTATION"). The raw value is still
+   *  persisted in the snapshot for downstream resolvers. */
+  options?: { value?: string; label?: string }[];
 }) {
   const lastFormula = React.useRef("");
   const isDateResult = React.useRef(false);
@@ -693,6 +752,78 @@ function FormulaField({
       const formatted = maskDDMMYYYY(t?.target?.value ?? "");
       form.setValue(name as never, formatted as never, { shouldDirty: true });
     };
+  }
+
+  // When options are provided OR the formula is a single-var passthrough like
+  // `{insured_insuredOccupation}`, show the matching option LABEL instead of
+  // the raw stored value (e.g. "TRANSPORTATION" instead of "T").
+  //
+  // The stored RHF value (the option value / code) is preserved for the
+  // snapshot — only the visual display is overridden. Downstream PDF /
+  // template resolvers still see the original code.
+  const storedVal = String(useWatch({ control: form.control, name: name as string }) ?? "");
+
+  // Auto-fetch options from the SOURCE field when the formula is a single-var
+  // mirror and the caller didn't pass `options` directly. This means an admin
+  // can write `{insured_insuredOccupation}` once and the dependent field will
+  // resolve labels automatically — no need to duplicate options.
+  const [autoOptions, setAutoOptions] = React.useState<{ value?: string; label?: string }[]>([]);
+  React.useEffect(() => {
+    if (Array.isArray(options) && options.length > 0) return;
+    const trimmed = (formula ?? "").trim();
+    const m = /^\{([^}]+)\}$/.exec(trimmed);
+    if (!m) {
+      setAutoOptions([]);
+      return;
+    }
+    const refKey = m[1].trim();
+    const km = /^([a-zA-Z][a-zA-Z0-9]*)(?:__|_)(.+)$/.exec(refKey);
+    if (!km) {
+      setAutoOptions([]);
+      return;
+    }
+    const [, srcPkg, srcField] = km;
+    const keyCandidates = formOptionRowKeyCandidates(srcPkg, srcField);
+    let cancelled = false;
+    getFormOptionsGroup(`${srcPkg}_fields`)
+      .then((rows) => {
+        if (cancelled) return;
+        const row = findFormOptionFieldRow(rows, keyCandidates);
+        const rawOpts = (row?.meta as Record<string, unknown> | null | undefined)?.options;
+        if (Array.isArray(rawOpts) && rawOpts.length > 0) {
+          setAutoOptions(rawOpts as { value?: string; label?: string }[]);
+        } else {
+          setAutoOptions([]);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAutoOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [formula, options]);
+
+  const effectiveOptions =
+    Array.isArray(options) && options.length > 0 ? options : autoOptions;
+  const hasOptions = effectiveOptions.length > 0;
+  const displayLabel = hasOptions ? optionLabelForStoredValue(effectiveOptions, storedVal) : null;
+
+  if (hasOptions) {
+    return (
+      <div className="space-y-1">
+        <Label>
+          {label} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+          {labelExtra}
+        </Label>
+        <Input
+          type="text"
+          readOnly
+          value={displayLabel ?? ""}
+          className="bg-neutral-50 dark:bg-neutral-800 cursor-default"
+        />
+      </div>
+    );
   }
 
   return (
@@ -1977,6 +2108,7 @@ export function PackageBlock({
                                               formula={String((child as any)?.formula ?? "")}
                                               label={child?.label ?? "Value"}
                                               pkg={pkg}
+                                              options={(child as any)?.options}
                                             />
                                           );
                                         }
@@ -2189,7 +2321,7 @@ export function PackageBlock({
                                       formula={String((child as any)?.formula ?? "")}
                                       label={child?.label ?? "Value"}
                                       pkg={pkg}
-            
+                                      options={(child as any)?.options}
                                     />
                                   </React.Fragment>
                                 );
@@ -2392,7 +2524,7 @@ export function PackageBlock({
                                       formula={String((child as any)?.formula ?? "")}
                                       label={child?.label ?? "Value"}
                                       pkg={pkg}
-            
+                                      options={(child as any)?.options}
                                     />
                                   </React.Fragment>
                                 );
@@ -2578,6 +2710,7 @@ export function PackageBlock({
                         required={Boolean(meta.required)}
                         pkg={pkg}
                         labelExtra={dedupeBadge}
+                        options={(meta as any)?.options}
                       />
                     );
                   }

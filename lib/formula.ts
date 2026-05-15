@@ -1,6 +1,49 @@
 import { parseAnyDate, fmtDateDDMMYYYY } from "@/lib/format/date";
 
 /**
+ * Admins often write `{insured_insuredOccupation}` while RHF keys are
+ * `insured__occupation` (field `value` in `insured_fields` is `occupation`).
+ * Expands to canonical keys so `resolveFieldValue` and formula UI can find
+ * the same cell as the insured select.
+ */
+export function expandRedundantPackageFieldRef(refKey: string): string[] {
+  const refKeyTrim = String(refKey ?? "").trim();
+  const m = /^([a-zA-Z][a-zA-Z0-9]*)(?:__|_)(.+)$/.exec(refKeyTrim);
+  if (!m) return [];
+  const [, srcPkg, tail] = m;
+  const pl = srcPkg.toLowerCase();
+  const out: string[] = [];
+  const push = (s: string) => {
+    const t = String(s ?? "").trim();
+    if (!t || out.some((e) => e.toLowerCase() === t.toLowerCase())) return;
+    out.push(t);
+  };
+  if (tail.length > pl.length && tail.slice(0, pl.length).toLowerCase() === pl) {
+    const after = tail.slice(srcPkg.length);
+    if (after) {
+      push(`${srcPkg}__${after.charAt(0).toLowerCase() + after.slice(1)}`);
+      push(`${srcPkg}_${after.charAt(0).toLowerCase() + after.slice(1)}`);
+    }
+  }
+  const re = new RegExp(`^${srcPkg}_`, "i");
+  const st = tail.replace(re, "");
+  if (st && st !== tail) {
+    push(`${srcPkg}__${st}`);
+    push(`${srcPkg}_${st}`);
+  }
+  return out;
+}
+
+function sepFlipKeyVariants(k: string): string[] {
+  const m = /^([a-zA-Z][a-zA-Z0-9]*)(__|_)(.+)$/.exec(k);
+  if (!m) return [k];
+  const [, prefix, sep, rest] = m;
+  const altSep = sep === "__" ? "_" : "__";
+  const alt = `${prefix}${altSep}${rest}`;
+  return k === alt ? [k] : [k, alt];
+}
+
+/**
  * Resolve a field reference key to its current string value from form data.
  * When `pkg` is provided, tries `pkg__key` first (package-scoped lookup),
  * then falls back to direct key and fuzzy suffix matching.
@@ -18,13 +61,13 @@ export function resolveFieldValue(
   formValues: Record<string, unknown>,
   pkg?: string,
 ): string {
-  const variants: string[] = [key];
-  const m = /^([a-zA-Z][a-zA-Z0-9]*)(__|_)(.+)$/.exec(key);
-  if (m) {
-    const [, prefix, sep, rest] = m;
-    const altSep = sep === "__" ? "_" : "__";
-    variants.push(`${prefix}${altSep}${rest}`);
+  const variantSet = new Set<string>();
+  for (const root of [key, ...expandRedundantPackageFieldRef(key)]) {
+    for (const k of sepFlipKeyVariants(root)) {
+      variantSet.add(k);
+    }
   }
+  const variants = [...variantSet];
 
   const candidates: unknown[] = [];
   for (const k of variants) {

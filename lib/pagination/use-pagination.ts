@@ -171,6 +171,23 @@ export function usePagination<T>(
   // render due to a fresh `{}` reference.
   const paramsFingerprint = React.useMemo(() => paramsKey(params), [params]);
 
+  // After hydration, apply `pagination:size:<scope>` even when the caller
+  // passed `initialPageSize` from SSR — otherwise the server default wins and
+  // the user's saved rows/page preference appears to reset every visit.
+  React.useEffect(() => {
+    const stored = readStoredPageSize(scope);
+    if (stored === null) return;
+    setPageSizeState((prevSize) => {
+      if (prevSize === stored) return prevSize;
+      writeStoredPageSize(scope, stored);
+      setPageState((p) => {
+        const firstRowIndex = p * prevSize;
+        return Math.floor(firstRowIndex / stored);
+      });
+      return stored;
+    });
+  }, [scope]);
+
   // Reset to page 0 when the filter / search params change (skip on first
   // mount so SSR-seeded pages don't immediately re-fetch).
   const isFirstMountRef = React.useRef(true);

@@ -49,7 +49,7 @@ const AccountingTab = dynamic(
 );
 import { Activity, DollarSign } from "lucide-react";
 import type { DrawerTab } from "@/components/ui/drawer-tabs";
-import { formatDDMMYYYYHHMM } from "@/lib/format/date";
+import { formatDDMMYYYYHHMM, parseAnyDate } from "@/lib/format/date";
 import { useSession } from "next-auth/react";
 import { StickyNote, ChevronDown, ChevronUp, Eye, X, ArrowUpDown } from "lucide-react";
 import { CompactSelect } from "@/components/ui/compact-select";
@@ -193,9 +193,26 @@ export default function PoliciesTableClient({
   const [selectedYear, setSelectedYear] = React.useState<number>(currentYear);
   const [selectedMonth, setSelectedMonth] = React.useState<number | null>(null); // null = All
 
+  // Sort state declared here so paginationParams can include sort params.
+  const [sortKey, setSortKey] = React.useState<string>("_builtin.policyNumber");
+  const [sortDir, setSortDir] = React.useState<"asc" | "desc">("desc");
+
   // Pagination: hook owns rows / total / page state. Optimistic updates
   // (toggle active, soft-delete, rename) go through the hook helpers so
   // they survive a refetch correctly.
+  //
+  // IMPORTANT — server returns ALL rows in one fetch; sort + page are
+  // applied client-side. Why: the user can sort by Name, Status, or any
+  // custom package field (Make, Excess, etc.) — none of which the server
+  // can ORDER BY without complex JSONB extraction and per-column SQL.
+  // Sorting only the 20-row server page would (and historically DID)
+  // produce inconsistent order across pages — e.g. page 2 having a
+  // record with `startedDate` earlier than every record on page 1.
+  //
+  // 500 covers every realistic dataset for this app. If you ever need to
+  // surpass it, server-side sort with a `sortJsonPath` SQL expression is
+  // the next step.
+  const FETCH_ALL_LIMIT = 500;
   const paginationParams = React.useMemo(() => {
     const base: Record<string, string | number | boolean | null | undefined> = {};
     if (flowKey) base.flow = flowKey;
@@ -207,22 +224,56 @@ export default function PoliciesTableClient({
   }, [flowKey, selectedYear, selectedMonth]);
   const {
     rows,
-    total,
-    page,
-    pageSize,
+    total: serverTotal,
     loading: rowsLoading,
-    setPage,
-    setPageSize,
     patchRow,
     removeRow,
   } = usePagination<Row>({
     url: "/api/policies",
-    scope: `policies:${entityLabel ?? "default"}`,
+    scope: `policies:${entityLabel ?? "default"}:fetch`,
     params: paginationParams,
     initialRows,
     initialTotal: initialTotal ?? initialRows.length,
-    initialPageSize: initialPageSize,
+    initialPageSize: FETCH_ALL_LIMIT,
   });
+
+  // Display pagination — local state on top of the full fetched dataset.
+  // Persisted in localStorage with its own key so we don't collide with
+  // the hook's fetch-size key.
+  const DISPLAY_SIZE_LS_KEY = `policies:${entityLabel ?? "default"}:displaySize`;
+  const [pageSize, setPageSizeState] = React.useState<number>(() => {
+    if (initialPageSize && initialPageSize > 0) return initialPageSize;
+    if (typeof window === "undefined") return 20;
+    const raw = window.localStorage.getItem(DISPLAY_SIZE_LS_KEY);
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 200) : 20;
+  });
+  const [page, setPageState] = React.useState(0);
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem(DISPLAY_SIZE_LS_KEY);
+    const n = raw ? Number(raw) : NaN;
+    if (Number.isFinite(n) && n > 0) {
+      setPageSizeState((prev) => {
+        const next = Math.min(Math.floor(n), 200);
+        return prev === next ? prev : next;
+      });
+    }
+    // We only want to read once on mount — scope changes go through setPageSize.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const setPage = React.useCallback((next: number) => {
+    setPageState(Math.max(0, Math.floor(next)));
+  }, []);
+  const setPageSize = React.useCallback((next: number) => {
+    const clamped = Math.min(Math.max(Math.floor(next), 1), 200);
+    try { window.localStorage.setItem(DISPLAY_SIZE_LS_KEY, String(clamped)); } catch {}
+    setPageSizeState((prev) => {
+      if (prev === clamped) return prev;
+      setPageState((p) => Math.floor((p * prev) / clamped));
+      return clamped;
+    });
+  }, [DISPLAY_SIZE_LS_KEY]);
 
   function patchRowById(id: number, next: Partial<Row>) {
     const idx = rows.findIndex((r) => r.policyId === id);
@@ -548,6 +599,7 @@ export default function PoliciesTableClient({
   const presetScope = entityLabel ?? "default";
   const {
     presets,
+    presetsLoaded,
     userPresets,
     activePresetId,
     setActivePresetId,
@@ -606,32 +658,6 @@ export default function PoliciesTableClient({
     setDraftName(preset.name);
     setDraftColumns([...preset.columns]);
     setConfigOpen(true);
-  }
-
-  function saveCurrentPreset() {
-    const name = draftName.trim() || "Untitled";
-    if (draftColumns.length === 0) {
-      toast.error("Select at least one column");
-      return;
-    }
-    if (editingPreset) {
-      const updated = upsertPreset({
-        ...editingPreset,
-        name,
-        columns: draftColumns,
-      });
-      if (!updated) return;
-    } else {
-      const created = upsertPreset({
-        id: `preset_${Date.now()}`,
-        name,
-        columns: draftColumns,
-        isDefault: userPresets.length === 0,
-      });
-      if (!created) return;
-      setActivePresetId(created.id);
-    }
-    setConfigOpen(false);
   }
 
   function applyCaseToText(text: string, mode?: "original" | "upper" | "lower" | "title"): string {
@@ -694,15 +720,89 @@ export default function PoliciesTableClient({
     return applyCaseToText(text, fieldCase);
   }
 
-  // Sorting — dynamic based on active view columns
-  const [sortKey, setSortKey] = React.useState<string>(activeColumns[0] ?? "_builtin.policyNumber");
-  const [sortDir, setSortDir] = React.useState<"asc" | "desc">("desc");
+  // Sorting — tied to the active saved view (`ViewPreset.sortKey` / `sortDir`).
+  // State is declared earlier (before paginationParams) so server-sort params are included.
+
+  const applyingPresetSortRef = React.useRef(false);
+  const prevPresetIdRef = React.useRef<string | null>(null);
+  const prevColsJoinRef = React.useRef<string>("");
+
+  const persistSortToPreset = React.useCallback(
+    (key: string, dir: "asc" | "desc") => {
+      if (applyingPresetSortRef.current) return;
+      if (!activePreset || activeColumns.length === 0) return;
+      if (!activeColumns.includes(key)) return;
+      upsertPreset({
+        ...activePreset,
+        sortKey: key,
+        sortDir: dir,
+      });
+    },
+    [activePreset, activeColumns, upsertPreset],
+  );
+
+  function saveCurrentPreset() {
+    const name = draftName.trim() || "Untitled";
+    if (draftColumns.length === 0) {
+      toast.error("Select at least one column");
+      return;
+    }
+    const sk = draftColumns.includes(sortKey) ? sortKey : (draftColumns[0] ?? "_builtin.policyNumber");
+    const sd = draftColumns.includes(sortKey) ? sortDir : "desc";
+    if (editingPreset) {
+      const updated = upsertPreset({
+        ...editingPreset,
+        name,
+        columns: draftColumns,
+        sortKey: sk,
+        sortDir: sd,
+      });
+      if (!updated) return;
+    } else {
+      const created = upsertPreset({
+        id: `preset_${Date.now()}`,
+        name,
+        columns: draftColumns,
+        isDefault: userPresets.length === 0,
+        sortKey: sk,
+        sortDir: sd,
+      });
+      if (!created) return;
+      setActivePresetId(created.id);
+    }
+    setConfigOpen(false);
+  }
 
   React.useEffect(() => {
-    if (activeColumns.length > 0 && !activeColumns.includes(sortKey)) {
-      setSortKey(activeColumns[0]);
+    if (!presetsLoaded || !activePreset || activeColumns.length === 0) return;
+
+    const colsJoin = activeColumns.join(",");
+    const presetIdentity = activePresetId ?? activePreset.id ?? "";
+
+    if (presetIdentity !== prevPresetIdRef.current) {
+      prevPresetIdRef.current = presetIdentity;
+      prevColsJoinRef.current = colsJoin;
+      applyingPresetSortRef.current = true;
+      const pk = activePreset.sortKey;
+      const pd = activePreset.sortDir === "asc" ? "asc" : "desc";
+      if (pk && activeColumns.includes(pk)) {
+        setSortKey(pk);
+        setSortDir(pd);
+      } else {
+        setSortKey(activeColumns[0]);
+        setSortDir("desc");
+      }
+      queueMicrotask(() => {
+        applyingPresetSortRef.current = false;
+      });
+      return;
     }
-  }, [activeColumns.join(",")]);
+
+    if (colsJoin !== prevColsJoinRef.current) {
+      prevColsJoinRef.current = colsJoin;
+      setSortKey((prevKey) => (activeColumns.includes(prevKey) ? prevKey : activeColumns[0]));
+    }
+  }, [presetsLoaded, activePresetId, activePreset, activeColumns]);
 
   const sortOptions = React.useMemo(() => {
     if (activeColumns.length === 0) {
@@ -713,7 +813,12 @@ export default function PoliciesTableClient({
 
   function getSortValue(row: Row, path: string): string | number {
     if (path === "_builtin.policyNumber") return row.policyNumber;
-    if (path === "_builtin.displayName") return row.displayName ?? "";
+    if (path === "_builtin.displayName") {
+      // Match the cell renderer: API rows don't include `displayName`
+      // (it's derived from carExtra). Without this fallback, every
+      // client-fetched row sorts as "" and clumps to one end.
+      return (row.displayName || extractNameFromExtra(row.carExtra) || "").toLowerCase();
+    }
     if (path === "_builtin.createdAt") return Date.parse(row.createdAt) || 0;
     if (path === "_builtin.isActive") return row.isActive !== false ? 1 : 0;
     const flat = flattenExtra(row.carExtra);
@@ -721,7 +826,18 @@ export default function PoliciesTableClient({
     if (v === null || v === undefined) return "";
     if (typeof v === "number") return v;
     if (typeof v === "boolean") return v ? 1 : 0;
-    return String(v);
+    const s = String(v);
+    // Date-aware compare: snapshot values can be `YYYY-MM-DD` (HTML5 date
+    // input) OR `DD-MM-YYYY` (formula / import). Lexicographic compare on
+    // those mixes ("22-03-2026" sorts AFTER "02-06-2026" because '2' > '0')
+    // — so parse them into a timestamp first and let the numeric branch
+    // handle the comparison chronologically.
+    if (/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{4}$/.test(s) ||
+        /^\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}/.test(s)) {
+      const parsed = parseAnyDate(s);
+      if (parsed) return parsed.getTime();
+    }
+    return s;
   }
 
   const sorted = React.useMemo(() => {
@@ -753,6 +869,23 @@ export default function PoliciesTableClient({
       return false;
     });
   }, [sorted, query, flattenExtra]);
+
+  // Display total reflects the user's view: when searching, count only
+  // matches; otherwise show the authoritative server count (which may
+  // exceed FETCH_ALL_LIMIT if the dataset grows past 500).
+  const total = query.trim() ? filtered.length : Math.max(serverTotal, filtered.length);
+  // Slice the fully sorted+filtered list for the current page so order
+  // is consistent across pages.
+  const visibleRows = React.useMemo(() => {
+    const start = page * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, page, pageSize]);
+  // Clamp the page back into range when the filtered count shrinks
+  // (e.g. user types a search that matches fewer rows).
+  React.useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(filtered.length / pageSize) - 1);
+    if (page > maxPage) setPageState(maxPage);
+  }, [filtered.length, pageSize, page]);
 
   async function openDetails(id: number, opts?: { silent?: boolean }): Promise<PolicyDetail | null> {
     if (!opts?.silent) {
@@ -1029,6 +1162,24 @@ export default function PoliciesTableClient({
   function closeDrawer() {
     setDrawerOpen(false);
     setTimeout(() => setOpenId(null), 250);
+    // Strip the deep-link query params from the URL so a page refresh
+    // (or back/forward navigation) doesn't immediately reopen the same
+    // drawer. Use `replaceState` so this doesn't add a history entry.
+    try {
+      const url = new URL(window.location.href);
+      let mutated = false;
+      for (const key of ["open", "policyId", "id", "openSection", "openTab", "docTemplate", "docAudience"]) {
+        if (url.searchParams.has(key)) {
+          url.searchParams.delete(key);
+          mutated = true;
+        }
+      }
+      if (mutated) {
+        window.history.replaceState(window.history.state, "", url.toString());
+      }
+    } catch {
+      // ignore — URL cleanup is a polish, not critical
+    }
   }
 
   async function confirmToggleActive() {
@@ -1174,7 +1325,10 @@ export default function PoliciesTableClient({
           <CompactSelect
             options={sortOptions}
             value={sortKey}
-            onChange={setSortKey}
+            onChange={(key) => {
+              setSortKey(key);
+              persistSortToPreset(key, sortDir);
+            }}
             icon={<ArrowUpDown />}
             iconLabel="Sort"
           />
@@ -1182,7 +1336,13 @@ export default function PoliciesTableClient({
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+            onClick={() => {
+              setSortDir((d) => {
+                const next = d === "asc" ? "desc" : "asc";
+                persistSortToPreset(sortKey, next);
+                return next;
+              });
+            }}
             className="h-auto flex-col gap-0 py-1 sm:h-9 sm:flex-row sm:py-0"
             title={sortDir === "asc" ? "Ascending" : "Descending"}
           >
@@ -1218,7 +1378,7 @@ export default function PoliciesTableClient({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {filtered.map((r) => (
+          {visibleRows.map((r) => (
             <TableRow key={r.policyId} className={`cursor-pointer group border-l-2 border-l-transparent transition-colors ${r.isActive === false ? "text-neutral-400 dark:text-neutral-500 hover:bg-red-50/60 dark:hover:bg-red-950/30 hover:border-l-red-500" : "text-green-600 dark:text-green-400 hover:bg-green-50/60 dark:hover:bg-green-950/30 hover:border-l-green-500"}`} onClick={() => openDetails(r.policyId)}>
               {activeColumns.length > 0 ? (
                 activeColumns.map((path) => (

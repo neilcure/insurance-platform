@@ -4,7 +4,7 @@ import { cars, policies } from "@/db/schema/insurance";
 import { memberships, clients, appSettings } from "@/db/schema/core";
 import { policyPremiums } from "@/db/schema/premiums";
 import { formOptions } from "@/db/schema/form_options";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { policyCreateSchema } from "@/lib/validation/policy";
 import { requireUser } from "@/lib/auth/require-user";
 import { canCreatePolicy } from "@/lib/auth/rbac";
@@ -958,6 +958,34 @@ export async function GET(request: Request) {
     const qLimit = Math.min(Math.max(Number(url.searchParams.get("limit")) || DEFAULT_LIMIT, 1), MAX_LIMIT);
     const qOffset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
 
+    // Sort: accept `sortField` + `sortDir` from the client.
+    // Supported DB-level sort fields (all indexed):
+    //   startDate  → policies.startDateIndexed
+    //   endDate    → policies.endDateIndexed
+    //   createdAt  → policies.createdAt (default)
+    //   policyNumber → policies.policyNumber
+    //
+    // Date columns use `nulls last` so any policy whose indexed-date
+    // sync was skipped (legacy import, race during create) lands at
+    // the END of the list instead of silently landing in the middle
+    // and giving the appearance of broken sort across pages. The
+    // backfill script (`scripts/backfill-policy-indexed-dates.ts`)
+    // fixes existing nulls; the nulls-last guard keeps the UX correct
+    // even if a brand-new row hasn't synced yet.
+    const rawSortField = url.searchParams.get("sortField") ?? "createdAt";
+    const rawSortDir   = url.searchParams.get("sortDir")   ?? "desc";
+    const sortDirFn = rawSortDir === "asc" ? asc : desc;
+    const dirSql = rawSortDir === "asc" ? sql`asc` : sql`desc`;
+    const sortExprMain = rawSortField === "startDate"   ? [sql`${policies.startDateIndexed} ${dirSql} nulls last`, desc(policies.id)]
+                       : rawSortField === "endDate"     ? [sql`${policies.endDateIndexed} ${dirSql} nulls last`, desc(policies.id)]
+                       : rawSortField === "policyNumber"? [sortDirFn(policies.policyNumber), desc(policies.id)]
+                       :                                  [sortDirFn(policies.createdAt), desc(policies.id)];
+    // Raw SQL fragment for the raw-sql branches (agent / direct_client)
+    const sortSql = rawSortField === "startDate"    ? sql`order by p.start_date_indexed ${rawSortDir === "asc" ? sql`asc` : sql`desc`} nulls last, p.id desc`
+                  : rawSortField === "endDate"      ? sql`order by p.end_date_indexed ${rawSortDir === "asc" ? sql`asc` : sql`desc`} nulls last, p.id desc`
+                  : rawSortField === "policyNumber" ? sql`order by p.policy_number ${rawSortDir === "asc" ? sql`asc` : sql`desc`}, p.id desc`
+                  :                                   sql`order by p.created_at ${rawSortDir === "asc" ? sql`asc` : sql`desc`}, p.id desc`;
+
     // Month-tab filter: when present, fetch a larger batch JS-side filtered
     // (mirrors what /api/policies/expiring does for date-based filtering).
     const startYearParam = url.searchParams.get("startYear");
@@ -1051,7 +1079,7 @@ export async function GET(request: Request) {
         if (hasClientNumberFilter) q = q.where(clientNumberFilterExpr!);
         if (hasFlowFilter) q = q.where(flowFilterExpr!);
         if (hasLinkedPolicyFilter) q = q.where(linkedPolicyFilterExpr!);
-        q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(sqlLimit).offset(sqlOffset);
+        q = q.orderBy(...sortExprMain).limit(sqlLimit).offset(sqlOffset);
         rows = await q;
       } else if (user.userType === "agent") {
         const agentId = Number(user.id);
@@ -1081,7 +1109,7 @@ export async function GET(request: Request) {
               ${hasClientNumberFilter ? sql`and ((c.extra_attributes)::jsonb ->> 'clientNumber') = ${clientNumberParam!}` : sql``}
               ${hasFlowFilter ? (polCols.hasFlowKey ? sql`and p.flow_key = ${flowParam}` : sql`and ((c.extra_attributes)::jsonb ->> 'flowKey') = ${flowParam}`) : sql``}
               ${hasLinkedPolicyFilter ? sql`and (((c.extra_attributes)::jsonb ->> 'linkedPolicyId')::int = ${linkedPolicyIdFilter})` : sql``}
-            order by p.created_at desc, p.id desc
+            ${sortSql}
             limit ${sqlLimit} offset ${sqlOffset}
           `);
           rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
@@ -1125,7 +1153,7 @@ export async function GET(request: Request) {
                   )
                 )
               )
-            order by p.created_at desc, p.id desc
+            ${sortSql}
             limit ${sqlLimit} offset ${sqlOffset}
           `);
           rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
@@ -1157,7 +1185,7 @@ export async function GET(request: Request) {
                 ${polCols.hasClientId ? sql`OR p.client_id = cl.id` : sql``}
               )
             )
-            order by p.created_at desc, p.id desc
+            ${sortSql}
             limit ${sqlLimit} offset ${sqlOffset}
           `);
           rows = (Array.isArray(result) ? result : (result as any)?.rows ?? []) as any[];
@@ -1172,7 +1200,7 @@ export async function GET(request: Request) {
         if (hasClientNumberFilter) scoped = scoped.where(clientNumberFilterExpr!);
         if (hasFlowFilter) scoped = scoped.where(flowFilterExpr!);
         if (hasLinkedPolicyFilter) scoped = scoped.where(linkedPolicyFilterExpr!);
-        scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(sqlLimit).offset(sqlOffset);
+        scoped = scoped.orderBy(...sortExprMain).limit(sqlLimit).offset(sqlOffset);
         rows = await scoped;
       }
     } catch {
@@ -1183,7 +1211,7 @@ export async function GET(request: Request) {
         if (hasClientNumberFilter) q = q.where(clientNumberFilterExpr!);
         if (hasFlowFilter) q = q.where(flowFilterExpr!);
         if (hasLinkedPolicyFilter) q = q.where(linkedPolicyFilterExpr!);
-        q = q.orderBy(desc(policies.createdAt), desc(policies.id)).limit(sqlLimit).offset(sqlOffset);
+        q = q.orderBy(...sortExprMain).limit(sqlLimit).offset(sqlOffset);
         rows = await q;
       } else if (user.userType === "agent" || user.userType === "direct_client") {
         rows = [];
@@ -1197,7 +1225,7 @@ export async function GET(request: Request) {
         if (hasClientNumberFilter) scoped = scoped.where(clientNumberFilterExpr!);
         if (hasFlowFilter) scoped = scoped.where(flowFilterExpr!);
         if (hasLinkedPolicyFilter) scoped = scoped.where(linkedPolicyFilterExpr!);
-        scoped = scoped.orderBy(desc(policies.createdAt), desc(policies.id)).limit(sqlLimit).offset(sqlOffset);
+        scoped = scoped.orderBy(...sortExprMain).limit(sqlLimit).offset(sqlOffset);
         rows = await scoped;
       }
     }
