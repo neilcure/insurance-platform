@@ -5,6 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { LocalUpdatedBadge } from "@/components/LocalUpdatedBadge";
 import { useT } from "@/lib/i18n";
+import {
+  clearDashboardWelcomePending,
+  peekDashboardWelcomePending,
+} from "@/lib/dashboard/welcome-session-flag";
 
 interface WelcomeCardProps {
   name?: string | null;
@@ -27,19 +31,34 @@ export function WelcomeCard({
   userTimeZone,
 }: WelcomeCardProps) {
   const t = useT();
+  const consumedRef = React.useRef(false);
+  /** Only true after mount when this tab completed a fresh sign-in (flag was set on `/auth/signin`). */
+  const [showWelcome, setShowWelcome] = React.useState(false);
   const [visible, setVisible] = React.useState(true);
   const [fading, setFading] = React.useState(false);
 
   React.useEffect(() => {
-    const fadeTimer = setTimeout(() => {
-      setFading(true);
-      const hideTimer = setTimeout(() => setVisible(false), FADE_DURATION_MS);
-      return () => clearTimeout(hideTimer);
-    }, FADE_DELAY_MS);
-    return () => clearTimeout(fadeTimer);
+    if (consumedRef.current) return;
+    if (!peekDashboardWelcomePending()) return;
+    consumedRef.current = true;
+    clearDashboardWelcomePending();
+    setShowWelcome(true);
   }, []);
 
-  if (!visible) return null;
+  React.useEffect(() => {
+    if (!showWelcome) return;
+    const fadeStartTimer = window.setTimeout(() => setFading(true), FADE_DELAY_MS);
+    const hideTimer = window.setTimeout(
+      () => setVisible(false),
+      FADE_DELAY_MS + FADE_DURATION_MS,
+    );
+    return () => {
+      window.clearTimeout(fadeStartTimer);
+      window.clearTimeout(hideTimer);
+    };
+  }, [showWelcome]);
+
+  if (!showWelcome || !visible) return null;
 
   return (
     <div

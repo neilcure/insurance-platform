@@ -13,6 +13,7 @@ import { useSession } from "next-auth/react";
 import { Separator } from "@/components/ui/separator";
 import { Chrome, ShieldCheck } from "lucide-react";
 import { useT } from "@/lib/i18n";
+import { markDashboardWelcomePending } from "@/lib/dashboard/welcome-session-flag";
 
 export default function SignInPage() {
   return (
@@ -150,6 +151,7 @@ function SignInContent() {
     setLoading(true);
     setError("");
     try {
+      markDashboardWelcomePending();
       await signIn("google", { callbackUrl });
     } catch {
       setError(t("auth.signin.errorGoogleFailed"));
@@ -179,6 +181,7 @@ function SignInContent() {
         return;
       }
 
+      markDashboardWelcomePending();
       router.push(result.url ?? callbackUrl);
       router.refresh();
     } catch {

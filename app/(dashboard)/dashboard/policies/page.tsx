@@ -5,6 +5,7 @@ import PoliciesTableClient from "@/components/policies/PoliciesTableClient";
 import { serverFetch } from "@/lib/auth/server-fetch";
 import { requireUser } from "@/lib/auth/require-user";
 import { DEFAULT_PAGE_SIZE } from "@/lib/pagination/types";
+import { resolvePrimaryDashboardCreatePolicyHref } from "@/lib/dashboard/resolve-create-policy-href";
 
 type PolicyRow = { policyId: number; policyNumber: string; createdAt: string; isActive: boolean; carExtra?: Record<string, unknown> | null };
 
@@ -30,14 +31,17 @@ export default async function PoliciesPage() {
   const isClient = me.userType === "direct_client";
   const pageSize = DEFAULT_PAGE_SIZE;
   const { rows, total } = await fetchPolicies(pageSize);
+  const createPolicy = !isClient ? await resolvePrimaryDashboardCreatePolicyHref() : null;
+  const createHref = createPolicy?.href ?? "/policies/new";
+  const createLabel = createPolicy?.flowButtonLabel?.trim() || "New Policy";
 
   return (
     <main className="mx-auto max-w-6xl">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">{isClient ? "My Policies" : "Policies"}</h1>
         {!isClient && (
-          <Link href="/policies/new">
-            <Button size="md">New Policy</Button>
+          <Link href={createHref}>
+            <Button size="md">{createLabel}</Button>
           </Link>
         )}
       </div>
