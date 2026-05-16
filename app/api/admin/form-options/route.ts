@@ -4,6 +4,7 @@ import { formOptions, formOptionGroups } from "@/db/schema/form_options";
 import { and, desc, eq, or } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { normalizeKeyLike } from "@/lib/utils";
+import { invalidateServerFormOptionsGroup } from "@/lib/server-form-options-cache";
 
 function isValidPackageKey(v: string): boolean {
   return /^[a-z][a-z0-9_-]{0,127}$/.test(v);
@@ -177,6 +178,7 @@ export async function POST(request: Request) {
         meta,
       })
       .returning();
+    invalidateServerFormOptionsGroup(groupKey);
     return NextResponse.json(opt, { status: 201 });
   } catch (err: unknown) {
     // Drizzle wraps native pg errors inside `cause` — check both levels.

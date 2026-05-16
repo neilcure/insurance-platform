@@ -38,6 +38,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { ExternalLink, Mail, AlertTriangle, CalendarDays, Settings2, Check, ChevronDown } from "lucide-react";
+import { toast } from "sonner";
 import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -546,7 +547,8 @@ function resolvePinnedRegistration(row: ExpiringRow, pinnedPaths: string[]): str
 // exist there, the try/catch catches the ReferenceError, and React reuses
 // the empty-defaults state during hydration without ever re-running the
 // initialiser on the client. The fix is to start with plain defaults and
-// hydrate from localStorage inside a `useEffect` that only runs client-side.
+// hydrate inside a `useEffect` from GET `/api/me/policy-calendar-settings`
+// (with localStorage as fallback / cache).
 const SETTINGS_KEY = "policy-calendar-settings-v1";
 
 type CalendarSettings = {
@@ -555,6 +557,20 @@ type CalendarSettings = {
 };
 
 const DEFAULT_SETTINGS: CalendarSettings = { hiddenStatuses: [], visibleFields: [] };
+
+function normalizeCalendarSettings(raw: unknown): CalendarSettings {
+  if (!raw || typeof raw !== "object") return { ...DEFAULT_SETTINGS };
+  const o = raw as Record<string, unknown>;
+  const hiddenRaw = Array.isArray(o.hiddenStatuses) ? o.hiddenStatuses : [];
+  const visibleRaw = Array.isArray(o.visibleFields) ? o.visibleFields : [];
+  const hidden = [...new Set(hiddenRaw.filter((x): x is string => typeof x === "string"))];
+  const visible = visibleRaw.filter((x): x is string => typeof x === "string").slice(0, 3);
+  return { hiddenStatuses: hidden, visibleFields: visible };
+}
+
+function isDefaultCalendarSettings(s: CalendarSettings): boolean {
+  return s.hiddenStatuses.length === 0 && s.visibleFields.length === 0;
+}
 // ──────────────────────────────────────────────────────────────────────────
 
 export function PolicyExpiryCalendar({
@@ -593,38 +609,77 @@ export function PolicyExpiryCalendar({
     });
   }, []);
 
-  // ── Settings (persisted in localStorage, edited via draft) ───────
-  // hiddenStatuses: status values the user wants to EXCLUDE from the
-  //   calendar entirely (persistent — different from the session
-  //   `statusFilter` chips below the calendar).
-  // visibleFields: ordered list of `<pkg>.<key>` field paths to show
-  //   as extra metadata under each row card (max 3 shown).
-  //
-  // The settings panel uses a draft → committed state pattern. The
-  // user toggles checkboxes against `draftSettings` (purely local to
-  // the open panel); only Save copies it onto `settings` AND
-  // persists to localStorage. Cancel discards the draft.
-  //
-  // IMPORTANT: we start with DEFAULT_SETTINGS and hydrate from
-  // localStorage inside a useEffect. Do NOT use localStorage inside
-  // useState() — it runs on the server during SSR and the value is
-  // silently discarded during hydration (Next.js client-component
-  // behaviour). See the module-level comment above for details.
+  // ── Calendar settings: persisted under `users.profile_meta.policyCalendarSettings`
+  // (GET/POST `/api/me/policy-calendar-settings`), with localStorage as cache /
+  // offline fallback. Draft → Save commits to the server; Cancel discards.
+  // hiddenStatuses = excluded statuses; visibleFields = up to 3 extra row fields.
+  // Do not read storage in useState() initialisers — SSR has no sessionStorage.
 
   const [settings, setSettings] = React.useState<CalendarSettings>(DEFAULT_SETTINGS);
 
-  // Load from localStorage once after the component mounts on the client.
   React.useEffect(() => {
-    try {
-      const raw = localStorage.getItem(SETTINGS_KEY);
-      if (raw) setSettings(JSON.parse(raw) as CalendarSettings);
-    } catch { /* ignore */ }
+    let cancelled = false;
+    (async () => {
+      let merged = normalizeCalendarSettings(undefined);
+      let loadedFromServer = false;
+      try {
+        const res = await fetch("/api/me/policy-calendar-settings", {
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        if (res.ok) {
+          merged = normalizeCalendarSettings(await res.json());
+          loadedFromServer = true;
+          // One-time migration: legacy local-only prefs → profile_meta so the
+          // same filters follow the user across browsers.
+          if (isDefaultCalendarSettings(merged)) {
+            try {
+              const raw = localStorage.getItem(SETTINGS_KEY);
+              if (raw) {
+                const local = normalizeCalendarSettings(JSON.parse(raw));
+                if (!isDefaultCalendarSettings(local)) {
+                  merged = local;
+                  void fetch("/api/me/policy-calendar-settings", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify(merged),
+                    credentials: "same-origin",
+                  }).catch(() => {});
+                }
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+          try {
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+          } catch {
+            /* ignore */
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      if (!loadedFromServer) {
+        try {
+          const raw = localStorage.getItem(SETTINGS_KEY);
+          if (raw) merged = normalizeCalendarSettings(JSON.parse(raw));
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!cancelled) setSettings(merged);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Draft state, edited inside the open panel. Reset to `settings`
   // every time the panel opens so a previous Cancel doesn't leak.
   const [draftSettings, setDraftSettings] = React.useState<CalendarSettings>(settings);
   const [settingsOpen, setSettingsOpen] = React.useState<boolean>(false);
+  const [savingCalendarSettings, setSavingCalendarSettings] = React.useState(false);
   // Client-only mount flag — keeps Radix's internal `useId` (used by
   // <DropdownMenu>) from emitting a server-rendered id that ends up
   // different from the client one and produces a hydration warning.
@@ -643,11 +698,44 @@ export function PolicyExpiryCalendar({
     setSettingsOpen(false);
   }, [settings]);
 
-  const saveSettingsNow = React.useCallback(() => {
-    setSettings(draftSettings);
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(draftSettings)); } catch { /* ignore */ }
-    setSettingsOpen(false);
-  }, [draftSettings]);
+  const saveSettingsNow = React.useCallback(async () => {
+    const next = normalizeCalendarSettings(draftSettings);
+    setSavingCalendarSettings(true);
+    try {
+      const res = await fetch("/api/me/policy-calendar-settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(next),
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const j = (await res.json()) as { error?: string };
+          detail = typeof j?.error === "string" ? j.error : "";
+        } catch {
+          detail = (await res.text().catch(() => "")).slice(0, 120);
+        }
+        toast.error(t("calendar.settings.saveFailed", "Couldn't save settings"), {
+          description: detail || undefined,
+        });
+        return;
+      }
+      setSettings(next);
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      setSettingsOpen(false);
+    } catch {
+      toast.error(
+        t("calendar.settings.saveFailedNetwork", "Couldn't save settings — check your connection"),
+      );
+    } finally {
+      setSavingCalendarSettings(false);
+    }
+  }, [draftSettings, t]);
 
   const toggleDraftHiddenStatus = React.useCallback((value: string) => {
     setDraftSettings((prev) => ({
@@ -1647,8 +1735,8 @@ export function PolicyExpiryCalendar({
                   </Button>
                   <Button
                     size="sm"
-                    onClick={saveSettingsNow}
-                    disabled={!draftDirty}
+                    onClick={() => void saveSettingsNow()}
+                    disabled={!draftDirty || savingCalendarSettings}
                   >
                     {t("common.save", "Save")}
                   </Button>

@@ -4,6 +4,7 @@ import { formOptions } from "@/db/schema/form_options";
 import { and, eq, ne } from "drizzle-orm";
 import { requireUser } from "@/lib/auth/require-user";
 import { normalizeKeyLike } from "@/lib/utils";
+import { invalidateServerFormOptionsGroup } from "@/lib/server-form-options-cache";
 
 function deriveValue(label: string): string {
   return label.trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
@@ -154,6 +155,7 @@ export async function PATCH(
   }
 
   const [row] = await db.update(formOptions).set(update).where(eq(formOptions.id, id)).returning();
+  invalidateServerFormOptionsGroup(currentGroupKey);
 
   // When a flow key is renamed, cascade to its steps group_key
   if (
@@ -168,6 +170,8 @@ export async function PATCH(
       .update(formOptions)
       .set({ groupKey: newStepsKey })
       .where(eq(formOptions.groupKey, oldStepsKey));
+    invalidateServerFormOptionsGroup(oldStepsKey);
+    invalidateServerFormOptionsGroup(newStepsKey);
   }
 
   // Propagate groupShowWhen to all fields sharing the same group within this groupKey.
@@ -218,6 +222,7 @@ export async function DELETE(
   if (!deleted) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+  if (deleted.groupKey) invalidateServerFormOptionsGroup(deleted.groupKey);
   return NextResponse.json({ ok: true }, { status: 200 });
 }
 
@@ -292,6 +297,7 @@ export async function POST(
       updatedOptions[parentIdx] = updatedParent;
       const updatedMeta = { ...meta, options: updatedOptions };
       await db.update(formOptions).set({ meta: updatedMeta }).where(eq(formOptions.id, id));
+      if (current.groupKey) invalidateServerFormOptionsGroup(current.groupKey);
       const [updated] = await db.select().from(formOptions).where(eq(formOptions.id, id)).limit(1);
       return NextResponse.json({ removed: body.value, field: updated }, { status: 200 });
     }
@@ -317,6 +323,7 @@ export async function POST(
     updatedOptions[parentIdx] = updatedParent;
     const updatedMeta = { ...meta, options: updatedOptions };
     await db.update(formOptions).set({ meta: updatedMeta }).where(eq(formOptions.id, id));
+    if (current.groupKey) invalidateServerFormOptionsGroup(current.groupKey);
     const [updated] = await db.select().from(formOptions).where(eq(formOptions.id, id)).limit(1);
     return NextResponse.json({ option: newOpt, field: updated }, { status: 200 });
   }
@@ -333,6 +340,7 @@ export async function POST(
     }
     const updatedMeta = { ...meta, options: filtered };
     await db.update(formOptions).set({ meta: updatedMeta }).where(eq(formOptions.id, id));
+    if (current.groupKey) invalidateServerFormOptionsGroup(current.groupKey);
     const [updated] = await db.select().from(formOptions).where(eq(formOptions.id, id)).limit(1);
     return NextResponse.json({ removed: removeValue, field: updated }, { status: 200 });
   }
@@ -372,6 +380,7 @@ export async function POST(
   // Use read-modify-write to include children structure
   const updatedMeta = { ...meta, options: [...currentOptions, newOption] };
   await db.update(formOptions).set({ meta: updatedMeta }).where(eq(formOptions.id, id));
+  if (current.groupKey) invalidateServerFormOptionsGroup(current.groupKey);
 
   const [updated] = await db.select().from(formOptions).where(eq(formOptions.id, id)).limit(1);
 

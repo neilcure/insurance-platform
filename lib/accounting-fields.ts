@@ -13,9 +13,6 @@
  * Client-safe helpers (`mapFormOptionRowToAccountingFieldDef`, `filterFieldsByUserType`)
  * live in `accounting-fields-shared.ts` so UI bundles never import `db/client`.
  */
-import { db } from "@/db/client";
-import { formOptions } from "@/db/schema/form_options";
-import { and, eq } from "drizzle-orm";
 import {
   mapFormOptionRowToAccountingFieldDef,
   type AccountingFieldDef,
@@ -23,6 +20,7 @@ import {
   type PremiumContext,
   type PremiumRole,
 } from "@/lib/accounting-fields-shared";
+import { getFormOptionsGroupServer } from "@/lib/server-form-options-cache";
 
 export type { ColumnType, PremiumContext, PremiumRole, AccountingFieldDef };
 export { mapFormOptionRowToAccountingFieldDef, filterFieldsByUserType } from "@/lib/accounting-fields-shared";
@@ -42,15 +40,15 @@ export function getColumnType(column: string): ColumnType {
  * Loads all active accounting fields from the admin-configured package.
  * Each field may have `premiumColumn` in its meta, which maps it to a
  * structured DB column on policy_premiums.
+ *
+ * Cached for 30s per process via `getFormOptionsGroupServer` — admins
+ * rarely change this config, but several hot routes call this on every
+ * request. Cache is invalidated from the admin form-options write paths
+ * (see `lib/server-form-options-cache.ts`).
  */
 export async function loadAccountingFields(): Promise<AccountingFieldDef[]> {
   const groupKey = `${ACCOUNTING_PKG}_fields`;
-  const rows = await db
-    .select()
-    .from(formOptions)
-    .where(and(eq(formOptions.groupKey, groupKey), eq(formOptions.isActive, true)))
-    .orderBy(formOptions.sortOrder);
-
+  const rows = await getFormOptionsGroupServer(groupKey);
   return rows
     .map((r) => mapFormOptionRowToAccountingFieldDef(r))
     .filter((f): f is AccountingFieldDef => f !== null);

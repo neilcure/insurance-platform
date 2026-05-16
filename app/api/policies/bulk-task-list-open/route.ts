@@ -9,16 +9,16 @@
  */
 
 import { NextResponse } from "next/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { users } from "@/db/schema/core";
 import { policyDocuments } from "@/db/schema/documents";
-import { formOptions } from "@/db/schema/form_options";
 import { cars, policies } from "@/db/schema/insurance";
 import { policyPremiums } from "@/db/schema/premiums";
 import { accountingPayments, accountingInvoices, accountingInvoiceItems } from "@/db/schema/accounting";
 import { requireUser } from "@/lib/auth/require-user";
 import { loadAccountingFields } from "@/lib/accounting-fields";
+import { getFormOptionsGroupsServer } from "@/lib/server-form-options-cache";
 import {
   incompleteTaskListPreviewItems,
   buildUploadStatusOrdinalMap,
@@ -71,13 +71,19 @@ export async function GET(req: Request) {
       const uncheckedIds = agentRows.filter((r) => r.agentId !== userId).map((r) => r.id);
       let parentGrantedIds: number[] = [];
       if (uncheckedIds.length > 0) {
+        // JSONB projection: only pull the one key we need (`linkedPolicyId`)
+        // rather than the entire `extra_attributes` blob (which can be tens of
+        // kilobytes per policy).
         const carExtras = await db
-          .select({ policyId: cars.policyId, extra: cars.extraAttributes })
+          .select({
+            policyId: cars.policyId,
+            linkedPolicyId: sql<unknown>`${cars.extraAttributes} -> 'linkedPolicyId'`.as("linked_policy_id"),
+          })
           .from(cars)
           .where(inArray(cars.policyId, uncheckedIds));
 
         const parentIds = carExtras
-          .map((c) => Number((c.extra as Record<string, unknown>)?.linkedPolicyId ?? 0))
+          .map((c) => Number(c.linkedPolicyId ?? 0))
           .filter((n) => n > 0);
 
         if (parentIds.length > 0) {
@@ -92,7 +98,7 @@ export async function GET(req: Request) {
 
           parentGrantedIds = carExtras
             .filter((c) => {
-              const parentId = Number((c.extra as Record<string, unknown>)?.linkedPolicyId ?? 0);
+              const parentId = Number(c.linkedPolicyId ?? 0);
               return parentId > 0 && agentOwnedParents.has(parentId);
             })
             .map((c) => c.policyId!);
@@ -131,22 +137,45 @@ export async function GET(req: Request) {
       .from(users)
       .as("verifier_bulk");
 
+    // Pre-built subquery: invoice IDs that belong to any accessible policy.
+    // Used by the payments query so payments can be fetched in PARALLEL
+    // with the invoice-items query instead of waiting for its result.
+    const accessibleInvoiceIdsSubquery = db
+      .select({ id: accountingInvoiceItems.invoiceId })
+      .from(accountingInvoiceItems)
+      .where(inArray(accountingInvoiceItems.policyId, accessibleIds));
+
     const [
       policyRows,
       carRows,
       docRows,
       invoiceItemRows,
       premiumRows,
-      foRows,
+      foRowsMap,
       accountingFields,
+      allPayments,
     ] = await Promise.all([
       db
         .select({ id: policies.id, flowKey: policies.flowKey })
         .from(policies)
         .where(inArray(policies.id, accessibleIds)),
 
+      // JSONB projection: only pull the six keys we actually read from
+      // `cars.extraAttributes` rather than the entire (potentially tens of
+      // kilobytes) blob per row. Result shape stays compatible with the
+      // downstream `(c.extra ?? {}) as Record<string, unknown>` usage.
       db
-        .select({ policyId: cars.policyId, extra: cars.extraAttributes })
+        .select({
+          policyId: cars.policyId,
+          extra: sql<Record<string, unknown>>`jsonb_build_object(
+            'insuredSnapshot', ${cars.extraAttributes} -> 'insuredSnapshot',
+            'packagesSnapshot', ${cars.extraAttributes} -> 'packagesSnapshot',
+            'entityLinkedPolicyIds', ${cars.extraAttributes} -> 'entityLinkedPolicyIds',
+            'statusClient', ${cars.extraAttributes} -> 'statusClient',
+            'flowKey', ${cars.extraAttributes} -> 'flowKey',
+            'linkedPolicyId', ${cars.extraAttributes} -> 'linkedPolicyId'
+          )`.as("extra"),
+        })
         .from(cars)
         .where(inArray(cars.policyId, accessibleIds)),
 
@@ -193,53 +222,40 @@ export async function GET(req: Request) {
         .from(policyPremiums)
         .where(inArray(policyPremiums.policyId, accessibleIds)),
 
+      // Server-side cached: avoids hitting `form_options` on every request.
+      // Admin write paths invalidate the cache via
+      // `invalidateServerFormOptionsGroup`.
+      getFormOptionsGroupsServer(["upload_document_types", "policy_statuses"]),
+
+      // Also cached.
+      loadAccountingFields(),
+
+      // Parallelized: previously this query waited for `invoiceItemRows`
+      // to resolve so it could pass an `IN (...)` list. Using a subquery
+      // lets it run in the same `Promise.all` batch as everything else.
       db
         .select({
-          groupKey: formOptions.groupKey,
-          id: formOptions.id,
-          label: formOptions.label,
-          value: formOptions.value,
-          sortOrder: formOptions.sortOrder,
-          isActive: formOptions.isActive,
-          meta: formOptions.meta,
+          invoiceId: accountingPayments.invoiceId,
+          amountCents: accountingPayments.amountCents,
+          paymentMethod: accountingPayments.paymentMethod,
+          paymentDate: accountingPayments.paymentDate,
+          referenceNumber: accountingPayments.referenceNumber,
+          status: accountingPayments.status,
+          createdAt: accountingPayments.createdAt,
+          payer: accountingPayments.payer,
+          direction: accountingInvoices.direction,
+          entityType: accountingInvoices.entityType,
         })
-        .from(formOptions)
-        .where(
-          and(
-            inArray(formOptions.groupKey, ["upload_document_types", "policy_statuses"]),
-            eq(formOptions.isActive, true),
-          ),
-        )
-        .orderBy(formOptions.sortOrder),
-
-      loadAccountingFields(),
+        .from(accountingPayments)
+        .innerJoin(accountingInvoices, eq(accountingInvoices.id, accountingPayments.invoiceId))
+        .where(inArray(accountingPayments.invoiceId, accessibleInvoiceIdsSubquery)),
     ]);
 
-    // ---------- Fetch payments for all relevant invoices ----------
-    const allInvoiceIds = [...new Set(invoiceItemRows.map((r) => r.invoiceId))];
-    const invoicePolicyMap = new Map<number, number>(); // invoiceId → policyId
+    // Build invoiceId → policyId map from the already-resolved invoice items.
+    const invoicePolicyMap = new Map<number, number>();
     for (const r of invoiceItemRows) {
       if (r.policyId != null) invoicePolicyMap.set(r.invoiceId, r.policyId);
     }
-
-    const allPayments = allInvoiceIds.length > 0
-      ? await db
-          .select({
-            invoiceId: accountingPayments.invoiceId,
-            amountCents: accountingPayments.amountCents,
-            paymentMethod: accountingPayments.paymentMethod,
-            paymentDate: accountingPayments.paymentDate,
-            referenceNumber: accountingPayments.referenceNumber,
-            status: accountingPayments.status,
-            createdAt: accountingPayments.createdAt,
-            payer: accountingPayments.payer,
-            direction: accountingInvoices.direction,
-            entityType: accountingInvoices.entityType,
-          })
-          .from(accountingPayments)
-          .innerJoin(accountingInvoices, eq(accountingInvoices.id, accountingPayments.invoiceId))
-          .where(inArray(accountingPayments.invoiceId, allInvoiceIds))
-      : [];
 
     // ---------- Build per-policy lookups ----------
 
@@ -311,24 +327,23 @@ export async function GET(req: Request) {
       }
     }
 
-    // ---------- Shared form-options data ----------
+    // ---------- Shared form-options data (cached) ----------
 
-    const statusRows = foRows
-      .filter((r) => r.groupKey === "policy_statuses")
-      .map((r) => ({ value: r.value, sortOrder: r.sortOrder }));
+    const statusRows = (foRowsMap.get("policy_statuses") ?? []).map((r) => ({
+      value: r.value,
+      sortOrder: r.sortOrder,
+    }));
     const statusOrdinalMap = buildUploadStatusOrdinalMap(statusRows);
 
-    const uploadTypeRows = foRows
-      .filter((r) => r.groupKey === "upload_document_types")
-      .map((r) => ({
-        id: r.id,
-        groupKey: r.groupKey,
-        label: r.label,
-        value: r.value,
-        sortOrder: r.sortOrder,
-        isActive: r.isActive,
-        meta: r.meta as import("@/lib/types/upload-document").UploadDocumentTypeMeta | null,
-      }));
+    const uploadTypeRows = (foRowsMap.get("upload_document_types") ?? []).map((r) => ({
+      id: r.id,
+      groupKey: r.groupKey,
+      label: r.label,
+      value: r.value,
+      sortOrder: r.sortOrder,
+      isActive: r.isActive,
+      meta: r.meta as import("@/lib/types/upload-document").UploadDocumentTypeMeta | null,
+    }));
 
     // ---------- Per-policy requirement building ----------
 
