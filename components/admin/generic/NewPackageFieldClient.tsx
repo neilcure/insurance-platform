@@ -36,6 +36,109 @@ import { InputTypeSelect, type InputType } from "@/components/admin/generic/Inpu
 import { TranslationsEditor } from "@/components/admin/i18n/TranslationsEditor";
 import type { Locale, TranslationBlock } from "@/lib/i18n";
 
+/**
+ * Inline editor for `meta.mirrorSource` on a brand-new field. Same
+ * contract as `MirrorSourceEditor` in `EditPackageFieldClient.tsx`,
+ * but local to this file to avoid a circular import (the Edit page is
+ * a server-component default export, importing it would force this
+ * client component to load all of its dependencies).
+ */
+function NewFieldMirrorSourceEditor({
+  allPackages,
+  value,
+  onChange,
+}: {
+  allPackages: { label: string; value: string }[];
+  value: { package?: string; field?: string } | undefined;
+  onChange: (next: { package: string; field: string } | undefined) => void;
+}) {
+  const pkgKey = String(value?.package ?? "").trim();
+  const [fields, setFields] = React.useState<{ label: string; value: string }[]>([]);
+  const [loadingFields, setLoadingFields] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!pkgKey) {
+      setFields([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingFields(true);
+    fetch(`/api/admin/form-options?groupKey=${encodeURIComponent(`${pkgKey}_fields`)}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows) => {
+        if (cancelled) return;
+        const list = (Array.isArray(rows) ? rows : []) as Array<{ label?: string; value?: string; isActive?: boolean }>;
+        setFields(
+          list
+            .filter((r) => r.isActive !== false)
+            .map((r) => ({ label: String(r.label ?? r.value ?? ""), value: String(r.value ?? "") }))
+            .filter((r) => r.value),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setFields([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingFields(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pkgKey]);
+
+  const fieldKey = String(value?.field ?? "").trim();
+  const commit = (nextPkg: string, nextField: string) => {
+    if (!nextPkg || !nextField) {
+      onChange(undefined);
+      return;
+    }
+    onChange({ package: nextPkg, field: nextField });
+  };
+
+  return (
+    <div className="grid gap-2 rounded-md border border-neutral-200 p-3 dark:border-neutral-700">
+      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+        This field always equals the chosen source field. Read-only, updates live, no formula edge cases.
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-1">
+          <Label>Source Package</Label>
+          <select
+            className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+            value={pkgKey}
+            onChange={(e) => commit(e.target.value, "")}
+          >
+            <option value="">— Pick package —</option>
+            {allPackages.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label || p.value}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="grid gap-1">
+          <Label>Source Field</Label>
+          <select
+            className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-sm disabled:bg-neutral-100 disabled:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:disabled:bg-neutral-800"
+            value={fieldKey}
+            disabled={!pkgKey || loadingFields}
+            onChange={(e) => commit(pkgKey, e.target.value)}
+          >
+            <option value="">
+              {!pkgKey ? "— Pick package first —" : loadingFields ? "Loading…" : "— Pick field —"}
+            </option>
+            {fields.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label || f.value}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
   const [categoryOptions, setCategoryOptions] = React.useState<{ label: string; value: string }[]>([]);
   const [allPackages, setAllPackages] = React.useState<{ label: string; value: string }[]>([]);
@@ -323,6 +426,14 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
             </div>
           ) : null}
 
+          {form.meta?.inputType === "mirror" ? (
+            <NewFieldMirrorSourceEditor
+              allPackages={allPackages}
+              value={(form.meta as { mirrorSource?: { package?: string; field?: string } })?.mirrorSource}
+              onChange={(next) => updateMeta("mirrorSource" as any, next as any)}
+            />
+          ) : null}
+
           {form.meta?.inputType === "formula" ? (
             <div className="grid gap-2">
               <div className="grid gap-1">
@@ -333,7 +444,7 @@ export default function NewPackageFieldClient({ pkg }: { pkg: string }) {
                   onChange={(e) => updateMeta("formula" as any, e.target.value as any)}
                 />
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                  Reference other fields using {"{field_key}"} syntax. A single reference like <strong>{"{insured_idNumber}"}</strong> copies the value as-is (text, numbers, dates). Supports numeric math (+, -, *, /), date arithmetic (e.g. {"{start_date}"} + 364), and <strong>TODAY</strong> for the current date (e.g. TODAY, TODAY + 30).
+                  Reference other fields using {"{field_key}"} syntax. For a simple <em>this field = another field</em> mirror, pick the <strong>Mirror</strong> input type instead — it&apos;s dead-simple and skips formula edge cases. Formula supports numeric math (+, -, *, /), date arithmetic (e.g. {"{start_date}"} + 364), and <strong>TODAY</strong> for the current date.
                 </p>
               </div>
             </div>

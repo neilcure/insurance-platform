@@ -14,7 +14,8 @@ export const INPUT_TYPE_OPTIONS: { value: InputType; label: string }[] = [
   { value: "multi_select", label: "Multi Select" },
   { value: "boolean", label: "Boolean (Yes/No)" },
   { value: "repeatable", label: "Repeatable (List)" },
-  { value: "formula", label: "Formula" },
+  { value: "mirror", label: "Mirror (= another field)" },
+  { value: "formula", label: "Formula (math)" },
   { value: "list", label: "List (Add Items)" },
   { value: "agent_picker", label: "Agent Picker" },
 ];

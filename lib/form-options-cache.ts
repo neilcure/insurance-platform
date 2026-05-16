@@ -50,27 +50,58 @@ type CacheEntry = {
 };
 
 const STALE_MS = 30_000;
+// A FAILED fetch (network blip, transient 401, slow timeout) is held only
+// briefly so the next consumer retries instead of being stuck behind a
+// poisoned cache for the full 30s TTL. This was the source of the
+// recurring "FormulaField shows raw code instead of option label" bug.
+const FAIL_MS = 1_500;
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<FormOptionRow[]>>();
 
+class FormOptionsFetchError extends Error {}
+
+/**
+ * Fetch a single group from the API. Throws (rather than swallowing into
+ * `[]`) so the caller can decide whether to cache the empty result or
+ * retry. Empty arrays from the API (group simply has no rows) ARE a
+ * legitimate success and are returned normally.
+ */
 async function doFetch(groupKey: string): Promise<FormOptionRow[]> {
+  let res: Response;
   try {
-    const res = await fetch(
+    res = await fetch(
       `/api/form-options?groupKey=${encodeURIComponent(groupKey)}`,
       { cache: "no-store" },
     );
-    if (!res.ok) return [];
-    const rows = (await res.json()) as FormOptionRow[];
-    return Array.isArray(rows) ? rows : [];
-  } catch {
-    return [];
+  } catch (err) {
+    throw new FormOptionsFetchError(
+      err instanceof Error ? err.message : "network error",
+    );
   }
+  if (!res.ok) {
+    throw new FormOptionsFetchError(`HTTP ${res.status}`);
+  }
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch (err) {
+    throw new FormOptionsFetchError(
+      err instanceof Error ? err.message : "invalid json",
+    );
+  }
+  return Array.isArray(body) ? (body as FormOptionRow[]) : [];
 }
 
 export function getFormOptionsGroup(groupKey: string): Promise<FormOptionRow[]> {
+  const now = Date.now();
   const cached = cache.get(groupKey);
-  if (cached && Date.now() - cached.fetchedAt < STALE_MS) {
-    return Promise.resolve(cached.rows);
+  if (cached) {
+    // Empty/failed caches have a much shorter TTL so transient failures
+    // don't pin every consumer for 30s.
+    const ttl = cached.rows.length === 0 ? FAIL_MS : STALE_MS;
+    if (now - cached.fetchedAt < ttl) {
+      return Promise.resolve(cached.rows);
+    }
   }
   const pending = inflight.get(groupKey);
   if (pending) return pending;
@@ -83,7 +114,12 @@ export function getFormOptionsGroup(groupKey: string): Promise<FormOptionRow[]> 
     })
     .catch(() => {
       inflight.delete(groupKey);
-      return cache.get(groupKey)?.rows ?? [];
+      // Surface the LAST GOOD value (non-empty) if we have one, so a
+      // transient hiccup doesn't break formula label translation that
+      // was working a moment ago. If we never had a good value, return
+      // an empty array but DON'T cache it — the next caller retries.
+      const fallback = cache.get(groupKey);
+      return fallback?.rows ?? [];
     });
   inflight.set(groupKey, p);
   return p;

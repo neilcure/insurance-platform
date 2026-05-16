@@ -48,13 +48,17 @@ function sepFlipKeyVariants(k: string): string[] {
  * When `pkg` is provided, tries `pkg__key` first (package-scoped lookup),
  * then falls back to direct key and fuzzy suffix matching.
  *
- * Also tolerates `_` ↔ `__` mismatches between the scope prefix and the rest
- * of the key. The wizard stores some snapshot keys with the package-style
- * `__` separator (e.g. `insured__dateOfBirth`) and others with the legacy
- * `_` separator (e.g. `insured_lastName`) depending on field origin. Admins
- * writing formulas shouldn't have to remember which one applies — both
- * `{insured_dateOfBirth}` and `{insured__dateOfBirth}` should find the same
- * value.
+ * Tolerances (intentional — admins write formulas in many shapes):
+ *   - `_` ↔ `__` mismatches between the scope prefix and the rest of the
+ *     key. `{insured_dateOfBirth}` and `{insured__dateOfBirth}` must find
+ *     the same value.
+ *   - Case mismatches in the PACKAGE PREFIX. Some admins type
+ *     `{Insured_idNumber}` while the form value lives under
+ *     `insured__idNumber`. `form_options` enforces lowercase package keys,
+ *     so the canonical stored shape is always lowercase — the resolver
+ *     must look at both spellings or the formula silently resolves to "".
+ *   - Case-insensitive whole-key match as a last resort (so a wholly
+ *     mismatched-case formula still finds its value).
  */
 export function resolveFieldValue(
   key: string,
@@ -62,9 +66,21 @@ export function resolveFieldValue(
   pkg?: string,
 ): string {
   const variantSet = new Set<string>();
+  // Build case variants of the package prefix so `Insured_x` matches
+  // `insured__x`. We only mutate the segment BEFORE the first separator,
+  // never the tail — admins rely on case-sensitive tail keys today.
+  const caseVariants = (k: string): string[] => {
+    const m = /^([a-zA-Z][a-zA-Z0-9]*)(__|_)(.+)$/.exec(k);
+    if (!m) return [k];
+    const [, prefix, sep, rest] = m;
+    const lower = prefix.toLowerCase();
+    if (lower === prefix) return [k];
+    return [k, `${lower}${sep}${rest}`];
+  };
+
   for (const root of [key, ...expandRedundantPackageFieldRef(key)]) {
     for (const k of sepFlipKeyVariants(root)) {
-      variantSet.add(k);
+      for (const ck of caseVariants(k)) variantSet.add(ck);
     }
   }
   const variants = [...variantSet];
@@ -77,11 +93,20 @@ export function resolveFieldValue(
   for (const v of candidates) {
     if (v !== undefined && v !== null && v !== "") return String(v);
   }
-  const keyLower = key.toLowerCase();
+
+  // Case-insensitive whole-key match (last resort). We look at the full
+  // form key, not just the suffix-after-`__`, because an admin formula
+  // like `{Insured_insuredOccuption}` needs to find the form key
+  // `insured__insuredOccuption` — those don't share a suffix after the
+  // last `__`, only the case-folded whole identifier matches.
+  const normalize = (s: string) => s.toLowerCase().replace(/__/g, "_");
+  const keyNormalized = normalize(key);
   for (const [fk, fv] of Object.entries(formValues)) {
     if (fv === undefined || fv === null || fv === "") continue;
+    if (normalize(fk) === keyNormalized) return String(fv);
+    // Suffix-only match (legacy): `idNumber` finds `insured__idNumber`.
     const suffix = fk.includes("__") ? fk.split("__").pop()! : fk;
-    if (suffix.toLowerCase() === keyLower) return String(fv);
+    if (suffix.toLowerCase() === key.toLowerCase()) return String(fv);
   }
   return "";
 }

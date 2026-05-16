@@ -10,8 +10,29 @@ export type InputType =
   | "boolean"
   | "repeatable"
   | "formula"
+  | "mirror"
   | "list"
   | "agent_picker";
+
+/**
+ * Configuration for `inputType: "mirror"` — a dead-simple "this field
+ * equals another field" passthrough. NO math, NO formula parsing, NO
+ * conditional logic. The field always renders read-only and its value
+ * is always the live value of `${package}__${field}` (with the usual
+ * case / separator tolerances).
+ *
+ * Use this INSTEAD of `inputType: "formula"` with a single-placeholder
+ * formula like `{insured_idNumber}` — the formula path inherits all
+ * the arithmetic-mode footguns (preserve-on-edit semantics, dedup
+ * guards, case-sensitive resolution) which broke mirror behaviour in
+ * confusing ways. See `.cursor/skills/wizard-formula-fields/SKILL.md`.
+ */
+export type MirrorSource = {
+  /** Source package key, e.g. `"insured"`. Lowercase, matches `form_options.group_key` prefix. */
+  package: string;
+  /** Source field key (matches `form_options.value` in `${package}_fields`). */
+  field: string;
+};
 
 export type SelectOption = { label?: string; value?: string; scrollToPackage?: string; scrollToGroup?: string; scrollToField?: string };
 

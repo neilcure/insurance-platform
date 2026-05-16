@@ -1,9 +1,52 @@
 ---
 name: wizard-formula-fields
-description: Documents how policy-flow wizard formula fields (`inputType: formula`) evaluate in React Hook Form, mirror other fields, interact with select option VALUE vs LABEL storage, persist into snapshots vs PDF-time resolution, repeatable-row formula scope, and the automatic label lookup for single-placeholder formulas like `{insured_insuredOccupation}`. Use when debugging or implementing formula-driven fields in `PackageBlock`, `lib/formula.ts`, driver/insured mirroring, occupation showing one letter, driving licence copy formulas, or admin field configs that reference `{pkg_field}` / `{pkg__field}` placeholders.
+description: Documents how policy-flow wizard formula fields (`inputType: formula`) evaluate in React Hook Form, mirror other fields, interact with select option VALUE vs LABEL storage, persist into snapshots vs PDF-time resolution, repeatable-row formula scope, and the automatic label lookup for single-placeholder formulas like `{insured_insuredOccupation}`. ALSO documents the dedicated `inputType: "mirror"` shortcut (added 2026-05) which is the preferred path for ANY plain "this field equals another field" use case — admins should NOT reach for `inputType: "formula"` with a single `{pkg_field}` placeholder anymore. Use when debugging or implementing formula-driven fields in `PackageBlock`, `lib/formula.ts`, driver/insured mirroring, occupation showing one letter, driving licence copy formulas, or admin field configs that reference `{pkg_field}` / `{pkg__field}` placeholders.
 ---
 
 # Wizard Formula Fields (`PackageBlock` + `lib/formula.ts`)
+
+## 0. Mirror vs Formula — pick the right tool first
+
+> **TL;DR — if you're tempted to author `{pkg_field}` as a formula, use `inputType: "mirror"` instead.**
+
+| Use case | Pick |
+|---|---|
+| `driver Occupation = insured Occupation` | **`mirror`** ✓ |
+| `driving licence = insured ID number` | **`mirror`** ✓ |
+| `policyEnd = policyStart + 364` | `formula` |
+| `levy = grossPremium * 0.001` | `formula` |
+| `age = YEARS_BETWEEN(insured__dob, TODAY)` | `formula` |
+| `expiryWarning = TODAY + 30` | `formula` |
+
+`inputType: "mirror"` (see `MirrorField` in `PackageBlock.tsx`,
+`MirrorSource` in `lib/types/form.ts`, and the
+`MirrorSourceEditor` admin component) is a dedicated, stripped-down
+passthrough with **no formula parsing**, **no math semantics**, and
+**no preserve-on-edit behaviour**. The admin picks the source
+package + field from dropdowns; the wizard always renders read-only
+and always writes the source value into RHF. This eliminates the
+entire class of "mirror mode vs arithmetic mode" footguns that
+plagued the `formula` path (see §3c).
+
+**One-time migration** `scripts/migrate-formula-to-mirror.ts`
+converts any pre-existing `formula` row whose `meta.formula` is a
+single `{pkg_field}` placeholder into the new shape:
+
+```jsonc
+// before
+{ "inputType": "formula", "formula": "{insured_idNumber}" }
+// after
+{ "inputType": "mirror", "mirrorSource": { "package": "insured", "field": "idNumber" } }
+```
+
+Dry-run first, then `--apply`. Idempotent.
+
+The rest of this skill still documents the `formula` path because
+admins may still legitimately need it for math, and existing rows
+that are NOT single-placeholder still go through `FormulaField`.
+
+---
+
 
 End-user confusion usually sounds like: **"Formula copies the value but I only see `A` / `T`"**, **"Driving licence should equal ID — formula does nothing in extra drivers"**, or **"PDF is wrong / wizard looks wrong."** Those are **different layers**. This skill is the **live wizard** layer only.
 
@@ -24,6 +67,43 @@ If the wizard looks correct but PDF shows a slug/code, fix **resolver / template
 - **`evaluateFormula(formula, formValues, pkg?)`** — dates, `*_BETWEEN`, numeric pipeline, and **single-placeholder passthrough**: a formula that is exactly `{someKey}` (trimmed) returns the resolved string **without** forcing numeric coercion. This is how ID/name mirrors work.
 
 Unsupported in formulas: arbitrary string concatenation (`{a}{b}`), conditionals — admins expect Excel-like behaviour but only the documented branches exist.
+
+### 1.1 Case tolerance contract (critical — do not break)
+
+Admin-authored formulas frequently use a mixed-case package prefix
+(`{Insured_insuredOccuption}`), while RHF form keys and snapshot keys
+are always stored with the **canonical lowercase** package prefix
+(`insured__insuredOccuption`). `form_options` enforces lowercase package
+keys via `normalizeKeyLike`, so the *only* correct stored shape is
+lowercase.
+
+`resolveFieldValue` MUST therefore:
+
+1. Try the formula's case **as written** (preserves the contract for any
+   legacy hand-authored keys that genuinely differ in case).
+2. Also try **`prefix.toLowerCase()` + the rest unchanged** (so
+   `Insured_x` matches `insured__x`).
+3. As a last-resort, do a **normalized whole-key match**: lowercase +
+   collapse `__` → `_` on BOTH sides. `{Insured_insuredOccuption}` →
+   `insured_insuredoccuption` matches form key
+   `insured__insuredOccuption` → `insured_insuredoccuption`.
+
+The pre-fix suffix-only fallback (`fk.split("__").pop()` vs
+`key.toLowerCase()`) was insufficient: for keys with an embedded
+underscore the suffix never matched the full key, so formulas silently
+resolved to `""` and the driver field kept whatever stale text was
+previously typed in (commonly **the first letter** of the source value,
+e.g. `"C"` for `"COACH (PING PONG)"`).
+
+**Verification snippet** (run after any edit to `resolveFieldValue`):
+
+```ts
+import { evaluateFormula } from "@/lib/formula";
+const v = evaluateFormula("{Insured_insuredOccuption}", {
+  insured__insuredOccuption: "COACH (PING PONG)",
+}, "driver");
+console.assert(v === "COACH (PING PONG)", "case-insensitive prefix broken");
+```
 
 ---
 
@@ -64,9 +144,77 @@ Without persisting into RHF, PDF placements that rely on snapshot keys under rep
 
 ## 3. Select VALUE vs LABEL (why "one letter" happens)
 
+There are **TWO** distinct ways a formula field ends up showing a
+single letter — diagnose which one applies before "fixing":
+
+### 3a. Source is a SELECT with short-coded `meta.options[].value`
+
 Admin **`select`** fields store **`meta.options[].value`** in snapshots (often a **short code**). The wizard dropdown shows **`label`**.
 
 A **`formula`** that copies that field correctly produces the **code** (`"A"`). If the formula UI renders a plain `<Input>`, the user sees **`A`** — not truncation, not CSS — **it's the real stored value**.
+
+### 3b. Source is a TEXT input + formula has a case-mismatched prefix (THE TRAP)
+
+`form_options.value` for the source field is `inputType: "string"`,
+**no options**, and the snapshot holds the full free-text value
+(e.g. `"COACH (PING PONG)"`). But the driver/dependent formula is
+authored as `{Insured_insuredOccuption}` (**capital I**), while the
+form key is `insured__insuredOccuption` (lowercase). Pre-§1.1 the
+case-sensitive resolver returned `""`, the formula did nothing on
+re-render, and the previously-editable `FormulaField` kept whatever
+text had been typed into it earlier — usually **the first letter of
+the source value** because that's what the user inadvertently
+captured during the wizard's first save.
+
+### 3c. Mirror mode vs Arithmetic mode (THE OTHER TRAP)
+
+`FormulaField` and `RepeatableFormulaCell` have to handle TWO
+fundamentally different uses of an `inputType: "formula"` field:
+
+|              | Mirror (`{singleRef}`)                | Arithmetic (`{a} + {b}`, `YEARS_BETWEEN(...)`) |
+|--------------|---------------------------------------|------------------------------------------------|
+| Display      | Read-only (user can't type)           | Editable (user may hand-tweak)                 |
+| Stale data   | MUST be overwritten                   | MUST be preserved                              |
+| Watch dedup  | Compare to **current form value**     | Compare to `lastFormula.current`               |
+
+Both fields branch on `/^\{[^{}]+\}$/.test(trimmed.formula)`:
+- mirror → call `syncMirror` / `sync(true)` on mount AND on every
+  `form.watch` tick, comparing the computed value against the
+  current stored value. If they drift, force-write.
+- arithmetic → original behaviour (`!current` guard on initial,
+  `lastFormula.current` dedup on watch).
+
+**Why this matters** (concrete bug chain):
+1. User picks an existing client to start a new policy.
+2. Wizard pre-fills both `insured__insuredOccuption =
+   "ELECTRICAL ENGINEERING"` AND, from the SAME client's previous
+   policy, `driver__occuption = "T"`.
+3. Without the mirror branch, the formula sees `current = "T"`
+   (non-empty), skips the fill, and the watch dedup on
+   `lastFormula.current` blocks the watch from ever correcting it.
+4. User sees `"T"` in driver Occupation even though source is
+   `"ELECTRICAL ENGINEERING"` — exact bug the user reported.
+
+**`shouldDirty` flag** — mirror sync uses `shouldDirty: false`
+because the user did not edit this field. Marking dirty would
+fire the wizard's "unsaved changes" prompt the first time someone
+opens an existing policy.
+
+**Diagnostic SQL** (replace policy id):
+
+```sql
+SELECT
+  extra_attributes->'insuredSnapshot'->>'insured__insuredOccuption' AS source,
+  extra_attributes->'packagesSnapshot'->'driver'->'values'->>'driver__occuption' AS driver
+FROM cars WHERE policy_id = 426;
+-- BAD:  source = "COACH (PING PONG)"  driver = "C"
+-- GOOD: source = "COACH (PING PONG)"  driver = "COACH (PING PONG)"
+```
+
+**Code fix lives in §1.1** (always lowercase the package prefix when
+matching). **Data repair** is `scripts/backfill-driver-occupation.ts`
+— conservative, idempotent, only overwrites when the driver value is
+empty / a clear case-insensitive prefix of the source.
 
 **Fix paths** (in order of preference):
 

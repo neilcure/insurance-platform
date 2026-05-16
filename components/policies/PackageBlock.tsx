@@ -139,22 +139,32 @@ function RepeatableFormulaCell({
       return evaluateFormula(formula, { ...allVals, ...rowVals });
     }
 
-    const initial = calc();
-    if (initial && initial !== lastWritten.current) {
-      lastWritten.current = initial;
-      const current = String(form.getValues(childName as never) ?? "");
-      if (initial !== current) {
-        form.setValue(childName as never, initial as never, { shouldDirty: true });
-      }
-    }
+    // See `FormulaField` for the full rationale — mirror formulas
+    // (`{singleRef}`) are authoritative and ALWAYS sync to source, so
+    // stale data carried over from an existing-client pre-fill doesn't
+    // mask the live source value. Arithmetic formulas keep the
+    // historical "only fill when empty" behaviour.
+    const trimmed = (formula ?? "").trim();
+    const isMirror = /^\{[^{}]+\}$/.test(trimmed);
 
-    const sub = form.watch(() => {
+    const sync = (forceWrite: boolean) => {
       const next = calc();
-      if (next && next !== lastWritten.current) {
+      const cur = String(form.getValues(childName as never) ?? "");
+      if (isMirror) {
+        if (next === cur) return;
         lastWritten.current = next;
-        form.setValue(childName as never, next as never, { shouldDirty: true });
+        form.setValue(childName as never, next as never, { shouldDirty: false });
+      } else {
+        if (!next || next === lastWritten.current) return;
+        lastWritten.current = next;
+        if (forceWrite || !cur) {
+          form.setValue(childName as never, next as never, { shouldDirty: true });
+        }
       }
-    });
+    };
+
+    sync(true);
+    const sub = form.watch(() => sync(true));
     return () => sub.unsubscribe();
   }, [form, childName, formula, rowVals]);
 
@@ -722,22 +732,62 @@ function FormulaField({
       return evaluateFormula(formula, vals, pkg);
     }
 
-    const initial = calc();
-    if (initial) {
-      isDateResult.current = parseAnyDate(initial) !== null;
-      lastFormula.current = initial;
-      const current = String(form.getValues(name as never) ?? "").trim();
-      if (!current) {
-        form.setValue(name as never, initial as never, { shouldDirty: true });
+    // Distinguish the TWO uses of formula fields. They have OPPOSITE
+    // semantics on stale stored data:
+    //
+    //   - MIRROR mode (`{insured_idNumber}`, `{insured_insuredOccuption}`):
+    //     the field is `A = B`. It is rendered read-only (see the
+    //     display branch below) so users can never type into it. The
+    //     formula is therefore AUTHORITATIVE — whenever a stored value
+    //     disagrees with the computed value, the computed value wins.
+    //     This is what stops "T" from sticking in the driver Occupation
+    //     after picking an existing client whose previous policy left
+    //     `driver__occuption = "T"` in the snapshot.
+    //
+    //   - ARITHMETIC mode (`YEARS_BETWEEN(...)`, `{a} + {b}`, etc.):
+    //     historically the result was user-editable in some flows, so
+    //     a stored value should NOT be clobbered on every render. We
+    //     fill once when empty, then track via `watch` against
+    //     `lastFormula.current` so a hand-tweaked value survives.
+    const trimmed = (formula ?? "").trim();
+    const isMirror = /^\{[^{}]+\}$/.test(trimmed);
+
+    const syncMirror = () => {
+      const next = calc();
+      const cur = String(form.getValues(name as never) ?? "");
+      if (next === cur) return;
+      if (next) isDateResult.current = parseAnyDate(next) !== null;
+      lastFormula.current = next;
+      // shouldDirty: false — the user did not edit this field, the
+      // formula is just re-asserting authority. Marking dirty would
+      // make the wizard's "unsaved changes" warning fire on first open.
+      form.setValue(name as never, next as never, { shouldDirty: false });
+    };
+
+    if (isMirror) {
+      syncMirror();
+    } else {
+      const initial = calc();
+      if (initial) {
+        isDateResult.current = parseAnyDate(initial) !== null;
+        lastFormula.current = initial;
+        const current = String(form.getValues(name as never) ?? "").trim();
+        if (!current) {
+          form.setValue(name as never, initial as never, { shouldDirty: true });
+        }
       }
     }
 
     const sub = form.watch(() => {
-      const next = calc();
-      if (next && next !== lastFormula.current) {
-        isDateResult.current = parseAnyDate(next) !== null;
-        lastFormula.current = next;
-        form.setValue(name as never, next as never, { shouldDirty: true });
+      if (isMirror) {
+        syncMirror();
+      } else {
+        const next = calc();
+        if (next && next !== lastFormula.current) {
+          isDateResult.current = parseAnyDate(next) !== null;
+          lastFormula.current = next;
+          form.setValue(name as never, next as never, { shouldDirty: true });
+        }
       }
     });
     return () => sub.unsubscribe();
@@ -767,28 +817,66 @@ function FormulaField({
   // mirror and the caller didn't pass `options` directly. This means an admin
   // can write `{insured_insuredOccupation}` once and the dependent field will
   // resolve labels automatically — no need to duplicate options.
+  //
+  // `attempt` is a tick we bump when (a) the formula points at a
+  // single-var ref but the fetched source-package rows came back empty
+  // OR didn't contain the source field, and (b) the stored value is
+  // already non-empty (so the user should be seeing a translated label
+  // by now). Bumping `attempt` retries `getFormOptionsGroup` — which
+  // skips the recent-failure short-TTL slot and goes back to the
+  // network. This is what makes "T" → "TRANSPORTATION" self-heal
+  // instead of staying stuck on the raw code.
   const [autoOptions, setAutoOptions] = React.useState<{ value?: string; label?: string }[]>([]);
-  React.useEffect(() => {
-    if (Array.isArray(options) && options.length > 0) return;
+  const [attempt, setAttempt] = React.useState(0);
+  const sourceRefMatch = React.useMemo(() => {
     const trimmed = (formula ?? "").trim();
     const m = /^\{([^}]+)\}$/.exec(trimmed);
-    if (!m) {
-      setAutoOptions([]);
-      return;
-    }
+    if (!m) return null;
     const refKey = m[1].trim();
     const km = /^([a-zA-Z][a-zA-Z0-9]*)(?:__|_)(.+)$/.exec(refKey);
-    if (!km) {
+    if (!km) return null;
+    // Package keys in form_options are stored lowercase by admin
+    // normalization (`isValidPackageKey` only accepts lowercase). So
+    // even when an admin writes the formula as `{Insured_...}` we MUST
+    // canonicalize to lowercase before building the `${pkg}_fields`
+    // group key — otherwise the case-sensitive `WHERE group_key = ?`
+    // returns zero rows and option-label translation silently fails.
+    return { srcPkg: km[1].toLowerCase(), srcField: km[2] };
+  }, [formula]);
+
+  React.useEffect(() => {
+    if (Array.isArray(options) && options.length > 0) return;
+    if (!sourceRefMatch) {
       setAutoOptions([]);
       return;
     }
-    const [, srcPkg, srcField] = km;
+    const { srcPkg, srcField } = sourceRefMatch;
     const keyCandidates = formOptionRowKeyCandidates(srcPkg, srcField);
     let cancelled = false;
+    // Try the canonical lowercase group key first. If that row set
+    // doesn't contain our source field (admin may have stored the
+    // package under a quirky case, OR the field is in a sibling alias
+    // group like `vehicle_fields` vs `vehicleinfo_fields`), fall back
+    // to a case-insensitive scan of the same data so a mismatched
+    // formula casing doesn't break translation.
     getFormOptionsGroup(`${srcPkg}_fields`)
-      .then((rows) => {
+      .then(async (rows) => {
         if (cancelled) return;
-        const row = findFormOptionFieldRow(rows, keyCandidates);
+        let row = findFormOptionFieldRow(rows, keyCandidates);
+        if (!row || !Array.isArray((row.meta as Record<string, unknown> | null)?.options)) {
+          // Last-ditch: pull the original-cased package key in case admin
+          // legacy data is mixed-case (DB lookup itself is case-sensitive
+          // so we have to try both spellings explicitly).
+          const trimmed = (formula ?? "").trim();
+          const m = /^\{([^}]+)\}$/.exec(trimmed);
+          const km = m ? /^([a-zA-Z][a-zA-Z0-9]*)(?:__|_)(.+)$/.exec(m[1].trim()) : null;
+          if (km && km[1] !== srcPkg) {
+            const altRows = await getFormOptionsGroup(`${km[1]}_fields`);
+            if (!cancelled && Array.isArray(altRows) && altRows.length > 0) {
+              row = findFormOptionFieldRow(altRows, keyCandidates) ?? row;
+            }
+          }
+        }
         const rawOpts = (row?.meta as Record<string, unknown> | null | undefined)?.options;
         if (Array.isArray(rawOpts) && rawOpts.length > 0) {
           setAutoOptions(rawOpts as { value?: string; label?: string }[]);
@@ -802,14 +890,53 @@ function FormulaField({
     return () => {
       cancelled = true;
     };
-  }, [formula, options]);
+  }, [sourceRefMatch, options, attempt, formula]);
 
   const effectiveOptions =
     Array.isArray(options) && options.length > 0 ? options : autoOptions;
   const hasOptions = effectiveOptions.length > 0;
-  const displayLabel = hasOptions ? optionLabelForStoredValue(effectiveOptions, storedVal) : null;
+  // Single source of truth for what the user sees:
+  //   - With matching option: show its label.
+  //   - Without matching option BUT we expect one (single-var ref +
+  //     non-empty stored value + still no autoOptions): keep the raw
+  //     value so the user at least sees the code, AND nudge a retry.
+  //   - No translation needed (no source ref / no options configured):
+  //     show the stored value directly.
+  // We DELIBERATELY do NOT swap between a read-only and a registered
+  // input mid-flight — that was the flip-flop responsible for one
+  // render showing "T" and the next showing "TRANSPORTATION".
+  const resolvedLabel = hasOptions
+    ? optionLabelForStoredValue(effectiveOptions, storedVal)
+    : storedVal;
 
-  if (hasOptions) {
+  // Retry the source-options fetch when we have a stored value but
+  // couldn't translate it because the fetch came back empty or
+  // missing the source field. Capped at a few attempts so we don't
+  // loop forever if the source field really has no options.
+  React.useEffect(() => {
+    if (!sourceRefMatch) return;
+    if (Array.isArray(options) && options.length > 0) return;
+    if (!storedVal) return;
+    if (hasOptions) return;
+    if (attempt >= 4) return;
+    const delay = Math.min(400 * (attempt + 1), 2000);
+    const t = setTimeout(() => setAttempt((n) => n + 1), delay);
+    return () => clearTimeout(t);
+  }, [sourceRefMatch, options, storedVal, hasOptions, attempt]);
+
+  // A single-var passthrough (or an explicit options prop) means the
+  // field is purely DISPLAY-only: render a stable readonly controlled
+  // input that shows the best value we have right now. Anything else
+  // (arithmetic, date math, …) keeps the existing editable+registered
+  // input so the user can still tweak the result if needed.
+  //
+  // `sourceRefMatch` and `options` are both fixed for the lifetime of
+  // this field (they come from admin config), so this branch choice
+  // never flips after mount — that's deliberately what kills the
+  // "shows T, then TRANSPORTATION, then back to T" flicker bug.
+  const isDisplayOnly = Boolean(sourceRefMatch) || hasOptions;
+
+  if (isDisplayOnly) {
     return (
       <div className="space-y-1">
         <Label>
@@ -819,7 +946,7 @@ function FormulaField({
         <Input
           type="text"
           readOnly
-          value={displayLabel ?? ""}
+          value={resolvedLabel}
           className="bg-neutral-50 dark:bg-neutral-800 cursor-default"
         />
       </div>
@@ -835,6 +962,110 @@ function FormulaField({
       <Input
         type="text"
         {...form.register(name as never, dateOpts)}
+      />
+    </div>
+  );
+}
+
+/**
+ * `inputType: "mirror"` — the dead-simple "this field equals another
+ * field" passthrough.
+ *
+ * Why this exists separately from `FormulaField`:
+ * `FormulaField` was originally written for math formulas (`{a} + {b}`,
+ * `YEARS_BETWEEN(...)`). It has accumulated edge cases for preserving
+ * user-edited results, deduplicating watch-triggered re-evaluations,
+ * and case-sensitive key resolution. Reusing it for the trivial `A = B`
+ * case caused repeated, hard-to-debug bugs where the dependent field
+ * would stick on stale data (a literal "T" instead of "TRANSPORTATION",
+ * etc).
+ *
+ * Contract:
+ * - Always readonly. Users CANNOT type into it.
+ * - Always = source. Stored value is overwritten on every mount AND on
+ *   every form change; no "preserve user edits" semantics.
+ * - Auto-translates the source field's option VALUE → option LABEL
+ *   when the source row in `form_options` has `meta.options`. The raw
+ *   value is still what gets persisted in the snapshot, so downstream
+ *   PDF resolvers continue to see e.g. "T" not "TRANSPORTATION".
+ * - No formula syntax to parse. No `{ }` placeholders. The source is
+ *   chosen via two explicit admin pickers (package + field).
+ */
+function MirrorField({
+  form,
+  name,
+  source,
+  label,
+  required,
+  labelExtra,
+}: {
+  form: UseFormReturn<Record<string, unknown>>;
+  name: string;
+  source: { package: string; field: string };
+  label: string;
+  required?: boolean;
+  labelExtra?: React.ReactNode;
+}) {
+  // Resolve the source value live. We watch the entire form (not a
+  // single key) because the admin picks an abstract source field but
+  // the actual RHF key has several tolerated shapes
+  // (`${pkg}__${field}`, `${pkg}_${field}`, alt casings). The
+  // resolver handles all of those via `resolveFieldValue`.
+  const allValues = useWatch({ control: form.control }) as Record<string, unknown>;
+  const refKey = `${source.package}_${source.field}`;
+  const liveSource = React.useMemo(
+    () => resolveFieldValue(refKey, allValues ?? {}),
+    [allValues, refKey],
+  );
+
+  // Persist the resolved value back into RHF so policy save / PDF
+  // snapshots see the correct stored value. No dirty flag — the user
+  // didn't edit anything.
+  React.useEffect(() => {
+    const cur = String(form.getValues(name as never) ?? "");
+    if (cur === liveSource) return;
+    form.setValue(name as never, liveSource as never, { shouldDirty: false });
+  }, [liveSource, form, name]);
+
+  // Optional: if the source field is a SELECT, translate the stored
+  // option VALUE into the matching option LABEL for display only. The
+  // RHF/snapshot value remains the raw option value.
+  const [autoOptions, setAutoOptions] = React.useState<{ value?: string; label?: string }[]>([]);
+  React.useEffect(() => {
+    let cancelled = false;
+    const pkgKey = source.package.toLowerCase();
+    const candidates = formOptionRowKeyCandidates(pkgKey, source.field);
+    getFormOptionsGroup(`${pkgKey}_fields`)
+      .then((rows) => {
+        if (cancelled) return;
+        const row = findFormOptionFieldRow(rows, candidates);
+        const opts = (row?.meta as Record<string, unknown> | null | undefined)?.options;
+        setAutoOptions(Array.isArray(opts) ? (opts as { value?: string; label?: string }[]) : []);
+      })
+      .catch(() => {
+        if (!cancelled) setAutoOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [source.package, source.field]);
+
+  const display =
+    autoOptions.length > 0
+      ? optionLabelForStoredValue(autoOptions, liveSource)
+      : liveSource;
+
+  return (
+    <div className="space-y-1">
+      <Label>
+        {label} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+        {labelExtra}
+      </Label>
+      <Input
+        type="text"
+        readOnly
+        value={display}
+        className="bg-neutral-50 dark:bg-neutral-800 cursor-default"
       />
     </div>
   );
@@ -2697,6 +2928,39 @@ export function PackageBlock({
                           </div>
                         ) : null}
                       </div>
+                    );
+                  }
+                  if (inputType === "mirror") {
+                    const src = (meta as { mirrorSource?: { package?: string; field?: string } })?.mirrorSource;
+                    const sp = String(src?.package ?? "").trim();
+                    const sf = String(src?.field ?? "").trim();
+                    if (!sp || !sf) {
+                      return (
+                        <div key={nameBase} className="space-y-1">
+                          <Label>
+                            {displayLabel} {meta.required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
+                            {dedupeBadge}
+                          </Label>
+                          <Input
+                            type="text"
+                            readOnly
+                            value=""
+                            placeholder="(mirror source not configured — pick a package + field in admin)"
+                            className="bg-neutral-50 dark:bg-neutral-800 cursor-default text-neutral-400 dark:text-neutral-500"
+                          />
+                        </div>
+                      );
+                    }
+                    return (
+                      <MirrorField
+                        key={nameBase}
+                        form={form}
+                        name={nameBase}
+                        source={{ package: sp, field: sf }}
+                        label={displayLabel}
+                        required={Boolean(meta.required)}
+                        labelExtra={dedupeBadge}
+                      />
                     );
                   }
                   if (inputType === "formula") {

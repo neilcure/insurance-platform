@@ -352,6 +352,13 @@ export type ImportFieldDef = {
    * <FormulaField /> would have written.
    */
   formula?: string;
+  /**
+   * Mirror source (only set when inputType="mirror"). Resolved at
+   * import-commit time so the snapshot mirrors what the wizard's
+   * <MirrorField /> would have written. See `lib/types/form.ts`
+   * `MirrorSource`.
+   */
+  mirrorSource?: { package: string; field: string };
   /** Group label this field belongs to (for groupShowWhen lookups). */
   group?: string;
   /** Per-field show condition; gating dropped when these fail. */
@@ -1384,14 +1391,18 @@ async function loadPackageFields(pkgKey: string): Promise<ImportFieldDef[]> {
     if (!fieldKey) continue;
 
     const isFormula = inputType === "formula";
+    const isMirror = inputType === "mirror";
     const { unsupported: unsupportedRaw, reason: reasonRaw } = isUnsupportedField(meta);
-    // Mark formulas as unsupported so the template generator skips them
-    // (excel.ts filters on `f.unsupported`), but still expose them in the
-    // schema so the payload builder can compute their values.
-    const unsupported = isFormula ? true : unsupportedRaw;
+    // Mark formulas / mirrors as unsupported so the template generator
+    // skips them (excel.ts filters on `f.unsupported`), but still expose
+    // them in the schema so the payload builder can resolve / compute
+    // their values.
+    const unsupported = isFormula || isMirror ? true : unsupportedRaw;
     const reason = isFormula
       ? "Computed automatically by formula"
-      : reasonRaw;
+      : isMirror
+        ? "Mirrors another field automatically"
+        : reasonRaw;
     const entityPicker = extractEntityPicker(meta, inputType);
     const categories = Array.isArray(meta.categories)
       ? meta.categories.filter((c): c is string => typeof c === "string" && c.length > 0)
@@ -1437,6 +1448,13 @@ async function loadPackageFields(pkgKey: string): Promise<ImportFieldDef[]> {
       effectiveOrder: positional++,
       dbId: r.id,
       formula: isFormula && typeof meta.formula === "string" ? meta.formula : undefined,
+      mirrorSource:
+        isMirror && meta.mirrorSource && typeof (meta.mirrorSource as { package?: unknown }).package === "string" && typeof (meta.mirrorSource as { field?: unknown }).field === "string"
+          ? {
+              package: String((meta.mirrorSource as { package: string }).package),
+              field: String((meta.mirrorSource as { field: string }).field),
+            }
+          : undefined,
       group: groupLabel,
       showWhen,
       groupShowWhen,

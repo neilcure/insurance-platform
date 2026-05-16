@@ -44,8 +44,18 @@ export function evaluateFormulaFields(
 
   for (const pkg of schema.packages) {
     for (const f of pkg.fields) {
-      if (!f.formula) continue;
-      const computed = evaluateFormula(f.formula, flat, pkg.key);
+      // Resolve effective expression. For `inputType: "mirror"` we
+      // synthesise the equivalent single-placeholder formula so the
+      // resolver path is identical — this guarantees bulk import
+      // produces the same snapshot value that the wizard's
+      // <MirrorField /> writes via setValue.
+      const effectiveFormula = f.formula
+        ? f.formula
+        : f.mirrorSource
+          ? `{${f.mirrorSource.package}_${f.mirrorSource.field}}`
+          : null;
+      if (!effectiveFormula) continue;
+      const computed = evaluateFormula(effectiveFormula, flat, pkg.key);
       if (!computed) continue; // mirrors wizard: don't write empty results
 
       // Persist under the wizard's RHF key shape (same as <FormulaField />:
@@ -59,7 +69,7 @@ export function evaluateFormulaFields(
         pkg: pkg.key,
         fieldKey: f.key,
         fieldLabel: f.label,
-        formula: f.formula,
+        formula: effectiveFormula,
         computedValue: computed,
       });
     }
