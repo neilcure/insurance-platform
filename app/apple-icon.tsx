@@ -10,7 +10,8 @@ import { bravoBPngDataUri } from "@/lib/bravo-b-png-base64";
  * for site-icon rendering when no other suitable square icon is found.
  *
  * Same PNG mark as `app/icon.svg` / `opengraph-image.tsx` on neutral-900.
- * Tab/wizard branding may additionally use `app/icon.svg` + `app/favicon.ico`.
+ * Tab/wizard branding may additionally use `app/icon.svg`, `app/favicon.ico`,
+ * and `public/favicon.ico` (Docker/static copy).
  * just larger (180x180 with 32px corner radius to mimic iOS rounded
  * app icons) so it looks crisp on a Retina home screen.
  */

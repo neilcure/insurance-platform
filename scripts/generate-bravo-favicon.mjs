@@ -1,5 +1,9 @@
 /**
- * Writes `app/favicon.ico` from the PNG embedded in `lib/bravo-b-png-base64.ts`.
+ * Writes `app/favicon.ico` + `public/favicon.ico` from the PNG in `lib/bravo-b-png-base64.ts`.
+ *
+ * `public/favicon.ico` matters for Docker (`Dockerfile` copies `./public` into the runner) and
+ * ensures GET `/favicon.ico` serves the Bravo “B” — not a stale default or cached triangle asset.
+ *
  * Square-pads non-square source (matches apple-icon neutral `#171717`).
  * Run after `scripts/extract-bravo-b-png-module.mjs` when icon.svg changes.
  *
@@ -13,7 +17,8 @@ import { spawnSync } from "node:child_process";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 const tsPath = path.join(root, "lib", "bravo-b-png-base64.ts");
-const outIco = path.join(root, "app", "favicon.ico");
+const outIcoApp = path.join(root, "app", "favicon.ico");
+const outIcoPublic = path.join(root, "public", "favicon.ico");
 const tmpPng = path.join(root, "scripts", ".tmp-bravo-favicon.png");
 
 const ts = fs.readFileSync(tsPath, "utf8");
@@ -51,7 +56,8 @@ run("sharp-cli", "npx", [
   "png",
 ]);
 
-run("png-to-ico", "npx", ["--yes", "png-to-ico", tmpPng, outIco]);
+run("png-to-ico", "npx", ["--yes", "png-to-ico", tmpPng, outIcoApp]);
+fs.copyFileSync(outIcoApp, outIcoPublic);
 
 try {
   fs.unlinkSync(tmpPng);
@@ -59,4 +65,5 @@ try {
   /* ignore */
 }
 
-console.log(`Wrote ${outIco}`);
+console.log(`Wrote ${outIcoApp}`);
+console.log(`Wrote ${outIcoPublic}`);
