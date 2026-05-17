@@ -106,10 +106,19 @@ type CalendarEventKind = "renewal" | "incomplete";
 type ExpiringRow = {
   policyId: number;
   policyNumber: string;
-  /** ISO date the calendar dot for this row is plotted on. For
-   *  renewals this is endDate; for incomplete this is the startDate
-   *  (the deadline by which paperwork should be done for the
-   *  proposed coverage to take effect). */
+  /**
+   * Calendar day the dot for this row is plotted on, as a
+   * timezone-free `YYYY-MM-DD` string from `/api/policies/expiring`.
+   * For renewals this is the endDate; for incomplete this is the
+   * startDate (the deadline by which paperwork should be done for
+   * the proposed coverage to take effect).
+   *
+   * ALWAYS parse with `parseLocalYMD(date)` — never `new Date(date)`.
+   * The native parser interprets ISO-shaped strings as UTC instants
+   * which can land on a different calendar day in the browser's
+   * timezone (e.g. HK-hosted app viewed from a US VPS would render
+   * a `17-06-2027` snapshot as June 16). See `parseLocalYMD` docs.
+   */
   date: string;
   /** DD-MM-YYYY label of `date` for display. */
   dateDisplay: string;
@@ -367,6 +376,41 @@ function startOfDay(d: Date): Date {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
   return x;
+}
+
+/**
+ * Parse the `ExpiringRow.date` value from `/api/policies/expiring`
+ * into a browser-local `Date` at midnight on that calendar day.
+ *
+ * The API contract is a timezone-free `YYYY-MM-DD` string (see the
+ * `ExpiringRow.date` docstring in the route). Using `new Date(iso)`
+ * here would re-introduce the bug this helper exists to prevent:
+ * for any ISO-with-time shape the browser parses it as a UTC
+ * instant and `.getDate()` then depends on the viewer's timezone,
+ * which shifts the calendar dot by one day whenever the server's
+ * and the browser's timezones cross a day boundary (e.g. HK-hosted
+ * app viewed from a US VPS).
+ *
+ * To stay resilient through rolling deploys / cached responses we
+ * also accept the legacy ISO-with-T shape and fall back to the
+ * native parser — but only the leading YYYY-MM-DD is used to
+ * construct the local-midnight Date, so the calendar-day stays
+ * stable even on the legacy shape.
+ */
+function parseLocalYMD(s: string | null | undefined): Date {
+  const raw = String(s ?? "").trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(raw);
+  if (m) {
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    if (Number.isFinite(y) && Number.isFinite(mo) && Number.isFinite(d)) {
+      return new Date(y, mo - 1, d);
+    }
+  }
+  const fallback = new Date(raw);
+  if (!Number.isNaN(fallback.getTime())) return startOfDay(fallback);
+  return startOfDay(new Date());
 }
 
 /** Human-readable label for an N-day duration. Keeps the empty-state
@@ -850,7 +894,7 @@ export function PolicyExpiryCalendar({
     );
     const closest = sortedByProximity[0];
     if (!closest) return;
-    const closestDate = new Date(closest.date);
+    const closestDate = parseLocalYMD(closest.date);
     const sameMonth =
       closestDate.getFullYear() === today.getFullYear()
       && closestDate.getMonth() === today.getMonth();
@@ -873,7 +917,7 @@ export function PolicyExpiryCalendar({
 
   const isInActiveMonth = React.useCallback(
     (iso: string) => {
-      const d = new Date(iso);
+      const d = parseLocalYMD(iso);
       return (
         d.getFullYear() === activeMonth.getFullYear()
         && d.getMonth() === activeMonth.getMonth()
@@ -1106,7 +1150,7 @@ export function PolicyExpiryCalendar({
     // "Show all months" is active.
     if (selectedDay) {
       filtered = filtered.filter((r) =>
-        isSameLocalDay(new Date(r.date), selectedDay),
+        isSameLocalDay(parseLocalYMD(r.date), selectedDay),
       );
     } else if (!showAllMonths) {
       filtered = filtered.filter((r) => isInActiveMonth(r.date));
@@ -1156,7 +1200,7 @@ export function PolicyExpiryCalendar({
       : rows;
     for (const r of sourceRows) {
       const key = bucketForRow(r);
-      out[key].push(new Date(r.date));
+      out[key].push(parseLocalYMD(r.date));
     }
     return out;
   }, [rows, statusFilter]);
@@ -1167,7 +1211,7 @@ export function PolicyExpiryCalendar({
   const dayToRows = React.useMemo(() => {
     const map = new Map<string, ExpiringRow[]>();
     for (const r of rows) {
-      const key = localDateRowMapKey(new Date(r.date));
+      const key = localDateRowMapKey(parseLocalYMD(r.date));
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(r);
     }

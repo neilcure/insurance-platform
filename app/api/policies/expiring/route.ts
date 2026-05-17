@@ -85,8 +85,22 @@ type CalendarEventKind = "renewal" | "incomplete";
 type ExpiringRow = {
   policyId: number;
   policyNumber: string;
-  /** ISO date the calendar should plot this event on. For renewals
-   *  this is the endDate; for incomplete this is the startDate. */
+  /**
+   * Calendar day the dot for this event is plotted on, as a
+   * timezone-FREE `YYYY-MM-DD` string. For renewals this is the
+   * endDate; for incomplete policies this is the startDate.
+   *
+   * IMPORTANT — do NOT serialize this as an ISO instant (`.toISOString()`).
+   * Snapshot dates like `17-06-2027` are calendar dates (no time, no
+   * timezone). Converting them to a UTC instant on the server and
+   * then re-reading them via `new Date(iso).getDate()` on the
+   * browser causes a 1-day shift whenever the browser's timezone is
+   * far enough from the server's to cross a day boundary (e.g. a
+   * HK-hosted app viewed from a US VPS). Sending `YYYY-MM-DD` and
+   * parsing it via `new Date(y, m-1, d)` on the client guarantees
+   * the displayed day matches the snapshot regardless of either
+   * party's timezone.
+   */
   date: string;
   /** Localised DD-MM-YYYY label of `date` for inline display. */
   dateDisplay: string;
@@ -526,7 +540,12 @@ export async function GET(request: Request) {
       expiring.push({
         policyId: r.policyId,
         policyNumber: r.policyNumber,
-        date: anchorDay.toISOString(),
+        // Calendar-day string (`YYYY-MM-DD`), NOT a UTC instant. See the
+        // ExpiringRow.date docstring above for why this matters. We use
+        // `toIsoYmd` so the value is built from `anchorDay`'s LOCAL
+        // accessors — which round-trip the original snapshot date
+        // (`parseAnyDate` produced a local-midnight `Date`) verbatim.
+        date: toIsoYmd(anchorDay),
         dateDisplay: fmtDateDDMMYYYY(anchorDay),
         daysFromToday: diffInDays(anchorDay, today),
         endDateDisplay: endDayDisplay,

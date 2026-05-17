@@ -130,6 +130,33 @@ To confirm a policy is routed correctly:
 4. If missing: check `GET /api/policies/expiring` response — confirm `kind`, `daysFromToday`, `date`, `status` fields.
 5. `daysFromToday = startOfDay(anchorDate) - startOfDay(today)` in whole days.
 
+## Timezone contract — `ExpiringRow.date` is a calendar day, NOT an instant
+
+Snapshot dates like `17-06-2027` are calendar days (no time, no
+timezone). The API MUST serialize them as a timezone-free
+`YYYY-MM-DD` string and the client MUST parse them with the
+`parseLocalYMD` helper. Do NOT use `anchorDay.toISOString()` on the
+server or `new Date(r.date)` on the client.
+
+The bug being prevented: when the server's timezone differs from
+the browser's enough to cross a day boundary (e.g. HK-hosted app
+viewed from a US VPS browser), `new Date("2027-06-16T16:00:00.000Z")
+.getDate()` returns 16 in PST but 17 in HKT — the calendar dot
+appears on the wrong day, the "clicked day" filter misses, and
+`localDateRowMapKey` produces inconsistent keys between the
+plotting pass and the row-lookup pass.
+
+| Surface | Pattern |
+|---|---|
+| API response `date` field | `toIsoYmd(anchorDay)` — uses local accessors on a `Date` that's already at local midnight, so the calendar day round-trips verbatim |
+| Client deserialization of `r.date` / `closest.date` | `parseLocalYMD(s)` — extracts `YYYY-MM-DD` and builds `new Date(y, m-1, d)` so `.getDate()` is stable across timezones |
+| `dateDisplay` / `endDateDisplay` | Already safe — computed on the server with `fmtDateDDMMYYYY` which reads local accessors; no timezone conversion happens |
+| `daysFromToday` | Already safe — computed server-side via `diffInDays(anchorDay, today)` on local-midnight Dates and shipped as a plain integer |
+
+If you add a NEW field on `ExpiringRow` that represents a calendar
+day, follow the same contract. Never call `.toISOString()` on a
+local-midnight `Date` and send it to the browser as a calendar day.
+
 SQL to inspect snapshot dates directly:
 
 ```sql
