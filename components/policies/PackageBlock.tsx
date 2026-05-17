@@ -123,12 +123,14 @@ function RepeatableFormulaCell({
   formula,
   rowVals,
   label,
+  currencyCode,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   childName: string;
   formula: string;
   rowVals: Record<string, unknown>;
   label: string;
+  currencyCode?: string;
 }) {
   const lastWritten = React.useRef<string>("");
 
@@ -169,11 +171,15 @@ function RepeatableFormulaCell({
   }, [form, childName, formula, rowVals]);
 
   const currentVal = String(useWatch({ control: form.control, name: childName as string }) ?? "");
+  const cc = String(currencyCode ?? "").trim();
 
   return (
     <div className="space-y-1">
       <Label>{label}</Label>
-      <Input type="text" readOnly value={currentVal} className="bg-neutral-50 dark:bg-neutral-800 cursor-default" />
+      <div className="flex items-center gap-2">
+        {cc ? <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span> : null}
+        <Input type="text" readOnly value={currentVal} className="bg-neutral-50 dark:bg-neutral-800 flex-1 cursor-default" />
+      </div>
     </div>
   );
 }
@@ -361,6 +367,7 @@ function SubFieldRepeatable({
                       formula={String((cf as any)?.formula ?? "")}
                       rowVals={rowVals}
                       label={cf?.label ?? "Value"}
+                      currencyCode={String((cf as any)?.currencyCode ?? "").trim()}
                     />
                   );
                 }
@@ -493,7 +500,15 @@ function SelectWithOptionChildren({
             }
             if (ocType === "formula") {
               return (
-                <FormulaField key={ocName} form={form} name={ocName} formula={String((oc as any)?.formula ?? "")} label={oc?.label ?? "Value"} pkg="" />
+                <FormulaField
+                  key={ocName}
+                  form={form}
+                  name={ocName}
+                  formula={String((oc as any)?.formula ?? "")}
+                  label={oc?.label ?? "Value"}
+                  pkg=""
+                  currencyCode={String((oc as any)?.currencyCode ?? "").trim()}
+                />
               );
             }
             if (ocType === "repeatable" || String(ocType).includes("repeat")) {
@@ -708,6 +723,7 @@ function FormulaField({
   pkg,
   labelExtra,
   options,
+  currencyCode,
 }: {
   form: UseFormReturn<Record<string, unknown>>;
   name: string;
@@ -722,6 +738,8 @@ function FormulaField({
    *  display the full label (e.g. "TRANSPORTATION"). The raw value is still
    *  persisted in the snapshot for downstream resolvers. */
   options?: { value?: string; label?: string }[];
+  /** Same as `currency` fields — show HKD/USD prefix when the formula returns money. */
+  currencyCode?: string;
 }) {
   const lastFormula = React.useRef("");
   const isDateResult = React.useRef(false);
@@ -909,6 +927,12 @@ function FormulaField({
     ? optionLabelForStoredValue(effectiveOptions, storedVal)
     : storedVal;
 
+  const cc = String(currencyCode ?? "").trim();
+  const currencyPrefix =
+    cc !== "" ? (
+      <span className="shrink-0 text-sm font-medium text-neutral-500 dark:text-neutral-400">{cc}</span>
+    ) : null;
+
   // Retry the source-options fetch when we have a stored value but
   // couldn't translate it because the fetch came back empty or
   // missing the source field. Capped at a few attempts so we don't
@@ -943,12 +967,15 @@ function FormulaField({
           {label} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
           {labelExtra}
         </Label>
-        <Input
-          type="text"
-          readOnly
-          value={resolvedLabel}
-          className="bg-neutral-50 dark:bg-neutral-800 cursor-default"
-        />
+        <div className="flex items-center gap-2">
+          {currencyPrefix}
+          <Input
+            type="text"
+            readOnly
+            value={resolvedLabel}
+            className="bg-neutral-50 dark:bg-neutral-800 flex-1 cursor-default"
+          />
+        </div>
       </div>
     );
   }
@@ -959,10 +986,10 @@ function FormulaField({
         {label} {required ? <span className="text-red-600 dark:text-red-400">*</span> : null}
         {labelExtra}
       </Label>
-      <Input
-        type="text"
-        {...form.register(name as never, dateOpts)}
-      />
+      <div className="flex items-center gap-2">
+        {currencyPrefix}
+        <Input type="text" className="flex-1" {...form.register(name as never, dateOpts)} />
+      </div>
     </div>
   );
 }
@@ -2340,6 +2367,7 @@ export function PackageBlock({
                                               label={child?.label ?? "Value"}
                                               pkg={pkg}
                                               options={(child as any)?.options}
+                                              currencyCode={String((child as any)?.currencyCode ?? "").trim()}
                                             />
                                           );
                                         }
@@ -2553,6 +2581,7 @@ export function PackageBlock({
                                       label={child?.label ?? "Value"}
                                       pkg={pkg}
                                       options={(child as any)?.options}
+                                      currencyCode={String((child as any)?.currencyCode ?? "").trim()}
                                     />
                                   </React.Fragment>
                                 );
@@ -2756,6 +2785,7 @@ export function PackageBlock({
                                       label={child?.label ?? "Value"}
                                       pkg={pkg}
                                       options={(child as any)?.options}
+                                      currencyCode={String((child as any)?.currencyCode ?? "").trim()}
                                     />
                                   </React.Fragment>
                                 );
@@ -2975,6 +3005,7 @@ export function PackageBlock({
                         pkg={pkg}
                         labelExtra={dedupeBadge}
                         options={(meta as any)?.options}
+                        currencyCode={String((meta as any)?.currencyCode ?? "").trim()}
                       />
                     );
                   }
