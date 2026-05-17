@@ -1,5 +1,7 @@
 import { ImageResponse } from "next/og";
 
+import { bravoBPngDataUri } from "@/lib/bravo-b-png-base64";
+
 /**
  * Default Open Graph / Twitter card preview image (1200x630).
  *
@@ -23,11 +25,8 @@ export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 export const alt = "Bravo General Insurance Interface";
 
-const SHIELD_PATH =
-  "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z";
-const CHECK_PATH = "m9 12 2 2 4-4";
-
 export default function OgImage() {
+  const src = bravoBPngDataUri();
   return new ImageResponse(
     (
       <div
@@ -64,19 +63,14 @@ export default function OgImage() {
               borderRadius: 28,
             }}
           >
-            <svg
-              width="86"
-              height="86"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#171717"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d={SHIELD_PATH} />
-              <path d={CHECK_PATH} />
-            </svg>
+            {/* eslint-disable-next-line @next/next/no-img-element -- OG renderer embed */}
+            <img
+              src={src}
+              alt=""
+              width={86}
+              height={86}
+              style={{ display: "block", objectFit: "contain" }}
+            />
           </div>
           <div
             style={{
