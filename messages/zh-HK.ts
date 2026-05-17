@@ -249,6 +249,20 @@ const messages: DeepPartial<Messages> = {
       toastDeleted: "公告已刪除",
       toastError: "發生錯誤",
     },
+    documentTemplatesEditor: {
+      legacyPremiumSource: "保費（舊版）",
+      legacyPremiumBannerTitle: "舊版「保費」資料來源",
+      legacyPremiumBannerBody:
+        "此選項讀取會計資料表的保費列（policyPremiums）。精靈裡「Premium Record」套件欄位會存在保單快照 — 請將來源改為「套件（自訂）」，套件選「premiumRecord」，文件才會顯示這些數值。",
+      premiumTypographyHeading: "此區塊標籤／數值字型",
+      premiumTypographyHint:
+        "覆蓋範本預設的正文字級與標籤／數值顏色。可用色塊選色或自行輸入十六進位色碼。「將最新金額列加粗」會套用最後一個貨幣或數字欄位（依欄位順序）。",
+      premiumTypographyBodySize: "正文字級",
+      premiumTypographyInherit: "沿用範本預設",
+      premiumTypographyLabelColor: "標籤顏色",
+      premiumTypographyValueColor: "數值顏色",
+      premiumTypographyBoldLatest: "將最新金額列加粗",
+    },
   },
 
   announcementsViewer: {

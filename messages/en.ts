@@ -332,6 +332,20 @@ export type Messages = {
       toastDeleted: string;
       toastError: string;
     };
+    /** Document Templates editor (`DocumentTemplatesManager`). */
+    documentTemplatesEditor: {
+      /** Select option when an old section still uses `source: accounting`. */
+      legacyPremiumSource: string;
+      legacyPremiumBannerTitle: string;
+      legacyPremiumBannerBody: string;
+      premiumTypographyHeading: string;
+      premiumTypographyHint: string;
+      premiumTypographyBodySize: string;
+      premiumTypographyInherit: string;
+      premiumTypographyLabelColor: string;
+      premiumTypographyValueColor: string;
+      premiumTypographyBoldLatest: string;
+    };
   };
   announcementsViewer: {
     openLink: string;
@@ -639,6 +653,20 @@ const messages: Messages = {
       toastSaved: "Announcement saved",
       toastDeleted: "Announcement deleted",
       toastError: "Something went wrong",
+    },
+    documentTemplatesEditor: {
+      legacyPremiumSource: "Premium (legacy)",
+      legacyPremiumBannerTitle: "Legacy Premium source",
+      legacyPremiumBannerBody:
+        "This reads accounting-table rows (policyPremiums). Premium Record fields from the wizard live in the policy snapshot — switch Source to \"Package (custom)\" and Package to \"premiumRecord\" so values render on documents.",
+      premiumTypographyHeading: "Row typography (this section)",
+      premiumTypographyHint:
+        "Overrides the template-wide body size and colours for label/value rows here. Pick colours with the swatch or type a hex code. “Bold latest amount” targets the last currency or number row in this section (field order).",
+      premiumTypographyBodySize: "Body size",
+      premiumTypographyInherit: "Use template default",
+      premiumTypographyLabelColor: "Label colour",
+      premiumTypographyValueColor: "Value colour",
+      premiumTypographyBoldLatest: "Bold latest amount row",
     },
   },
 

@@ -24,7 +24,18 @@ type RecentPolicy = {
   policyNumber: string;
   createdAt: string;
   flowKey: string | null;
+  plateNumber?: string | null;
+  insuredLabel?: string | null;
 };
+
+function recentPolicyPickerLabel(p: RecentPolicy): { short: string; full: string } {
+  const bits: string[] = [p.policyNumber];
+  if (p.plateNumber && String(p.plateNumber).trim()) bits.push(String(p.plateNumber).trim());
+  if (p.insuredLabel && String(p.insuredLabel).trim()) bits.push(String(p.insuredLabel).trim());
+  const full = bits.join(" · ");
+  const short = full.length > 130 ? `${full.slice(0, 127)}…` : full;
+  return { short, full };
+}
 
 type SnapshotData = {
   packagesSnapshot?: Record<string, unknown> | null;
@@ -85,6 +96,16 @@ export function DocumentTemplateLivePreview({
   const [detail, setDetail] = React.useState<PolicyDetail | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // Active cover-line keys of the currently previewed policy. Lets the
+  // preview honour admin-configured `sectionCoverTypes` / `groupCoverTypes`
+  // gates so a "Sum Premium (TPO + PD)" group only shows when the policy
+  // really has both covers. Loaded alongside the policy detail below.
+  const [policyLineKeys, setPolicyLineKeys] = React.useState<Set<string> | null>(null);
+  // Policy category slug (e.g. `"tpo"`, `"comp"`, `"tpo_with_od"`)
+  // derived from the line-key set against admin-configured
+  // `form_options.policy_category` rows. Lets the admin preview honour
+  // the new `groupCoverCategories` single-dropdown gate.
+  const [policyCategory, setPolicyCategory] = React.useState<string | null>(null);
   // Audience toggle — only meaningful when the template either flags
   // `enableAgentCopy`, is itself an agent template, or has at least one
   // section with `audience: "agent" | "client"`. For client-only templates
@@ -120,7 +141,8 @@ export function DocumentTemplateLivePreview({
   }, [supportsAgent, previewAudience]);
 
   // Load the "recent policies" list whenever the drawer opens, so the admin
-  // can pick a policy without remembering its number.
+  // can pick a policy without remembering its number. The API omits `clientSet`
+  // client-master stubs (insured-only rows) and returns plate + insured hints.
   React.useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -160,9 +182,61 @@ export function DocumentTemplateLivePreview({
       if (data?.detail?.policyNumber) {
         setPolicyNum(data.detail.policyNumber);
       }
+      // Also fetch active cover-line keys + policy_category config so
+      // the preview honours the cover-types and cover-categories gates.
+      // Fire-and-forget — if it fails, the gates simply pass through.
+      const pid = data?.detail?.policyId;
+      if (typeof pid === "number" && pid > 0) {
+        type PolicyCategoryRow = {
+          value?: string;
+          meta?: { accountingLines?: { key?: string }[] } | null;
+        };
+        Promise.all([
+          fetch(`/api/policies/${pid}/premiums`, { cache: "no-store" })
+            .then((r) => (r.ok ? r.json() : { lines: [] }))
+            .then((d: { lines?: { lineKey?: string }[] }) =>
+              new Set(
+                (d.lines ?? [])
+                  .map((l) => String(l.lineKey ?? "").toLowerCase())
+                  .filter(Boolean),
+              ),
+            )
+            .catch(() => new Set<string>()),
+          fetch(`/api/form-options?groupKey=policy_category`, { cache: "no-store" })
+            .then((r) => (r.ok ? r.json() : []))
+            .catch(() => [] as PolicyCategoryRow[]),
+        ])
+          .then(([keys, catRows]) => {
+            setPolicyLineKeys(keys);
+            const rows: PolicyCategoryRow[] = Array.isArray(catRows) ? (catRows as PolicyCategoryRow[]) : [];
+            const lineKeyList = Array.from(keys);
+            let matched = "";
+            for (const row of rows) {
+              const lines = row?.meta?.accountingLines;
+              if (!Array.isArray(lines) || lines.length === 0) continue;
+              const rowKeys = lines.map((l) => String(l?.key ?? "").toLowerCase()).filter(Boolean);
+              if (rowKeys.length !== lineKeyList.length) continue;
+              const rowKeySet = new Set(rowKeys);
+              if (lineKeyList.every((k) => rowKeySet.has(k))) {
+                matched = String(row?.value ?? "");
+                break;
+              }
+            }
+            setPolicyCategory(matched);
+          })
+          .catch(() => {
+            setPolicyLineKeys(new Set<string>());
+            setPolicyCategory("");
+          });
+      } else {
+        setPolicyLineKeys(null);
+        setPolicyCategory(null);
+      }
     } catch (err) {
       setError((err as Error).message ?? "Failed to load policy");
       setDetail(null);
+      setPolicyLineKeys(null);
+      setPolicyCategory(null);
     } finally {
       setLoading(false);
     }
@@ -292,12 +366,14 @@ export function DocumentTemplateLivePreview({
                   disabled={recentLoading || loading}
                 >
                   <option value="">— pick a recent policy —</option>
-                  {recent.map((p) => (
-                    <option key={p.policyId} value={p.policyId}>
-                      {p.policyNumber}
-                      {p.flowKey ? ` · ${p.flowKey}` : ""}
-                    </option>
-                  ))}
+                  {recent.map((p) => {
+                    const { short, full } = recentPolicyPickerLabel(p);
+                    return (
+                      <option key={p.policyId} value={p.policyId} title={full}>
+                        {short}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
             )}
@@ -396,6 +472,8 @@ export function DocumentTemplateLivePreview({
               audience={supportsAgent ? previewAudience : undefined}
               trackingEntry={previewTrackingEntry}
               previewShowEmptySections={showEmptySections}
+              policyLineKeys={policyLineKeys ?? undefined}
+              policyCategory={policyCategory ?? undefined}
             />
           )}
         </div>

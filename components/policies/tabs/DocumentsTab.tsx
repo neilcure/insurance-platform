@@ -612,6 +612,60 @@ function bucketFieldsByGroup<T extends { group?: string }>(
   return buckets;
 }
 
+/**
+ * Dual-audience document templates strip agent-sided *money* fields from the
+ * client copy. We must NOT hide broker identity rows whose label happens to
+ * include "Agent" (Financial assignment, Agent Info) — only premium/credit/
+ * commission semantics.
+ *
+ * Section-level Audience in the template editor still controls whole blocks
+ * ("Client only" / "Agent only"); this filter only affects mixed sections.
+ */
+function isAgentMoneyFieldHiddenFromClient(f: { key: string; label: string }): boolean {
+  const k = (f.key ?? "").toLowerCase().replace(/[\s_-]/g, "");
+  const lab = (f.label ?? "").toLowerCase();
+  if (k.includes("agentpremium") || k.includes("agentcredit")) return true;
+  if (k === "apremium") return true;
+  if (lab.includes("agent premium") || lab.includes("agent credit")) return true;
+  if (/\bsum\s+agent\b/i.test(lab) && lab.includes("premium")) return true;
+  if (
+    /\bagent\b/i.test(lab)
+    && (/\bpremium\b/i.test(lab) || /\bcredit\b/i.test(lab) || /\bcommission\b/i.test(lab))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Mirror: hide client-sided money fields from the agent copy where appropriate. */
+function isClientMoneyFieldHiddenFromAgent(f: { key: string; label: string }): boolean {
+  const k = (f.key ?? "").toLowerCase().replace(/[\s_-]/g, "");
+  const lab = (f.label ?? "").toLowerCase();
+  if (k.includes("clientpremium") || k.includes("clientcredit")) return true;
+  if (k === "cpremium") return true;
+  if (lab.includes("client premium") || lab.includes("client credit")) return true;
+  if (/\bsum\s+client\b/i.test(lab) && lab.includes("premium")) return true;
+  if (
+    /\bclient\b/i.test(lab)
+    && (/\bpremium\b/i.test(lab) || /\bcredit\b/i.test(lab) || /\bcommission\b/i.test(lab))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Agent-copy doc number (HTML preview / email / print) — distinct from client-facing templates. */
+const AGENT_COPY_DOCUMENT_NUMBER_COLOR = "#dc2626";
+
+/** Last index of a currency / number row — used to bold the “latest” premium line. */
+function latestAmountRowIndex(rows: { format?: string }[]): number {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const fmt = rows[i]?.format;
+    if (fmt === "currency" || fmt === "negative_currency" || fmt === "number") return i;
+  }
+  return -1;
+}
+
 export function DocumentPreview({
   template,
   detail,
@@ -624,6 +678,8 @@ export function DocumentPreview({
   onConfirmDoc,
   onOpenEmailDialog,
   previewShowEmptySections,
+  policyLineKeys,
+  policyCategory,
 }: {
   template: DocumentTemplateRow;
   detail: PolicyDetail;
@@ -645,6 +701,32 @@ export function DocumentPreview({
    * Production renders never set this so end-user output stays unchanged.
    */
   previewShowEmptySections?: boolean;
+  /**
+   * Active accounting line keys (cover-type keys) for this policy
+   * (e.g. `Set(["tpo", "pd"])`). Used by the admin-configured
+   * cover-types gates (`section.sectionCoverTypes` and
+   * `section.groupCoverTypes`) to hide whole sections / per-group
+   * blocks for policies that don't match. Caller is expected to load
+   * this from `/api/policies/:id/premiums` once and pass it here.
+   *
+   * When `undefined`, the gates are NOT enforced (backwards-compatible
+   * pass-through). When provided but empty, every group with a
+   * non-empty rule is hidden.
+   */
+  policyLineKeys?: Set<string>;
+  /**
+   * Policy "category" slug (e.g. `"tpo"`, `"comp"`, `"tpo_with_od"`)
+   * derived from the policy's line-key set against admin-configured
+   * `form_options.policy_category` rows. Used by the new admin-facing
+   * `section.groupCoverCategories` / `section.sectionCoverCategories`
+   * gates so admins can pick "show this group when policy is X" with
+   * a single dropdown instead of the older two-rule line-key gates.
+   *
+   * `undefined` => gate not enforced (legacy callers that haven't been
+   * updated). Empty string => no category matched the policy's line
+   * keys (legacy single-`main` policy) and the gate is bypassed.
+   */
+  policyCategory?: string;
 }) {
   const meta = template.meta!;
 
@@ -1007,9 +1089,86 @@ export function DocumentPreview({
   );
   const viewAudience = audience ?? "client";
 
-  const filteredSections = hasAudienceSections
+  // Admin-configurable visibility gates. All helpers are pass-through
+  // when `policyLineKeys` is undefined (caller hasn't wired it yet) so
+  // legacy templates render unchanged.
+  //
+  // Three rule kinds, combined with AND. The PREFERRED knob is the
+  // first one — it maps directly to a single admin-facing dropdown
+  // ("Show this group when policy is …"). The other two are legacy
+  // line-key gates kept for back-compat:
+  //
+  //  - CATEGORY (`sectionCoverCategories` / `groupCoverCategories`):
+  //    pass only when the policy's category slug is in the list.
+  //    Empty/undefined => no requirement.
+  //  - SHOW-when (`sectionCoverTypes` / `groupCoverTypes`):
+  //    legacy AND-of-line-keys rule (every listed line key must exist
+  //    on the policy).
+  //  - HIDE-when (`sectionHideCoverTypes` / `groupHideCoverTypes`):
+  //    legacy inverse — fail when every listed line key exists.
+  //
+  // The "Other" bucket (fields without `meta.group`) is never gated.
+  const isGateEnforced = policyLineKeys !== undefined;
+  const lineKeySet = policyLineKeys ?? new Set<string>();
+  const categorySlug = String(policyCategory ?? "").toLowerCase();
+  const everyKeyPresent = React.useCallback(
+    (keys: string[]) => keys.every((k) => lineKeySet.has(String(k).toLowerCase())),
+    [lineKeySet],
+  );
+  const categoryMatches = React.useCallback(
+    (cats: string[] | undefined): boolean => {
+      if (!cats || cats.length === 0) return true;
+      // When category couldn't be derived (legacy policy / no match),
+      // bypass the gate so we never silently hide everything.
+      if (!categorySlug) return true;
+      const norm = cats.map((c) => String(c).toLowerCase());
+      return norm.includes(categorySlug);
+    },
+    [categorySlug],
+  );
+  const sectionGateOK = React.useCallback(
+    (s: TemplateSection): boolean => {
+      if (!isGateEnforced) return true;
+      // PRECEDENCE: when the new category gate is configured for the
+      // section, it is the SOLE source of truth — legacy line-key
+      // rules are ignored. This stops half-migrated templates (where
+      // a stale `sectionHideCoverTypes` lingers after the admin set a
+      // category) from contradicting the admin's clear intent.
+      if (s.sectionCoverCategories !== undefined && s.sectionCoverCategories.length > 0) {
+        return categoryMatches(s.sectionCoverCategories);
+      }
+      const show = s.sectionCoverTypes;
+      if (show && show.length > 0 && !everyKeyPresent(show)) return false;
+      const hide = s.sectionHideCoverTypes;
+      if (hide && hide.length > 0 && everyKeyPresent(hide)) return false;
+      return true;
+    },
+    [isGateEnforced, everyKeyPresent, categoryMatches],
+  );
+  const groupGateOK = React.useCallback(
+    (s: TemplateSection, groupName: string | undefined): boolean => {
+      if (!isGateEnforced) return true;
+      if (!groupName) return true;
+      // PRECEDENCE: per-group category rule (the admin-facing "Show
+      // on" dropdown) wins over legacy show/hide rules whenever it
+      // exists, so stale legacy entries can't silently contradict it.
+      const cats = s.groupCoverCategories?.[groupName];
+      if (cats !== undefined && cats.length > 0) {
+        return categoryMatches(cats);
+      }
+      const show = s.groupCoverTypes?.[groupName];
+      if (show && show.length > 0 && !everyKeyPresent(show)) return false;
+      const hide = s.groupHideCoverTypes?.[groupName];
+      if (hide && hide.length > 0 && everyKeyPresent(hide)) return false;
+      return true;
+    },
+    [isGateEnforced, everyKeyPresent, categoryMatches],
+  );
+
+  const filteredSections = (hasAudienceSections
     ? meta.sections.filter((s) => !s.audience || s.audience === "all" || s.audience === viewAudience)
-    : meta.sections;
+    : meta.sections
+  ).filter(sectionGateOK);
 
   // Page-level styles for the print iframe and the server-side
   // Puppeteer PDF renderer live in `lib/pdf/print-styles.ts` so the
@@ -1392,15 +1551,16 @@ export function DocumentPreview({
     lines.push("");
 
     for (const section of filteredSections) {
-      const isAgentFld = (f: { key: string; label: string }) =>
-        /agent/i.test(f.label) || /agent/i.test(f.key);
       const rawVisibleFields = section.fields.filter((f) => {
         if (!hasAudienceSections) return true;
-        if (section.id === "totals") return true;
-        if (viewAudience === "client" && isAgentFld(f)) return false;
+        if (section.id === "line_items" || section.id === "totals") return true;
+        if (viewAudience === "client" && !section.showAgentPremiumOnClientCopy && isAgentMoneyFieldHiddenFromClient(f)) return false;
+        if (viewAudience === "agent" && !section.showClientPremiumOnAgentCopy && isClientMoneyFieldHiddenFromAgent(f)) return false;
         return true;
       });
-      const visibleFlds = rawVisibleFields;
+      const visibleFlds = rawVisibleFields.filter((f) =>
+        groupGateOK(section, f.group),
+      );
 
       const useTable =
         (section.layout === "table" || section.id === "line_items") &&
@@ -1667,11 +1827,13 @@ export function DocumentPreview({
     if (trackingEntry?.documentNumber) {
       // Pixel sizes mirror the on-screen scale used in the React render so
       // the email/print HTML matches what admins see in the live preview.
-      // Defaults preserve the old 14px / #1a1a1a so existing templates are
-      // visually identical until someone tunes the new settings.
+      // Client copy uses template color or #1a1a1a; agent copy uses fixed red.
       const docNoPxMap = { xs: 11, sm: 12, md: 14, lg: 18, xl: 22 } as const;
       const docNoPx = docNoPxMap[(meta.header.documentNumberSize ?? "md") as keyof typeof docNoPxMap];
-      const docNoColor = meta.header.documentNumberColor || "#1a1a1a";
+      const docNoColor =
+        viewAudience === "agent"
+          ? AGENT_COPY_DOCUMENT_NUMBER_COLOR
+          : meta.header.documentNumberColor || "#1a1a1a";
       docNoHtml =
         '<div style="white-space:nowrap;">' +
         '<div style="font-size:10px;color:#a3a3a3;text-transform:uppercase;letter-spacing:0.05em;">Doc No.</div>' +
@@ -1759,17 +1921,18 @@ export function DocumentPreview({
     // Sections — same visibility/empty-value rules as the on-screen preview.
     if (!(meta.requiresStatement && !extraCtx.statementData)) {
       for (const section of filteredSections) {
-        const isAgentFld = (f: { key: string; label: string }) =>
-          /agent/i.test(f.label) || /agent/i.test(f.key);
-        const isClientFld = (f: { key: string; label: string }) =>
-          /client/i.test(f.label) || /client/i.test(f.key);
-        const visibleFlds = section.fields.filter((f) => {
+        const audienceVisibleFlds = section.fields.filter((f) => {
           if (!hasAudienceSections) return true;
           if (section.id === "line_items" || section.id === "totals") return true;
-          if (viewAudience === "client" && isAgentFld(f)) return false;
-          if (viewAudience === "agent" && isClientFld(f)) return false;
+          if (viewAudience === "client" && !section.showAgentPremiumOnClientCopy && isAgentMoneyFieldHiddenFromClient(f)) return false;
+          if (viewAudience === "agent" && !section.showClientPremiumOnAgentCopy && isClientMoneyFieldHiddenFromAgent(f)) return false;
           return true;
         });
+        // Apply per-group cover-types gate AFTER audience filter so the
+        // HTML/email path agrees with the on-screen + plain-text paths.
+        const visibleFlds = audienceVisibleFlds.filter((f) =>
+          groupGateOK(section, f.group),
+        );
 
         const fields = expandFieldsWithChildren(
           visibleFlds
@@ -1913,6 +2076,15 @@ export function DocumentPreview({
 
         if (fields.length === 0) continue;
 
+        const pt = section.premiumTypography;
+        const secBodySize = (pt?.bodyFontSize ?? bodyFontSize) as BodySizeKey;
+        const secBodyPx = bodyPxMap[secBodySize];
+        const secLabelColorStyle = ((pt?.labelColor ?? labelColor) || "").trim() || "#737373";
+        const secValueColorStyle = ((pt?.valueColor ?? valueColor) || "").trim() || "#1a1a1a";
+        const latestFieldsIdx = pt?.emphasizeLatestAmount ? latestAmountRowIndex(fields) : -1;
+        const emphasizeLatestField = (f: (typeof fields)[number]) =>
+          latestFieldsIdx >= 0 && fields.indexOf(f) === latestFieldsIdx;
+
         const gap = emailGap[sectionSpacing];
         const titlePx = emailTitlePxFor(section);
         parts.push(
@@ -1969,8 +2141,8 @@ export function DocumentPreview({
               const cell = (f: typeof left) =>
                 f
                   ? [
-                      `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:${labelColorStyle};font-size:${bodyPx}px;vertical-align:top;width:20%;${border}">${escape(f.label)}</td>`,
-                      `<td style="padding:${gap.rowPy}px 12px ${gap.rowPy}px 0;color:${valueColorStyle};font-weight:600;font-size:${bodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;width:30%;${border}">${escape(formatValue(f.resolved, f.format, f.currencyCode))}</td>`,
+                      `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:${secLabelColorStyle};font-size:${secBodyPx}px;vertical-align:top;width:20%;${border}">${escape(f.label)}</td>`,
+                      `<td style="padding:${gap.rowPy}px 12px ${gap.rowPy}px 0;color:${secValueColorStyle};font-weight:${emphasizeLatestField(f) ? 700 : 600};font-size:${secBodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;width:30%;${border}">${escape(formatValue(f.resolved, f.format, f.currencyCode))}</td>`,
                     ].join("")
                   : `<td style="${border}" colspan="2"></td>`;
               inner.push("<tr>", cell(left), cell(right), "</tr>");
@@ -1983,8 +2155,8 @@ export function DocumentPreview({
               const valueText = formatValue(f.resolved, f.format, f.currencyCode);
               inner.push(
                 "<tr>",
-                `<td style="padding:${gap.rowPy}px 6px ${gap.rowPy}px 0;color:${labelColorStyle};font-size:${bodyPx}px;vertical-align:top;width:50%;${borderStyle}">${escape(f.label)}</td>`,
-                `<td style="padding:${gap.rowPy}px 0;color:${valueColorStyle};font-weight:600;font-size:${bodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
+                `<td style="padding:${gap.rowPy}px 6px ${gap.rowPy}px 0;color:${secLabelColorStyle};font-size:${secBodyPx}px;vertical-align:top;width:50%;${borderStyle}">${escape(f.label)}</td>`,
+                `<td style="padding:${gap.rowPy}px 0;color:${secValueColorStyle};font-weight:${emphasizeLatestField(f) ? 700 : 600};font-size:${secBodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
                 "</tr>",
               );
             }
@@ -2083,8 +2255,8 @@ export function DocumentPreview({
             const cell = (f: typeof left) =>
               f
                 ? [
-                    `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:${labelColorStyle};font-size:${bodyPx}px;vertical-align:top;width:20%;${border}">${escape(f.label)}</td>`,
-                    `<td style="padding:${gap.rowPy}px 12px ${gap.rowPy}px 0;color:${valueColorStyle};font-weight:600;font-size:${bodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;width:30%;${border}">${escape(formatValue(f.resolved, f.format, f.currencyCode))}</td>`,
+                    `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:${secLabelColorStyle};font-size:${secBodyPx}px;vertical-align:top;width:20%;${border}">${escape(f.label)}</td>`,
+                    `<td style="padding:${gap.rowPy}px 12px ${gap.rowPy}px 0;color:${secValueColorStyle};font-weight:${emphasizeLatestField(f) ? 700 : 600};font-size:${secBodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;width:30%;${border}">${escape(formatValue(f.resolved, f.format, f.currencyCode))}</td>`,
                   ].join("")
                 : `<td style="${border}" colspan="2"></td>`;
             parts.push("<tr>", cell(left), cell(right), "</tr>");
@@ -2100,8 +2272,8 @@ export function DocumentPreview({
             const borderStyle = isLast ? "" : "border-bottom:1px solid #f5f5f5;";
             parts.push(
               "<tr>",
-              `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:${labelColorStyle};font-size:${bodyPx}px;vertical-align:top;width:40%;${borderStyle}">${escape(f.label)}</td>`,
-              `<td style="padding:${gap.rowPy}px 0;color:${valueColorStyle};font-weight:600;font-size:${bodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
+              `<td style="padding:${gap.rowPy}px 8px ${gap.rowPy}px 0;color:${secLabelColorStyle};font-size:${secBodyPx}px;vertical-align:top;width:40%;${borderStyle}">${escape(f.label)}</td>`,
+              `<td style="padding:${gap.rowPy}px 0;color:${secValueColorStyle};font-weight:${emphasizeLatestField(f) ? 700 : 600};font-size:${secBodyPx}px;text-align:right;vertical-align:top;white-space:pre-line;${borderStyle}">${escape(valueText)}</td>`,
               "</tr>",
             );
           }
@@ -2351,7 +2523,10 @@ export function DocumentPreview({
               lg: "text-sm sm:text-lg",
               xl: "text-base sm:text-xl",
             };
-            const docNoColor = meta.header.documentNumberColor || "#1a1a1a";
+            const docNoColor =
+              viewAudience === "agent"
+                ? AGENT_COPY_DOCUMENT_NUMBER_COLOR
+                : meta.header.documentNumberColor || "#1a1a1a";
             const docNoBlock = trackingEntry?.documentNumber ? (
               <div className="text-right ml-2 shrink-0 max-w-[45%]">
                 <div className="text-[10px] sm:text-xs text-neutral-400 uppercase tracking-wider">Doc No.</div>
@@ -2433,19 +2608,35 @@ export function DocumentPreview({
 
         {/* Sections — skip entirely when requiresStatement is set and no statement data exists */}
         {!(meta.requiresStatement && !loadingExtra && !extraCtx.statementData) && filteredSections.map((section) => {
-          const isAgentField = (f: { key: string; label: string }) =>
-            /agent/i.test(f.label) || /agent/i.test(f.key);
-          const isClientField = (f: { key: string; label: string }) =>
-            /client/i.test(f.label) || /client/i.test(f.key);
+          const pt = section.premiumTypography;
+          const secBodySize = (pt?.bodyFontSize ?? bodyFontSize) as BodySizeKey;
+          const secLabelClassName = bodyLabelClass[secBodySize];
+          const secValueClassName = bodyValueClass[secBodySize];
+          const secLabelColorStr = (pt?.labelColor ?? labelColor ?? "").trim();
+          const secValueColorStr = (pt?.valueColor ?? valueColor ?? "").trim();
+          const secLabelStyle: React.CSSProperties | undefined = secLabelColorStr ? { color: secLabelColorStr } : undefined;
+          const secValueStyle: React.CSSProperties = {
+            whiteSpace: "pre-line",
+            ...(secValueColorStr ? { color: secValueColorStr } : {}),
+          };
+
           const rawVisibleFields = section.fields.filter((f) => {
             if (!hasAudienceSections) return true;
             if (section.id === "line_items") return true;
             if (section.id === "totals") return true;
-            if (viewAudience === "client" && isAgentField(f)) return false;
-            if (viewAudience === "agent" && isClientField(f)) return false;
+            if (viewAudience === "client" && !section.showAgentPremiumOnClientCopy && isAgentMoneyFieldHiddenFromClient(f)) return false;
+            if (viewAudience === "agent" && !section.showClientPremiumOnAgentCopy && isClientMoneyFieldHiddenFromAgent(f)) return false;
             return true;
           });
-          const visibleFields = rawVisibleFields;
+          // Apply per-group cover-types gate after audience filtering so
+          // an admin can have e.g. an "Agent Premium" group that is BOTH
+          // agent-only AND multi-cover-only. The audience filter strips
+          // agent/client *premium* rows from the wrong copy; identity rows
+          // (assigned broker, insured contact) stay visible. Section-level
+          // `audience` still removes whole blocks (e.g. Agent Info).
+          const visibleFields = rawVisibleFields.filter((f) =>
+            groupGateOK(section, f.group),
+          );
 
           const useTable =
             (section.layout === "table" || section.id === "line_items") &&
@@ -2516,19 +2707,34 @@ export function DocumentPreview({
                           );
                         })}
                       </div>
-                    ) : scalarFields.map((f, idx) => (
-                      <div
-                        key={f.key}
-                        className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
-                      >
-                        <span className={`${bodyLabelClassName} text-neutral-500 font-medium w-[40%] shrink-0`} style={labelStyle}>
-                          {f.label}
-                        </span>
-                        <span className={`${bodyValueClassName} font-semibold text-neutral-900 wrap-break-word text-right`} style={valueStyle}>
-                          {formatValue(f.resolved, f.format, f.currencyCode)}
-                        </span>
-                      </div>
-                    ))}
+                    ) : (() => {
+                      const latestScalarIdx =
+                        pt?.emphasizeLatestAmount ? latestAmountRowIndex(scalarFields) : -1;
+                      return scalarFields.map((f, idx) => {
+                        const emphasized = latestScalarIdx >= 0 && idx === latestScalarIdx;
+                        return (
+                          <div
+                            key={f.key}
+                            className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < scalarFields.length - 1 ? "border-b border-neutral-100" : ""}`}
+                          >
+                            <span className={`${secLabelClassName} text-neutral-500 font-medium w-[40%] shrink-0`} style={secLabelStyle}>
+                              {f.label}
+                            </span>
+                            <span
+                              className={cn(
+                                secValueClassName,
+                                emphasized ? "font-bold" : "font-semibold",
+                                secValueColorStr ? "" : "text-neutral-900",
+                                "wrap-break-word text-right",
+                              )}
+                              style={secValueStyle}
+                            >
+                              {formatValue(f.resolved, f.format, f.currencyCode)}
+                            </span>
+                          </div>
+                        );
+                      });
+                    })()}
                   </div>
                 )}
 
@@ -2736,6 +2942,11 @@ export function DocumentPreview({
             section,
           );
 
+          const latestFieldsIdx =
+            pt?.emphasizeLatestAmount ? latestAmountRowIndex(fields) : -1;
+          const emphasizeLatestField = (f: (typeof fields)[number]) =>
+            latestFieldsIdx >= 0 && fields.indexOf(f) === latestFieldsIdx;
+
           if (fields.length === 0) {
             // In production we drop empty sections so recipients don't see
             // empty headers. In live preview the admin opted in to keep
@@ -2871,10 +3082,18 @@ export function DocumentPreview({
                                   key={f.key}
                                   className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${isLastRow ? "" : "border-b border-neutral-100"}`}
                                 >
-                                  <span className={`${bodyLabelClassName} text-neutral-500 font-medium w-[45%] shrink-0`} style={labelStyle}>
+                                  <span className={`${secLabelClassName} text-neutral-500 font-medium w-[45%] shrink-0`} style={secLabelStyle}>
                                     {f.label}
                                   </span>
-                                  <span className={`${bodyValueClassName} font-semibold text-neutral-900 wrap-break-word text-right`} style={valueStyle}>
+                                  <span
+                                    className={cn(
+                                      secValueClassName,
+                                      emphasizeLatestField(f) ? "font-bold" : "font-semibold",
+                                      secValueColorStr ? "" : "text-neutral-900",
+                                      "wrap-break-word text-right",
+                                    )}
+                                    style={secValueStyle}
+                                  >
                                     {formatValue(f.resolved, f.format, f.currencyCode)}
                                   </span>
                                 </div>
@@ -2887,10 +3106,18 @@ export function DocumentPreview({
                               key={f.key}
                               className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < b.fields.length - 1 ? "border-b border-neutral-100" : ""}`}
                             >
-                              <span className={`${bodyLabelClassName} text-neutral-500 font-medium w-[40%] shrink-0`} style={labelStyle}>
+                              <span className={`${secLabelClassName} text-neutral-500 font-medium w-[40%] shrink-0`} style={secLabelStyle}>
                                 {f.label}
                               </span>
-                              <span className={`${bodyValueClassName} font-semibold text-neutral-900 wrap-break-word text-right`} style={valueStyle}>
+                              <span
+                                className={cn(
+                                  secValueClassName,
+                                  emphasizeLatestField(f) ? "font-bold" : "font-semibold",
+                                  secValueColorStr ? "" : "text-neutral-900",
+                                  "wrap-break-word text-right",
+                                )}
+                                style={secValueStyle}
+                              >
                                 {formatValue(f.resolved, f.format, f.currencyCode)}
                               </span>
                             </div>
@@ -2990,10 +3217,18 @@ export function DocumentPreview({
                               key={f.key}
                               className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${isLastRow ? "" : "border-b border-neutral-100"}`}
                             >
-                              <span className={`${bodyLabelClassName} text-neutral-500 font-medium w-[45%] shrink-0`} style={labelStyle}>
+                              <span className={`${secLabelClassName} text-neutral-500 font-medium w-[45%] shrink-0`} style={secLabelStyle}>
                                 {f.label}
                               </span>
-                              <span className={`${bodyValueClassName} font-semibold text-neutral-900 wrap-break-word text-right`} style={valueStyle}>
+                              <span
+                                className={cn(
+                                  secValueClassName,
+                                  emphasizeLatestField(f) ? "font-bold" : "font-semibold",
+                                  secValueColorStr ? "" : "text-neutral-900",
+                                  "wrap-break-word text-right",
+                                )}
+                                style={secValueStyle}
+                              >
                                 {formatValue(f.resolved, f.format, f.currencyCode)}
                               </span>
                             </div>
@@ -3011,10 +3246,18 @@ export function DocumentPreview({
                       key={f.key}
                       className={`flex justify-between gap-3 ${fieldRowPaddingClassName} ${idx < fields.length - 1 ? "border-b border-neutral-100" : ""}`}
                     >
-                      <span className={`${bodyLabelClassName} text-neutral-500 font-medium w-[40%] shrink-0`} style={labelStyle}>
+                      <span className={`${secLabelClassName} text-neutral-500 font-medium w-[40%] shrink-0`} style={secLabelStyle}>
                         {f.label}
                       </span>
-                      <span className={`${bodyValueClassName} font-semibold text-neutral-900 wrap-break-word text-right`} style={valueStyle}>
+                      <span
+                        className={cn(
+                          secValueClassName,
+                          emphasizeLatestField(f) ? "font-bold" : "font-semibold",
+                          secValueColorStr ? "" : "text-neutral-900",
+                          "wrap-break-word text-right",
+                        )}
+                        style={secValueStyle}
+                      >
                         {formatValue(f.resolved, f.format, f.currencyCode)}
                       </span>
                     </div>
@@ -4838,6 +5081,15 @@ export function DocumentsTab({
   const [policyInsurerIds, setPolicyInsurerIds] = React.useState<number[] | null>(null);
   const [policyLineKeys, setPolicyLineKeys] = React.useState<Set<string> | null>(null);
   const [policyInvoiceTypes, setPolicyInvoiceTypes] = React.useState<Set<string>>(new Set());
+  // Policy "category" slug (e.g. "tpo", "comp", "tpo_with_od") derived
+  // from the policy's line-key set against the admin-configured
+  // `form_options.policy_category` rows. The renderer feeds this to
+  // each template section's `groupCoverCategories` gate so admins can
+  // configure "show this group only on TPO + OD" or "show on TPO or
+  // Comprehensive" with a single dropdown instead of two AND/HIDE
+  // rules. `null` while loading; `""` (empty) when no category matches
+  // — both treated as "no category known" by the gate (always shows).
+  const [policyCategory, setPolicyCategory] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     setInitialSelectionApplied(false);
@@ -4928,13 +5180,48 @@ export function DocumentsTab({
       .then((r) => (r.ok ? r.json() : []))
       .catch(() => [] as PdfTemplateRow[]);
 
-    Promise.all([pInsurers, pLines, pInvoices, pHtml, pPdf]).then(
-      ([insurerIds, lineKeys, invoiceTypes, htmlRows, pdfRows]) => {
+    // Load policy_category config so we can reverse-map the policy's
+    // line-key set into its category slug (e.g. {tpo, own_vehicle_damage}
+    // -> "tpo_with_od"). The admin-facing dropdown stores category slugs
+    // (one human concept) rather than raw line keys (two technical keys),
+    // so the renderer needs this to match them up.
+    type PolicyCategoryRow = {
+      value?: string;
+      meta?: { accountingLines?: { key?: string }[] } | null;
+    };
+    const pCategories = fetch(`/api/form-options?groupKey=policy_category&_t=${ts}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => [] as PolicyCategoryRow[]);
+
+    Promise.all([pInsurers, pLines, pInvoices, pHtml, pPdf, pCategories]).then(
+      ([insurerIds, lineKeys, invoiceTypes, htmlRows, pdfRows, catRows]) => {
         if (cancelled) return;
 
         setPolicyInsurerIds(insurerIds);
         setPolicyLineKeys(lineKeys);
         setPolicyInvoiceTypes(invoiceTypes);
+
+        // Derive policy category from the line-key set. The matching
+        // rule is "set-equality": the category whose
+        // `meta.accountingLines[].key` set EQUALS the policy's line-key
+        // set wins. Falls back to `""` when no category matches (e.g.
+        // legacy single-`main` policies) — the gate treats this as
+        // "no category known" and the group renders unconditionally.
+        const rows: PolicyCategoryRow[] = Array.isArray(catRows) ? (catRows as PolicyCategoryRow[]) : [];
+        const lineKeyList = Array.from(lineKeys);
+        let matched = "";
+        for (const row of rows) {
+          const lines = row?.meta?.accountingLines;
+          if (!Array.isArray(lines) || lines.length === 0) continue;
+          const rowKeys = lines.map((l) => String(l?.key ?? "").toLowerCase()).filter(Boolean);
+          if (rowKeys.length !== lineKeyList.length) continue;
+          const rowKeySet = new Set(rowKeys);
+          if (lineKeyList.every((k) => rowKeySet.has(k))) {
+            matched = String(row?.value ?? "");
+            break;
+          }
+        }
+        setPolicyCategory(matched);
 
         const matchingIds = [...new Set([detail.policyId, ...insurerIds])];
         const matchesInsurer = (tplInsurerIds: number[] | undefined) => {
@@ -5274,6 +5561,8 @@ export function DocumentsTab({
             setHtmlConfirmFile(null);
           }}
           onOpenEmailDialog={handleOpenHtmlEmail}
+          policyLineKeys={policyLineKeys ?? undefined}
+          policyCategory={policyCategory ?? undefined}
         />
 
         {/* Confirm dialog for HTML documents */}

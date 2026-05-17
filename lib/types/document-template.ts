@@ -39,6 +39,21 @@ export type TemplateSection = {
   packageName?: string;
   /** Which audience sees this section: "all" (default), "client", or "agent" */
   audience?: "all" | "client" | "agent";
+  /**
+   * When the section is visible to both audiences (`audience: "all"`), the
+   * renderer normally strips agent-premium / agent-credit fields from the
+   * client copy and client-premium / client-credit fields from the agent
+   * copy. Set these to override that default for a specific section.
+   *
+   * `showClientPremiumOnAgentCopy: true` → keep client-premium fields on the
+   * agent copy (e.g. so the agent can see what the client is paying).
+   * `showAgentPremiumOnClientCopy: true` → keep agent-premium fields on the
+   * client copy.
+   *
+   * No effect unless `audience` is "all" (or unset).
+   */
+  showClientPremiumOnAgentCopy?: boolean;
+  showAgentPremiumOnClientCopy?: boolean;
   /** Render fields as a table (one row per item) instead of label–value pairs */
   layout?: "default" | "table";
   /**
@@ -108,6 +123,99 @@ export type TemplateSection = {
    * already). Empty/undefined => no group is forced full-width.
    */
   fullWidthGroups?: string[];
+  /**
+   * Per-group visibility gate based on the policy's active accounting
+   * line keys (a.k.a. cover types — `tpo`, `od`, `pd`, …). Keyed by
+   * group name (matches `TemplateFieldMapping.group`).
+   *
+   * The group's fields render ONLY when EVERY listed key is present
+   * in the policy's cover-line set. This is the right knob for
+   * "Sum Premium (TPO + PD)" style groups that should only appear on
+   * multi-cover policies — set `["tpo", "pd"]` on the Sum Premium
+   * group and it auto-disappears for single-cover policies, without
+   * affecting any other group.
+   *
+   * Empty / missing entry for a group => no cover-type gate
+   * (existing behaviour). The synthetic "Other" bucket (fields with
+   * no `meta.group`) is intentionally ungatable here because it has
+   * no stable name to key by.
+   */
+  groupCoverTypes?: Record<string, string[]>;
+  /**
+   * Section-level cover-types gate. When set, the WHOLE section is
+   * hidden unless every listed key is present in the policy's
+   * cover-line set. Useful for sections that don't use per-group
+   * headers (e.g. a standalone "Multi-cover summary" section).
+   *
+   * Combines with `groupCoverTypes` — a group is shown only when
+   * BOTH section-level and per-group gates pass.
+   */
+  sectionCoverTypes?: string[];
+  /**
+   * Inverse of `groupCoverTypes` — keys whose simultaneous presence
+   * HIDES the group. The group's fields render UNLESS every listed
+   * key is present in the policy's cover-line set.
+   *
+   * Use to swap per-cover rows for a combined-sum row on multi-cover
+   * policies (e.g. hide "General Accounting" + "PD Accounting" groups
+   * when the policy has both `tpo` AND `own_vehicle_damage`, since
+   * "Sum Premium (TPO + PD)" already conveys the totals).
+   *
+   * Combines with `groupCoverTypes` (AND): a group renders iff
+   * `groupCoverTypes` passes AND `groupHideCoverTypes` does NOT match.
+   */
+  groupHideCoverTypes?: Record<string, string[]>;
+  /**
+   * Inverse of `sectionCoverTypes` — hides the WHOLE section when
+   * every listed key is present in the policy's cover-line set.
+   * Useful for a "Per-cover detail" section that should disappear on
+   * multi-cover policies in favour of a combined-sum section.
+   */
+  sectionHideCoverTypes?: string[];
+  /**
+   * Per-group visibility gate based on the policy's resolved
+   * **category** slug (e.g. `tpo`, `comp`, `tpo_with_od`), keyed by
+   * group name (matches `TemplateFieldMapping.group`).
+   *
+   * Each policy resolves to exactly ONE category (via
+   * `form_options.policy_category` config), so this is a much simpler
+   * mental model than the `groupCoverTypes` / `groupHideCoverTypes`
+   * pair above: the group renders only when the policy's category is
+   * in the list. Empty / missing entry => no gate (always show).
+   *
+   * This is the preferred admin-facing config — the older line-key
+   * gates are kept for backwards compatibility on templates that were
+   * configured before the category picker existed, but new templates
+   * should set this field instead.
+   */
+  groupCoverCategories?: Record<string, string[]>;
+  /**
+   * Section-level mirror of `groupCoverCategories`. When set, the
+   * WHOLE section is hidden unless the policy's category slug is in
+   * the list. Combines with `sectionCoverTypes` /
+   * `sectionHideCoverTypes` (AND).
+   */
+  sectionCoverCategories?: string[];
+  /**
+   * Optional typography for label/value rows in this section only (typical
+   * use: Premium). Overrides template-wide `meta.layout.bodyFontSize` /
+   * `labelColor` / `valueColor` for this block. Email and print HTML use the
+   * same rules as the on-screen preview.
+   */
+  premiumTypography?: {
+    /** When set, replaces `layout.bodyFontSize` for rows in this section. */
+    bodyFontSize?: "xs" | "sm" | "md" | "lg";
+    /** Hex label colour (e.g. `#737373`). */
+    labelColor?: string;
+    /** Hex value colour (e.g. `#1a1a1a`). */
+    valueColor?: string;
+    /**
+     * When true, the last visible row in this section whose format is
+     * `currency`, `negative_currency`, or `number` is rendered bolder on the
+     * value side (document field order).
+     */
+    emphasizeLatestAmount?: boolean;
+  };
   fields: TemplateFieldMapping[];
 };
 

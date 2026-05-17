@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { Plus, Trash2, ArrowLeft, Copy, Pencil, EyeOff, Eye, FlaskConical, Loader2, CheckCircle2, ChevronUp, ChevronDown, ChevronRight, Monitor, Layers, Crown, Palette, X, Upload, Image as ImageIcon } from "lucide-react";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { CompactMultiCheck } from "@/components/ui/compact-multi-check";
+import { CompactMultiSelect } from "@/components/ui/compact-multi-select";
 import {
   SortableList,
   SortableHandle,
@@ -42,8 +43,12 @@ import {
 } from "@/lib/document-template-sync";
 import { confirmDialog, alertDialog } from "@/components/ui/global-dialogs";
 import { FIELD_KEY_HINTS } from "@/lib/types/pdf-template";
+import { useT } from "@/lib/i18n";
 
 const GROUP_KEY = "document_templates";
+
+/** DB-backed premium resolver — omitted from new sections; see `documentTemplateSourceSelectOptions`. */
+const LEGACY_ACCOUNTING_SOURCE = "accounting";
 
 const TEMPLATE_TYPES: { value: DocumentTemplateMeta["type"]; label: string }[] =
   [
@@ -65,11 +70,32 @@ const ALL_SOURCE_OPTIONS: { value: string; label: string; forTypes?: string[] }[
   { value: "package", label: "Package (custom)" },
   { value: "policy", label: "Policy Info" },
   { value: "agent", label: "Agent Info" },
-  { value: "accounting", label: "Premium" },
   { value: "statement", label: "Statement Data", forTypes: ["statement"] },
   { value: "client", label: "Client Info" },
   { value: "organisation", label: "Insurance Company" },
 ];
+
+function documentTemplateSourceSelectOptions(
+  templateType: string | undefined,
+  currentSource: string,
+  legacyPremiumLabel: string,
+): { value: string; label: string; forTypes?: string[] }[] {
+  const type = templateType ?? "quotation";
+  const base = ALL_SOURCE_OPTIONS.filter(
+    (s) =>
+      (!s.forTypes || s.forTypes.includes(type))
+      && s.value !== LEGACY_ACCOUNTING_SOURCE,
+  );
+  if (currentSource === LEGACY_ACCOUNTING_SOURCE) {
+    return [...base, { value: LEGACY_ACCOUNTING_SOURCE, label: legacyPremiumLabel }];
+  }
+  return base;
+}
+
+function documentTemplateSectionSourceLabel(source: string, legacyPremiumLabel: string): string {
+  if (source === LEGACY_ACCOUNTING_SOURCE) return legacyPremiumLabel;
+  return ALL_SOURCE_OPTIONS.find((o) => o.value === source)?.label ?? source;
+}
 
 const FORMAT_OPTIONS: {
   value: NonNullable<TemplateFieldMapping["format"]>;
@@ -111,6 +137,7 @@ function defaultMeta(): DocumentTemplateMeta {
 }
 
 export default function DocumentTemplatesManager() {
+  const t = useT();
   const [rows, setRows] = React.useState<DocumentTemplateRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [open, setOpen] = React.useState(false);
@@ -131,6 +158,15 @@ export default function DocumentTemplatesManager() {
   >([]);
   const [statusOptions, setStatusOptions] = React.useState<{ label: string; value: string }[]>([]);
   const [availableInsurers, setAvailableInsurers] = React.useState<{ id: number; name: string }[]>([]);
+  // Policy categories (e.g. "Third Party Only", "Comprehensive", "TPO + Own
+  // Vehicle Damage") loaded directly from `form_options.policy_category`.
+  // Each row is ONE policy type, and the option's `value` is the slug
+  // (`tpo`, `comp`, `tpo_with_od`). Used by the per-group "Show on" picker
+  // — picking "TPO + Own Vehicle Damage" stores `["tpo_with_od"]` on the
+  // section's `groupCoverCategories[bucket]` map, and the renderer
+  // resolves each policy's category from its line-key set to gate
+  // visibility.
+  const [coverCategoryOptions, setCoverCategoryOptions] = React.useState<{ value: string; label: string }[]>([]);
   const [pkgFieldsCache, setPkgFieldsCache] = React.useState<Record<string, { key: string; label: string; group?: string }[]>>({});
   const [saving, setSaving] = React.useState(false);
   // Logo-upload progress flag — disables the upload button while the
@@ -377,7 +413,7 @@ export default function DocumentTemplatesManager() {
   }
 
   async function loadLookups() {
-    const [pkgRes, flowRes, statusRes, orgRes] = await Promise.all([
+    const [pkgRes, flowRes, statusRes, orgRes, catRes] = await Promise.all([
       fetch("/api/form-options?groupKey=packages", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
@@ -388,6 +424,9 @@ export default function DocumentTemplatesManager() {
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
       fetch("/api/admin/organisations", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+      fetch("/api/form-options?groupKey=policy_category", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
     ]);
@@ -409,6 +448,23 @@ export default function DocumentTemplatesManager() {
     setAvailableInsurers(
       Array.isArray(orgRes) ? (orgRes as { id: number; name: string }[]) : [],
     );
+
+    // One option per policy_category row → drives the per-group
+    // "Show on" picker in the editor. Empty selection on a group means
+    // "show on every policy".
+    type PolicyCategoryRow = {
+      label?: string;
+      value?: string;
+    };
+    const categories: { value: string; label: string }[] = [];
+    if (Array.isArray(catRes)) {
+      for (const row of catRes as PolicyCategoryRow[]) {
+        const slug = String(row?.value ?? "").trim().toLowerCase();
+        const label = String(row?.label ?? "").trim() || slug;
+        if (slug) categories.push({ value: slug, label });
+      }
+    }
+    setCoverCategoryOptions(categories);
   }
 
   React.useEffect(() => {
@@ -1066,6 +1122,55 @@ export default function DocumentTemplatesManager() {
     }));
   }
 
+  function normalizePremiumTypography(
+    cur: NonNullable<TemplateSection["premiumTypography"]>,
+  ): TemplateSection["premiumTypography"] | undefined {
+    const next: NonNullable<TemplateSection["premiumTypography"]> = {};
+    if (cur.bodyFontSize && ["xs", "sm", "md", "lg"].includes(cur.bodyFontSize)) {
+      next.bodyFontSize = cur.bodyFontSize;
+    }
+    const lc = cur.labelColor?.trim();
+    const vc = cur.valueColor?.trim();
+    if (lc) next.labelColor = lc;
+    if (vc) next.valueColor = vc;
+    if (cur.emphasizeLatestAmount) next.emphasizeLatestAmount = true;
+    return Object.keys(next).length > 0 ? next : undefined;
+  }
+
+  function patchPremiumTypography(
+    sectionIdx: number,
+    patch: Partial<NonNullable<TemplateSection["premiumTypography"]>>,
+  ) {
+    setMeta((m) => ({
+      ...m,
+      sections: m.sections.map((s, i) => {
+        if (i !== sectionIdx) return s;
+        const cur: NonNullable<TemplateSection["premiumTypography"]> = {
+          ...(s.premiumTypography ?? {}),
+        };
+        if ("bodyFontSize" in patch) {
+          if (patch.bodyFontSize) cur.bodyFontSize = patch.bodyFontSize;
+          else delete cur.bodyFontSize;
+        }
+        if ("labelColor" in patch) {
+          const v = patch.labelColor?.trim();
+          if (v) cur.labelColor = v;
+          else delete cur.labelColor;
+        }
+        if ("valueColor" in patch) {
+          const v = patch.valueColor?.trim();
+          if (v) cur.valueColor = v;
+          else delete cur.valueColor;
+        }
+        if ("emphasizeLatestAmount" in patch) {
+          if (patch.emphasizeLatestAmount) cur.emphasizeLatestAmount = true;
+          else delete cur.emphasizeLatestAmount;
+        }
+        return { ...s, premiumTypography: normalizePremiumTypography(cur) };
+      }),
+    }));
+  }
+
   function removeSection(idx: number) {
     setMeta((m) => ({
       ...m,
@@ -1653,8 +1758,10 @@ export default function DocumentTemplatesManager() {
                     : { border: "border-neutral-200 dark:border-neutral-700", bg: "", tag: "", tagColor: "" };
 
                 const isCollapsed = collapsedSectionIds.has(section.id);
-                const sourceLabel =
-                  ALL_SOURCE_OPTIONS.find((o) => o.value === section.source)?.label ?? section.source;
+                const sourceLabel = documentTemplateSectionSourceLabel(
+                  section.source,
+                  t("admin.documentTemplatesEditor.legacyPremiumSource", "Premium (legacy)"),
+                );
 
                 return (
                   <div key={section.id} className={`rounded-lg border overflow-hidden ${audienceTag.border}`}>
@@ -1791,9 +1898,11 @@ export default function DocumentTemplatesManager() {
                             value={section.source}
                             onChange={(e) => updateSection(sIdx, { source: e.target.value as TemplateSection["source"], fields: [] })}
                           >
-                            {ALL_SOURCE_OPTIONS
-                              .filter((s) => !s.forTypes || s.forTypes.includes(meta.type))
-                              .map((s) => (
+                            {documentTemplateSourceSelectOptions(
+                              meta.type,
+                              section.source,
+                              t("admin.documentTemplatesEditor.legacyPremiumSource", "Premium (legacy)"),
+                            ).map((s) => (
                               <option key={s.value} value={s.value}>{s.label}</option>
                             ))}
                           </select>
@@ -1828,6 +1937,37 @@ export default function DocumentTemplatesManager() {
                             <option value="agent">Agent Only</option>
                           </select>
                         </div>
+                        {/* Cross-audience money-field toggles — only relevant when
+                            Audience is "All". When a section is already Client Only /
+                            Agent Only these have no effect. */}
+                        {(!section.audience || section.audience === "all") && (
+                          <div className="flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:gap-x-4 sm:gap-y-1">
+                            <label
+                              className="flex items-center gap-1.5 cursor-pointer text-[11px] sm:text-xs text-neutral-600 dark:text-neutral-300 select-none"
+                              title="Show Client Premium / Client Credit fields on the agent copy too (e.g. so the agent can see what the client is paying)"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={!!section.showClientPremiumOnAgentCopy}
+                                onChange={(e) => updateSection(sIdx, { showClientPremiumOnAgentCopy: e.target.checked || undefined })}
+                                className="h-3.5 w-3.5 rounded accent-blue-500"
+                              />
+                              Show client premium on agent copy
+                            </label>
+                            <label
+                              className="flex items-center gap-1.5 cursor-pointer text-[11px] sm:text-xs text-neutral-600 dark:text-neutral-300 select-none"
+                              title="Show Agent Premium / Agent Credit fields on the client copy too"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={!!section.showAgentPremiumOnClientCopy}
+                                onChange={(e) => updateSection(sIdx, { showAgentPremiumOnClientCopy: e.target.checked || undefined })}
+                                className="h-3.5 w-3.5 rounded accent-blue-500"
+                              />
+                              Show agent premium on client copy
+                            </label>
+                          </div>
+                        )}
                         {section.source === "statement" && (
                           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
                             <Label className="text-[11px] sm:text-xs text-neutral-500 shrink-0">Layout</Label>
@@ -1863,6 +2003,134 @@ export default function DocumentTemplatesManager() {
                               </select>
                             </div>
                           )}
+                        {section.id !== "totals" && section.id !== "line_items" && (
+                          <div className="w-full rounded-md border border-neutral-200 bg-neutral-50/80 p-2 sm:p-3 dark:border-neutral-700 dark:bg-neutral-900/40">
+                            <div className="text-[11px] font-semibold text-neutral-700 dark:text-neutral-200">
+                              {t(
+                                "admin.documentTemplatesEditor.premiumTypographyHeading",
+                                "Row typography (this section)",
+                              )}
+                            </div>
+                            <p className="mt-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
+                              {t(
+                                "admin.documentTemplatesEditor.premiumTypographyHint",
+                                "Overrides the template-wide body size and colours for label/value rows here. Pick colours with the swatch or type a hex code. \"Bold latest amount\" targets the last currency or number row in this section (field order).",
+                              )}
+                            </p>
+                            <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end sm:gap-x-4 sm:gap-y-2">
+                              <div className="flex flex-col gap-1">
+                                <Label className="text-[10px] sm:text-[11px] text-neutral-500">
+                                  {t(
+                                    "admin.documentTemplatesEditor.premiumTypographyBodySize",
+                                    "Body size",
+                                  )}
+                                </Label>
+                                <select
+                                  className="h-8 w-full min-w-48 rounded-md border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 sm:w-auto"
+                                  value={section.premiumTypography?.bodyFontSize ?? ""}
+                                  onChange={(e) =>
+                                    patchPremiumTypography(sIdx, {
+                                      bodyFontSize: e.target.value
+                                        ? (e.target.value as "xs" | "sm" | "md" | "lg")
+                                        : undefined,
+                                    })
+                                  }
+                                >
+                                  <option value="">
+                                    {t(
+                                      "admin.documentTemplatesEditor.premiumTypographyInherit",
+                                      "Use template default",
+                                    )}
+                                  </option>
+                                  <option value="xs">Extra small</option>
+                                  <option value="sm">Small</option>
+                                  <option value="md">Medium</option>
+                                  <option value="lg">Large</option>
+                                </select>
+                              </div>
+                              <div className="flex flex-col gap-1">
+                                <Label className="text-[10px] sm:text-[11px] text-neutral-500">
+                                  {t(
+                                    "admin.documentTemplatesEditor.premiumTypographyLabelColor",
+                                    "Label colour",
+                                  )}
+                                </Label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    title={t(
+                                      "admin.documentTemplatesEditor.premiumTypographyLabelColor",
+                                      "Label colour",
+                                    )}
+                                    className="h-9 w-10 shrink-0 cursor-pointer rounded-md border border-neutral-200 bg-transparent dark:border-neutral-700"
+                                    value={
+                                      section.premiumTypography?.labelColor?.trim() || "#737373"
+                                    }
+                                    onChange={(e) =>
+                                      patchPremiumTypography(sIdx, { labelColor: e.target.value })
+                                    }
+                                  />
+                                  <Input
+                                    className="h-8 min-w-0 flex-1 font-mono text-xs sm:w-28"
+                                    placeholder="#737373"
+                                    value={section.premiumTypography?.labelColor ?? ""}
+                                    onChange={(e) =>
+                                      patchPremiumTypography(sIdx, { labelColor: e.target.value })
+                                    }
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex flex-col gap-1">
+                                <Label className="text-[10px] sm:text-[11px] text-neutral-500">
+                                  {t(
+                                    "admin.documentTemplatesEditor.premiumTypographyValueColor",
+                                    "Value colour",
+                                  )}
+                                </Label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    title={t(
+                                      "admin.documentTemplatesEditor.premiumTypographyValueColor",
+                                      "Value colour",
+                                    )}
+                                    className="h-9 w-10 shrink-0 cursor-pointer rounded-md border border-neutral-200 bg-transparent dark:border-neutral-700"
+                                    value={
+                                      section.premiumTypography?.valueColor?.trim() || "#1a1a1a"
+                                    }
+                                    onChange={(e) =>
+                                      patchPremiumTypography(sIdx, { valueColor: e.target.value })
+                                    }
+                                  />
+                                  <Input
+                                    className="h-8 min-w-0 flex-1 font-mono text-xs sm:w-28"
+                                    placeholder="#1a1a1a"
+                                    value={section.premiumTypography?.valueColor ?? ""}
+                                    onChange={(e) =>
+                                      patchPremiumTypography(sIdx, { valueColor: e.target.value })
+                                    }
+                                  />
+                                </div>
+                              </div>
+                              <label className="flex cursor-pointer items-center gap-2 pb-1 text-[11px] text-neutral-600 dark:text-neutral-300 select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={!!section.premiumTypography?.emphasizeLatestAmount}
+                                  onChange={(e) =>
+                                    patchPremiumTypography(sIdx, {
+                                      emphasizeLatestAmount: e.target.checked ? true : undefined,
+                                    })
+                                  }
+                                  className="h-3.5 w-3.5 rounded accent-blue-500"
+                                />
+                                {t(
+                                  "admin.documentTemplatesEditor.premiumTypographyBoldLatest",
+                                  "Bold latest amount row",
+                                )}
+                              </label>
+                            </div>
+                          </div>
+                        )}
                         {/* Group headers — always shown so the option is
                             discoverable, but only meaningful when at least
                             one field actually has a group (set via the
@@ -2000,25 +2268,35 @@ export default function DocumentTemplatesManager() {
                       )}
 
                       {/* Premium context note */}
-                      {section.source === "accounting" && (
-                        <div className="text-[11px] sm:text-xs rounded-md border px-3 py-2 border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300">
-                          {meta.type === "endorsement" ? (
-                            <>
-                              <strong>Endorsement template:</strong> These premium fields read from the <strong>endorsement&apos;s own premium record</strong> (e.g. Gross Premium, Net Premium, Agent Premium, Client Premium of the endorsement).
-                              The same field keys are used for all template types — the values change based on which policy/endorsement the document is generated for.
-                            </>
-                          ) : meta.type === "statement" ? (
-                            <>
-                              <strong>Statement template:</strong> For premium totals across all items, use the <strong>Statement Data</strong> source instead (it has Policy Premium Total and Endorsement Premium Total).
-                              This Premium source reads from the <strong>parent policy&apos;s</strong> premium record only.
-                            </>
-                          ) : (
-                            <>
-                              <strong>Template type: {meta.type || "—"}</strong> — These premium fields read from the <strong>policy&apos;s own premium record</strong>.
-                              The same field keys are used for all template types.
-                              For an endorsement template, these same fields will read the endorsement&apos;s premium values instead.
-                            </>
-                          )}
+                      {section.source === LEGACY_ACCOUNTING_SOURCE && (
+                        <div className="space-y-2">
+                          <div className="text-[11px] sm:text-xs rounded-md border px-3 py-2 border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                            <strong>{t("admin.documentTemplatesEditor.legacyPremiumBannerTitle", "Legacy Premium source")}</strong>
+                            {" — "}
+                            {t(
+                              "admin.documentTemplatesEditor.legacyPremiumBannerBody",
+                              "This reads accounting-table rows (policyPremiums). Premium Record fields from the wizard live in the policy snapshot — switch Source to \"Package (custom)\" and Package to \"premiumRecord\" so values render on documents.",
+                            )}
+                          </div>
+                          <div className="text-[11px] sm:text-xs rounded-md border px-3 py-2 border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300">
+                            {meta.type === "endorsement" ? (
+                              <>
+                                <strong>Endorsement template:</strong> These premium fields read from the <strong>endorsement&apos;s own premium record</strong> (e.g. Gross Premium, Net Premium, Agent Premium, Client Premium of the endorsement).
+                                The same field keys are used for all template types — the values change based on which policy/endorsement the document is generated for.
+                              </>
+                            ) : meta.type === "statement" ? (
+                              <>
+                                <strong>Statement template:</strong> For premium totals across all items, use the <strong>Statement Data</strong> source instead (it has Policy Premium Total and Endorsement Premium Total).
+                                This Premium source reads from the <strong>parent policy&apos;s</strong> premium record only.
+                              </>
+                            ) : (
+                              <>
+                                <strong>Template type: {meta.type || "—"}</strong> — These premium fields read from the <strong>policy&apos;s own premium record</strong>.
+                                The same field keys are used for all template types.
+                                For an endorsement template, these same fields will read the endorsement&apos;s premium values instead.
+                              </>
+                            )}
+                          </div>
                         </div>
                       )}
 
@@ -2166,6 +2444,7 @@ export default function DocumentTemplatesManager() {
                               onRemove={(fIdx) => removeField(sIdx, fIdx)}
                               onReorder={(nextFields) => reorderFields(sIdx, nextFields)}
                               onPatchSection={(patch) => patchSection(sIdx, patch)}
+                              coverCategoryOptions={coverCategoryOptions}
                             />
                           </div>
                         </div>
@@ -3635,6 +3914,15 @@ type SortableFieldsTableProps = {
    * updates without rebuilding the whole section.
    */
   onPatchSection: (patch: Partial<TemplateSection>) => void;
+  /**
+   * Multi-select options for the per-group "Show on" picker. One entry
+   * per `policy_category` row (e.g.
+   * `{ value: "tpo_with_od", label: "TPO + Own Vehicle Damage" }`).
+   * Storing the policy-category slug instead of raw line keys means an
+   * admin only needs to think about WHICH POLICY TYPE the group should
+   * appear on — no AND/HIDE rule juggling.
+   */
+  coverCategoryOptions: { value: string; label: string }[];
 };
 
 function SortableFieldsTable({
@@ -3647,6 +3935,7 @@ function SortableFieldsTable({
   onRemove,
   onReorder,
   onPatchSection,
+  coverCategoryOptions,
 }: SortableFieldsTableProps) {
   // Bucket the selected fields by their group. Group order = first appearance
   // in the array; field order within a group = array order of just-those
@@ -3751,6 +4040,31 @@ function SortableFieldsTable({
       });
     },
     [section.fullWidthGroups, onPatchSection],
+  );
+
+  // Per-group category gate. The preferred admin-facing knob — one
+  // dropdown lists the policy categories ("Third Party Only",
+  // "Comprehensive", "TPO + Own Vehicle Damage", …) configured under
+  // Policy Settings. Picking 1+ categories shows the group ONLY on
+  // policies of those types. Empty clears the rule (always shown).
+  // Stored as policy-category slugs (e.g. `tpo`, `tpo_with_od`) — the
+  // renderer derives each policy's category from its line-key set.
+  const setGroupCoverCategories = React.useCallback(
+    (groupName: string, slugs: string[]) => {
+      const normalized = slugs
+        .map((s) => String(s).trim().toLowerCase())
+        .filter(Boolean);
+      const next: Record<string, string[]> = { ...(section.groupCoverCategories ?? {}) };
+      if (normalized.length === 0) {
+        delete next[groupName];
+      } else {
+        next[groupName] = normalized;
+      }
+      onPatchSection({
+        groupCoverCategories: Object.keys(next).length > 0 ? next : undefined,
+      });
+    },
+    [section.groupCoverCategories, onPatchSection],
   );
 
   // Column count for the group-header row's colSpan. Mobile hides the
@@ -3862,6 +4176,36 @@ function SortableFieldsTable({
                               onChange={() => toggleFullWidthGroup(bucket.name)}
                             />
                             Full width
+                          </label>
+                        )}
+                        {/* Per-group visibility gate — ONE pull-down
+                            menu that lists the admin-configured policy
+                            categories ("Third Party Only",
+                            "Comprehensive", "TPO + Own Vehicle Damage",
+                            …). Picking 1+ shows the group ONLY on
+                            policies of those types. Leaving it empty
+                            shows the group on every policy.
+
+                            This replaces the older SHOW/HIDE pair of
+                            line-key pickers because admins reason about
+                            "which policy type" not "which premium
+                            lines". Both the old and new rules are
+                            honoured at render time, so existing
+                            templates keep working. */}
+                        {bucket.name !== "Other" && (
+                          <label
+                            className="flex items-center gap-1 normal-case tracking-normal text-[10px] sm:text-[11px] font-normal text-neutral-500 dark:text-neutral-400"
+                            title="Show this group only on policies of the selected type(s). Leave empty to show on every policy."
+                          >
+                            Show on:
+                            <CompactMultiSelect
+                              options={coverCategoryOptions}
+                              value={section.groupCoverCategories?.[bucket.name] ?? []}
+                              onChange={(next) => setGroupCoverCategories(bucket.name, next)}
+                              placeholder="all policies"
+                              emptyOptionsLabel="—"
+                              maxWidth="12rem"
+                            />
                           </label>
                         )}
                         {/* Reorder this whole group (block) up or down.

@@ -1,13 +1,39 @@
 import { NextResponse } from "next/server";
-import { eq, sql, desc, ilike } from "drizzle-orm";
+import { and, eq, sql, desc, ilike } from "drizzle-orm";
 import { db } from "@/db/client";
 import { policies, cars } from "@/db/schema/insurance";
 import { clients } from "@/db/schema/core";
 import { requireUser } from "@/lib/auth/require-user";
 import { getPolicyColumns } from "@/lib/db/column-check";
+import { getInsuredDisplayName } from "@/lib/field-resolver";
+
+/**
+ * `clientSet` rows are client-master stubs (insured/contact only). They lack
+ * real motor packages / premiums, so listing them for document-template
+ * preview duplicates policy numbers and produces confusing empty sections.
+ */
+const EXCLUDE_CLIENT_MASTER_FLOW = sql`(
+  COALESCE(${policies.flowKey}, '') <> 'clientSet'
+  AND COALESCE((${cars.extraAttributes})::jsonb ->> 'flowKey', '') <> 'clientSet'
+)`;
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+
+function registrationFromVehicleSnapshot(extra: Record<string, unknown>): string | null {
+  const pkgs = extra.packagesSnapshot;
+  if (!pkgs || typeof pkgs !== "object") return null;
+  const vehicleinfo = (pkgs as Record<string, unknown>).vehicleinfo;
+  if (!vehicleinfo || typeof vehicleinfo !== "object") return null;
+  const values = (vehicleinfo as { values?: Record<string, unknown> }).values;
+  if (!values || typeof values !== "object") return null;
+  const keys = ["registration", "registrationNumber", "vehicleRegistration", "plateNumber", "plate", "vehicleNo"];
+  for (const k of keys) {
+    const v = values[k];
+    if (v != null && String(v).trim()) return String(v).trim();
+  }
+  return null;
+}
 
 /**
  * Admin-only endpoint that backs the live document-template preview pane.
@@ -17,8 +43,9 @@ export const revalidate = 0;
  *   - GET ?id=123                → returns the policy by id
  *   - GET ?search=ABC            → returns up to 20 recent policies whose
  *                                   policyNumber matches `%search%`
- *   - GET (no params)            → returns the 20 most recently created policies
- *                                   (admin can pick one to preview against)
+ *   - GET (no params)            → returns up to 20 recent **real policy**
+ *                                   rows (excludes `clientSet` client-master
+ *                                   stubs), with plate + insured hint labels
  *
  * The single-policy response intentionally mirrors the `PolicyDetail` shape
  * that the existing `/api/policies/[id]` endpoint returns, so the same
@@ -39,20 +66,59 @@ export async function GET(request: Request) {
     const polCols = await getPolicyColumns();
 
     if (!idParam && !policyNumberParam) {
-      const where = searchParam.length > 0
-        ? ilike(policies.policyNumber, `%${searchParam}%`)
-        : undefined;
-      const baseList = db
+      const searchWhere =
+        searchParam.length > 0 ? ilike(policies.policyNumber, `%${searchParam}%`) : undefined;
+
+      const rows = await db
         .select({
           policyId: policies.id,
           policyNumber: policies.policyNumber,
           createdAt: policies.createdAt,
           flowKey: policies.flowKey,
+          plateNumber: cars.plateNumber,
+          extraAttributes: cars.extraAttributes,
         })
-        .from(policies);
-      const list = await (where
-        ? baseList.where(where).orderBy(desc(policies.createdAt)).limit(20)
-        : baseList.orderBy(desc(policies.createdAt)).limit(20));
+        .from(policies)
+        .leftJoin(cars, eq(cars.policyId, policies.id))
+        .where(searchWhere ? and(searchWhere, EXCLUDE_CLIENT_MASTER_FLOW) : EXCLUDE_CLIENT_MASTER_FLOW)
+        .orderBy(desc(policies.createdAt))
+        .limit(80);
+
+      const seen = new Set<number>();
+      const list: {
+        policyId: number;
+        policyNumber: string;
+        createdAt: string;
+        flowKey: string | null;
+        plateNumber: string | null;
+        insuredLabel: string | null;
+      }[] = [];
+
+      for (const r of rows) {
+        if (seen.has(r.policyId)) continue;
+        seen.add(r.policyId);
+
+        const extra = (r.extraAttributes ?? {}) as Record<string, unknown>;
+        const insuredSnap = extra.insuredSnapshot as Record<string, unknown> | undefined;
+        const insuredLabel = getInsuredDisplayName(insuredSnap) || null;
+
+        const plateCol =
+          r.plateNumber != null && String(r.plateNumber).trim() !== ""
+            ? String(r.plateNumber).trim()
+            : null;
+        const plate = plateCol ?? registrationFromVehicleSnapshot(extra);
+
+        list.push({
+          policyId: r.policyId,
+          policyNumber: r.policyNumber,
+          createdAt: String(r.createdAt ?? ""),
+          flowKey: r.flowKey,
+          plateNumber: plate,
+          insuredLabel,
+        });
+        if (list.length >= 20) break;
+      }
+
       return NextResponse.json({ list });
     }
 
